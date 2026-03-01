@@ -1,6 +1,8 @@
 //! Admin stats and maintenance operations (SPEC §5.4).
 
 use sqlx::{PgPool, Row};
+use uuid::Uuid;
+use chrono::{DateTime, Utc};
 
 use crate::errors::*;
 use crate::graph::{AgeGraphRepository, GraphRepository};
@@ -153,7 +155,7 @@ impl AdminService {
             // For now, just mark stale processing jobs as failed
             let result = sqlx::query(
                 "UPDATE covalence.slow_path_queue \
-                 SET status = 'failed', error = 'timed out' \
+                 SET status = 'failed' = 'timed out' \
                  WHERE status = 'processing' AND started_at < now() - interval '10 minutes'"
             ).execute(&self.pool).await?;
             actions.push(format!("timed out {} stale queue jobs", result.rows_affected()));
@@ -189,5 +191,109 @@ impl AdminService {
         }
 
         Ok(MaintenanceResponse { actions_taken: actions })
+    }
+}
+
+// ── Queue listing ───────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub struct QueueEntry {
+    pub id: Uuid,
+    pub task_type: String,
+    pub node_id: Option<Uuid>,
+    pub status: String,
+    pub priority: i32,
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl AdminService {
+    pub async fn list_queue(
+        &self,
+        status_filter: Option<&str>,
+        limit: i64,
+    ) -> AppResult<Vec<QueueEntry>> {
+        let rows = sqlx::query(
+            "SELECT id, task_type, node_id, status, priority, created_at, started_at, completed_at
+             FROM covalence.slow_path_queue
+             WHERE ($1::text IS NULL OR status = $1)
+             ORDER BY priority DESC, created_at ASC
+             LIMIT $2"
+        )
+        .bind(status_filter)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(|r| {
+            use sqlx::Row;
+            Ok(QueueEntry {
+                id: r.try_get("id")?,
+                task_type: r.try_get("task_type")?,
+                node_id: r.try_get("node_id")?,
+                status: r.try_get("status")?,
+                priority: r.try_get("priority")?,
+                created_at: r.try_get("created_at")?,
+                started_at: r.try_get("started_at")?,
+                completed_at: r.try_get("completed_at")?,
+            })
+        }).collect::<Result<Vec<_>, sqlx::Error>>().map_err(|e| AppError::Database(e))
+    }
+
+    pub async fn get_queue_entry(&self, id: Uuid) -> AppResult<Option<QueueEntry>> {
+        let row = sqlx::query(
+            "SELECT id, task_type, node_id, status, priority, created_at, started_at, completed_at
+             FROM covalence.slow_path_queue WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(r) => {
+                use sqlx::Row;
+                Ok(Some(QueueEntry {
+                    id: r.try_get("id")?,
+                    task_type: r.try_get("task_type")?,
+                    node_id: r.try_get("node_id")?,
+                    status: r.try_get("status")?,
+                    priority: r.try_get("priority")?,
+                    created_at: r.try_get("created_at")?,
+                    started_at: r.try_get("started_at")?,
+                    completed_at: r.try_get("completed_at")?,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Record a usage trace when a node is retrieved in search results.
+    pub async fn record_usage(
+        &self,
+        node_id: Uuid,
+        session_id: Option<&str>,
+        query_text: &str,
+        rank: i32,
+    ) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO covalence.usage_traces (id, node_id, session_id, query_text, retrieval_rank)
+             VALUES ($1, $2, $3, $4, $5)"
+        )
+        .bind(Uuid::new_v4())
+        .bind(node_id)
+        .bind(session_id)
+        .bind(query_text)
+        .bind(rank)
+        .execute(&self.pool)
+        .await?;
+
+        // Update node's accessed_at
+        sqlx::query("UPDATE covalence.nodes SET accessed_at = now() WHERE id = $1")
+            .bind(node_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
     }
 }

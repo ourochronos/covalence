@@ -18,6 +18,7 @@ use crate::services::{
     search_service::*,
     contention_service::*,
     memory_service::*,
+    session_service::*,
 };
 
 use super::AppState;
@@ -55,7 +56,14 @@ pub fn router() -> Router<AppState> {
         .route("/memory/search", post(memory_recall))
         .route("/memory/status", get(memory_status))
         .route("/memory/{id}/forget", patch(memory_forget))
+        // Sessions
+        .route("/sessions", post(session_create))
+        .route("/sessions", get(session_list))
+        .route("/sessions/{id}", get(session_get))
+        .route("/sessions/{id}/close", post(session_close))
         // Admin
+        .route("/admin/queue", get(admin_queue_list))
+        .route("/admin/queue/{id}", get(admin_queue_get))
         .route("/admin/stats", get(admin_stats))
         .route("/admin/maintenance", post(admin_maintenance))
 }
@@ -386,5 +394,71 @@ async fn memory_forget(
     let svc = MemoryService::new(state.pool.clone());
     let reason = body.get("reason").and_then(|v| v.as_str()).map(String::from);
     svc.forget(id, reason).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Admin queue handlers ────────────────────────────────────────
+
+async fn admin_queue_list(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = AdminService::new(state.pool.clone());
+    let status = params.get("status").map(|s| s.as_str());
+    let limit = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50i64);
+    let entries = svc.list_queue(status, limit).await?;
+    Ok(Json(serde_json::json!({"data": entries})))
+}
+
+async fn admin_queue_get(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = AdminService::new(state.pool.clone());
+    match svc.get_queue_entry(id).await? {
+        Some(e) => Ok(Json(serde_json::json!({"data": e}))),
+        None => Err(crate::errors::AppError::NotFound("queue entry not found".into())),
+    }
+}
+
+// ── Session handlers ────────────────────────────────────────────
+
+async fn session_create(
+    State(state): State<AppState>,
+    Json(req): Json<CreateSessionRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    let session = svc.create(req).await?;
+    Ok((StatusCode::CREATED, Json(serde_json::json!({"data": session}))))
+}
+
+async fn session_list(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    let status = params.get("status").map(|s| s.as_str());
+    let limit = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50i64);
+    let sessions = svc.list(status, limit).await?;
+    Ok(Json(serde_json::json!({"data": sessions})))
+}
+
+async fn session_get(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    match svc.get(id).await? {
+        Some(s) => Ok(Json(serde_json::json!({"data": s}))),
+        None => Err(crate::errors::AppError::NotFound("session not found".into())),
+    }
+}
+
+async fn session_close(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    svc.close(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
