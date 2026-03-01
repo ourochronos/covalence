@@ -32,6 +32,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
+use serial_test::serial;
 
 use covalence_engine::worker::{
     QueueTask,
@@ -188,17 +189,15 @@ impl LlmClient for MockLlmClient {
                 "updated_content": "Updated article content incorporating the source's corrections."
             })
             .to_string()
-        } else if prompt.contains("tree decomposition") || prompt.contains("Tree index") || prompt.contains("decompose") {
+        } else if prompt.contains("tree decomposition") || prompt.contains("tree index") || prompt.contains("decompose") {
             // handle_tree_index prompt
             json!({
-                "sections": [
+                "nodes": [
                     {
                         "title": "Introduction",
+                        "summary": "Introduction section.",
                         "start_char": 0,
-                        "end_char": 100,
-                        "tree_path": "1",
-                        "depth": 0,
-                        "summary": "Introduction section."
+                        "end_char": 1000
                     }
                 ]
             })
@@ -378,6 +377,7 @@ async fn cleanup_queue_tasks(pool: &PgPool, task_types: &[&str]) {
 /// provenance-insert step.  The assertions below reflect the *intended*
 /// behaviour once the schema is aligned.
 #[tokio::test]
+#[serial]
 async fn test_compile_creates_article() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
@@ -431,7 +431,7 @@ async fn test_compile_creates_article() {
 
     // ── Provenance edges (COMPILED_FROM/ORIGINATES in covalence.edges) ──────
     let edge_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM covalence.edges          WHERE target_node_id = $1            AND edge_type IN ('COMPILED_FROM', 'ORIGINATES')",
+        "SELECT count(*) FROM covalence.edges WHERE target_node_id = $1 AND edge_type IN ('COMPILED_FROM', 'ORIGINATES') AND created_by = 'compile'",
     )
     .bind(article_id)
     .fetch_one(&pool)
@@ -461,6 +461,7 @@ async fn test_compile_creates_article() {
 /// (vector cosine distance < 0.15), `handle_compile` should update the
 /// existing article rather than create a new one.
 #[tokio::test]
+#[serial]
 async fn test_compile_dedup() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
@@ -528,6 +529,7 @@ async fn test_compile_dedup() {
 /// When the LLM client always errors, `handle_compile` falls back to a degraded
 /// article built by concatenating source content.
 #[tokio::test]
+#[serial]
 async fn test_compile_fallback() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::always_fail());
@@ -588,6 +590,7 @@ async fn test_compile_fallback() {
 /// DB uses `source_node_id`/`target_node_id`.  The edge assertions are written
 /// against the actual DB columns and will document when the handler SQL is fixed.
 #[tokio::test]
+#[serial]
 async fn test_split_with_tree_index() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
@@ -670,6 +673,7 @@ async fn test_split_with_tree_index() {
 /// `handle_split` without a `tree_index` must call the LLM to determine the
 /// split point.
 #[tokio::test]
+#[serial]
 async fn test_split_without_tree_index() {
     let pool = setup_test_db().await;
     let mock = Arc::new(MockLlmClient::new());
@@ -713,6 +717,7 @@ async fn test_split_without_tree_index() {
 /// archives both originals, creates MERGED_FROM edges, copies provenance,
 /// and records mutations.
 #[tokio::test]
+#[serial]
 async fn test_merge() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
@@ -796,6 +801,7 @@ async fn test_merge() {
 /// `handle_infer_edges` finds similar nodes via vector search and creates
 /// typed edges between them using LLM classification.
 #[tokio::test]
+#[serial]
 async fn test_infer_edges() {
     let pool = setup_test_db().await;
     let mock = Arc::new(MockLlmClient::new());
@@ -862,6 +868,7 @@ async fn test_infer_edges() {
 /// nearby articles (found via vector similarity), then records contention rows
 /// and queues resolve_contention tasks.
 #[tokio::test]
+#[serial]
 async fn test_contention_check() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
@@ -930,6 +937,7 @@ async fn test_contention_check() {
 /// does not yet exist; this test sets up the contention row manually.
 /// Until the schema migration is applied it will fail on the initial fetch.
 #[tokio::test]
+#[serial]
 async fn test_resolve_contention_supersede_b() {
     let pool = setup_test_db().await;
 
@@ -1021,6 +1029,7 @@ async fn test_resolve_contention_supersede_b() {
 /// For small content (< TRIVIAL_THRESHOLD_CHARS) a trivial single-node tree is
 /// built without LLM involvement.
 #[tokio::test]
+#[serial]
 async fn test_tree_index_small_content() {
     let pool = setup_test_db().await;
     let mock = Arc::new(MockLlmClient::new());
@@ -1066,6 +1075,7 @@ async fn test_tree_index_small_content() {
 /// `handle_tree_embed` embeds each section of a tree-indexed node and
 /// composes a node-level embedding from the section embeddings.
 #[tokio::test]
+#[serial]
 async fn test_tree_embed() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
@@ -1105,6 +1115,7 @@ async fn test_tree_embed() {
 /// `handle_embed` stores a vector embedding for a small node directly
 /// (no tree delegation).
 #[tokio::test]
+#[serial]
 async fn test_embed_small_node() {
     let pool = setup_test_db().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
@@ -1148,6 +1159,7 @@ async fn test_embed_small_node() {
 /// `handle_embed` on a large node (> TRIVIAL_THRESHOLD_CHARS) delegates to the
 /// tree_index pipeline instead of doing a direct embed.
 #[tokio::test]
+#[serial]
 async fn test_embed_large_node_delegates_to_tree() {
     let pool = setup_test_db().await;
     let mock = Arc::new(MockLlmClient::new());

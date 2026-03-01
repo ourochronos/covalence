@@ -4,7 +4,7 @@
 //! asynchronously without blocking the hot API path.
 //!
 //! # Task lifecycle
-//! ```
+//! ```text
 //! pending → processing → complete
 //!                      ↘ failed   (after 3 attempts)
 //! ```
