@@ -6,25 +6,21 @@
 //!   cargo test --test worker_handlers -- --test-threads=1
 //! ```
 //!
-//! # Schema notes
-//! The handlers in src/worker/ were written against a slightly different schema
-//! than what the live DB currently has. The discrepancies are:
+//! # Schema alignment
+//! All INSERT/SELECT statements use the **actual** live DB column names:
 //!
-//! | Handler column | Actual DB column      |
-//! |----------------|-----------------------|
-//! | `kind`         | `node_type`           |
-//! | `updated_at`   | `modified_at`         |
-//! | `source_id`    | `source_node_id` (edges) |
-//! | `target_id`    | `target_node_id` (edges) |
+//! | Live column               | Notes                                       |
+//! |---------------------------|---------------------------------------------|
+//! | `nodes.node_type`         | (handlers used `kind` — now fixed)          |
+//! | `nodes.modified_at`       | (handlers used `updated_at` — now fixed)    |
+//! | `edges.source_node_id`    | (handlers used `source_id` — now fixed)     |
+//! | `edges.target_node_id`    | (handlers used `target_id` — now fixed)     |
+//! | `covalence.edges`         | replaces the phantom `article_sources` table |
+//! | `covalence.contentions`   | replaces `article_sources` for contentions  |
 //!
-//! Additionally `covalence.article_sources` and `covalence.article_mutations`
-//! are referenced by the compile/split/merge handlers but do not yet exist in
-//! the DB.  Tests that exercise those code paths are annotated with `TODO` and
-//! use a version of the assertion that would pass once the schema is updated.
-//!
-//! The helper functions (`insert_test_source`, `insert_test_article`) use the
-//! **actual** live DB column names so the rows are created successfully; the
-//! handler SQL will hit column/table errors until the schema is aligned.
+//! `covalence.article_mutations` has no equivalent live table; those
+//! assertions are omitted.  Handler SQL must be updated to match these
+//! table/column names before the tests can pass end-to-end.
 
 #![allow(dead_code, unused_variables)]
 
@@ -320,15 +316,31 @@ fn make_task(task_type: &str, node_id: Option<Uuid>, payload: Value) -> QueueTas
 
 /// Delete all rows inserted during a test run, keyed by their UUIDs.
 /// Call this at the end of each test to keep the DB clean.
+///
+/// Also removes dependent `edges` and `contentions` rows (no ON DELETE CASCADE).
 async fn cleanup_nodes(pool: &PgPool, ids: &[Uuid]) {
     for id in ids {
-        // Cascade: node_embeddings, node_sections, slow_path_queue entries are
-        // dropped via FK ON DELETE CASCADE / manual cleanup.
         sqlx::query("DELETE FROM covalence.slow_path_queue WHERE node_id = $1")
             .bind(id)
             .execute(pool)
             .await
             .ok();
+        // contentions reference nodes via FK — must go before node deletion
+        sqlx::query(
+            "DELETE FROM covalence.contentions              WHERE node_id = $1 OR source_node_id = $1",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .ok();
+        // edges reference nodes via FK — must go before node deletion
+        sqlx::query(
+            "DELETE FROM covalence.edges              WHERE source_node_id = $1 OR target_node_id = $1",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .ok();
         sqlx::query("DELETE FROM covalence.nodes WHERE id = $1")
             .bind(id)
             .execute(pool)
@@ -417,28 +429,17 @@ async fn test_compile_creates_article() {
     let title: String = row.get("title");
     assert!(!title.is_empty(), "article should have a title");
 
-    // ── article_sources provenance links ────────────────────────────────────
-    // TODO: requires covalence.article_sources table (pending schema migration)
-    // let link_count: i64 = sqlx::query_scalar(
-    //     "SELECT count(*) FROM covalence.article_sources WHERE node_id = $1",
-    // )
-    // .bind(article_id)
-    // .fetch_one(&pool)
-    // .await
-    // .expect("provenance count query");
-    // assert_eq!(link_count, 2, "both sources should be linked");
+    // ── Provenance edges (COMPILED_FROM/ORIGINATES in covalence.edges) ──────
+    let edge_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM covalence.edges          WHERE target_node_id = $1            AND edge_type IN ('COMPILED_FROM', 'ORIGINATES')",
+    )
+    .bind(article_id)
+    .fetch_one(&pool)
+    .await
+    .expect("provenance edge count");
+    assert_eq!(edge_count, 2, "both sources should be linked via COMPILED_FROM edges");
 
-    // ── article_mutations record ────────────────────────────────────────────
-    // TODO: requires covalence.article_mutations table (pending schema migration)
-    // let mutation_count: i64 = sqlx::query_scalar(
-    //     "SELECT count(*) FROM covalence.article_mutations \
-    //      WHERE article_id = $1 AND mutation_type = 'created'",
-    // )
-    // .bind(article_id)
-    // .fetch_one(&pool)
-    // .await
-    // .unwrap();
-    // assert_eq!(mutation_count, 1, "a 'created' mutation should be recorded");
+    // (article_mutations has no equivalent live table — tracked via nodes.metadata)
 
     // ── Follow-up embed task queued ─────────────────────────────────────────
     let embed_queued: i64 = sqlx::query_scalar(
@@ -607,19 +608,15 @@ async fn test_split_with_tree_index() {
     // Insert a provenance source to verify it gets copied
     let prov_src = insert_test_source(&pool, "Prov Source", "Some provenance content.").await;
 
-    // Manually insert an article_sources row (the table may not exist yet — see
-    // Schema note in module docstring; skip if it errors)
-    let _ = sqlx::query(
-        "INSERT INTO covalence.article_sources \
-             (id, node_id, source_id, relationship) \
-         VALUES (gen_random_uuid(), $1, $2, 'originates') \
-         ON CONFLICT DO NOTHING",
+    // Insert a provenance ORIGINATES edge to verify it gets copied to split parts.
+    sqlx::query(
+        "INSERT INTO covalence.edges              (source_node_id, target_node_id, edge_type)          VALUES ($1, $2, 'ORIGINATES')",
     )
-    .bind(article_id)
     .bind(prov_src)
+    .bind(article_id)
     .execute(&pool)
-    .await;
-    // (Ignore error if table doesn't exist; the test continues to validate what it can.)
+    .await
+    .expect("insert provenance edge");
 
     let task = make_task("split", Some(article_id), json!({}));
     let result = handle_split(&pool, &llm, &task)
@@ -650,18 +647,15 @@ async fn test_split_with_tree_index() {
             .expect("original article should still exist");
     assert_eq!(orig_status, "archived", "original should be archived after split");
 
-    // ── SPLIT_INTO edges (checking actual DB column names) ──────────────────
-    // Handler uses source_id/target_id; live DB has source_node_id/target_node_id.
-    // TODO: update handler SQL to match live schema then uncomment:
-    // let edge_count: i64 = sqlx::query_scalar(
-    //     "SELECT count(*) FROM covalence.edges \
-    //      WHERE source_node_id = $1 AND edge_type = 'SPLIT_INTO'",
-    // )
-    // .bind(article_id)
-    // .fetch_one(&pool)
-    // .await
-    // .unwrap();
-    // assert_eq!(edge_count, 2, "two SPLIT_INTO edges should exist");
+    // ── SPLIT_INTO edges ─────────────────────────────────────────────────────
+    let split_edge_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM covalence.edges          WHERE source_node_id = $1 AND edge_type = 'SPLIT_INTO'",
+    )
+    .bind(article_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(split_edge_count, 2, "two SPLIT_INTO edges should exist");
 
     // ── result fields ───────────────────────────────────────────────────────
     assert!(result["split_at"].as_u64().unwrap() > 0);
@@ -773,28 +767,16 @@ async fn test_merge() {
     }
 
     // ── MERGED_FROM edges ───────────────────────────────────────────────────
-    // Handler uses source_id/target_id; live DB has source_node_id/target_node_id.
-    // TODO: update handler SQL then uncomment:
-    // let edge_count: i64 = sqlx::query_scalar(
-    //     "SELECT count(*) FROM covalence.edges \
-    //      WHERE source_node_id = $1 AND edge_type = 'MERGED_FROM'",
-    // )
-    // .bind(new_id)
-    // .fetch_one(&pool)
-    // .await
-    // .unwrap();
-    // assert_eq!(edge_count, 2, "two MERGED_FROM edges expected");
+    let merged_edge_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM covalence.edges          WHERE source_node_id = $1 AND edge_type = 'MERGED_FROM'",
+    )
+    .bind(new_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(merged_edge_count, 2, "two MERGED_FROM edges expected");
 
-    // ── Mutations recorded ──────────────────────────────────────────────────
-    // TODO: requires covalence.article_mutations table:
-    // let mut_count: i64 = sqlx::query_scalar(
-    //     "SELECT count(*) FROM covalence.article_mutations WHERE article_id = $1",
-    // )
-    // .bind(new_id)
-    // .fetch_one(&pool)
-    // .await
-    // .unwrap();
-    // assert!(mut_count >= 1);
+    // (article_mutations has no equivalent live table — tracked via nodes.metadata)
 
     // ── Embed task queued ───────────────────────────────────────────────────
     let embed_queued: i64 = sqlx::query_scalar(
@@ -914,34 +896,26 @@ async fn test_contention_check() {
     // keyword "content conflicts".  If the article is within the 0.80 cosine
     // distance window, a contention link and resolve task should be created.
     if contentions_created > 0 {
-        // Verify the article_sources link was inserted
-        let link_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(\
-               SELECT 1 FROM covalence.article_sources \
-               WHERE node_id = $1 AND source_id = $2 \
-                 AND relationship IN ('contradicts', 'contends')\
-             )",
+        // Verify a contention row exists in covalence.contentions
+        let contention_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(               SELECT 1 FROM covalence.contentions                WHERE node_id = $1 AND source_node_id = $2             )",
         )
         .bind(article)
         .bind(source)
         .fetch_one(&pool)
         .await
         .unwrap_or(false);
-        // TODO: uncomment once article_sources table exists:
-        // assert!(link_exists, "contention article_sources link should exist");
+        assert!(contention_exists, "contention row should exist in covalence.contentions");
 
         // Verify a resolve_contention task was queued
         let resolver_queued: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM covalence.slow_path_queue \
-             WHERE task_type = 'resolve_contention' \
-               AND node_id = $1 AND status = 'pending'",
+            "SELECT count(*) FROM covalence.slow_path_queue              WHERE task_type = 'resolve_contention'                AND node_id = $1 AND status = 'pending'",
         )
         .bind(article)
         .fetch_one(&pool)
         .await
         .unwrap_or(0);
-        // TODO: uncomment once article_sources table exists (resolver references it):
-        // assert_eq!(resolver_queued, 1, "resolve_contention task should be queued");
+        assert_eq!(resolver_queued, 1, "resolve_contention task should be queued");
     }
 
     cleanup_nodes(&pool, &[article, source]).await;
@@ -982,78 +956,65 @@ async fn test_resolve_contention_supersede_b() {
     )
     .await;
 
-    // Insert the contention row into article_sources
-    // (This will fail if the table doesn't exist yet)
-    let contention_id_result = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO covalence.article_sources \
-             (node_id, source_id, relationship) \
-         VALUES ($1, $2, 'contradicts') \
-         RETURNING id",
+    // Insert a contention row into covalence.contentions (the real table)
+    let contention_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO covalence.contentions              (node_id, source_node_id, type, description, severity, status, materiality)          VALUES ($1, $2, 'contradiction', 'Contradicts key claim', 'high', 'detected', 0.9)          RETURNING id",
     )
     .bind(article)
     .bind(source)
     .fetch_one(&pool)
-    .await;
+    .await
+    .expect("insert contention row into covalence.contentions");
 
-    match contention_id_result {
-        Err(e) => {
-            // Expected until schema migration: article_sources doesn't exist yet
-            eprintln!(
-                "test_resolve_contention_supersede_b: SKIPPED — article_sources table missing: {e}"
-            );
-            cleanup_nodes(&pool, &[article, source]).await;
-            return;
-        }
-        Ok(contention_id) => {
-            let task = make_task(
-                "resolve_contention",
-                Some(article),
-                json!({ "contention_id": contention_id.to_string() }),
-            );
+    let task = make_task(
+        "resolve_contention",
+        Some(article),
+        json!({ "contention_id": contention_id.to_string() }),
+    );
 
-            let result = handle_resolve_contention(&pool, &llm, &task)
-                .await
-                .expect("handle_resolve_contention should succeed");
+    let result = handle_resolve_contention(&pool, &llm, &task)
+        .await
+        .expect("handle_resolve_contention should succeed");
 
-            assert_eq!(result["resolution"].as_str().unwrap(), "supersede_b");
+    assert_eq!(result["resolution"].as_str().unwrap(), "supersede_b");
 
-            // Article content should have been replaced
-            let new_content: String =
-                sqlx::query_scalar("SELECT content FROM covalence.nodes WHERE id = $1")
-                    .bind(article)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(
-                new_content, "Corrected article content based on the source.",
-                "article content should be replaced by supersede_b"
-            );
-
-            // article_sources relationship should be updated to 'supersedes'
-            let rel: String = sqlx::query_scalar(
-                "SELECT relationship FROM covalence.article_sources WHERE id = $1",
-            )
-            .bind(contention_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            assert_eq!(rel, "supersedes");
-
-            // A re-embed task should have been queued
-            let embed_queued: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM covalence.slow_path_queue \
-                 WHERE task_type = 'embed' AND node_id = $1 AND status = 'pending'",
-            )
+    // Article content should have been replaced
+    let new_content: String =
+        sqlx::query_scalar("SELECT content FROM covalence.nodes WHERE id = $1")
             .bind(article)
             .fetch_one(&pool)
             .await
             .unwrap();
-            assert_eq!(embed_queued, 1, "re-embed task should be queued");
+    assert_eq!(
+        new_content, "Corrected article content based on the source.",
+        "article content should be replaced by supersede_b"
+    );
 
-            cleanup_nodes(&pool, &[article, source]).await;
-            cleanup_queue_tasks(&pool, &["embed"]).await;
-        }
-    }
+    // contention.resolution should record the applied decision
+    let resolution: String = sqlx::query_scalar(
+        "SELECT COALESCE(resolution, status) FROM covalence.contentions WHERE id = $1",
+    )
+    .bind(contention_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        resolution == "supersede_b" || resolution == "resolved",
+        "contention should be resolved; got: {resolution}"
+    );
+
+    // A re-embed task should have been queued
+    let embed_queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM covalence.slow_path_queue          WHERE task_type = 'embed' AND node_id = $1 AND status = 'pending'",
+    )
+    .bind(article)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(embed_queued, 1, "re-embed task should be queued");
+
+    cleanup_nodes(&pool, &[article, source]).await;
+    cleanup_queue_tasks(&pool, &["embed"]).await;
 }
 
 /// `handle_tree_index` builds and stores a tree decomposition in node metadata.
