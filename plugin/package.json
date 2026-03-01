@@ -1,0 +1,16 @@
+{
+  "name": "@ourochronos/memory-covalence",
+  "version": "0.1.0",
+  "description": "OpenClaw memory plugin backed by Covalence knowledge graph engine",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}

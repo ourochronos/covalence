@@ -1,0 +1,133 @@
+{
+  "id": "memory-covalence",
+  "kind": "memory",
+  "uiHints": {
+    "serverUrl": {
+      "label": "Server URL",
+      "placeholder": "http://localhost:8430",
+      "help": "Covalence HTTP REST API URL"
+    },
+    "authToken": {
+      "label": "Auth Token",
+      "sensitive": true,
+      "placeholder": "Bearer token or leave empty",
+      "help": "Bearer token for Covalence server (or use ${COVALENCE_AUTH_TOKEN})"
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Inject relevant memories into context before agent runs"
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Extract insights from conversations as memories"
+    },
+    "recallMaxResults": {
+      "label": "Recall Max Results",
+      "advanced": true,
+      "help": "Maximum memories to inject on auto-recall (default: 5)"
+    },
+    "recallMinScore": {
+      "label": "Recall Min Score",
+      "advanced": true,
+      "help": "Minimum relevance score for auto-recall 0-1 (default: 0.3)"
+    },
+    "captureDomains": {
+      "label": "Default Capture Tags",
+      "advanced": true,
+      "help": "Default tags for auto-captured memories"
+    },
+    "sessionIngestion": {
+      "label": "Session Ingestion",
+      "help": "Capture conversations as Covalence sources for compilation into knowledge articles"
+    },
+    "staleSessionMinutes": {
+      "label": "Stale Session Threshold",
+      "advanced": true,
+      "help": "Minutes of inactivity before a session is considered stale (default: 30)"
+    },
+    "autoCompileOnFlush": {
+      "label": "Auto-Compile on Flush",
+      "advanced": true,
+      "help": "Automatically trigger queue processing when flushing sessions (default: true)"
+    },
+    "includeSystemMessages": {
+      "label": "Include System Messages",
+      "advanced": true,
+      "help": "Include system messages in session transcripts (default: true)"
+    },
+    "inferenceEnabled": {
+      "label": "Inference Proxy",
+      "help": "Expose OpenAI-compatible /covalence/v1/chat/completions and /embeddings endpoints for Covalence engine"
+    },
+    "inferenceModel": {
+      "label": "Inference Model",
+      "placeholder": "github-copilot/gpt-4.1-mini",
+      "help": "Provider/model ID for chat completions (e.g. github-copilot/gpt-4.1-mini)"
+    },
+    "chatModel": {
+      "label": "Chat Model Default",
+      "placeholder": "gpt-4.1-mini",
+      "advanced": true,
+      "help": "Default model ID for chat completions when not specified in request (default: gpt-4.1-mini)"
+    },
+    "embeddingModel": {
+      "label": "Embedding Model",
+      "placeholder": "text-embedding-3-small",
+      "advanced": true,
+      "help": "Default model ID for embeddings requests (default: text-embedding-3-small)"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serverUrl": {
+        "type": "string"
+      },
+      "authToken": {
+        "type": "string"
+      },
+      "autoRecall": {
+        "type": "boolean"
+      },
+      "autoCapture": {
+        "type": "boolean"
+      },
+      "recallMaxResults": {
+        "type": "number"
+      },
+      "recallMinScore": {
+        "type": "number"
+      },
+      "captureDomains": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "sessionIngestion": {
+        "type": "boolean"
+      },
+      "staleSessionMinutes": {
+        "type": "number"
+      },
+      "autoCompileOnFlush": {
+        "type": "boolean"
+      },
+      "includeSystemMessages": {
+        "type": "boolean"
+      },
+      "inferenceEnabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "inferenceModel": {
+        "type": "string"
+      },
+      "chatModel": {
+        "type": "string"
+      },
+      "embeddingModel": {
+        "type": "string"
+      }
+    }
+  }
+}

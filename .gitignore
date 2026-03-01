@@ -21,3 +21,4 @@ Cargo.lock
 /cli/vendor/
 /engine/target/
 cli/cov
+plugin/node_modules/
