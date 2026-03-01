@@ -1,5 +1,7 @@
 //! ScoreFusion — weighted dimensional score fusion with confidence × freshness (SPEC §7.3).
 
+#![allow(dead_code)]
+
 use super::dimension::DimensionResult;
 use crate::models::DimensionWeights;
 use chrono::{DateTime, Utc};

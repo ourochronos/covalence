@@ -101,10 +101,12 @@ pub trait GraphRepository: Send + Sync {
     ) -> GraphResult<Vec<ProvenanceLink>>;
 
     /// Find CONTRADICTS/CONTENDS edges involving a node.
+    #[allow(dead_code)]
     async fn find_contradictions(&self, node_id: Uuid) -> GraphResult<Vec<Edge>>;
 
     /// Get chain tips: active articles with no incoming SUPERSEDES edge.
     /// Uses the SQL fast path (covalence.get_chain_tips function).
+    #[allow(dead_code)]
     async fn get_chain_tips(&self, limit: usize) -> GraphResult<Vec<Node>>;
 
     // ── Bulk / utility ──────────────────────────────────────────
@@ -113,9 +115,11 @@ pub trait GraphRepository: Send + Sync {
     async fn count_edges(&self) -> GraphResult<i64>;
 
     /// Count vertices in the AGE graph.
+    #[allow(dead_code)]
     async fn count_vertices(&self) -> GraphResult<i64>;
 
     /// Verify AGE graph and SQL edges mirror are in sync.
     /// Returns (age_count, sql_count).
+    #[allow(dead_code)]
     async fn verify_sync(&self) -> GraphResult<(i64, i64)>;
 }

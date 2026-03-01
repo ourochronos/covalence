@@ -367,6 +367,7 @@ pub async fn handle_embed(
 
 /// `contention_check`: Find nodes with similar content; if similarity is high
 /// but content differs meaningfully, insert a contention record.
+#[allow(dead_code)]
 async fn handle_contention_check(pool: &PgPool, task: &QueueTask) -> anyhow::Result<Value> {
     let node_id = task
         .node_id
@@ -1017,7 +1018,7 @@ pub async fn handle_split(
 
     // ── 2. Find split point ─────────────────────────────────────────────────
     let midpoint = orig_content.len() / 2;
-    let chat_model =
+    let _chat_model =
         std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let split_index: usize = 'tree: {
         if let Some(tree) = metadata.get("tree_index").and_then(|v| v.as_array()) {
@@ -1249,6 +1250,7 @@ Return ONLY valid JSON (no markdown fences):\n\
 /// `merge`: Merge two related article nodes into one.
 ///
 /// LLM integration planned for v1.
+#[allow(dead_code)]
 async fn handle_merge(
     _pool: &PgPool,
     _llm: &Arc<dyn LlmClient>,
@@ -1268,6 +1270,7 @@ async fn handle_merge(
 /// `infer_edges`: Use LLM to infer semantic edges between nodes.
 ///
 /// Requires LLM; planned for v1.
+#[allow(dead_code)]
 async fn handle_infer_edges(
     _pool: &PgPool,
     _llm: &Arc<dyn LlmClient>,
@@ -1286,6 +1289,7 @@ async fn handle_infer_edges(
 /// `resolve_contention`: Attempt to automatically resolve a contention.
 ///
 /// Requires LLM reasoning; planned for v1.
+#[allow(dead_code)]
 async fn handle_resolve_contention(
     _pool: &PgPool,
     _llm: &Arc<dyn LlmClient>,

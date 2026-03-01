@@ -20,6 +20,7 @@ pub struct DimensionResult {
 
 /// Query parameters for a dimension search.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DimensionQuery {
     /// The search text (used by lexical).
     pub text: String,
@@ -36,6 +37,7 @@ pub struct DimensionQuery {
 #[async_trait]
 pub trait DimensionAdaptor: Send + Sync {
     /// Human-readable name for this dimension.
+    #[allow(dead_code)]
     fn name(&self) -> &'static str;
 
     /// Check if this dimension's backend is available.
@@ -57,8 +59,10 @@ pub trait DimensionAdaptor: Send + Sync {
 
     /// Static estimate of selectivity [0.0, 1.0]. Lower = more selective.
     /// Used by the query planner for cascade ordering.
+    #[allow(dead_code)]
     fn estimate_selectivity(&self, query: &DimensionQuery) -> f64;
 
     /// Can this dimension run in parallel with others?
+    #[allow(dead_code)]
     fn parallelizable(&self) -> bool;
 }

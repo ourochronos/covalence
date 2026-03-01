@@ -86,6 +86,7 @@ impl ContentionService {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn detect(
         &self,
         node_id: Uuid,
