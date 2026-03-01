@@ -313,8 +313,20 @@ async fn admin_maintenance(
 
 async fn search_handler(
     State(state): State<AppState>,
-    Json(req): Json<SearchRequest>,
+    Json(mut req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    // Auto-embed query text if no embedding provided
+    if req.embedding.is_none() && !req.query.is_empty() {
+        match state.llm.embed(&req.query).await {
+            Ok(vec) => {
+                // Only use if not all zeros (stub check)
+                if vec.iter().any(|v| *v != 0.0) {
+                    req.embedding = Some(vec);
+                }
+            }
+            Err(e) => tracing::warn!("failed to embed search query: {e:#}"),
+        }
+    }
     let service = SearchService::new(state.pool.clone());
     service.init().await;
     let (results, meta) = service.search(req).await

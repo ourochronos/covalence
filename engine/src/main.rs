@@ -40,7 +40,24 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("slow-path worker spawned");
 
     // Build app
-    let state = AppState { pool };
+    let llm: std::sync::Arc<dyn worker::llm::LlmClient> = match std::env::var("OPENAI_API_KEY") {
+        Ok(key) if !key.is_empty() => {
+            let mut client = worker::openai::OpenAiClient::new(key);
+            if let Ok(url) = std::env::var("OPENAI_BASE_URL") {
+                client = client.with_base_url(url);
+            }
+            if let Ok(model) = std::env::var("COVALENCE_EMBED_MODEL") {
+                client = client.with_embed_model(model);
+            }
+            tracing::info!("search using OpenAI embeddings for query auto-embed");
+            std::sync::Arc::new(client)
+        }
+        _ => {
+            tracing::warn!("OPENAI_API_KEY not set — search will skip vector dimension");
+            std::sync::Arc::new(worker::llm::StubLlmClient)
+        }
+    };
+    let state = AppState { pool, llm };
     let app = api::routes::router()
         .with_state(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
