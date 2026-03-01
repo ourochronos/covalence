@@ -1,38 +1,64 @@
-use async_trait::async_trait;
-use uuid::Uuid;
+//! DimensionAdaptor trait — the SING cascade search pattern (SPEC §4.2).
+//!
+//! Each adaptor represents one retrieval dimension (vector, lexical, graph).
+//! Adaptors produce scored results that are fused by ScoreFusion.
 
-/// A scored candidate from a dimension search.
+use async_trait::async_trait;
+use sqlx::PgPool;
+use uuid::Uuid;
+use crate::models::SearchIntent;
+
+/// A single scored result from one dimension.
 #[derive(Debug, Clone)]
-pub struct ScoredCandidate {
+pub struct DimensionResult {
     pub node_id: Uuid,
-    /// Raw score from this dimension (will be normalized to 0-1).
-    pub raw_score: f32,
+    /// Raw score from this dimension (unnormalized).
+    pub raw_score: f64,
+    /// Normalized score in [0.0, 1.0] (set by normalize_scores).
+    pub normalized_score: f64,
 }
 
-/// Each search dimension implements this trait.
-/// Graph, semantic, lexical — all behind the same interface.
-/// The `candidates` parameter enables cascade pre-filtering:
-/// pass results from a cheaper dimension to constrain an expensive one.
+/// Query parameters for a dimension search.
+#[derive(Debug, Clone)]
+pub struct DimensionQuery {
+    /// The search text (used by lexical).
+    pub text: String,
+    /// Pre-computed query embedding (used by vector).
+    pub embedding: Option<Vec<f32>>,
+    /// Search intent (affects graph edge weighting).
+    pub intent: Option<SearchIntent>,
+    /// Session scope filter.
+    pub session_id: Option<Uuid>,
+    /// Node type filter.
+    pub node_types: Option<Vec<String>>,
+}
+
 #[async_trait]
 pub trait DimensionAdaptor: Send + Sync {
-    /// Human-readable name for logging/explain.
-    fn name(&self) -> &str;
+    /// Human-readable name for this dimension.
+    fn name(&self) -> &'static str;
 
-    /// Estimated base cost (relative units). Used for query planning.
-    fn base_cost(&self) -> f32;
+    /// Check if this dimension's backend is available.
+    /// Called once at startup. Failure is a hard error (except lexical → ts_rank fallback).
+    async fn check_availability(&self, pool: &PgPool) -> bool;
 
-    /// Search this dimension, optionally constrained to a candidate set.
+    /// Execute this dimension's search.
+    /// `candidates`: if Some, restrict search to these node IDs (cascade pre-filter).
     async fn search(
         &self,
-        query: &str,
+        pool: &PgPool,
+        query: &DimensionQuery,
         candidates: Option<&[Uuid]>,
         limit: usize,
-    ) -> anyhow::Result<Vec<ScoredCandidate>>;
+    ) -> anyhow::Result<Vec<DimensionResult>>;
 
-    /// Normalize raw scores to [0, 1].
-    fn normalize(&self, candidates: &mut [ScoredCandidate]);
+    /// Normalize raw scores to [0.0, 1.0] (higher = better).
+    fn normalize_scores(&self, results: &mut [DimensionResult]);
 
-    /// Estimate selectivity (0-1) for query planning.
-    /// Lower = more selective = fewer results = run first.
-    async fn estimate_selectivity(&self, query: &str) -> anyhow::Result<f32>;
+    /// Static estimate of selectivity [0.0, 1.0]. Lower = more selective.
+    /// Used by the query planner for cascade ordering.
+    fn estimate_selectivity(&self, query: &DimensionQuery) -> f64;
+
+    /// Can this dimension run in parallel with others?
+    fn parallelizable(&self) -> bool;
 }
