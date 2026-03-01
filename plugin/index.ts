@@ -757,6 +757,39 @@ const covalencePlugin = {
     );
 
     // =====================
+    // FILE-BASED MEMORY TOOLS — DR fallback
+    // =====================
+
+    // Register OpenClaw's built-in memory_search and memory_get tools.
+    // These operate on MEMORY.md / memory/*.md and provide a DR fallback
+    // if the Covalence engine is unreachable. MUST always be available.
+
+    try {
+      const memorySearchFactory = (api as any).runtime?.tools?.createMemorySearchTool;
+      const memoryGetFactory = (api as any).runtime?.tools?.createMemoryGetTool;
+
+      if (memorySearchFactory) {
+        api.registerTool(
+          (ctx: any) =>
+            memorySearchFactory({ config: ctx.config, agentSessionKey: ctx.sessionKey }) ?? undefined,
+          { name: "memory_search", optional: true },
+        );
+      }
+
+      if (memoryGetFactory) {
+        api.registerTool(
+          (ctx: any) =>
+            memoryGetFactory({ config: ctx.config, agentSessionKey: ctx.sessionKey }) ?? undefined,
+          { name: "memory_get", optional: true },
+        );
+      }
+    } catch {
+      log.warn(
+        "memory-covalence: could not register file-based memory tools (runtime not available)",
+      );
+    }
+
+    // =====================
     // HOOKS — Automatic lifecycle
     // =====================
 
