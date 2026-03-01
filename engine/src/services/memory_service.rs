@@ -156,7 +156,7 @@ impl MemoryService {
                    AND COALESCE(confidence, 0.5) >= $1
                    AND content_tsv @@ websearch_to_tsquery('english', $2)
                  ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', $2)) DESC
-                 LIMIT $3"
+                 LIMIT $3",
             )
             .bind(min_conf)
             .bind(&req.query)
@@ -177,7 +177,7 @@ impl MemoryService {
                    AND content_tsv @@ websearch_to_tsquery('english', $2)
                    AND metadata->'tags' @> $4
                  ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', $2)) DESC
-                 LIMIT $3"
+                 LIMIT $3",
             )
             .bind(min_conf)
             .bind(&req.query)

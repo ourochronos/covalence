@@ -506,7 +506,9 @@ pub async fn embed_sections(
         if start >= end {
             continue;
         }
-        let start = content.floor_char_boundary(start); let end = content.floor_char_boundary(end); let slice = content[start..end].trim().to_string();
+        let start = content.floor_char_boundary(start);
+        let end = content.floor_char_boundary(end);
+        let slice = content[start..end].trim().to_string();
         if slice.len() < MIN_SECTION_CHARS {
             continue;
         }
@@ -710,7 +712,8 @@ async fn embed_long_section(
 
     while offset < text.len() {
         let end = (offset + window_chars).min(text.len());
-        let end = text.floor_char_boundary(end); let window = &text[offset..end];
+        let end = text.floor_char_boundary(end);
+        let window = &text[offset..end];
 
         let embedding = llm.embed(window).await?;
         embeddings.push(embedding);

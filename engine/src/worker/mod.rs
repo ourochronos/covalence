@@ -532,7 +532,6 @@ pub(super) async fn enqueue_task(
     Ok(())
 }
 
-
 /// Write an inference log entry after a successful LLM completion.
 /// Errors are logged as warnings but not propagated — inference logging is
 /// best-effort and must never fail a handler.
@@ -719,8 +718,7 @@ SOURCE DOCUMENTS:\n\
     );
 
     // ── 4. LLM completion with timing + fallback ─────────────────────────────
-    let chat_model =
-        std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    let chat_model = std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let t0 = Instant::now();
     let llm_result = llm.complete(&prompt, 4096).await;
     let llm_latency_ms = t0.elapsed().as_millis() as i32;
@@ -801,7 +799,6 @@ SOURCE DOCUMENTS:\n\
             .unwrap_or_default();
         (title, content, etype, rels)
     };
-
 
     // ── 4a. Log inference ────────────────────────────────────────────────────
     if !degraded {

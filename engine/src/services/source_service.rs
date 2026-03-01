@@ -250,9 +250,7 @@ fn source_from_row(row: &PgRow) -> SourceResponse {
         content: row.get("content"),
         source_type: row.get("source_type"),
         status: row.get("status"),
-        confidence: row
-            .get::<Option<f64>, _>("confidence")
-            .unwrap_or(0.5) as f32,
+        confidence: row.get::<Option<f64>, _>("confidence").unwrap_or(0.5) as f32,
         reliability: row.get::<Option<f64>, _>("reliability").unwrap_or(0.5) as f32,
         fingerprint: row
             .get::<Option<String>, _>("fingerprint")

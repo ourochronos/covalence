@@ -136,8 +136,7 @@ pub async fn handle_merge(
          {content_b}\n"
     );
 
-    let chat_model =
-        std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    let chat_model = std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let t0 = Instant::now();
     let (merged_title, merged_content, degraded) = match llm.complete(&prompt, 4096).await {
         Ok(resp) => match parse_json_response(&resp) {
@@ -522,7 +521,8 @@ pub async fn handle_infer_edges(
             let input_summary = format!(
                 "node_id={node_id}, candidate_id={candidate_id}, cosine_distance={cosine_distance:.4}"
             );
-            let output_decision = format!("relationship={relationship}, confidence={confidence:.3}");
+            let output_decision =
+                format!("relationship={relationship}, confidence={confidence:.3}");
             if let Err(e) = super::log_inference(
                 pool,
                 "infer_edge",

@@ -1052,7 +1052,10 @@ async fn test_resolve_contention_supersede_b() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(tree_embed_queued, 1, "tree_embed task should be queued to invalidate sections");
+    assert_eq!(
+        tree_embed_queued, 1,
+        "tree_embed task should be queued to invalidate sections"
+    );
 
     cleanup_nodes(&pool, &[article, source]).await;
     cleanup_queue_tasks(&pool, &["embed", "tree_embed"]).await;

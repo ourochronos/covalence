@@ -201,7 +201,7 @@ impl ArticleService {
         if req.domain_path.is_some() {
             sets.push(format!("domain_path = ${bind_idx}"));
             bind_idx += 1;
-        let _ = bind_idx; // consumed to suppress unused_assignments warning
+            let _ = bind_idx; // consumed to suppress unused_assignments warning
         }
         if let Some(pinned) = req.pinned {
             sets.push(format!("pinned = {pinned}"));
@@ -571,9 +571,7 @@ fn article_from_row(row: &PgRow) -> ArticleResponse {
         title: row.get("title"),
         content: row.get("content"),
         status: row.get("status"),
-        confidence: row
-            .get::<Option<f64>, _>("confidence")
-            .unwrap_or(0.5) as f32,
+        confidence: row.get::<Option<f64>, _>("confidence").unwrap_or(0.5) as f32,
         epistemic_type: row.get("epistemic_type"),
         domain_path: row
             .get::<Option<Vec<String>>, _>("domain_path")

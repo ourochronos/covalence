@@ -599,9 +599,7 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
         content: row.try_get("content")?,
         status,
         confidence: Confidence {
-            overall: row
-                .try_get::<Option<f64>, _>("confidence")?
-                .unwrap_or(0.5) as f32,
+            overall: row.try_get::<Option<f64>, _>("confidence")?.unwrap_or(0.5) as f32,
             source: row
                 .try_get::<Option<f64>, _>("confidence_source")?
                 .unwrap_or(0.5) as f32,

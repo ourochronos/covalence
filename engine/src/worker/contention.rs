@@ -151,8 +151,7 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
 }}"#,
     );
 
-    let chat_model =
-        std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    let chat_model = std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let t0 = Instant::now();
     let raw = llm
         .complete(&prompt, 2048)
@@ -638,14 +637,14 @@ If NOT a contention:
         // Log inference for this LLM call
         {
             let input_nodes = [source_id, article_id];
-            let input_summary = format!(
-                "source_id={source_id}, article_id={article_id}, distance={distance:.4}"
-            );
+            let input_summary =
+                format!("source_id={source_id}, article_id={article_id}, distance={distance:.4}");
             let explanation_str = llm_json
                 .get("explanation")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let output_decision = format!("is_contention={is_contention}, materiality={materiality}");
+            let output_decision =
+                format!("is_contention={is_contention}, materiality={materiality}");
             if let Err(e) = super::log_inference(
                 pool,
                 "contention_check",
