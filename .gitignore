@@ -1,0 +1,21 @@
+# Build
+/target/
+/bin/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Env
+.env
+*.local
+
+# Rust
+Cargo.lock
+
+# Go
+/cli/vendor/
