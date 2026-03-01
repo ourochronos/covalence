@@ -11,6 +11,7 @@
 //!   asks the LLM to decide how to resolve it, then applies the resolution.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context as _;
 use serde_json::{Value, json};
@@ -59,6 +60,12 @@ pub async fn handle_resolve_contention(
         .context("resolve_contention: missing payload.contention_id")?
         .parse()
         .context("resolve_contention: contention_id is not a valid UUID")?;
+
+    // ── 0. Idempotency guard ──────────────────────────────────────────────
+    if super::already_completed(pool, task).await? {
+        tracing::info!(task_id = %task.id, "resolve_contention: idempotency guard — already complete, skipping");
+        return Ok(serde_json::json!({"skipped": true, "reason": "already_complete"}));
+    }
 
     tracing::info!(
         task_id        = %task.id,
@@ -144,10 +151,14 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
 }}"#,
     );
 
+    let chat_model =
+        std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    let t0 = Instant::now();
     let raw = llm
         .complete(&prompt, 2048)
         .await
         .context("LLM call failed for resolve_contention")?;
+    let llm_latency_ms = t0.elapsed().as_millis() as i32;
 
     tracing::debug!(task_id = %task.id, raw_response = %raw, "resolve_contention: LLM response received");
 
@@ -175,6 +186,30 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
         materiality,
         "resolve_contention: applying LLM resolution"
     );
+
+    // ── 4a. Log inference ──────────────────────────────────────────────────
+    {
+        let input_node_ids = [article_id, source_id];
+        let input_summary = format!(
+            "contention_id={contention_id}, article_id={article_id}, source_id={source_id}, relationship={relationship}"
+        );
+        let output_decision = format!("resolution={resolution}, materiality={materiality}");
+        if let Err(e) = super::log_inference(
+            pool,
+            "resolve_contention",
+            &input_node_ids,
+            &input_summary,
+            &output_decision,
+            None,
+            reasoning,
+            &chat_model,
+            llm_latency_ms,
+        )
+        .await
+        {
+            tracing::warn!(task_id = %task.id, "resolve_contention: log_inference failed: {e:#}");
+        }
+    }
 
     // ── 5. Apply the resolution ──────────────────────────────────────────────
     match resolution {
@@ -219,6 +254,30 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
             .await
             .context("supersede_b: failed to update article content")?;
 
+            // Increment version (Item 7)
+            sqlx::query(
+                "UPDATE covalence.nodes SET version = version + 1 WHERE id = $1",
+            )
+            .bind(article_id)
+            .execute(pool)
+            .await
+            .context("supersede_b: failed to increment article version")?;
+
+            // Create CONFIRMS edge: source → article (Item 7)
+            // The winning source now confirms the updated article content.
+            sqlx::query(
+                "INSERT INTO covalence.edges
+                     (id, source_node_id, target_node_id, edge_type, weight, confidence, created_by)
+                 VALUES ($1, $2, $3, 'CONFIRMS', 1.0, 1.0, 'resolve_contention')
+                 ON CONFLICT (source_node_id, target_node_id, edge_type) DO NOTHING",
+            )
+            .bind(Uuid::new_v4())
+            .bind(source_id)
+            .bind(article_id)
+            .execute(pool)
+            .await
+            .context("supersede_b: failed to insert CONFIRMS edge")?;
+
             sqlx::query(
                 "UPDATE covalence.contentions
                     SET status = 'resolved', resolution = 'supersede_b', resolved_at = now()
@@ -239,6 +298,17 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
             .execute(pool)
             .await
             .context("supersede_b: failed to queue embed task")?;
+
+            // Queue tree_embed to invalidate stale section embeddings (Item 8)
+            sqlx::query(
+                "INSERT INTO covalence.slow_path_queue
+                     (task_type, node_id, payload, priority, status)
+                 VALUES ('tree_embed', $1, '{}', 4, 'pending')",
+            )
+            .bind(article_id)
+            .execute(pool)
+            .await
+            .context("supersede_b: failed to queue tree_embed task")?;
 
             record_mutation(
                 pool,
@@ -358,6 +428,12 @@ pub async fn handle_contention_check(
     let source_id = task
         .node_id
         .context("contention_check: task requires node_id")?;
+
+    // ── 0. Idempotency guard ──────────────────────────────────────────────
+    if super::already_completed(pool, task).await? {
+        tracing::info!(task_id = %task.id, "contention_check: idempotency guard — already complete, skipping");
+        return Ok(serde_json::json!({"skipped": true, "reason": "already_complete"}));
+    }
 
     tracing::info!(
         task_id   = %task.id,
@@ -514,6 +590,9 @@ If NOT a contention:
 }}"#,
         );
 
+        let chat_model =
+            std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+        let t0 = Instant::now();
         let raw = match llm.complete(&prompt, 512).await {
             Ok(r) => r,
             Err(e) => {
@@ -525,6 +604,7 @@ If NOT a contention:
                 continue;
             }
         };
+        let llm_latency_ms = t0.elapsed().as_millis() as i32;
 
         let llm_json = match extract_json_value(&raw) {
             Ok(v) => v,
@@ -554,6 +634,38 @@ If NOT a contention:
             .get("explanation")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+
+        // Log inference for this LLM call
+        {
+            let input_nodes = [source_id, article_id];
+            let input_summary = format!(
+                "source_id={source_id}, article_id={article_id}, distance={distance:.4}"
+            );
+            let explanation_str = llm_json
+                .get("explanation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let output_decision = format!("is_contention={is_contention}, materiality={materiality}");
+            if let Err(e) = super::log_inference(
+                pool,
+                "contention_check",
+                &input_nodes,
+                &input_summary,
+                &output_decision,
+                None,
+                explanation_str,
+                &chat_model,
+                llm_latency_ms,
+            )
+            .await
+            {
+                tracing::warn!(
+                    source_id = %source_id,
+                    article_id = %article_id,
+                    "contention_check: log_inference failed: {e:#}"
+                );
+            }
+        }
 
         // ── 5. Skip if not a contention or materiality is low ───────────────
         if !is_contention || materiality == "low" {

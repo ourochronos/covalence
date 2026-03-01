@@ -8,6 +8,7 @@
 //! ```
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context;
 use serde_json::{Value, json};
@@ -79,6 +80,12 @@ pub async fn handle_merge(
         .parse()
         .context("article_id_b is not a valid UUID")?;
 
+    // ── 0. Idempotency guard ─────────────────────────────────────────────────
+    if super::already_completed(pool, task).await? {
+        tracing::info!(task_id = %task.id, "merge: idempotency guard — already complete, skipping");
+        return Ok(json!({"skipped": true, "reason": "already_complete"}));
+    }
+
     tracing::info!(
         task_id      = %task.id,
         article_id_a = %id_a,
@@ -129,6 +136,9 @@ pub async fn handle_merge(
          {content_b}\n"
     );
 
+    let chat_model =
+        std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    let t0 = Instant::now();
     let (merged_title, merged_content, degraded) = match llm.complete(&prompt, 4096).await {
         Ok(resp) => match parse_json_response(&resp) {
             Ok(v) => {
@@ -170,6 +180,32 @@ pub async fn handle_merge(
             )
         }
     };
+
+    let llm_latency_ms = t0.elapsed().as_millis() as i32;
+
+    // Log inference for merge LLM call
+    if !degraded {
+        let input_nodes = [id_a, id_b];
+        let input_summary = format!(
+            "article_id_a={id_a}, article_id_b={id_b}, title_a={title_a:?}, title_b={title_b:?}"
+        );
+        let output_decision = format!("merged_title={merged_title}");
+        if let Err(e) = super::log_inference(
+            pool,
+            "merge",
+            &input_nodes,
+            &input_summary,
+            &output_decision,
+            None,
+            "",
+            &chat_model,
+            llm_latency_ms,
+        )
+        .await
+        {
+            tracing::warn!(task_id = %task.id, "merge: log_inference failed: {e:#}");
+        }
+    }
 
     // ── 4. Create new merged article node ────────────────────────────────────
     let new_id = Uuid::new_v4();
@@ -268,8 +304,9 @@ pub async fn handle_merge(
         .with_context(|| format!("failed to record mutation '{mutation_type}' for {article_id}"))?;
     }
 
-    // ── 9. Queue embed task for new article ───────────────────────────────────
+    // ── 9. Queue embed + tree_embed tasks for new article (Item 8) ──────────
     queue_task(pool, "embed", new_id).await?;
+    queue_task(pool, "tree_embed", new_id).await?;
 
     // ── 10. Return result ─────────────────────────────────────────────────────
     Ok(json!({
@@ -295,6 +332,12 @@ pub async fn handle_infer_edges(
 ) -> anyhow::Result<Value> {
     // ── 1. Resolve node ───────────────────────────────────────────────────────
     let node_id = task.node_id.context("infer_edges task requires node_id")?;
+
+    // ── 0. Idempotency guard ─────────────────────────────────────────────────
+    if super::already_completed(pool, task).await? {
+        tracing::info!(task_id = %task.id, "infer_edges: idempotency guard — already complete, skipping");
+        return Ok(json!({"skipped": true, "reason": "already_complete"}));
+    }
 
     tracing::info!(task_id = %task.id, node_id = %node_id, "infer_edges: starting");
 
@@ -424,6 +467,9 @@ pub async fn handle_infer_edges(
              {cand_snippet}\n"
         );
 
+        let chat_model =
+            std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+        let t0 = Instant::now();
         let (relationship, confidence, reasoning) = match llm.complete(&prompt, 512).await {
             Ok(resp) => match parse_json_response(&resp) {
                 Ok(v) => {
@@ -467,6 +513,36 @@ pub async fn handle_infer_edges(
                 continue;
             }
         };
+
+        let llm_latency_ms = t0.elapsed().as_millis() as i32;
+
+        // Log inference for this candidate
+        {
+            let input_nodes = [node_id, candidate_id];
+            let input_summary = format!(
+                "node_id={node_id}, candidate_id={candidate_id}, cosine_distance={cosine_distance:.4}"
+            );
+            let output_decision = format!("relationship={relationship}, confidence={confidence:.3}");
+            if let Err(e) = super::log_inference(
+                pool,
+                "infer_edge",
+                &input_nodes,
+                &input_summary,
+                &output_decision,
+                Some(confidence as f64),
+                &reasoning,
+                &chat_model,
+                llm_latency_ms,
+            )
+            .await
+            {
+                tracing::warn!(
+                    node_id = %node_id,
+                    candidate_id = %candidate_id,
+                    "infer_edges: log_inference failed: {e:#}"
+                );
+            }
+        }
 
         // Confidence gate
         if confidence < 0.5 {

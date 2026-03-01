@@ -20,7 +20,7 @@ pub mod openai;
 pub mod tree_index;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use serde_json::{Value, json};
@@ -508,7 +508,7 @@ fn strip_fences(text: &str) -> String {
 }
 
 /// Enqueue a slow-path task with an optional node_id and JSON payload.
-async fn enqueue_task(
+pub(super) async fn enqueue_task(
     pool: &PgPool,
     task_type: &str,
     node_id: Option<Uuid>,
@@ -531,6 +531,91 @@ async fn enqueue_task(
     Ok(())
 }
 
+
+/// Write an inference log entry after a successful LLM completion.
+/// Errors are logged as warnings but not propagated — inference logging is
+/// best-effort and must never fail a handler.
+pub(super) async fn log_inference(
+    pool: &PgPool,
+    operation: &str,
+    input_node_ids: &[Uuid],
+    input_summary: &str,
+    output_decision: &str,
+    output_confidence: Option<f64>,
+    output_rationale: &str,
+    model: &str,
+    latency_ms: i32,
+) -> anyhow::Result<()> {
+    let inputs = json!({
+        "input_node_ids": input_node_ids,
+        "input_summary":  input_summary,
+    });
+    let output = json!({
+        "decision":   output_decision,
+        "confidence": output_confidence,
+        "rationale":  output_rationale,
+    });
+
+    sqlx::query(
+        "INSERT INTO covalence.inference_log
+             (operation, inputs, output, input_node_ids, input_summary,
+              output_decision, output_confidence, output_rationale, model, latency_ms)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(operation)
+    .bind(&inputs)
+    .bind(&output)
+    .bind(input_node_ids)
+    .bind(input_summary)
+    .bind(output_decision)
+    .bind(output_confidence)
+    .bind(output_rationale)
+    .bind(model)
+    .bind(latency_ms)
+    .execute(pool)
+    .await
+    .with_context(|| format!("log_inference: failed to insert row for operation={operation}"))?;
+
+    Ok(())
+}
+
+/// Idempotency guard: returns `true` if a *different* task row with the same
+/// `task_type` and `node_id` (or same payload when `node_id` is NULL) has
+/// already reached `status = 'complete'`.
+pub(super) async fn already_completed(pool: &PgPool, task: &QueueTask) -> anyhow::Result<bool> {
+    let row = if let Some(nid) = task.node_id {
+        sqlx::query(
+            "SELECT 1 FROM covalence.slow_path_queue
+             WHERE task_type = $1
+               AND status    = 'complete'
+               AND id       != $2
+               AND node_id   = $3
+             LIMIT 1",
+        )
+        .bind(&task.task_type)
+        .bind(task.id)
+        .bind(nid)
+        .fetch_optional(pool)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT 1 FROM covalence.slow_path_queue
+             WHERE task_type = $1
+               AND status    = 'complete'
+               AND id       != $2
+               AND node_id  IS NULL
+               AND payload   = $3
+             LIMIT 1",
+        )
+        .bind(&task.task_type)
+        .bind(task.id)
+        .bind(&task.payload)
+        .fetch_optional(pool)
+        .await?
+    };
+    Ok(row.is_some())
+}
+
 /// `compile`: Synthesise a new article node from source nodes.
 pub async fn handle_compile(
     pool: &PgPool,
@@ -538,6 +623,12 @@ pub async fn handle_compile(
     task: &QueueTask,
 ) -> anyhow::Result<Value> {
     use sqlx::Row as _;
+
+    // ── 0. Idempotency guard ────────────────────────────────────────────────
+    if already_completed(pool, task).await? {
+        tracing::info!(task_id = %task.id, "compile: idempotency guard — already complete, skipping");
+        return Ok(json!({"skipped": true, "reason": "already_complete"}));
+    }
 
     // ── 1. Parse payload ────────────────────────────────────────────────────
     let source_ids_val = task
@@ -626,8 +717,14 @@ SOURCE DOCUMENTS:\n\
 {sources_block}"
     );
 
-    // ── 4. LLM completion with fallback ─────────────────────────────────────
-    let (llm_json, degraded) = match llm.complete(&prompt, 4096).await {
+    // ── 4. LLM completion with timing + fallback ─────────────────────────────
+    let chat_model =
+        std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    let t0 = Instant::now();
+    let llm_result = llm.complete(&prompt, 4096).await;
+    let llm_latency_ms = t0.elapsed().as_millis() as i32;
+
+    let (llm_json, degraded) = match llm_result {
         Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
             Ok(v) => (v, false),
             Err(e) => {
@@ -703,6 +800,36 @@ SOURCE DOCUMENTS:\n\
             .unwrap_or_default();
         (title, content, etype, rels)
     };
+
+
+    // ── 4a. Log inference ────────────────────────────────────────────────────
+    if !degraded {
+        let input_summary = format!(
+            "source_ids=[{}], title_hint={:?}",
+            source_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            title_hint
+        );
+        let output_decision = format!("{} / {}", article_title, epistemic_type);
+        if let Err(e) = log_inference(
+            pool,
+            "compile",
+            &source_ids,
+            &input_summary,
+            &output_decision,
+            None,
+            "",
+            &chat_model,
+            llm_latency_ms,
+        )
+        .await
+        {
+            tracing::warn!(task_id = %task.id, "compile: log_inference failed: {e:#}");
+        }
+    }
 
     // ── 5. Dedup check via vector similarity ────────────────────────────────
     let embed_result = llm.embed(&article_content).await.ok();
@@ -867,6 +994,12 @@ pub async fn handle_split(
 ) -> anyhow::Result<Value> {
     use sqlx::Row as _;
 
+    // ── 0. Idempotency guard ────────────────────────────────────────────────
+    if already_completed(pool, task).await? {
+        tracing::info!(task_id = %task.id, "split: idempotency guard — already complete, skipping");
+        return Ok(json!({"skipped": true, "reason": "already_complete"}));
+    }
+
     // ── 1. Fetch article ────────────────────────────────────────────────────
     let node_id = task.node_id.context("split: task requires node_id")?;
 
@@ -884,6 +1017,8 @@ pub async fn handle_split(
 
     // ── 2. Find split point ─────────────────────────────────────────────────
     let midpoint = orig_content.len() / 2;
+    let chat_model =
+        std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let split_index: usize = 'tree: {
         if let Some(tree) = metadata.get("tree_index").and_then(|v| v.as_array()) {
             let mut best: Option<usize> = None;
@@ -1085,9 +1220,11 @@ Return ONLY valid JSON (no markdown fences):\n\
         .context("split: failed to record created mutation")?;
     }
 
-    // ── 8. Queue embed tasks for new articles ───────────────────────────────
+    // ── 8. Queue embed + tree_embed tasks for both new articles (Item 8) ───
     enqueue_task(pool, "embed", Some(id_a), json!({}), 5).await?;
     enqueue_task(pool, "embed", Some(id_b), json!({}), 5).await?;
+    enqueue_task(pool, "tree_embed", Some(id_a), json!({}), 4).await?;
+    enqueue_task(pool, "tree_embed", Some(id_b), json!({}), 4).await?;
 
     tracing::info!(
         original_id = %node_id,
