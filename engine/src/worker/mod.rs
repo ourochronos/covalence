@@ -14,6 +14,7 @@
 //! `{"attempts": N, ...}` since the table has no dedicated attempts column.
 
 pub mod llm;
+pub mod openai;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,7 +45,26 @@ struct QueueTask {
 /// Start the background worker loop.
 /// Call this once at startup; it runs forever until the process exits.
 pub async fn run(pool: PgPool) {
-    let llm: Arc<dyn LlmClient> = Arc::new(StubLlmClient);
+    let llm: Arc<dyn LlmClient> = match std::env::var("OPENAI_API_KEY") {
+        Ok(key) if !key.is_empty() => {
+            let mut client = openai::OpenAiClient::new(key);
+            if let Ok(url) = std::env::var("OPENAI_BASE_URL") {
+                client = client.with_base_url(url);
+            }
+            if let Ok(model) = std::env::var("COVALENCE_EMBED_MODEL") {
+                client = client.with_embed_model(model);
+            }
+            if let Ok(model) = std::env::var("COVALENCE_CHAT_MODEL") {
+                client = client.with_chat_model(model);
+            }
+            tracing::info!("slow-path worker using OpenAI LLM client");
+            Arc::new(client)
+        }
+        _ => {
+            tracing::warn!("OPENAI_API_KEY not set — using StubLlmClient (no real embeddings/completions)");
+            Arc::new(StubLlmClient)
+        }
+    };
     tracing::info!("slow-path worker started (poll_interval={}s)", POLL_INTERVAL.as_secs());
 
     loop {
@@ -245,27 +265,56 @@ async fn handle_embed(
 
     // Fetch node content
     let row = sqlx::query!(
-        "SELECT content FROM covalence.nodes WHERE id = $1",
+        "SELECT content, title FROM covalence.nodes WHERE id = $1",
         node_id
     )
     .fetch_optional(pool)
     .await?
     .context("node not found for embed")?;
 
+    let title = row.title.unwrap_or_default();
     let content = row.content.unwrap_or_default();
 
-    // TODO: Replace StubLlmClient with a real embedding client.
-    // After obtaining a real vector, upsert into covalence.node_embeddings:
-    //   INSERT INTO covalence.node_embeddings (node_id, embedding, model, dimensions)
-    //   VALUES ($1, $2::vector, 'text-embedding-3-small', 1536)
-    //   ON CONFLICT (node_id) DO UPDATE SET embedding = EXCLUDED.embedding, updated_at = now();
-    let _embedding = llm.embed(&content).await?;
+    // Prepend title to content for richer embeddings
+    let embed_input = if title.is_empty() {
+        content.clone()
+    } else {
+        format!("{title}\n\n{content}")
+    };
 
-    tracing::debug!(node_id = %node_id, "embed: stub vector produced (TODO: store real embedding)");
+    let embedding = llm.embed(&embed_input).await?;
+    let dims = embedding.len() as i32;
+
+    // Format as pgvector literal: [0.1,0.2,...]
+    let vec_literal = format!(
+        "[{}]",
+        embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+    );
+
+    // Determine model name from env or default
+    let model = std::env::var("COVALENCE_EMBED_MODEL")
+        .unwrap_or_else(|_| "text-embedding-3-small".into());
+
+    // Upsert into node_embeddings using halfvec cast
+    sqlx::query(&format!(
+        "INSERT INTO covalence.node_embeddings (node_id, embedding, model)
+         VALUES ($1, \'{vec_literal}\'::halfvec({dims}), $2)
+         ON CONFLICT (node_id) DO UPDATE
+           SET embedding = EXCLUDED.embedding,
+               model = EXCLUDED.model"
+    ))
+    .bind(node_id)
+    .bind(&model)
+    .execute(pool)
+    .await
+    .context("failed to upsert embedding")?;
+
+    tracing::info!(node_id = %node_id, dims, model = %model, "embed: vector stored");
 
     Ok(json!({
-        "note": "stub embed — no real vector stored; integrate OpenAI in v1",
         "node_id": node_id,
+        "dimensions": dims,
+        "model": model,
         "content_len": content.len(),
     }))
 }

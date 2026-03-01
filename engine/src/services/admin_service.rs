@@ -154,9 +154,9 @@ impl AdminService {
         if req.process_queue.unwrap_or(false) {
             // For now, just mark stale processing jobs as failed
             let result = sqlx::query(
-                "UPDATE covalence.slow_path_queue \
-                 SET status = 'failed' = 'timed out' \
-                 WHERE status = 'processing' AND started_at < now() - interval '10 minutes'"
+                r#"UPDATE covalence.slow_path_queue
+                   SET status = 'failed', result = '{"error":"timed_out"}'::jsonb
+                   WHERE status = 'processing' AND started_at < now() - interval '10 minutes'"#
             ).execute(&self.pool).await?;
             actions.push(format!("timed out {} stale queue jobs", result.rows_affected()));
         }
@@ -268,7 +268,6 @@ impl AdminService {
         }
     }
 
-    /// Record a usage trace when a node is retrieved in search results.
     pub async fn record_usage(
         &self,
         node_id: Uuid,
@@ -288,12 +287,27 @@ impl AdminService {
         .execute(&self.pool)
         .await?;
 
-        // Update node's accessed_at
         sqlx::query("UPDATE covalence.nodes SET accessed_at = now() WHERE id = $1")
             .bind(node_id)
             .execute(&self.pool)
             .await?;
 
         Ok(())
+    }
+
+    /// Queue embed tasks for all active nodes that lack embeddings.
+    pub async fn queue_embed_all(&self) -> AppResult<i64> {
+        let result = sqlx::query(
+            r#"INSERT INTO covalence.slow_path_queue (id, task_type, node_id, payload, status, priority)
+             SELECT gen_random_uuid(), 'embed', n.id, '{}'::jsonb, 'pending', 3
+             FROM covalence.nodes n
+             WHERE n.status = 'active'
+               AND NOT EXISTS (SELECT 1 FROM covalence.node_embeddings ne WHERE ne.node_id = n.id)
+               AND NOT EXISTS (
+                   SELECT 1 FROM covalence.slow_path_queue q
+                   WHERE q.node_id = n.id AND q.task_type = 'embed' AND q.status IN ('pending', 'processing')
+               )"#
+        ).execute(&self.pool).await?;
+        Ok(result.rows_affected() as i64)
     }
 }

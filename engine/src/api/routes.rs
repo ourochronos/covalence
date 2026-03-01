@@ -66,6 +66,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/queue/{id}", get(admin_queue_get))
         .route("/admin/stats", get(admin_stats))
         .route("/admin/maintenance", post(admin_maintenance))
+        .route("/admin/embed-all", post(admin_embed_all))
 }
 
 // ── Source handlers ─────────────────────────────────────────────
@@ -461,4 +462,14 @@ async fn session_close(
     let svc = SessionService::new(state.pool.clone());
     svc.close(id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn admin_embed_all(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let svc = AdminService::new(state.pool);
+    match svc.queue_embed_all().await {
+        Ok(queued) => Json(serde_json::json!({"queued": queued})).into_response(),
+        Err(e) => e.into_response(),
+    }
 }
