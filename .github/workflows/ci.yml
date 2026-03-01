@@ -26,9 +26,27 @@ jobs:
       - name: Cargo clippy
         working-directory: engine
         run: cargo clippy -- -W warnings 2>&1 || true
-      - name: Cargo test (unit tests only; integration tests need pgvector DATABASE_URL)
+      - name: Start test database
+        run: docker compose up -d --build
+      - name: Wait for database
+        run: |
+          for i in $(seq 1 30); do
+            docker compose exec -T postgres pg_isready -U covalence && break
+            sleep 2
+          done
+      - name: Apply migrations
+        run: |
+          for f in sql/[0-9]*.sql; do
+            docker compose exec -T postgres psql -U covalence -d covalence -f /dev/stdin < "$f"
+          done
+      - name: Cargo test
         working-directory: engine
-        run: cargo test --lib
+        env:
+          DATABASE_URL: postgresql://covalence:covalence@localhost:5434/covalence
+        run: cargo test
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
 
   format:
     name: Format
