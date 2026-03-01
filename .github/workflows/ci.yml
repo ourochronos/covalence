@@ -28,7 +28,7 @@ jobs:
         run: cargo clippy -- -W warnings 2>&1 || true
       - name: Cargo test
         working-directory: engine
-        run: cargo test --lib
+        run: cargo test
 
   format:
     name: Format
