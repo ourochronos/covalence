@@ -22,3 +22,5 @@ Cargo.lock
 /engine/target/
 cli/cov
 plugin/node_modules/
+engine/.env.direct-openai.bak
+engine/logs/

@@ -67,6 +67,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/stats", get(admin_stats))
         .route("/admin/maintenance", post(admin_maintenance))
         .route("/admin/embed-all", post(admin_embed_all))
+        .route("/admin/tree-index-all", post(admin_tree_index_all))
 }
 
 // ── Source handlers ─────────────────────────────────────────────
@@ -484,4 +485,67 @@ async fn admin_embed_all(
         Ok(queued) => Json(serde_json::json!({"queued": queued})).into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+async fn admin_tree_index_all(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let overlap = body.get("overlap").and_then(|v| v.as_f64()).unwrap_or(0.20);
+    let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let min_chars = body.get("min_chars").and_then(|v| v.as_i64()).unwrap_or(700) as i32;
+
+    // Find nodes without tree_index that have content above threshold
+    let query = if force {
+        format!(
+            "SELECT id FROM covalence.nodes WHERE status = 'active' AND content IS NOT NULL AND LENGTH(content) >= {}",
+            min_chars
+        )
+    } else {
+        format!(
+            "SELECT id FROM covalence.nodes WHERE status = 'active' AND content IS NOT NULL AND LENGTH(content) >= {} AND (metadata->>'tree_index' IS NULL OR metadata->>'tree_indexed_at' IS NULL)",
+            min_chars
+        )
+    };
+
+    let rows = match sqlx::query_as::<_, (uuid::Uuid,)>(&query)
+        .fetch_all(&state.pool)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return Json(serde_json::json!({"error": e.to_string()})).into_response(),
+    };
+
+    let mut queued = 0i64;
+    for (node_id,) in &rows {
+        let payload = serde_json::json!({ "overlap": overlap, "force": force });
+        let result = sqlx::query(
+            "INSERT INTO covalence.slow_path_queue (task_type, node_id, payload, priority)
+             VALUES ('tree_index', $1, $2, 5)"
+        )
+        .bind(node_id)
+        .bind(&payload)
+        .execute(&state.pool)
+        .await;
+
+        if result.is_ok() {
+            // Also queue tree_embed to run after
+            let _ = sqlx::query(
+                "INSERT INTO covalence.slow_path_queue (task_type, node_id, payload, priority)
+                 VALUES ('tree_embed', $1, '{}'::jsonb, 4)"
+            )
+            .bind(node_id)
+            .execute(&state.pool)
+            .await;
+            queued += 1;
+        }
+    }
+
+    Json(serde_json::json!({
+        "queued": queued,
+        "overlap": overlap,
+        "force": force,
+        "min_chars": min_chars,
+    }))
+    .into_response()
 }

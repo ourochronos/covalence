@@ -48,15 +48,28 @@ impl DimensionAdaptor for VectorAdaptor {
             embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
         );
 
+        // Search both node-level and section-level embeddings, taking best per node.
+        // This enables sub-document matching while deduplicating to node level.
         let rows = if let Some(candidates) = candidates {
             sqlx::query_as::<_, (Uuid, f64)>(
-                "SELECT ne.node_id, (ne.embedding::vector <=> $1::vector)::float8 AS distance
-                 FROM covalence.node_embeddings ne
-                 JOIN covalence.nodes n ON n.id = ne.node_id
-                 WHERE n.status = 'active'
-                   AND ne.node_id = ANY($2)
-                 ORDER BY ne.embedding::vector <=> $1::vector
-                 LIMIT $3"
+                "WITH candidates AS (
+                    -- Node-level embeddings
+                    SELECT ne.node_id, (ne.embedding::vector <=> $1::vector)::float8 AS distance
+                    FROM covalence.node_embeddings ne
+                    JOIN covalence.nodes n ON n.id = ne.node_id
+                    WHERE n.status = 'active' AND ne.node_id = ANY($2)
+                    UNION ALL
+                    -- Section-level embeddings (sub-document precision)
+                    SELECT ns.node_id, (ns.embedding::vector <=> $1::vector)::float8 AS distance
+                    FROM covalence.node_sections ns
+                    JOIN covalence.nodes n ON n.id = ns.node_id
+                    WHERE n.status = 'active' AND ns.node_id = ANY($2) AND ns.embedding IS NOT NULL
+                )
+                SELECT node_id, MIN(distance) AS distance
+                FROM candidates
+                GROUP BY node_id
+                ORDER BY distance
+                LIMIT $3"
             )
             .bind(&vec_str)
             .bind(candidates)
@@ -65,12 +78,24 @@ impl DimensionAdaptor for VectorAdaptor {
             .await?
         } else {
             sqlx::query_as::<_, (Uuid, f64)>(
-                "SELECT ne.node_id, (ne.embedding::vector <=> $1::vector)::float8 AS distance
-                 FROM covalence.node_embeddings ne
-                 JOIN covalence.nodes n ON n.id = ne.node_id
-                 WHERE n.status = 'active'
-                 ORDER BY ne.embedding::vector <=> $1::vector
-                 LIMIT $2"
+                "WITH candidates AS (
+                    -- Node-level embeddings
+                    SELECT ne.node_id, (ne.embedding::vector <=> $1::vector)::float8 AS distance
+                    FROM covalence.node_embeddings ne
+                    JOIN covalence.nodes n ON n.id = ne.node_id
+                    WHERE n.status = 'active'
+                    UNION ALL
+                    -- Section-level embeddings (sub-document precision)
+                    SELECT ns.node_id, (ns.embedding::vector <=> $1::vector)::float8 AS distance
+                    FROM covalence.node_sections ns
+                    JOIN covalence.nodes n ON n.id = ns.node_id
+                    WHERE n.status = 'active' AND ns.embedding IS NOT NULL
+                )
+                SELECT node_id, MIN(distance) AS distance
+                FROM candidates
+                GROUP BY node_id
+                ORDER BY distance
+                LIMIT $2"
             )
             .bind(&vec_str)
             .bind(limit as i64)

@@ -6,6 +6,7 @@ description = "Graph-native knowledge substrate for AI agent persistent memory"
 license = "MIT"
 
 [dependencies]
+md5 = "0.7"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 

@@ -14,6 +14,7 @@
 //! `{"attempts": N, ...}` since the table has no dedicated attempts column.
 
 pub mod llm;
+pub mod tree_index;
 pub mod openai;
 
 use std::sync::Arc;
@@ -242,6 +243,8 @@ async fn execute_task(
 ) -> anyhow::Result<Value> {
     match task.task_type.as_str() {
         "embed"              => handle_embed(pool, llm, task).await,
+        "tree_index"         => handle_tree_index(pool, llm, task).await,
+        "tree_embed"         => handle_tree_embed(pool, llm, task).await,
         "contention_check"   => handle_contention_check(pool, task).await,
         "compile"            => handle_compile(pool, llm, task).await,
         "split"              => handle_split(pool, llm, task).await,
@@ -280,7 +283,37 @@ async fn handle_embed(
     let title = title.unwrap_or_default();
     let content = content.unwrap_or_default();
 
-    // Prepend title to content for richer embeddings
+    // For large sources, delegate to tree_index pipeline (no truncation)
+    if content.len() > tree_index::TRIVIAL_THRESHOLD_CHARS {
+        tracing::info!(
+            node_id = %node_id,
+            content_len = content.len(),
+            "embed: large source — delegating to tree_index pipeline"
+        );
+
+        let overlap = tree_index::DEFAULT_OVERLAP_FRACTION;
+        // Build tree index if missing
+        let has_tree = {
+            let row = sqlx::query_as::<_, (Value,)>(
+                "SELECT metadata FROM covalence.nodes WHERE id = $1",
+            )
+            .bind(node_id)
+            .fetch_optional(pool)
+            .await?;
+            row.and_then(|r| r.0.get("tree_index").cloned())
+                .map(|v| !v.is_null())
+                .unwrap_or(false)
+        };
+
+        if !has_tree {
+            tree_index::build_tree_index(pool, llm, node_id, overlap, false).await?;
+        }
+
+        // Embed sections + compose node embedding
+        return tree_index::embed_sections(pool, llm, node_id).await;
+    }
+
+    // Small sources: direct embedding (no tree overhead)
     let embed_input = if title.is_empty() {
         content.clone()
     } else {
@@ -549,4 +582,42 @@ async fn handle_resolve_contention(
         "note": "stub — LLM contention resolution not yet implemented (v1)",
         "payload": task.payload,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Tree index + section embedding handlers
+// ---------------------------------------------------------------------------
+
+/// `tree_index`: Build a tree index for a node using LLM decomposition.
+/// Payload: { "overlap": 0.20, "force": false }
+async fn handle_tree_index(
+    pool: &PgPool,
+    llm: &Arc<dyn LlmClient>,
+    task: &QueueTask,
+) -> anyhow::Result<Value> {
+    let node_id = task.node_id.context("tree_index task requires node_id")?;
+
+    let overlap = task
+        .payload
+        .get("overlap")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(tree_index::DEFAULT_OVERLAP_FRACTION);
+
+    let force = task
+        .payload
+        .get("force")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    tree_index::build_tree_index(pool, llm, node_id, overlap, force).await
+}
+
+/// `tree_embed`: Embed all sections of a tree-indexed node + compose node embedding.
+async fn handle_tree_embed(
+    pool: &PgPool,
+    llm: &Arc<dyn LlmClient>,
+    task: &QueueTask,
+) -> anyhow::Result<Value> {
+    let node_id = task.node_id.context("tree_embed task requires node_id")?;
+    tree_index::embed_sections(pool, llm, node_id).await
 }

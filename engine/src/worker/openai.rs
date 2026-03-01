@@ -130,16 +130,13 @@ impl LlmClient for OpenAiClient {
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         let url = format!("{}/embeddings", self.base_url);
 
-        // Truncate to ~8000 tokens (~32000 chars) to stay within model limits
-        let truncated = if text.len() > 32_000 {
-            &text[..32_000]
-        } else {
-            text
-        };
-
+        // No truncation — callers (tree_index pipeline) are responsible for
+        // sizing content to fit model context windows. text-embedding-3-small
+        // supports 8191 tokens (~28K chars). Large content is handled by
+        // embed_long_section() in tree_index.rs which uses sliding windows.
         let body = EmbedRequest {
             model: self.embed_model.clone(),
-            input: truncated.to_string(),
+            input: text.to_string(),
         };
 
         let resp = self.http
