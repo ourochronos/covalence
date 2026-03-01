@@ -24,6 +24,7 @@ pub struct UpdateArticleRequest {
     pub content: Option<String>,
     pub title: Option<String>,
     pub domain_path: Option<Vec<String>>,
+    #[allow(dead_code)]
     pub metadata: Option<serde_json::Value>,
     pub pinned: Option<bool>,
 }
@@ -182,6 +183,7 @@ impl ArticleService {
             "modified_at = now()".to_string(),
             "version = version + 1".to_string(),
         ];
+        #[allow(unused_assignments)]
         let mut bind_idx = 2u32; // $1 is the id
 
         if let Some(ref content) = req.content {
@@ -199,6 +201,7 @@ impl ArticleService {
         if req.domain_path.is_some() {
             sets.push(format!("domain_path = ${bind_idx}"));
             bind_idx += 1;
+        let _ = bind_idx; // consumed to suppress unused_assignments warning
         }
         if let Some(pinned) = req.pinned {
             sets.push(format!("pinned = {pinned}"));

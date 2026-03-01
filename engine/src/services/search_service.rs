@@ -10,8 +10,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::models::SearchIntent;
-use crate::search::dimension::{DimensionAdaptor, DimensionQuery, DimensionResult};
-use crate::search::fusion::ScoreFusion;
+use crate::search::dimension::{DimensionAdaptor, DimensionQuery};
 use crate::search::graph::GraphAdaptor;
 use crate::search::lexical::LexicalAdaptor;
 use crate::search::vector::VectorAdaptor;

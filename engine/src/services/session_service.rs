@@ -60,6 +60,7 @@ impl SessionService {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_by_label(&self, label: &str) -> Result<Option<Session>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, label, status, created_at, last_active_at, metadata
@@ -93,6 +94,7 @@ impl SessionService {
         rows.iter().map(session_from_row).collect()
     }
 
+    #[allow(dead_code)]
     pub async fn touch(&self, id: Uuid) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE covalence.sessions SET last_active_at = now() WHERE id = $1")
             .bind(id)
@@ -110,6 +112,7 @@ impl SessionService {
     }
 
     /// Record that a session accessed a node.
+    #[allow(dead_code)]
     pub async fn record_access(&self, session_id: Uuid, node_id: Uuid) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO covalence.session_nodes (session_id, node_id)

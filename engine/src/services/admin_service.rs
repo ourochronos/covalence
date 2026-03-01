@@ -287,6 +287,7 @@ impl AdminService {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn record_usage(
         &self,
         node_id: Uuid,

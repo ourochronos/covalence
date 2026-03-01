@@ -116,6 +116,7 @@ impl EdgeType {
     }
 
     /// Edge types that affect what counts as "current" (chain tip calculation).
+    #[allow(dead_code)]
     pub fn is_versioning_edge(&self) -> bool {
         matches!(
             self,
@@ -124,6 +125,7 @@ impl EdgeType {
     }
 
     /// Provenance edges — used in provenance chain walks.
+    #[allow(dead_code)]
     pub fn is_provenance_edge(&self) -> bool {
         matches!(
             self,
@@ -141,6 +143,7 @@ impl EdgeType {
     }
 
     /// Temporal edges — prioritized for temporal intent queries.
+    #[allow(dead_code)]
     pub fn is_temporal_edge(&self) -> bool {
         matches!(
             self,
@@ -149,6 +152,7 @@ impl EdgeType {
     }
 
     /// Causal edges — prioritized for causal intent queries.
+    #[allow(dead_code)]
     pub fn is_causal_edge(&self) -> bool {
         matches!(
             self,
@@ -157,6 +161,7 @@ impl EdgeType {
     }
 
     /// Resolve legacy aliases to canonical names.
+    #[allow(dead_code)]
     pub fn canonical(&self) -> EdgeType {
         match self {
             EdgeType::CompiledFrom => EdgeType::Originates,
@@ -276,6 +281,7 @@ impl Default for Confidence {
 impl Confidence {
     /// Recompute overall from components.
     /// Formula: weighted mean matching Valence v2's proven weighting.
+    #[allow(dead_code)]
     pub fn recompute_overall(&mut self) {
         self.overall = self.source * 0.30
             + self.method * 0.15
@@ -372,6 +378,7 @@ pub enum SearchIntent {
 
 impl SearchIntent {
     /// Edge types prioritized for this intent in the graph dimension.
+    #[allow(dead_code)]
     pub fn priority_edges(&self) -> &'static [EdgeType] {
         match self {
             SearchIntent::Factual => &[EdgeType::Confirms, EdgeType::Originates],
@@ -410,6 +417,7 @@ impl Default for DimensionWeights {
 
 impl DimensionWeights {
     /// Normalize so weights sum to 1.0.
+    #[allow(dead_code)]
     pub fn normalize(&mut self) {
         let sum = self.vector + self.lexical + self.graph;
         if sum > 0.0 {

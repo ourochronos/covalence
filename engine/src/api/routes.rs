@@ -209,6 +209,7 @@ async fn article_compile(
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ProvenanceQuery {
     max_depth: Option<u32>,
     claim: Option<String>,

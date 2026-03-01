@@ -1044,8 +1044,18 @@ async fn test_resolve_contention_supersede_b() {
     .unwrap();
     assert_eq!(embed_queued, 1, "re-embed task should be queued");
 
+    // A tree_embed invalidation task should also be queued
+    let tree_embed_queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM covalence.slow_path_queue          WHERE task_type = 'tree_embed' AND node_id = $1 AND status = 'pending'",
+    )
+    .bind(article)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(tree_embed_queued, 1, "tree_embed task should be queued to invalidate sections");
+
     cleanup_nodes(&pool, &[article, source]).await;
-    cleanup_queue_tasks(&pool, &["embed"]).await;
+    cleanup_queue_tasks(&pool, &["embed", "tree_embed"]).await;
 }
 
 /// `handle_tree_index` builds and stores a tree decomposition in node metadata.
@@ -1207,4 +1217,97 @@ async fn test_embed_large_node_delegates_to_tree() {
     assert!(exists, "node embedding should exist after large-node embed");
 
     cleanup_nodes(&pool, &[node_id]).await;
+}
+
+/// `handle_compile` should write an inference_log row when not degraded.
+#[tokio::test]
+#[serial]
+async fn test_compile_logs_inference() {
+    let pool = setup_test_db().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    let src_a = insert_test_source(
+        &pool,
+        "Inference Source A",
+        "Inference logging source A content.",
+    )
+    .await;
+    let src_b = insert_test_source(
+        &pool,
+        "Inference Source B",
+        "Inference logging source B content.",
+    )
+    .await;
+
+    let payload = json!({ "source_ids": [src_a.to_string(), src_b.to_string()] });
+    let task = make_task("compile", None, payload.clone());
+
+    let result = handle_compile(&pool, &llm, &task)
+        .await
+        .expect("handle_compile should succeed");
+
+    let article_id = Uuid::parse_str(result["article_id"].as_str().unwrap()).unwrap();
+
+    let log_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM covalence.inference_log \
+         WHERE operation = 'compile' AND input_node_ids @> $1",
+    )
+    .bind(&vec![src_a, src_b])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(log_count, 1, "compile should log inference metadata");
+
+    sqlx::query(
+        "DELETE FROM covalence.inference_log \
+         WHERE operation = 'compile' AND input_node_ids @> $1",
+    )
+    .bind(&vec![src_a, src_b])
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    cleanup_nodes(&pool, &[src_a, src_b, article_id]).await;
+    cleanup_queue_tasks(&pool, &["embed", "contention_check"]).await;
+}
+
+/// `handle_compile` should skip when an identical completed task exists.
+#[tokio::test]
+#[serial]
+async fn test_compile_idempotency_guard() {
+    let pool = setup_test_db().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    let src = insert_test_source(&pool, "Idempotent Source", "Idempotent content.").await;
+    let payload = json!({ "source_ids": [src.to_string()] });
+
+    sqlx::query(
+        "INSERT INTO covalence.slow_path_queue \
+         (id, task_type, node_id, payload, status, priority) \
+         VALUES ($1, 'compile', NULL, $2, 'complete', 0)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&payload)
+    .execute(&pool)
+    .await
+    .expect("insert completed compile task");
+
+    let task = make_task("compile", None, payload.clone());
+    let result = handle_compile(&pool, &llm, &task)
+        .await
+        .expect("handle_compile should return skip result");
+
+    assert_eq!(result["skipped"], json!(true));
+    assert_eq!(result["reason"], json!("already_complete"));
+
+    sqlx::query(
+        "DELETE FROM covalence.slow_path_queue \
+         WHERE task_type = 'compile' AND status = 'complete' AND payload = $1",
+    )
+    .bind(&payload)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    cleanup_nodes(&pool, &[src]).await;
 }

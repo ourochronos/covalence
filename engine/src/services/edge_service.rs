@@ -26,6 +26,7 @@ pub struct NeighborhoodParams {
 }
 
 pub struct EdgeService {
+    #[allow(dead_code)]
     pool: PgPool,
     graph: AgeGraphRepository,
 }

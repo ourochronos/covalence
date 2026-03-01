@@ -27,6 +27,7 @@ impl AgeGraphRepository {
 
     /// Build the AGE preamble SQL that must precede every Cypher query.
     /// AGE requires LOAD + SET search_path per session/transaction.
+    #[allow(dead_code)]
     fn age_preamble(&self) -> String {
         "LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;".to_string()
     }
@@ -134,7 +135,7 @@ impl GraphRepository for AgeGraphRepository {
         &self,
         node_id: Uuid,
         node_type: NodeType,
-        properties: serde_json::Value,
+        _properties: serde_json::Value,
     ) -> GraphResult<i64> {
         let label = node_type.age_label();
         let node_id_str = node_id.to_string();
