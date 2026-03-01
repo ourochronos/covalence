@@ -4,7 +4,7 @@
 //! asynchronously without blocking the hot API path.
 //!
 //! # Task lifecycle
-//! ```
+//! ```text
 //! pending → processing → complete
 //!                      ↘ failed   (after 3 attempts)
 //! ```
@@ -13,15 +13,17 @@
 //! Attempt count is tracked in the `result` JSONB column as
 //! `{"attempts": N, ...}` since the table has no dedicated attempts column.
 
+pub mod contention;
 pub mod llm;
-pub mod tree_index;
+pub mod merge_edges;
 pub mod openai;
+pub mod tree_index;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -35,12 +37,12 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A row fetched from `slow_path_queue`.
 #[derive(Debug)]
-struct QueueTask {
-    id: Uuid,
-    task_type: String,
-    node_id: Option<Uuid>,
-    payload: Value,
-    result: Option<Value>,
+pub struct QueueTask {
+    pub id: Uuid,
+    pub task_type: String,
+    pub node_id: Option<Uuid>,
+    pub payload: Value,
+    pub result: Option<Value>,
 }
 
 /// Start the background worker loop.
@@ -62,11 +64,16 @@ pub async fn run(pool: PgPool) {
             Arc::new(client)
         }
         _ => {
-            tracing::warn!("OPENAI_API_KEY not set — using StubLlmClient (no real embeddings/completions)");
+            tracing::warn!(
+                "OPENAI_API_KEY not set — using StubLlmClient (no real embeddings/completions)"
+            );
             Arc::new(StubLlmClient)
         }
     };
-    tracing::info!("slow-path worker started (poll_interval={}s)", POLL_INTERVAL.as_secs());
+    tracing::info!(
+        "slow-path worker started (poll_interval={}s)",
+        POLL_INTERVAL.as_secs()
+    );
 
     loop {
         match poll_and_execute(&pool, &llm).await {
@@ -191,9 +198,9 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
                          completed_at = now(),
                          result       = $1
                     WHERE id = $2"#,
-                    )
-                    .bind(&result_json)
-                    .bind(task.id)
+                )
+                .bind(&result_json)
+                .bind(task.id)
                 .execute(pool)
                 .await
                 .context("failed to mark task failed")?;
@@ -215,9 +222,9 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
                          started_at = null,
                          result     = $1
                     WHERE id = $2"#,
-                    )
-                    .bind(&result_json)
-                    .bind(task.id)
+                )
+                .bind(&result_json)
+                .bind(task.id)
                 .execute(pool)
                 .await
                 .context("failed to requeue task")?;
@@ -236,21 +243,21 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
 }
 
 /// Dispatch to the appropriate handler for each task type.
-async fn execute_task(
+pub async fn execute_task(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
 ) -> anyhow::Result<Value> {
     match task.task_type.as_str() {
-        "embed"              => handle_embed(pool, llm, task).await,
-        "tree_index"         => handle_tree_index(pool, llm, task).await,
-        "tree_embed"         => handle_tree_embed(pool, llm, task).await,
-        "contention_check"   => handle_contention_check(pool, task).await,
-        "compile"            => handle_compile(pool, llm, task).await,
-        "split"              => handle_split(pool, llm, task).await,
-        "merge"              => handle_merge(pool, llm, task).await,
-        "infer_edges"        => handle_infer_edges(pool, llm, task).await,
-        "resolve_contention" => handle_resolve_contention(pool, llm, task).await,
+        "embed" => handle_embed(pool, llm, task).await,
+        "tree_index" => handle_tree_index(pool, llm, task).await,
+        "tree_embed" => handle_tree_embed(pool, llm, task).await,
+        "contention_check" => contention::handle_contention_check(pool, llm, task).await,
+        "compile" => handle_compile(pool, llm, task).await,
+        "split" => handle_split(pool, llm, task).await,
+        "merge" => merge_edges::handle_merge(pool, llm, task).await,
+        "infer_edges" => merge_edges::handle_infer_edges(pool, llm, task).await,
+        "resolve_contention" => contention::handle_resolve_contention(pool, llm, task).await,
         other => anyhow::bail!("unknown task_type: {other}"),
     }
 }
@@ -261,21 +268,19 @@ async fn execute_task(
 ///
 /// TODO: Integrate OpenAI text-embedding-3-small (or compatible) API.
 /// The stub currently returns a zero vector and skips the DB upsert.
-async fn handle_embed(
+pub async fn handle_embed(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
 ) -> anyhow::Result<Value> {
-    let node_id = task
-        .node_id
-        .context("embed task requires node_id")?;
+    let node_id = task.node_id.context("embed task requires node_id")?;
 
     // Fetch node content
     let row = sqlx::query("SELECT content, title FROM covalence.nodes WHERE id = $1")
-    .bind(node_id)
-    .fetch_optional(pool)
-    .await?
-    .context("node not found for embed")?;
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?
+        .context("node not found for embed")?;
 
     use sqlx::Row as _;
     let title: Option<String> = row.get("title");
@@ -294,12 +299,11 @@ async fn handle_embed(
         let overlap = tree_index::DEFAULT_OVERLAP_FRACTION;
         // Build tree index if missing
         let has_tree = {
-            let row = sqlx::query_as::<_, (Value,)>(
-                "SELECT metadata FROM covalence.nodes WHERE id = $1",
-            )
-            .bind(node_id)
-            .fetch_optional(pool)
-            .await?;
+            let row =
+                sqlx::query_as::<_, (Value,)>("SELECT metadata FROM covalence.nodes WHERE id = $1")
+                    .bind(node_id)
+                    .fetch_optional(pool)
+                    .await?;
             row.and_then(|r| r.0.get("tree_index").cloned())
                 .map(|v| !v.is_null())
                 .unwrap_or(false)
@@ -326,12 +330,16 @@ async fn handle_embed(
     // Format as pgvector literal: [0.1,0.2,...]
     let vec_literal = format!(
         "[{}]",
-        embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+        embedding
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     );
 
     // Determine model name from env or default
-    let model = std::env::var("COVALENCE_EMBED_MODEL")
-        .unwrap_or_else(|_| "text-embedding-3-small".into());
+    let model =
+        std::env::var("COVALENCE_EMBED_MODEL").unwrap_or_else(|_| "text-embedding-3-small".into());
 
     // Upsert into node_embeddings using halfvec cast
     sqlx::query(&format!(
@@ -359,10 +367,7 @@ async fn handle_embed(
 
 /// `contention_check`: Find nodes with similar content; if similarity is high
 /// but content differs meaningfully, insert a contention record.
-async fn handle_contention_check(
-    pool: &PgPool,
-    task: &QueueTask,
-) -> anyhow::Result<Value> {
+async fn handle_contention_check(pool: &PgPool, task: &QueueTask) -> anyhow::Result<Value> {
     let node_id = task
         .node_id
         .context("contention_check task requires node_id")?;
@@ -490,41 +495,617 @@ async fn handle_contention_check(
     }))
 }
 
+/// Strip markdown code fences from an LLM response, returning the inner text.
+fn strip_fences(text: &str) -> String {
+    let text = text.trim();
+    if text.starts_with("```") {
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() >= 3 {
+            return lines[1..lines.len() - 1].join("\n");
+        }
+    }
+    text.to_string()
+}
+
+/// Enqueue a slow-path task with an optional node_id and JSON payload.
+async fn enqueue_task(
+    pool: &PgPool,
+    task_type: &str,
+    node_id: Option<Uuid>,
+    payload: Value,
+    priority: i32,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO covalence.slow_path_queue \
+             (id, task_type, node_id, payload, status, priority) \
+         VALUES ($1, $2, $3, $4, 'pending', $5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(task_type)
+    .bind(node_id)
+    .bind(&payload)
+    .bind(priority)
+    .execute(pool)
+    .await
+    .with_context(|| format!("failed to enqueue {task_type} task"))?;
+    Ok(())
+}
+
 /// `compile`: Synthesise a new article node from source nodes.
-///
-/// LLM integration is planned for v1. For now, marks the task complete
-/// and logs the intent so the queue doesn't stall.
-async fn handle_compile(
-    _pool: &PgPool,
-    _llm: &Arc<dyn LlmClient>,
+pub async fn handle_compile(
+    pool: &PgPool,
+    llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
 ) -> anyhow::Result<Value> {
-    tracing::info!(
-        task_id = %task.id,
-        payload = %task.payload,
-        "compile: stub — LLM-driven article compilation planned for v1"
+    use sqlx::Row as _;
+
+    // ── 1. Parse payload ────────────────────────────────────────────────────
+    let source_ids_val = task
+        .payload
+        .get("source_ids")
+        .context("compile: missing source_ids in payload")?;
+    let source_ids: Vec<Uuid> = source_ids_val
+        .as_array()
+        .context("compile: source_ids must be an array")?
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.as_str()
+                .with_context(|| format!("compile: source_ids[{i}] is not a string"))
+                .and_then(|s| {
+                    Uuid::parse_str(s)
+                        .with_context(|| format!("compile: invalid UUID in source_ids[{i}]"))
+                })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let title_hint: Option<String> = task
+        .payload
+        .get("title_hint")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // ── 2. Fetch source content ─────────────────────────────────────────────
+    let rows = sqlx::query("SELECT id, title, content FROM covalence.nodes WHERE id = ANY($1)")
+        .bind(&source_ids)
+        .fetch_all(pool)
+        .await
+        .context("compile: failed to fetch source nodes")?;
+
+    if rows.is_empty() {
+        anyhow::bail!("compile: no source nodes found for {:?}", source_ids);
+    }
+
+    struct SourceDoc {
+        id: Uuid,
+        title: String,
+        content: String,
+    }
+
+    let sources: Vec<SourceDoc> = rows
+        .iter()
+        .map(|r| SourceDoc {
+            id: r.get("id"),
+            title: r.get::<Option<String>, _>("title").unwrap_or_default(),
+            content: r.get::<Option<String>, _>("content").unwrap_or_default(),
+        })
+        .collect();
+
+    // ── 3. Build prompt ─────────────────────────────────────────────────────
+    let mut sources_block = String::new();
+    for s in &sources {
+        sources_block.push_str(&format!(
+            "=== SOURCE {} ===\nTitle: {}\n\n{}\n\n",
+            s.id, s.title, s.content
+        ));
+    }
+
+    let title_hint_line = title_hint
+        .as_deref()
+        .map(|h| format!("Suggested title: {h}\n"))
+        .unwrap_or_default();
+
+    let prompt = format!(
+        "You are a knowledge synthesizer. Read the following source documents and \
+produce a well-structured article that synthesizes their information.\n\
+\n\
+{title_hint_line}\
+Target length: ~2000 tokens (minimum 200, maximum 4000 tokens).\n\
+\n\
+Respond ONLY with valid JSON (no markdown fences), exactly:\n\
+{{\n\
+  \"title\": \"...\",\n\
+  \"content\": \"...\",\n\
+  \"epistemic_type\": \"episodic|semantic|procedural\",\n\
+  \"source_relationships\": [\n\
+    {{\"source_id\": \"<uuid>\", \"relationship\": \"originates|confirms|supersedes|contradicts|contends\"}}\n\
+  ]\n\
+}}\n\
+\n\
+SOURCE DOCUMENTS:\n\
+{sources_block}"
     );
+
+    // ── 4. LLM completion with fallback ─────────────────────────────────────
+    let (llm_json, degraded) = match llm.complete(&prompt, 4096).await {
+        Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
+            Ok(v) => (v, false),
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    "compile: JSON parse error ({e}), falling back to concatenation"
+                );
+                (Value::Null, true)
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                task_id = %task.id,
+                "compile: LLM error ({e}), falling back to concatenation"
+            );
+            (Value::Null, true)
+        }
+    };
+
+    let (article_title, article_content, epistemic_type, source_relationships): (
+        String,
+        String,
+        String,
+        Vec<(Uuid, String)>,
+    ) = if degraded {
+        let mut concat = String::new();
+        for s in &sources {
+            if !s.title.is_empty() {
+                concat.push_str(&format!("## {}\n\n", s.title));
+            }
+            concat.push_str(&s.content);
+            concat.push_str("\n\n");
+        }
+        let title = title_hint
+            .clone()
+            .unwrap_or_else(|| "Compiled Article".to_string());
+        (title, concat, "semantic".to_string(), vec![])
+    } else {
+        let title = llm_json
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Compiled Article")
+            .to_string();
+        let content = llm_json
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let etype = llm_json
+            .get("epistemic_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("semantic")
+            .to_string();
+        let rels: Vec<(Uuid, String)> = llm_json
+            .get("source_relationships")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let sid = item
+                            .get("source_id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| Uuid::parse_str(s).ok())?;
+                        let rel = item
+                            .get("relationship")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("originates")
+                            .to_string();
+                        Some((sid, rel))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (title, content, etype, rels)
+    };
+
+    // ── 5. Dedup check via vector similarity ────────────────────────────────
+    let embed_result = llm.embed(&article_content).await.ok();
+    let existing_article_id: Option<Uuid> = if let Some(ref emb) = embed_result {
+        let dims = emb.len();
+        let vec_literal = format!(
+            "[{}]",
+            emb.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        sqlx::query(&format!(
+            "SELECT ne.node_id \
+             FROM covalence.node_embeddings ne \
+             JOIN covalence.nodes n ON n.id = ne.node_id \
+             WHERE n.node_type = 'article' AND n.status = 'active' \
+               AND (ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims})) < 0.15 \
+             ORDER BY (ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims})) ASC \
+             LIMIT 1"
+        ))
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .map(|r| r.get::<Uuid, _>("node_id"))
+    } else {
+        None
+    };
+
+    // ── 6. Insert or update article node ────────────────────────────────────
+    let meta = json!({
+        "epistemic_type": epistemic_type,
+        "degraded":       degraded,
+    });
+
+    let article_id: Uuid = if let Some(existing_id) = existing_article_id {
+        tracing::info!(
+            existing_id = %existing_id,
+            "compile: dedup hit — updating existing article"
+        );
+        sqlx::query(
+            "UPDATE covalence.nodes \
+             SET title = $1, content = $2, metadata = $3, modified_at = now() \
+             WHERE id = $4",
+        )
+        .bind(&article_title)
+        .bind(&article_content)
+        .bind(&meta)
+        .bind(existing_id)
+        .execute(pool)
+        .await
+        .context("compile: failed to update existing article")?;
+        existing_id
+    } else {
+        let new_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO covalence.nodes \
+                 (id, node_type, status, title, content, metadata, created_at, modified_at) \
+             VALUES ($1, 'article', 'active', $2, $3, $4, now(), now())",
+        )
+        .bind(new_id)
+        .bind(&article_title)
+        .bind(&article_content)
+        .bind(&meta)
+        .execute(pool)
+        .await
+        .context("compile: failed to insert article node")?;
+        new_id
+    };
+
+    // ── 7. Insert provenance links via edges table ─────────────────────────
+    let rel_map: std::collections::HashMap<Uuid, String> =
+        source_relationships.into_iter().collect();
+
+    for src in &sources {
+        let rel = rel_map
+            .get(&src.id)
+            .map(|s| s.as_str())
+            .unwrap_or("originates");
+        // Map LLM relationship name to valid edge_type enum value
+        let edge_type = match rel {
+            "confirms" => "CONFIRMS",
+            "supersedes" => "SUPERSEDES",
+            "contradicts" => "CONTRADICTS",
+            "contends" => "CONTENDS",
+            _ => "ORIGINATES",
+        };
+        sqlx::query(
+            "INSERT INTO covalence.edges \
+                 (id, source_node_id, target_node_id, edge_type, weight, created_by) \
+             VALUES ($1, $2, $3, $4, 1.0, 'compile')",
+        )
+        .bind(Uuid::new_v4())
+        .bind(src.id)
+        .bind(article_id)
+        .bind(edge_type)
+        .execute(pool)
+        .await
+        .context("compile: failed to insert provenance edge")?;
+    }
+
+    // ── 8. Record mutation in node metadata ────────────────────────────────
+    let _mutation_entry = serde_json::json!([{
+        "type": "created",
+        "summary": format!("Compiled from {} source(s)", sources.len()),
+        "recorded_at": chrono::Utc::now().to_rfc3339(),
+    }]);
+    sqlx::query(
+        r#"UPDATE covalence.nodes
+              SET metadata = jsonb_set(
+                                 coalesce(metadata, '{}'::jsonb),
+                                 '{mutation_log}',
+                                 coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb,
+                                 true
+                             ),
+                  modified_at = now()
+            WHERE id = $2"#,
+    )
+    .bind(&_mutation_entry)
+    .bind(article_id)
+    .execute(pool)
+    .await
+    .context("compile: failed to record mutation in metadata")?;
+
+    // ── 9. Queue follow-up tasks ────────────────────────────────────────────
+    enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;
+    for src in &sources {
+        enqueue_task(pool, "contention_check", Some(src.id), json!({}), 3).await?;
+    }
+    if article_content.len() > 14_000 {
+        tracing::info!(
+            article_id  = %article_id,
+            content_len = article_content.len(),
+            "compile: content large, queuing split task"
+        );
+        enqueue_task(pool, "split", Some(article_id), json!({}), 4).await?;
+    }
+
+    tracing::info!(
+        article_id  = %article_id,
+        title       = %article_title,
+        content_len = article_content.len(),
+        degraded,
+        "compile: done"
+    );
+
     Ok(json!({
-        "note": "stub — LLM article compilation not yet implemented (v1)",
-        "node_id": task.node_id,
+        "article_id":     article_id,
+        "title":          article_title,
+        "content_len":    article_content.len(),
+        "epistemic_type": epistemic_type,
+        "degraded":       degraded,
+        "source_count":   sources.len(),
     }))
 }
 
 /// `split`: Split an oversized article node into two smaller nodes.
-///
-/// LLM integration planned for v1.
-async fn handle_split(
-    _pool: &PgPool,
-    _llm: &Arc<dyn LlmClient>,
+pub async fn handle_split(
+    pool: &PgPool,
+    llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
 ) -> anyhow::Result<Value> {
+    use sqlx::Row as _;
+
+    // ── 1. Fetch article ────────────────────────────────────────────────────
+    let node_id = task.node_id.context("split: task requires node_id")?;
+
+    let row = sqlx::query("SELECT title, content, metadata FROM covalence.nodes WHERE id = $1")
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?
+        .with_context(|| format!("split: article {node_id} not found"))?;
+
+    let orig_title: String = row.get::<Option<String>, _>("title").unwrap_or_default();
+    let orig_content: String = row.get::<Option<String>, _>("content").unwrap_or_default();
+    let metadata: Value = row
+        .get::<Option<Value>, _>("metadata")
+        .unwrap_or(Value::Null);
+
+    // ── 2. Find split point ─────────────────────────────────────────────────
+    let midpoint = orig_content.len() / 2;
+    let split_index: usize = 'tree: {
+        if let Some(tree) = metadata.get("tree_index").and_then(|v| v.as_array()) {
+            let mut best: Option<usize> = None;
+            let mut best_dist = usize::MAX;
+            for node in tree {
+                let end = node
+                    .get("end_char")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+                if let Some(e) = end {
+                    let dist = e.abs_diff(midpoint);
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best = Some(e);
+                    }
+                }
+            }
+            if let Some(idx) = best {
+                tracing::info!(
+                    node_id     = %node_id,
+                    split_index = idx,
+                    "split: using tree_index split point"
+                );
+                break 'tree idx;
+            }
+        }
+
+        // No tree_index — ask LLM
+        let prompt = format!(
+            "Find the best point to split this article into two coherent parts.\n\
+Return ONLY valid JSON (no markdown fences):\n\
+{{\"split_index\": <char_index>, \"part_a_title\": \"...\", \
+\"part_b_title\": \"...\", \"reasoning\": \"...\"}}\n\
+\nARTICLE ({} chars):\n{orig_content}",
+            orig_content.len()
+        );
+
+        match llm.complete(&prompt, 512).await {
+            Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
+                Ok(v) => {
+                    let idx = v
+                        .get("split_index")
+                        .and_then(|x| x.as_u64())
+                        .map(|x| x as usize)
+                        .unwrap_or(midpoint);
+                    tracing::info!(
+                        node_id     = %node_id,
+                        split_index = idx,
+                        "split: LLM provided split point"
+                    );
+                    idx
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        node_id = %node_id,
+                        "split: LLM JSON parse error ({e}), using midpoint"
+                    );
+                    midpoint
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    node_id = %node_id,
+                    "split: LLM error ({e}), using midpoint"
+                );
+                midpoint
+            }
+        }
+    };
+
+    // Clamp and align to UTF-8 boundary
+    let split_index = split_index.clamp(1, orig_content.len().saturating_sub(1));
+    let split_at = orig_content
+        .char_indices()
+        .map(|(i, _)| i)
+        .filter(|&i| i >= split_index)
+        .next()
+        .unwrap_or(orig_content.len());
+
+    let content_a = orig_content[..split_at].to_string();
+    let content_b = orig_content[split_at..].to_string();
+    let title_a = format!("{orig_title} (Part 1)");
+    let title_b = format!("{orig_title} (Part 2)");
+
+    // ── 3. Create two new article nodes ─────────────────────────────────────
+    let id_a = Uuid::new_v4();
+    let id_b = Uuid::new_v4();
+
+    for (new_id, new_title, new_content) in
+        [(id_a, &title_a, &content_a), (id_b, &title_b, &content_b)]
+    {
+        sqlx::query(
+            "INSERT INTO covalence.nodes \
+                 (id, node_type, status, title, content, metadata, created_at, modified_at) \
+             VALUES ($1, 'article', 'active', $2, $3, $4, now(), now())",
+        )
+        .bind(new_id)
+        .bind(new_title)
+        .bind(new_content)
+        .bind(json!({"split_from": node_id}))
+        .execute(pool)
+        .await
+        .with_context(|| format!("split: failed to insert new article {new_id}"))?;
+    }
+
+    // ── 4. Archive original ─────────────────────────────────────────────────
+    sqlx::query(
+        "UPDATE covalence.nodes \
+         SET status = 'archived', modified_at = now() WHERE id = $1",
+    )
+    .bind(node_id)
+    .execute(pool)
+    .await
+    .context("split: failed to archive original article")?;
+
+    // ── 5. Create SPLIT_INTO edges ──────────────────────────────────────────
+    for target in [id_a, id_b] {
+        sqlx::query(
+            "INSERT INTO covalence.edges \
+                 (id, source_node_id, target_node_id, edge_type, weight, metadata) \
+             VALUES ($1, $2, $3, 'SPLIT_INTO', 1.0, '{}'::jsonb)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(node_id)
+        .bind(target)
+        .execute(pool)
+        .await
+        .context("split: failed to insert SPLIT_INTO edge")?;
+    }
+
+    // ── 6. Copy provenance edges from original to both new articles ────────
+    let prov_rows = sqlx::query(
+        "SELECT source_node_id, edge_type \
+         FROM covalence.edges \
+         WHERE target_node_id = $1 \
+           AND edge_type IN ('ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES')",
+    )
+    .bind(node_id)
+    .fetch_all(pool)
+    .await
+    .context("split: failed to fetch provenance edges")?;
+
+    for prow in &prov_rows {
+        let src_id: Uuid = prow.get("source_node_id");
+        let edge_type: String = prow.get("edge_type");
+        for &new_article in &[id_a, id_b] {
+            sqlx::query(
+                "INSERT INTO covalence.edges \
+                     (id, source_node_id, target_node_id, edge_type, weight, created_by) \
+                 VALUES ($1, $2, $3, $4, 1.0, 'split_inherit')",
+            )
+            .bind(Uuid::new_v4())
+            .bind(src_id)
+            .bind(new_article)
+            .bind(&edge_type)
+            .execute(pool)
+            .await
+            .context("split: failed to copy provenance edge")?;
+        }
+    }
+
+    // ── 7. Record mutations in node metadata ──────────────────────────
+    let _now_str = chrono::Utc::now().to_rfc3339();
+    let _split_note = serde_json::json!([{
+        "type": "split",
+        "summary": format!("Split into {id_a} and {id_b}"),
+        "recorded_at": &_now_str,
+    }]);
+    sqlx::query(
+        r#"UPDATE covalence.nodes
+              SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{mutation_log}',
+                                 coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb, true),
+                  modified_at = now()
+            WHERE id = $2"#,
+    )
+    .bind(&_split_note)
+    .bind(node_id)
+    .execute(pool)
+    .await
+    .context("split: failed to record split mutation")?;
+
+    for (new_id, part) in [(id_a, "Part 1"), (id_b, "Part 2")] {
+        let _create_note = serde_json::json!([{
+            "type": "created",
+            "summary": format!("{part} of split from {node_id}"),
+            "recorded_at": &_now_str,
+        }]);
+        sqlx::query(
+            r#"UPDATE covalence.nodes
+                  SET metadata = jsonb_set(coalesce(metadata, '{}' ::jsonb), '{mutation_log}',
+                                     coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb, true),
+                      modified_at = now()
+                WHERE id = $2"#,
+        )
+        .bind(&_create_note)
+        .bind(new_id)
+        .execute(pool)
+        .await
+        .context("split: failed to record created mutation")?;
+    }
+
+    // ── 8. Queue embed tasks for new articles ───────────────────────────────
+    enqueue_task(pool, "embed", Some(id_a), json!({}), 5).await?;
+    enqueue_task(pool, "embed", Some(id_b), json!({}), 5).await?;
+
     tracing::info!(
-        task_id = %task.id,
-        "split: stub — LLM-driven article split planned for v1"
+        original_id = %node_id,
+        part_a      = %id_a,
+        part_b      = %id_b,
+        split_at,
+        "split: done"
     );
+
     Ok(json!({
-        "note": "stub — LLM article split not yet implemented (v1)",
-        "node_id": task.node_id,
+        "original_id":  node_id,
+        "part_a_id":    id_a,
+        "part_b_id":    id_b,
+        "part_a_title": title_a,
+        "part_b_title": title_b,
+        "part_a_len":   content_a.len(),
+        "part_b_len":   content_b.len(),
+        "split_at":     split_at,
     }))
 }
 
@@ -590,7 +1171,7 @@ async fn handle_resolve_contention(
 
 /// `tree_index`: Build a tree index for a node using LLM decomposition.
 /// Payload: { "overlap": 0.20, "force": false }
-async fn handle_tree_index(
+pub async fn handle_tree_index(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
@@ -613,7 +1194,7 @@ async fn handle_tree_index(
 }
 
 /// `tree_embed`: Embed all sections of a tree-indexed node + compose node embedding.
-async fn handle_tree_embed(
+pub async fn handle_tree_embed(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,

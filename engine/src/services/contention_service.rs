@@ -1,9 +1,9 @@
 //! Contention system — detecting and resolving contradictions (SPEC §6.4).
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Serialize)]
 pub struct Contention {
@@ -30,7 +30,9 @@ fn contention_from_row(row: &sqlx::postgres::PgRow) -> Result<Contention, sqlx::
         node_id: row.try_get("node_id")?,
         source_node_id: row.try_get("source_node_id")?,
         description: row.try_get("description")?,
-        status: row.try_get::<Option<String>, _>("status")?.unwrap_or_default(),
+        status: row
+            .try_get::<Option<String>, _>("status")?
+            .unwrap_or_default(),
         resolution: row.try_get("resolution")?,
         severity: row.try_get("severity")?,
         detected_at: row.try_get("detected_at")?,
@@ -58,7 +60,7 @@ impl ContentionService {
              FROM covalence.contentions
              WHERE ($1::uuid IS NULL OR node_id = $1)
                AND ($2::text IS NULL OR status = $2)
-             ORDER BY detected_at DESC"
+             ORDER BY detected_at DESC",
         )
         .bind(node_id)
         .bind(status.as_deref())
@@ -72,7 +74,7 @@ impl ContentionService {
         let row = sqlx::query(
             "SELECT id, node_id, source_node_id, description, status,
                     resolution, severity, detected_at, resolved_at
-             FROM covalence.contentions WHERE id = $1"
+             FROM covalence.contentions WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -103,16 +105,13 @@ impl ContentionService {
         contention_from_row(&row)
     }
 
-    pub async fn resolve(
-        &self,
-        id: Uuid,
-        req: ResolveRequest,
-    ) -> Result<Contention, sqlx::Error> {
+    pub async fn resolve(&self, id: Uuid, req: ResolveRequest) -> Result<Contention, sqlx::Error> {
         let valid = ["supersede_a", "supersede_b", "accept_both", "dismiss"];
         if !valid.contains(&req.resolution.as_str()) {
-            return Err(sqlx::Error::Protocol(
-                format!("invalid resolution: {}", req.resolution)
-            ));
+            return Err(sqlx::Error::Protocol(format!(
+                "invalid resolution: {}",
+                req.resolution
+            )));
         }
 
         // Store rationale in resolution field as "type: rationale"
@@ -123,9 +122,10 @@ impl ContentionService {
              SET status = 'resolved', resolution = $2, resolved_at = now()
              WHERE id = $1
              RETURNING id, node_id, source_node_id, description, status,
-                       resolution, severity, detected_at, resolved_at"
+                       resolution, severity, detected_at, resolved_at",
         )
-        .bind(id).bind(&resolution_text)
+        .bind(id)
+        .bind(&resolution_text)
         .fetch_one(&self.pool)
         .await?;
         contention_from_row(&row)

@@ -38,7 +38,9 @@ impl EdgeService {
 
     /// Create a typed edge between two nodes.
     pub async fn create(&self, req: CreateEdgeRequest) -> AppResult<Edge> {
-        let edge_type: EdgeType = req.label.parse()
+        let edge_type: EdgeType = req
+            .label
+            .parse()
             .map_err(|e: String| AppError::BadRequest(e))?;
 
         let method = req.method.as_deref().unwrap_or("agent_explicit");
@@ -46,18 +48,34 @@ impl EdgeService {
         let props = serde_json::json!({"notes": req.notes});
 
         self.graph
-            .create_edge(req.from_node_id, req.to_node_id, edge_type, confidence, method, props)
+            .create_edge(
+                req.from_node_id,
+                req.to_node_id,
+                edge_type,
+                confidence,
+                method,
+                props,
+            )
             .await
             .map_err(AppError::Graph)
     }
 
     /// Delete an edge.
     pub async fn delete(&self, edge_id: Uuid) -> AppResult<()> {
-        self.graph.delete_edge(edge_id).await.map_err(AppError::Graph)
+        self.graph
+            .delete_edge(edge_id)
+            .await
+            .map_err(AppError::Graph)
     }
 
     /// List edges for a node.
-    pub async fn list_for_node(&self, node_id: Uuid, direction: Option<&str>, labels: Option<&str>, limit: usize) -> AppResult<Vec<Edge>> {
+    pub async fn list_for_node(
+        &self,
+        node_id: Uuid,
+        direction: Option<&str>,
+        labels: Option<&str>,
+        limit: usize,
+    ) -> AppResult<Vec<Edge>> {
         let dir = match direction {
             Some("outbound") => TraversalDirection::Outbound,
             Some("inbound") => TraversalDirection::Inbound,
@@ -77,7 +95,11 @@ impl EdgeService {
     }
 
     /// Neighborhood traversal.
-    pub async fn neighborhood(&self, node_id: Uuid, params: NeighborhoodParams) -> AppResult<Vec<GraphNeighbor>> {
+    pub async fn neighborhood(
+        &self,
+        node_id: Uuid,
+        params: NeighborhoodParams,
+    ) -> AppResult<Vec<GraphNeighbor>> {
         let depth = params.depth.unwrap_or(2).min(5);
         let limit = params.limit.unwrap_or(50).min(200);
         let dir = match params.direction.as_deref() {

@@ -1,8 +1,8 @@
 //! Admin stats and maintenance operations (SPEC §5.4).
 
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 use crate::errors::*;
 use crate::graph::{AgeGraphRepository, GraphRepository};
@@ -82,12 +82,15 @@ impl AdminService {
                COUNT(*) FILTER (WHERE status = 'active') AS active, \
                COUNT(*) FILTER (WHERE status = 'archived') AS archived, \
                COUNT(*) FILTER (WHERE pinned = true) AS pinned \
-             FROM covalence.nodes"
-        ).fetch_one(&self.pool).await?;
+             FROM covalence.nodes",
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         // Edge counts + sync check
         let sql_edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM covalence.edges")
-            .fetch_one(&self.pool).await?;
+            .fetch_one(&self.pool)
+            .await?;
 
         let age_edges = self.graph.count_edges().await.unwrap_or(-1);
 
@@ -156,9 +159,14 @@ impl AdminService {
             let result = sqlx::query(
                 r#"UPDATE covalence.slow_path_queue
                    SET status = 'failed', result = '{"error":"timed_out"}'::jsonb
-                   WHERE status = 'processing' AND started_at < now() - interval '10 minutes'"#
-            ).execute(&self.pool).await?;
-            actions.push(format!("timed out {} stale queue jobs", result.rows_affected()));
+                   WHERE status = 'processing' AND started_at < now() - interval '10 minutes'"#,
+            )
+            .execute(&self.pool)
+            .await?;
+            actions.push(format!(
+                "timed out {} stale queue jobs",
+                result.rows_affected()
+            ));
         }
 
         if req.evict_if_over_capacity.unwrap_or(false) {
@@ -176,13 +184,19 @@ impl AdminService {
                        SELECT id FROM covalence.nodes \
                        WHERE node_type = 'article' AND status = 'active' AND pinned = false \
                        ORDER BY usage_score ASC LIMIT $1 \
-                     )"
+                     )",
                 )
-                    .bind(evict_count)
-                    .execute(&self.pool).await?;
-                actions.push(format!("evicted {} low-usage articles", result.rows_affected()));
+                .bind(evict_count)
+                .execute(&self.pool)
+                .await?;
+                actions.push(format!(
+                    "evicted {} low-usage articles",
+                    result.rows_affected()
+                ));
             } else {
-                actions.push(format!("no eviction needed ({active_count}/{max_active} active)"));
+                actions.push(format!(
+                    "no eviction needed ({active_count}/{max_active} active)"
+                ));
             }
         }
 
@@ -190,7 +204,9 @@ impl AdminService {
             actions.push("no operations requested".into());
         }
 
-        Ok(MaintenanceResponse { actions_taken: actions })
+        Ok(MaintenanceResponse {
+            actions_taken: actions,
+        })
     }
 }
 
@@ -219,32 +235,35 @@ impl AdminService {
              FROM covalence.slow_path_queue
              WHERE ($1::text IS NULL OR status = $1)
              ORDER BY priority DESC, created_at ASC
-             LIMIT $2"
+             LIMIT $2",
         )
         .bind(status_filter)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter().map(|r| {
-            use sqlx::Row;
-            Ok(QueueEntry {
-                id: r.try_get("id")?,
-                task_type: r.try_get("task_type")?,
-                node_id: r.try_get("node_id")?,
-                status: r.try_get("status")?,
-                priority: r.try_get("priority")?,
-                created_at: r.try_get("created_at")?,
-                started_at: r.try_get("started_at")?,
-                completed_at: r.try_get("completed_at")?,
+        rows.iter()
+            .map(|r| {
+                use sqlx::Row;
+                Ok(QueueEntry {
+                    id: r.try_get("id")?,
+                    task_type: r.try_get("task_type")?,
+                    node_id: r.try_get("node_id")?,
+                    status: r.try_get("status")?,
+                    priority: r.try_get("priority")?,
+                    created_at: r.try_get("created_at")?,
+                    started_at: r.try_get("started_at")?,
+                    completed_at: r.try_get("completed_at")?,
+                })
             })
-        }).collect::<Result<Vec<_>, sqlx::Error>>().map_err(|e| AppError::Database(e))
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|e| AppError::Database(e))
     }
 
     pub async fn get_queue_entry(&self, id: Uuid) -> AppResult<Option<QueueEntry>> {
         let row = sqlx::query(
             "SELECT id, task_type, node_id, status, priority, created_at, started_at, completed_at
-             FROM covalence.slow_path_queue WHERE id = $1"
+             FROM covalence.slow_path_queue WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)

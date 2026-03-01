@@ -6,6 +6,7 @@ description = "Graph-native knowledge substrate for AI agent persistent memory"
 license = "MIT"
 
 [dependencies]
+futures = "0.3"
 md5 = "0.7"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -36,6 +37,7 @@ dotenvy = "0.15"
 thiserror = "2"
 anyhow = "1"
 async-trait = "0.1"
+serial_test = "3"
 
 # OpenAPI
 utoipa = { version = "5", features = ["axum_extras"] }
@@ -48,3 +50,5 @@ version = "0.12"
 features = ["json"]
 
 [dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+async-trait = "0.1"

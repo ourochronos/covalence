@@ -1,8 +1,8 @@
 pub mod routes;
 
-use std::sync::Arc;
-use sqlx::PgPool;
 use crate::worker::llm::LlmClient;
+use sqlx::PgPool;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {

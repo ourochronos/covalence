@@ -7,7 +7,9 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::models::{Edge, EdgeType, GraphNeighbor, Node, NodeType, ProvenanceLink, TraversalDirection};
+use crate::models::{
+    Edge, EdgeType, GraphNeighbor, Node, NodeType, ProvenanceLink, TraversalDirection,
+};
 
 /// Errors from graph operations.
 #[derive(Debug, thiserror::Error)]
@@ -99,10 +101,7 @@ pub trait GraphRepository: Send + Sync {
     ) -> GraphResult<Vec<ProvenanceLink>>;
 
     /// Find CONTRADICTS/CONTENDS edges involving a node.
-    async fn find_contradictions(
-        &self,
-        node_id: Uuid,
-    ) -> GraphResult<Vec<Edge>>;
+    async fn find_contradictions(&self, node_id: Uuid) -> GraphResult<Vec<Edge>>;
 
     /// Get chain tips: active articles with no incoming SUPERSEDES edge.
     /// Uses the SQL fast path (covalence.get_chain_tips function).

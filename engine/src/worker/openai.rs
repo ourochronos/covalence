@@ -105,7 +105,8 @@ impl LlmClient for OpenAiClient {
             temperature: 0.3,
         };
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
@@ -139,7 +140,8 @@ impl LlmClient for OpenAiClient {
             input: text.to_string(),
         };
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)

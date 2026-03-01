@@ -1,10 +1,10 @@
 //! ScoreFusion — weighted dimensional score fusion with confidence × freshness (SPEC §7.3).
 
-use crate::models::DimensionWeights;
 use super::dimension::DimensionResult;
+use crate::models::DimensionWeights;
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 /// A fused search result ready for ranking.
 #[derive(Debug, Clone)]
@@ -66,7 +66,9 @@ impl ScoreFusion {
             .map(|(node_id, (v, l, g))| {
                 // Weighted mean over present dimensions
                 let dimensional_score = weighted_mean_present(
-                    v, l, g,
+                    v,
+                    l,
+                    g,
                     weights.vector as f64,
                     weights.lexical as f64,
                     weights.graph as f64,
@@ -83,14 +85,13 @@ impl ScoreFusion {
                 let freshness = (-DECAY_RATE * days_since).exp();
 
                 // Base composite
-                let mut composite = dimensional_score * 0.50
-                    + confidence * 0.35
-                    + freshness * 0.15;
+                let mut composite = dimensional_score * 0.50 + confidence * 0.35 + freshness * 0.15;
 
                 // Novelty boost for new nodes
                 let hours_since_created = (now - created_at).num_seconds() as f64 / 3600.0;
                 if hours_since_created < NOVELTY_HOURS {
-                    let novelty = 1.0 + (NOVELTY_MAX - 1.0) * (1.0 - hours_since_created / NOVELTY_HOURS);
+                    let novelty =
+                        1.0 + (NOVELTY_MAX - 1.0) * (1.0 - hours_since_created / NOVELTY_HOURS);
                     composite *= novelty;
                 }
 
@@ -107,7 +108,11 @@ impl ScoreFusion {
             .collect();
 
         // Sort descending by composite score
-        results.sort_by(|a, b| b.composite_score.partial_cmp(&a.composite_score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.composite_score
+                .partial_cmp(&a.composite_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
         results
     }
@@ -139,7 +144,11 @@ fn weighted_mean_present(
         weight_sum += wg;
     }
 
-    if weight_sum > 0.0 { sum / weight_sum } else { 0.0 }
+    if weight_sum > 0.0 {
+        sum / weight_sum
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
@@ -168,7 +177,10 @@ mod tests {
         let weights = DimensionWeights::default();
         let mut meta = HashMap::new();
         meta.insert(id1, (0.8, now, now));
-        meta.insert(id2, (0.6, now - Duration::days(30), now - Duration::days(30)));
+        meta.insert(
+            id2,
+            (0.6, now - Duration::days(30), now - Duration::days(30)),
+        );
 
         let results = ScoreFusion::fuse(&vector, &lexical, &graph, &weights, &meta, 10);
 
