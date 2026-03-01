@@ -4,6 +4,7 @@ mod graph;
 mod models;
 mod search;
 mod services;
+mod worker;
 
 use api::AppState;
 use sqlx::postgres::PgPoolOptions;
@@ -30,6 +31,13 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     tracing::info!("connected to database");
+
+    // Spawn slow-path background worker
+    let worker_pool = pool.clone();
+    tokio::spawn(async move {
+        worker::run(worker_pool).await;
+    });
+    tracing::info!("slow-path worker spawned");
 
     // Build app
     let state = AppState { pool };
