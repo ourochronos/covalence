@@ -719,7 +719,7 @@ SOURCE DOCUMENTS:\n\
             "SELECT ne.node_id \
              FROM covalence.node_embeddings ne \
              JOIN covalence.nodes n ON n.id = ne.node_id \
-             WHERE n.kind = 'article' AND n.status = 'active' \
+             WHERE n.node_type = 'article' AND n.status = 'active' \
                AND (ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims})) < 0.15 \
              ORDER BY (ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims})) ASC \
              LIMIT 1"
@@ -745,7 +745,7 @@ SOURCE DOCUMENTS:\n\
         );
         sqlx::query(
             "UPDATE covalence.nodes \
-             SET title = $1, content = $2, metadata = $3, updated_at = now() \
+             SET title = $1, content = $2, metadata = $3, modified_at = now() \
              WHERE id = $4",
         )
         .bind(&article_title)
@@ -760,7 +760,7 @@ SOURCE DOCUMENTS:\n\
         let new_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO covalence.nodes \
-                 (id, kind, status, title, content, metadata, created_at, updated_at) \
+                 (id, node_type, status, title, content, metadata, created_at, modified_at) \
              VALUES ($1, 'article', 'active', $2, $3, $4, now(), now())",
         )
         .bind(new_id)
@@ -773,7 +773,7 @@ SOURCE DOCUMENTS:\n\
         new_id
     };
 
-    // ── 7. Insert provenance links ──────────────────────────────────────────
+    // ── 7. Insert provenance links via edges table ─────────────────────────
     let rel_map: std::collections::HashMap<Uuid, String> =
         source_relationships.into_iter().collect();
 
@@ -782,33 +782,50 @@ SOURCE DOCUMENTS:\n\
             .get(&src.id)
             .map(|s| s.as_str())
             .unwrap_or("originates");
+        // Map LLM relationship name to valid edge_type enum value
+        let edge_type = match rel {
+            "confirms"    => "CONFIRMS",
+            "supersedes"  => "SUPERSEDES",
+            "contradicts" => "CONTRADICTS",
+            "contends"    => "CONTENDS",
+            _             => "ORIGINATES",
+        };
         sqlx::query(
-            "INSERT INTO covalence.article_sources \
-                 (id, node_id, source_id, relationship) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT DO NOTHING",
+            "INSERT INTO covalence.edges \
+                 (id, source_node_id, target_node_id, edge_type, weight, created_by) \
+             VALUES ($1, $2, $3, $4, 1.0, 'compile')",
         )
         .bind(Uuid::new_v4())
-        .bind(article_id)
         .bind(src.id)
-        .bind(rel)
+        .bind(article_id)
+        .bind(edge_type)
         .execute(pool)
         .await
-        .context("compile: failed to insert article_sources link")?;
+        .context("compile: failed to insert provenance edge")?;
     }
 
-    // ── 8. Record mutation ──────────────────────────────────────────────────
+    // ── 8. Record mutation in node metadata ────────────────────────────────
+    let _mutation_entry = serde_json::json!([{
+        "type": "created",
+        "summary": format!("Compiled from {} source(s)", sources.len()),
+        "recorded_at": chrono::Utc::now().to_rfc3339(),
+    }]);
     sqlx::query(
-        "INSERT INTO covalence.article_mutations \
-             (id, mutation_type, article_id, summary) \
-         VALUES ($1, 'created', $2, $3)",
+        r#"UPDATE covalence.nodes
+              SET metadata = jsonb_set(
+                                 coalesce(metadata, '{}'::jsonb),
+                                 '{mutation_log}',
+                                 coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb,
+                                 true
+                             ),
+                  modified_at = now()
+            WHERE id = $2"#,
     )
-    .bind(Uuid::new_v4())
+    .bind(&_mutation_entry)
     .bind(article_id)
-    .bind(format!("Compiled from {} source(s)", sources.len()))
     .execute(pool)
     .await
-    .context("compile: failed to record mutation")?;
+    .context("compile: failed to record mutation in metadata")?;
 
     // ── 9. Queue follow-up tasks ────────────────────────────────────────────
     enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;
@@ -960,7 +977,7 @@ Return ONLY valid JSON (no markdown fences):\n\
     {
         sqlx::query(
             "INSERT INTO covalence.nodes \
-                 (id, kind, status, title, content, metadata, created_at, updated_at) \
+                 (id, node_type, status, title, content, metadata, created_at, modified_at) \
              VALUES ($1, 'article', 'active', $2, $3, $4, now(), now())",
         )
         .bind(new_id)
@@ -975,7 +992,7 @@ Return ONLY valid JSON (no markdown fences):\n\
     // ── 4. Archive original ─────────────────────────────────────────────────
     sqlx::query(
         "UPDATE covalence.nodes \
-         SET status = 'archived', updated_at = now() WHERE id = $1",
+         SET status = 'archived', modified_at = now() WHERE id = $1",
     )
     .bind(node_id)
     .execute(pool)
@@ -986,7 +1003,7 @@ Return ONLY valid JSON (no markdown fences):\n\
     for target in [id_a, id_b] {
         sqlx::query(
             "INSERT INTO covalence.edges \
-                 (id, source_id, target_id, edge_type, weight, metadata) \
+                 (id, source_node_id, target_node_id, edge_type, weight, metadata) \
              VALUES ($1, $2, $3, 'SPLIT_INTO', 1.0, '{}'::jsonb)",
         )
         .bind(Uuid::new_v4())
@@ -997,57 +1014,72 @@ Return ONLY valid JSON (no markdown fences):\n\
         .context("split: failed to insert SPLIT_INTO edge")?;
     }
 
-    // ── 6. Copy provenance links ─────────────────────────────────────────────
+    // ── 6. Copy provenance edges from original to both new articles ────────
     let prov_rows = sqlx::query(
-        "SELECT source_id, relationship \
-         FROM covalence.article_sources WHERE node_id = $1",
+        "SELECT source_node_id, edge_type \
+         FROM covalence.edges \
+         WHERE target_node_id = $1 \
+           AND edge_type IN ('ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES')",
     )
     .bind(node_id)
     .fetch_all(pool)
     .await
-    .context("split: failed to fetch provenance links")?;
+    .context("split: failed to fetch provenance edges")?;
 
     for prow in &prov_rows {
-        let src_id: Uuid = prow.get("source_id");
-        let rel: String = prow.get("relationship");
+        let src_id: Uuid = prow.get("source_node_id");
+        let edge_type: String = prow.get("edge_type");
         for &new_article in &[id_a, id_b] {
             sqlx::query(
-                "INSERT INTO covalence.article_sources \
-                     (id, node_id, source_id, relationship) \
-                 VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                "INSERT INTO covalence.edges \
+                     (id, source_node_id, target_node_id, edge_type, weight, created_by) \
+                 VALUES ($1, $2, $3, $4, 1.0, 'split_inherit')",
             )
             .bind(Uuid::new_v4())
-            .bind(new_article)
             .bind(src_id)
-            .bind(&rel)
+            .bind(new_article)
+            .bind(&edge_type)
             .execute(pool)
             .await
-            .context("split: failed to copy provenance link")?;
+            .context("split: failed to copy provenance edge")?;
         }
     }
 
-    // ── 7. Record mutations ─────────────────────────────────────────────────
+    // ── 7. Record mutations in node metadata ──────────────────────────
+    let _now_str = chrono::Utc::now().to_rfc3339();
+    let _split_note = serde_json::json!([{
+        "type": "split",
+        "summary": format!("Split into {id_a} and {id_b}"),
+        "recorded_at": &_now_str,
+    }]);
     sqlx::query(
-        "INSERT INTO covalence.article_mutations \
-             (id, mutation_type, article_id, summary) \
-         VALUES ($1, 'split', $2, $3)",
+        r#"UPDATE covalence.nodes
+              SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{mutation_log}',
+                                 coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb, true),
+                  modified_at = now()
+            WHERE id = $2"#,
     )
-    .bind(Uuid::new_v4())
+    .bind(&_split_note)
     .bind(node_id)
-    .bind(format!("Split into {id_a} and {id_b}"))
     .execute(pool)
     .await
     .context("split: failed to record split mutation")?;
 
     for (new_id, part) in [(id_a, "Part 1"), (id_b, "Part 2")] {
+        let _create_note = serde_json::json!([{
+            "type": "created",
+            "summary": format!("{part} of split from {node_id}"),
+            "recorded_at": &_now_str,
+        }]);
         sqlx::query(
-            "INSERT INTO covalence.article_mutations \
-                 (id, mutation_type, article_id, summary) \
-             VALUES ($1, 'created', $2, $3)",
+            r#"UPDATE covalence.nodes
+                  SET metadata = jsonb_set(coalesce(metadata, '{}' ::jsonb), '{mutation_log}',
+                                     coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb, true),
+                      modified_at = now()
+                WHERE id = $2"#,
         )
-        .bind(Uuid::new_v4())
+        .bind(&_create_note)
         .bind(new_id)
-        .bind(format!("{part} of split from {node_id}"))
         .execute(pool)
         .await
         .context("split: failed to record created mutation")?;

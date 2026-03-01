@@ -180,7 +180,7 @@ pub async fn handle_merge(
 
     sqlx::query(
         r#"INSERT INTO covalence.nodes
-               (id, kind, status, title, content, metadata)
+               (id, node_type, status, title, content, metadata)
            VALUES ($1, 'article', 'active', $2, $3, $4)"#,
     )
     .bind(new_id)
@@ -201,7 +201,7 @@ pub async fn handle_merge(
     // ── 5. Archive both originals ─────────────────────────────────────────────
     for id in [id_a, id_b] {
         sqlx::query(
-            "UPDATE covalence.nodes SET status = 'archived', updated_at = now() WHERE id = $1",
+            "UPDATE covalence.nodes SET status = 'archived', modified_at = now() WHERE id = $1",
         )
         .bind(id)
         .execute(pool)
@@ -213,7 +213,7 @@ pub async fn handle_merge(
     for original_id in [id_a, id_b] {
         sqlx::query(
             r#"INSERT INTO covalence.edges
-                   (id, source_id, target_id, edge_type, weight, metadata)
+                   (id, source_node_id, target_node_id, edge_type, weight, metadata)
                VALUES ($1, $2, $3, 'MERGED_FROM', 1.0, '{"inferred":false}'::jsonb)"#,
         )
         .bind(Uuid::new_v4())
@@ -224,43 +224,41 @@ pub async fn handle_merge(
         .with_context(|| format!("failed to insert MERGED_FROM edge to {original_id}"))?;
     }
 
-    // ── 7. Union provenance — copy article_sources from both to new node ──────
+    // ── 7. Union provenance — copy inbound edges from both originals to new node ──
     // ON CONFLICT (node_id, source_id) absorbs duplicates that appear in both.
     sqlx::query(
-        r#"INSERT INTO covalence.article_sources
-               (id, node_id, source_id, relationship)
-           SELECT gen_random_uuid(), $1, source_id, relationship
-           FROM   covalence.article_sources
-           WHERE  node_id IN ($2, $3)
-           ON CONFLICT (node_id, source_id) DO NOTHING"#,
+        r#"INSERT INTO covalence.edges
+               (id, source_node_id, target_node_id, edge_type, weight, created_by)
+           SELECT gen_random_uuid(), source_node_id, $1, edge_type, weight, 'merge_inherit'
+           FROM   covalence.edges
+           WHERE  target_node_id IN ($2, $3)
+             AND  edge_type IN ('ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','CONTRADICTS','CONTENDS')"#,
     )
     .bind(new_id)
     .bind(id_a)
     .bind(id_b)
     .execute(pool)
     .await
-    .context("failed to copy article_sources provenance to merged node")?;
+    .context("failed to copy provenance edges to merged node")?;
 
     // ── 8. Record mutations ───────────────────────────────────────────────────
+    let _now_str = chrono::Utc::now().to_rfc3339();
     let mutations: &[(Uuid, &str, String)] = &[
         (id_a, "merged", format!("Archived: merged into {new_id}")),
         (id_b, "merged", format!("Archived: merged into {new_id}")),
-        (
-            new_id,
-            "created",
-            format!("Created by merging {id_a} and {id_b}"),
-        ),
+        (new_id, "created", format!("Created by merging {id_a} and {id_b}")),
     ];
     for (article_id, mutation_type, summary) in mutations {
+        let _entry = serde_json::json!([{"type": mutation_type, "summary": summary, "recorded_at": &_now_str}]);
         sqlx::query(
-            r#"INSERT INTO covalence.article_mutations
-                   (id, mutation_type, article_id, summary)
-               VALUES ($1, $2, $3, $4)"#,
+            r#"UPDATE covalence.nodes
+                  SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{mutation_log}',
+                                     coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb, true),
+                      modified_at = now()
+                WHERE id = $2"#,
         )
-        .bind(Uuid::new_v4())
-        .bind(mutation_type)
+        .bind(&_entry)
         .bind(article_id)
-        .bind(summary)
         .execute(pool)
         .await
         .with_context(|| format!("failed to record mutation '{mutation_type}' for {article_id}"))?;
@@ -430,6 +428,11 @@ pub async fn handle_infer_edges(
                         .and_then(|r| r.as_str())
                         .unwrap_or("RELATES_TO")
                         .to_uppercase();
+                    // Normalise aliases to valid edge_type constraint values
+                    let rel = match rel.as_str() {
+                        "DERIVED_FROM" => "DERIVES_FROM".to_string(),
+                        _ => rel,
+                    };
                     let conf = v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0) as f32;
                     let reason = v
                         .get("reasoning")
@@ -475,7 +478,7 @@ pub async fn handle_infer_edges(
 
         // ── 6. Skip if edge already exists ────────────────────────────────────
         let existing = sqlx::query(
-            "SELECT id FROM covalence.edges WHERE source_id = $1 AND target_id = $2 LIMIT 1",
+            "SELECT id FROM covalence.edges WHERE source_node_id = $1 AND target_node_id = $2 LIMIT 1",
         )
         .bind(node_id)
         .bind(candidate_id)
@@ -502,11 +505,8 @@ pub async fn handle_infer_edges(
 
         sqlx::query(
             r#"INSERT INTO covalence.edges
-                   (id, source_id, target_id, edge_type, weight, metadata)
-               VALUES ($1, $2, $3, $4, $5, $6)
-               ON CONFLICT (source_id, target_id, edge_type)
-                   DO UPDATE SET weight   = EXCLUDED.weight,
-                                 metadata = EXCLUDED.metadata"#,
+                   (id, source_node_id, target_node_id, edge_type, weight, metadata)
+               VALUES ($1, $2, $3, $4, $5, $6)"#,
         )
         .bind(Uuid::new_v4())
         .bind(node_id)

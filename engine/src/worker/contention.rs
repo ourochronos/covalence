@@ -7,7 +7,7 @@
 //!   contention exists.
 //!
 //! * [`handle_resolve_contention`] — picks up a detected contention
-//!   (`article_sources` row with relationship `contradicts` or `contends`) and
+//!   (`contentions` row with `status = 'detected'`) and
 //!   asks the LLM to decide how to resolve it, then applies the resolution.
 
 use std::sync::Arc;
@@ -42,8 +42,8 @@ fn extract_json_value(text: &str) -> anyhow::Result<Value> {
 
 /// `resolve_contention`: LLM-driven resolution of a single contention record.
 ///
-/// The contention is represented as a row in `covalence.article_sources` with
-/// `relationship IN ('contradicts', 'contends')`.
+/// The contention is represented as a row in `covalence.contentions`
+/// with `status = 'detected'`.
 ///
 /// Payload: `{ "contention_id": "<uuid>" }`
 pub async fn handle_resolve_contention(
@@ -66,12 +66,12 @@ pub async fn handle_resolve_contention(
         "resolve_contention: starting"
     );
 
-    // ── 2. Fetch the article_sources contention row ─────────────────────────
+    // ── 2. Fetch the contentions row ───────────────────────────────────────
     let contention_row = sqlx::query(
-        r#"SELECT id, node_id, source_id, relationship
-           FROM   covalence.article_sources
-           WHERE  id           = $1
-             AND  relationship IN ('contradicts', 'contends')"#,
+        r#"SELECT id, node_id, source_node_id, type
+           FROM   covalence.contentions
+           WHERE  id     = $1
+             AND  status = 'detected'"#,
     )
     .bind(contention_id)
     .fetch_optional(pool)
@@ -80,8 +80,10 @@ pub async fn handle_resolve_contention(
     .with_context(|| format!("contention {contention_id} not found (or already resolved)"))?;
 
     let article_id: Uuid = contention_row.get("node_id");
-    let source_id: Uuid = contention_row.get("source_id");
-    let relationship: String = contention_row.get("relationship");
+    let source_id: Uuid = contention_row.get("source_node_id");
+    let relationship: String = contention_row
+        .get::<Option<String>, _>("type")
+        .unwrap_or_else(|| "contends".to_string());
 
     // ── 3. Fetch article and source content ─────────────────────────────────
     let article_row = sqlx::query("SELECT title, content FROM covalence.nodes WHERE id = $1")
@@ -179,14 +181,14 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
         // Article wins — mark relationship resolved, leave article content alone.
         "supersede_a" => {
             sqlx::query(
-                "UPDATE covalence.article_sources
-                    SET relationship = 'contends_resolved'
+                "UPDATE covalence.contentions
+                    SET status = 'resolved', resolution = 'supersede_a', resolved_at = now()
                   WHERE id = $1",
             )
             .bind(contention_id)
             .execute(pool)
             .await
-            .context("supersede_a: failed to update article_sources")?;
+            .context("supersede_a: failed to update contentions")?;
 
             record_mutation(
                 pool,
@@ -207,8 +209,8 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
 
             sqlx::query(
                 "UPDATE covalence.nodes
-                    SET content    = $1,
-                        updated_at = now()
+                    SET content     = $1,
+                        modified_at = now()
                   WHERE id = $2",
             )
             .bind(new_content)
@@ -218,14 +220,14 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
             .context("supersede_b: failed to update article content")?;
 
             sqlx::query(
-                "UPDATE covalence.article_sources
-                    SET relationship = 'supersedes'
+                "UPDATE covalence.contentions
+                    SET status = 'resolved', resolution = 'supersede_b', resolved_at = now()
                   WHERE id = $1",
             )
             .bind(contention_id)
             .execute(pool)
             .await
-            .context("supersede_b: failed to update article_sources relationship")?;
+            .context("supersede_b: failed to update contentions")?;
 
             // Queue re-embed so the new content gets a fresh vector
             sqlx::query(
@@ -269,7 +271,7 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
                                            || $1::jsonb,
                                            true
                                        ),
-                          updated_at = now()
+                          modified_at = now()
                     WHERE id = $2"#,
             )
             .bind(json!([note]))
@@ -279,14 +281,14 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
             .context("accept_both: failed to update article metadata")?;
 
             sqlx::query(
-                "UPDATE covalence.article_sources
-                    SET relationship = 'contends_acknowledged'
+                "UPDATE covalence.contentions
+                    SET status = 'resolved', resolution = 'accept_both', resolved_at = now()
                   WHERE id = $1",
             )
             .bind(contention_id)
             .execute(pool)
             .await
-            .context("accept_both: failed to update article_sources")?;
+            .context("accept_both: failed to update contentions")?;
 
             record_mutation(
                 pool,
@@ -303,14 +305,14 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
         // Dismiss — not material, mark and move on.
         _ /* "dismiss" */ => {
             sqlx::query(
-                "UPDATE covalence.article_sources
-                    SET relationship = 'contends_dismissed'
+                "UPDATE covalence.contentions
+                    SET status = 'dismissed', resolution = 'dismiss', resolved_at = now()
                   WHERE id = $1",
             )
             .bind(contention_id)
             .execute(pool)
             .await
-            .context("dismiss: failed to update article_sources")?;
+            .context("dismiss: failed to update contentions")?;
 
             record_mutation(
                 pool,
@@ -344,8 +346,7 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
 /// top-5 most similar articles, then asks the LLM for each whether a real
 /// contention exists.  For each confirmed, non-low-materiality contention:
 ///
-/// * inserts an `article_sources` row with `relationship = 'contradicts'`
-///   or `'contends'`
+/// * inserts a `contentions` row with appropriate type
 /// * queues a `resolve_contention` task
 ///
 /// Requires `task.node_id` (the newly ingested source node).
@@ -408,7 +409,7 @@ pub async fn handle_contention_check(
              ON       ne.node_id != src_emb.node_id
            JOIN       covalence.nodes           AS n
              ON       n.id     = ne.node_id
-            AND       n.kind   = 'article'
+            AND       n.node_type = 'article'
             AND       n.status = 'active'
            WHERE      src_emb.node_id = $1
            ORDER BY   distance ASC
@@ -450,14 +451,10 @@ pub async fn handle_contention_check(
 
         // Skip if a contention link already exists between these two
         let already_linked = sqlx::query(
-            r#"SELECT 1 FROM covalence.article_sources
-               WHERE  node_id   = $1
-                 AND  source_id = $2
-                 AND  relationship IN (
-                         'contradicts', 'contends',
-                         'contends_resolved', 'contends_acknowledged',
-                         'contends_dismissed', 'supersedes'
-                      )
+            r#"SELECT 1 FROM covalence.contentions
+               WHERE  node_id        = $1
+                 AND  source_node_id = $2
+                 AND  status != 'dismissed'
                LIMIT 1"#,
         )
         .bind(article_id)
@@ -577,19 +574,27 @@ If NOT a contention:
             "contends"
         };
 
-        // ── 6. Insert article_sources row + queue resolve_contention ─────────
+        // ── 6. Insert contentions row + queue resolve_contention ─────────────
+        let mat_score: f64 = match materiality {
+            "high"   => 0.9,
+            "medium" => 0.5,
+            _        => 0.2,
+        };
         let contention_id: Uuid = sqlx::query_scalar(
-            r#"INSERT INTO covalence.article_sources
-                   (node_id, source_id, relationship)
-               VALUES ($1, $2, $3)
+            r#"INSERT INTO covalence.contentions
+                   (node_id, source_node_id, type, description, severity, status, materiality)
+               VALUES ($1, $2, $3, $4, $5, 'detected', $6)
                RETURNING id"#,
         )
         .bind(article_id)
         .bind(source_id)
         .bind(relationship)
+        .bind(format!("Source {source_id} flagged as '{relationship}' against article {article_id}: {explanation}"))
+        .bind(materiality)
+        .bind(mat_score)
         .fetch_one(pool)
         .await
-        .context("contention_check: failed to insert article_sources contention row")?;
+        .context("contention_check: failed to insert contention")?;
 
         contentions_created += 1;
 
@@ -646,26 +651,36 @@ If NOT a contention:
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-/// Append a row to `covalence.article_mutations`.
+/// Record a mutation event in node metadata (no dedicated mutations table).
 async fn record_mutation(
     pool: &PgPool,
     article_id: Uuid,
     mutation_type: &str,
     summary: &str,
 ) -> anyhow::Result<()> {
+    let entry = serde_json::json!([{
+        "type": mutation_type,
+        "summary": summary,
+        "recorded_at": chrono::Utc::now().to_rfc3339(),
+    }]);
     sqlx::query(
-        r#"INSERT INTO covalence.article_mutations
-               (mutation_type, article_id, summary)
-           VALUES ($1, $2, $3)"#,
+        r#"UPDATE covalence.nodes
+              SET metadata = jsonb_set(
+                                 coalesce(metadata, '{}'::jsonb),
+                                 '{mutation_log}',
+                                 coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb,
+                                 true
+                             ),
+                  modified_at = now()
+            WHERE id = $2"#,
     )
-    .bind(mutation_type)
+    .bind(&entry)
     .bind(article_id)
-    .bind(summary)
     .execute(pool)
     .await
     .with_context(|| {
         format!(
-            "record_mutation: failed to insert {mutation_type} mutation for article {article_id}"
+            "record_mutation: failed to log {mutation_type} mutation for article {article_id}"
         )
     })?;
     Ok(())
