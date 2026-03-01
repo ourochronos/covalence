@@ -15,6 +15,7 @@ use crate::services::{
     article_service::*,
     edge_service::*,
     admin_service::*,
+    search_service::*,
 };
 
 use super::AppState;
@@ -42,6 +43,7 @@ pub fn router() -> Router<AppState> {
         // Nodes (shared)
         .route("/nodes/{id}/edges", get(node_edges))
         .route("/nodes/{id}/neighborhood", get(node_neighborhood))
+        .route("/search", post(search_handler))
         // Admin
         .route("/admin/stats", get(admin_stats))
         .route("/admin/maintenance", post(admin_maintenance))
@@ -285,4 +287,20 @@ async fn admin_maintenance(
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+// ── Search handler ──────────────────────────────────────────────
+
+async fn search_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SearchRequest>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let service = SearchService::new(state.pool.clone());
+    service.init().await;
+    let (results, meta) = service.search(req).await
+        .map_err(|e| crate::errors::AppError::Internal(e))?;
+    Ok(Json(serde_json::json!({
+        "data": results,
+        "meta": meta,
+    })))
 }
