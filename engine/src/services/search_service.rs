@@ -222,7 +222,7 @@ impl SearchService {
             ),
         >(
             "SELECT id, node_type, title, LEFT(content, 200) AS preview,
-                    COALESCE(confidence_overall, 0.5)::float8 AS confidence,
+                    COALESCE(confidence, 0.5)::float8 AS confidence,
                     modified_at
              FROM covalence.nodes
              WHERE id = ANY($1) AND status = 'active'",

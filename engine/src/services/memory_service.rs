@@ -83,7 +83,7 @@ impl MemoryService {
         // Insert as source node
         sqlx::query(
             "INSERT INTO covalence.nodes (id, node_type, source_type, title, content, content_hash, fingerprint,
-                 size_tokens, reliability, metadata, status, confidence_overall, confidence_source)
+                 size_tokens, reliability, metadata, status, confidence, confidence_source)
              VALUES ($1, 'source', 'observation', 'memory', $2, $3, $3, $4, $5, $6, 'active', $5, $5)"
         )
         .bind(id)
@@ -147,13 +147,13 @@ impl MemoryService {
 
         let rows = if req.tags.is_empty() {
             sqlx::query_as::<_, (Uuid, String, serde_json::Value, f64, DateTime<Utc>)>(
-                "SELECT id, content, metadata, COALESCE(confidence_overall, 0.5)::float8, created_at
+                "SELECT id, content, metadata, COALESCE(confidence, 0.5)::float8, created_at
                  FROM covalence.nodes
                  WHERE node_type = 'source' AND source_type = 'observation'
                    AND (metadata->>'memory')::boolean = true
                    AND COALESCE((metadata->>'forgotten')::boolean, false) = false
                    AND status = 'active'
-                   AND COALESCE(confidence_overall, 0.5) >= $1
+                   AND COALESCE(confidence, 0.5) >= $1
                    AND content_tsv @@ websearch_to_tsquery('english', $2)
                  ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', $2)) DESC
                  LIMIT $3"
@@ -167,13 +167,13 @@ impl MemoryService {
             // Filter by tags using jsonb containment
             let tags_json = serde_json::json!(req.tags);
             sqlx::query_as::<_, (Uuid, String, serde_json::Value, f64, DateTime<Utc>)>(
-                "SELECT id, content, metadata, COALESCE(confidence_overall, 0.5)::float8, created_at
+                "SELECT id, content, metadata, COALESCE(confidence, 0.5)::float8, created_at
                  FROM covalence.nodes
                  WHERE node_type = 'source' AND source_type = 'observation'
                    AND (metadata->>'memory')::boolean = true
                    AND COALESCE((metadata->>'forgotten')::boolean, false) = false
                    AND status = 'active'
-                   AND COALESCE(confidence_overall, 0.5) >= $1
+                   AND COALESCE(confidence, 0.5) >= $1
                    AND content_tsv @@ websearch_to_tsquery('english', $2)
                    AND metadata->'tags' @> $4
                  ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', $2)) DESC

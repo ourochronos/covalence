@@ -97,7 +97,7 @@ impl ArticleService {
         sqlx::query(
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, epistemic_type, domain_path, \
-              content_hash, size_tokens, metadata, confidence_overall, \
+              content_hash, size_tokens, metadata, confidence, \
               created_at, modified_at, accessed_at) \
              VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $9, $9)",
         )
@@ -158,7 +158,7 @@ impl ArticleService {
     /// Get an article by ID.
     pub async fn get(&self, id: Uuid) -> AppResult<ArticleResponse> {
         let row = sqlx::query(
-            "SELECT n.id, n.title, n.content, n.status, n.confidence_overall, \
+            "SELECT n.id, n.title, n.content, n.status, n.confidence, \
              n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
              n.created_at, n.modified_at, \
              (SELECT COUNT(*) FROM covalence.edges e \
@@ -531,7 +531,7 @@ impl ArticleService {
 
         let rows = if let Some(cursor) = cursor {
             sqlx::query(
-                "SELECT n.id, n.title, n.content, n.status, n.confidence_overall, \
+                "SELECT n.id, n.title, n.content, n.status, n.confidence, \
                  n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
                  n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
@@ -546,7 +546,7 @@ impl ArticleService {
             .await?
         } else {
             sqlx::query(
-                "SELECT n.id, n.title, n.content, n.status, n.confidence_overall, \
+                "SELECT n.id, n.title, n.content, n.status, n.confidence, \
                  n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
                  n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
@@ -572,7 +572,7 @@ fn article_from_row(row: &PgRow) -> ArticleResponse {
         content: row.get("content"),
         status: row.get("status"),
         confidence: row
-            .get::<Option<f64>, _>("confidence_overall")
+            .get::<Option<f64>, _>("confidence")
             .unwrap_or(0.5) as f32,
         epistemic_type: row.get("epistemic_type"),
         domain_path: row

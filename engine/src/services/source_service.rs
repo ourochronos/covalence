@@ -91,7 +91,7 @@ impl SourceService {
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, source_type, reliability, \
               fingerprint, content_hash, size_tokens, metadata, \
-              confidence_overall, confidence_source, \
+              confidence, confidence_source, \
               created_at, modified_at, accessed_at) \
              VALUES ($1, 'source', $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $10, $11, $11, $11)"
         )
@@ -146,7 +146,7 @@ impl SourceService {
     pub async fn get(&self, id: Uuid) -> AppResult<SourceResponse> {
         let row = sqlx::query(
             "SELECT id, title, content, source_type, status, \
-             confidence_overall, reliability, fingerprint, metadata, version, \
+             confidence, reliability, fingerprint, metadata, version, \
              created_at, modified_at \
              FROM covalence.nodes WHERE id = $1 AND node_type = 'source'",
         )
@@ -163,7 +163,7 @@ impl SourceService {
         let limit = params.limit.unwrap_or(20).min(100);
         let mut sql = String::from(
             "SELECT id, title, content, source_type, status, \
-             confidence_overall, reliability, fingerprint, metadata, version, \
+             confidence, reliability, fingerprint, metadata, version, \
              created_at, modified_at \
              FROM covalence.nodes WHERE node_type = 'source'",
         );
@@ -251,7 +251,7 @@ fn source_from_row(row: &PgRow) -> SourceResponse {
         source_type: row.get("source_type"),
         status: row.get("status"),
         confidence: row
-            .get::<Option<f64>, _>("confidence_overall")
+            .get::<Option<f64>, _>("confidence")
             .unwrap_or(0.5) as f32,
         reliability: row.get::<Option<f64>, _>("reliability").unwrap_or(0.5) as f32,
         fingerprint: row

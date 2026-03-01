@@ -541,7 +541,7 @@ impl AgeGraphRepository {
     async fn fetch_node(&self, node_id: Uuid) -> GraphResult<Node> {
         let row = sqlx::query(
             "SELECT id, age_id, node_type, title, content, status, \
-             confidence_overall, confidence_source, confidence_method, \
+             confidence, confidence_source, confidence_method, \
              confidence_consistency, confidence_freshness, confidence_corroboration, \
              confidence_applicability, epistemic_type, domain_path, metadata, \
              source_type, reliability, content_hash, fingerprint, size_tokens, \
@@ -600,7 +600,7 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
         status,
         confidence: Confidence {
             overall: row
-                .try_get::<Option<f64>, _>("confidence_overall")?
+                .try_get::<Option<f64>, _>("confidence")?
                 .unwrap_or(0.5) as f32,
             source: row
                 .try_get::<Option<f64>, _>("confidence_source")?
