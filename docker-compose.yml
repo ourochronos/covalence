@@ -1,0 +1,22 @@
+services:
+  postgres:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    container_name: covalence-pg
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: covalence
+      POSTGRES_USER: covalence
+      POSTGRES_PASSWORD: covalence
+    volumes:
+      - covalence-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U covalence"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  covalence-data:

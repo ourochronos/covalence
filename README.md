@@ -50,4 +50,4 @@ Covalence is a persistent knowledge management system designed for AI agents. It
 
 ## License
 
-TBD
+MIT
