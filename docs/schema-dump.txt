@@ -1,0 +1,260 @@
+                List of relations
+  Schema   |       Name       | Type  |   Owner   
+-----------+------------------+-------+-----------
+ covalence | Article          | table | covalence
+ covalence | COMPILED_FROM    | table | covalence
+ covalence | CONFIRMS         | table | covalence
+ covalence | CONTENDS         | table | covalence
+ covalence | CONTRADICTS      | table | covalence
+ covalence | ELABORATES       | table | covalence
+ covalence | Entity           | table | covalence
+ covalence | FOLLOWS          | table | covalence
+ covalence | GENERALIZES      | table | covalence
+ covalence | INVOLVES         | table | covalence
+ covalence | ORIGINATES       | table | covalence
+ covalence | PRECEDES         | table | covalence
+ covalence | RELATES_TO       | table | covalence
+ covalence | SPLIT_FROM       | table | covalence
+ covalence | SUPERSEDES       | table | covalence
+ covalence | Source           | table | covalence
+ covalence | _ag_label_edge   | table | covalence
+ covalence | _ag_label_vertex | table | covalence
+ covalence | contentions      | table | covalence
+ covalence | edges            | table | covalence
+ covalence | inference_log    | table | covalence
+ covalence | node_embeddings  | table | covalence
+ covalence | node_sections    | table | covalence
+ covalence | nodes            | table | covalence
+ covalence | session_nodes    | table | covalence
+ covalence | sessions         | table | covalence
+ covalence | slow_path_queue  | table | covalence
+ covalence | usage_traces     | table | covalence
+(28 rows)
+
+                                                                                               Table "covalence.nodes"
+          Column          |           Type           | Collation | Nullable |                                                                 Default                                                                 
+--------------------------+--------------------------+-----------+----------+-----------------------------------------------------------------------------------------------------------------------------------------
+ id                       | uuid                     |           | not null | gen_random_uuid()
+ age_id                   | bigint                   |           |          | 
+ node_type                | text                     |           | not null | 
+ title                    | text                     |           |          | 
+ content                  | text                     |           |          | 
+ status                   | text                     |           |          | 'active'::text
+ confidence_overall       | double precision         |           |          | 
+ confidence_source        | double precision         |           |          | 
+ confidence_method        | double precision         |           |          | 
+ confidence_consistency   | double precision         |           |          | 
+ confidence_freshness     | double precision         |           |          | 
+ confidence_corroboration | double precision         |           |          | 
+ confidence_applicability | double precision         |           |          | 
+ epistemic_type           | text                     |           |          | 
+ domain_path              | text[]                   |           |          | 
+ metadata                 | jsonb                    |           |          | '{}'::jsonb
+ source_type              | text                     |           |          | 
+ reliability              | double precision         |           |          | 
+ content_hash             | text                     |           |          | 
+ fingerprint              | text                     |           |          | 
+ size_tokens              | integer                  |           |          | 
+ pinned                   | boolean                  |           |          | false
+ version                  | integer                  |           |          | 1
+ created_at               | timestamp with time zone |           |          | now()
+ modified_at              | timestamp with time zone |           |          | now()
+ accessed_at              | timestamp with time zone |           |          | now()
+ archived_at              | timestamp with time zone |           |          | 
+ usage_score              | double precision         |           |          | 0.5
+ content_tsv              | tsvector                 |           |          | generated always as (to_tsvector('english'::regconfig, (COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text))) stored
+Indexes:
+    "nodes_pkey" PRIMARY KEY, btree (id)
+    "nodes_active_status_idx" btree (status) WHERE status = 'active'::text
+    "nodes_content_tsv_gin_idx" gin (content_tsv)
+    "nodes_metadata_gin_idx" gin (metadata)
+    "nodes_type_status_idx" btree (node_type, status)
+Check constraints:
+    "nodes_epistemic_type_check" CHECK (epistemic_type = ANY (ARRAY['semantic'::text, 'episodic'::text, 'procedural'::text, 'declarative'::text]))
+    "nodes_node_type_check" CHECK (node_type = ANY (ARRAY['article'::text, 'source'::text, 'entity'::text]))
+    "nodes_status_check" CHECK (status = ANY (ARRAY['active'::text, 'archived'::text, 'tombstone'::text]))
+Referenced by:
+    TABLE "contentions" CONSTRAINT "contentions_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+    TABLE "contentions" CONSTRAINT "contentions_source_node_id_fkey" FOREIGN KEY (source_node_id) REFERENCES nodes(id)
+    TABLE "edges" CONSTRAINT "edges_source_node_id_fkey" FOREIGN KEY (source_node_id) REFERENCES nodes(id)
+    TABLE "edges" CONSTRAINT "edges_target_node_id_fkey" FOREIGN KEY (target_node_id) REFERENCES nodes(id)
+    TABLE "node_embeddings" CONSTRAINT "node_embeddings_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    TABLE "node_sections" CONSTRAINT "node_sections_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    TABLE "session_nodes" CONSTRAINT "session_nodes_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+    TABLE "slow_path_queue" CONSTRAINT "slow_path_queue_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+    TABLE "usage_traces" CONSTRAINT "usage_traces_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+
+                               Table "covalence.edges"
+     Column     |           Type           | Collation | Nullable |      Default      
+----------------+--------------------------+-----------+----------+-------------------
+ id             | uuid                     |           | not null | gen_random_uuid()
+ age_id         | bigint                   |           |          | 
+ source_node_id | uuid                     |           |          | 
+ target_node_id | uuid                     |           |          | 
+ edge_type      | text                     |           | not null | 
+ weight         | double precision         |           |          | 1.0
+ confidence     | double precision         |           |          | 1.0
+ metadata       | jsonb                    |           |          | '{}'::jsonb
+ created_at     | timestamp with time zone |           |          | now()
+ created_by     | text                     |           |          | 
+Indexes:
+    "edges_pkey" PRIMARY KEY, btree (id)
+    "edges_edge_type_idx" btree (edge_type)
+    "edges_source_node_idx" btree (source_node_id)
+    "edges_target_node_idx" btree (target_node_id)
+Check constraints:
+    "edges_edge_type_check" CHECK (edge_type = ANY (ARRAY['SUPERSEDES'::text, 'SPLIT_FROM'::text, 'COMPILED_FROM'::text, 'CONFIRMS'::text, 'CONTRADICTS'::text, 'CONTENDS'::text, 'RELATES_TO'::text, 'ELABORATES'::text, 'GENERALIZES'::text, 'PRECEDES'::text, 'FOLLOWS'::text, 'INVOLVES'::text, 'ORIGINATES'::text, 'EXTENDS'::text, 'DERIVES_FROM'::text, 'MERGED_FROM'::text, 'SPLIT_INTO'::text, 'CONCURRENT_WITH'::text, 'CAUSES'::text, 'MOTIVATED_BY'::text, 'IMPLEMENTS'::text, 'CAPTURED_IN'::text]))
+Foreign-key constraints:
+    "edges_source_node_id_fkey" FOREIGN KEY (source_node_id) REFERENCES nodes(id)
+    "edges_target_node_id_fkey" FOREIGN KEY (target_node_id) REFERENCES nodes(id)
+Referenced by:
+    TABLE "contentions" CONSTRAINT "contentions_edge_id_fkey" FOREIGN KEY (edge_id) REFERENCES edges(id)
+
+                               Table "covalence.node_embeddings"
+   Column   |           Type           | Collation | Nullable |            Default             
+------------+--------------------------+-----------+----------+--------------------------------
+ node_id    | uuid                     |           | not null | 
+ embedding  | halfvec(1536)            |           |          | 
+ model      | text                     |           |          | 'text-embedding-3-small'::text
+ created_at | timestamp with time zone |           |          | now()
+Indexes:
+    "node_embeddings_pkey" PRIMARY KEY, btree (node_id)
+    "node_embeddings_hnsw_idx" hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64')
+Foreign-key constraints:
+    "node_embeddings_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+
+                                 Table "covalence.node_sections"
+    Column    |           Type           | Collation | Nullable |            Default             
+--------------+--------------------------+-----------+----------+--------------------------------
+ id           | uuid                     |           | not null | gen_random_uuid()
+ node_id      | uuid                     |           | not null | 
+ tree_path    | text                     |           | not null | 
+ depth        | integer                  |           | not null | 0
+ title        | text                     |           |          | 
+ summary      | text                     |           |          | 
+ start_char   | integer                  |           | not null | 
+ end_char     | integer                  |           | not null | 
+ content_hash | text                     |           |          | 
+ embedding    | halfvec(1536)            |           |          | 
+ model        | text                     |           |          | 'text-embedding-3-small'::text
+ created_at   | timestamp with time zone |           |          | now()
+Indexes:
+    "node_sections_pkey" PRIMARY KEY, btree (id)
+    "node_sections_depth_idx" btree (depth)
+    "node_sections_hnsw_idx" hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64')
+    "node_sections_node_id_idx" btree (node_id)
+    "node_sections_unique" UNIQUE CONSTRAINT, btree (node_id, tree_path)
+Foreign-key constraints:
+    "node_sections_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+
+                            Table "covalence.contentions"
+     Column     |           Type           | Collation | Nullable |      Default      
+----------------+--------------------------+-----------+----------+-------------------
+ id             | uuid                     |           | not null | gen_random_uuid()
+ node_id        | uuid                     |           |          | 
+ source_node_id | uuid                     |           |          | 
+ edge_id        | uuid                     |           |          | 
+ type           | text                     |           |          | 
+ description    | text                     |           |          | 
+ severity       | text                     |           |          | 
+ status         | text                     |           |          | 'detected'::text
+ resolution     | text                     |           |          | 
+ materiality    | double precision         |           |          | 
+ detected_at    | timestamp with time zone |           |          | now()
+ resolved_at    | timestamp with time zone |           |          | 
+Indexes:
+    "contentions_pkey" PRIMARY KEY, btree (id)
+    "contentions_status_idx" btree (status)
+Foreign-key constraints:
+    "contentions_edge_id_fkey" FOREIGN KEY (edge_id) REFERENCES edges(id)
+    "contentions_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+    "contentions_source_node_id_fkey" FOREIGN KEY (source_node_id) REFERENCES nodes(id)
+
+                         Table "covalence.slow_path_queue"
+    Column    |           Type           | Collation | Nullable |      Default      
+--------------+--------------------------+-----------+----------+-------------------
+ id           | uuid                     |           | not null | gen_random_uuid()
+ task_type    | text                     |           | not null | 
+ node_id      | uuid                     |           |          | 
+ payload      | jsonb                    |           |          | '{}'::jsonb
+ status       | text                     |           |          | 'pending'::text
+ priority     | integer                  |           |          | 0
+ created_at   | timestamp with time zone |           |          | now()
+ started_at   | timestamp with time zone |           |          | 
+ completed_at | timestamp with time zone |           |          | 
+ result       | jsonb                    |           |          | 
+Indexes:
+    "slow_path_queue_pkey" PRIMARY KEY, btree (id)
+    "slow_path_queue_status_priority_idx" btree (status, priority)
+Check constraints:
+    "slow_path_queue_status_check" CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'complete'::text, 'failed'::text]))
+    "slow_path_queue_task_type_check" CHECK (task_type = ANY (ARRAY['compile'::text, 'infer_edges'::text, 'resolve_contention'::text, 'split'::text, 'merge'::text, 'embed'::text, 'contention_check'::text, 'tree_index'::text, 'tree_embed'::text]))
+Foreign-key constraints:
+    "slow_path_queue_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+
+                              Table "covalence.sessions"
+     Column     |           Type           | Collation | Nullable |      Default      
+----------------+--------------------------+-----------+----------+-------------------
+ id             | uuid                     |           | not null | gen_random_uuid()
+ label          | text                     |           |          | 
+ created_at     | timestamp with time zone |           |          | now()
+ last_active_at | timestamp with time zone |           |          | now()
+ metadata       | jsonb                    |           |          | '{}'::jsonb
+ status         | text                     |           |          | 'active'::text
+Indexes:
+    "sessions_pkey" PRIMARY KEY, btree (id)
+    "sessions_label_idx" btree (label)
+    "sessions_label_key" UNIQUE CONSTRAINT, btree (label)
+    "sessions_status_idx" btree (status)
+Check constraints:
+    "sessions_status_check" CHECK (status = ANY (ARRAY['active'::text, 'expired'::text, 'closed'::text]))
+Referenced by:
+    TABLE "session_nodes" CONSTRAINT "session_nodes_session_id_fkey" FOREIGN KEY (session_id) REFERENCES sessions(id)
+
+                      Table "covalence.session_nodes"
+     Column     |           Type           | Collation | Nullable | Default 
+----------------+--------------------------+-----------+----------+---------
+ session_id     | uuid                     |           | not null | 
+ node_id        | uuid                     |           | not null | 
+ first_accessed | timestamp with time zone |           |          | now()
+ access_count   | integer                  |           |          | 1
+Indexes:
+    "session_nodes_pkey" PRIMARY KEY, btree (session_id, node_id)
+Foreign-key constraints:
+    "session_nodes_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+    "session_nodes_session_id_fkey" FOREIGN KEY (session_id) REFERENCES sessions(id)
+
+                            Table "covalence.usage_traces"
+     Column     |           Type           | Collation | Nullable |      Default      
+----------------+--------------------------+-----------+----------+-------------------
+ id             | uuid                     |           | not null | gen_random_uuid()
+ node_id        | uuid                     |           |          | 
+ session_id     | text                     |           |          | 
+ query_text     | text                     |           |          | 
+ retrieval_rank | integer                  |           |          | 
+ accessed_at    | timestamp with time zone |           |          | now()
+Indexes:
+    "usage_traces_pkey" PRIMARY KEY, btree (id)
+    "usage_traces_node_accessed_idx" btree (node_id, accessed_at)
+Foreign-key constraints:
+    "usage_traces_node_id_fkey" FOREIGN KEY (node_id) REFERENCES nodes(id)
+
+                             Table "covalence.inference_log"
+      Column       |           Type           | Collation | Nullable |      Default      
+-------------------+--------------------------+-----------+----------+-------------------
+ id                | uuid                     |           | not null | gen_random_uuid()
+ operation         | text                     |           | not null | 
+ inputs            | jsonb                    |           | not null | 
+ output            | jsonb                    |           | not null | 
+ model             | text                     |           |          | 
+ latency_ms        | integer                  |           |          | 
+ created_at        | timestamp with time zone |           |          | now()
+ input_node_ids    | uuid[]                   |           |          | 
+ input_summary     | text                     |           |          | 
+ output_decision   | text                     |           |          | 
+ output_confidence | double precision         |           |          | 
+ output_rationale  | text                     |           |          | 
+Indexes:
+    "inference_log_pkey" PRIMARY KEY, btree (id)
+    "inference_log_operation_created_idx" btree (operation, created_at DESC)
+
