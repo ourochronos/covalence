@@ -19,3 +19,4 @@ Cargo.lock
 
 # Go
 /cli/vendor/
+/engine/target/
