@@ -81,8 +81,7 @@ pub async fn run(pool: PgPool) {
 async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Result<usize> {
     // Claim the highest-priority pending task atomically using SKIP LOCKED
     // so multiple worker instances can run safely.
-    let maybe_task = sqlx::query_as!(
-        QueueTask,
+    let maybe_row = sqlx::query(
         r#"
         UPDATE covalence.slow_path_queue
         SET    status     = 'processing',
@@ -106,6 +105,17 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
     .fetch_optional(pool)
     .await
     .context("failed to claim task from slow_path_queue")?;
+
+    let maybe_task = maybe_row.map(|r| {
+        use sqlx::Row;
+        QueueTask {
+            id: r.get("id"),
+            task_type: r.get("task_type"),
+            node_id: r.get("node_id"),
+            payload: r.get("payload"),
+            result: r.get("result"),
+        }
+    });
 
     let task = match maybe_task {
         Some(t) => t,
@@ -138,17 +148,15 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
                 "attempts": attempts,
                 "output": output,
             });
-            sqlx::query!(
-                r#"
-                UPDATE covalence.slow_path_queue
+            sqlx::query(
+                r#"UPDATE covalence.slow_path_queue
                 SET  status       = 'complete',
                      completed_at = now(),
                      result       = $1
-                WHERE id = $2
-                "#,
-                result_json,
-                task.id,
+                WHERE id = $2"#,
             )
+            .bind(&result_json)
+            .bind(task.id)
             .execute(pool)
             .await
             .context("failed to mark task complete")?;
@@ -176,17 +184,15 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
                     "error": error_msg,
                     "final": true,
                 });
-                sqlx::query!(
-                    r#"
-                    UPDATE covalence.slow_path_queue
+                sqlx::query(
+                    r#"UPDATE covalence.slow_path_queue
                     SET  status       = 'failed',
                          completed_at = now(),
                          result       = $1
-                    WHERE id = $2
-                    "#,
-                    result_json,
-                    task.id,
-                )
+                    WHERE id = $2"#,
+                    )
+                    .bind(&result_json)
+                    .bind(task.id)
                 .execute(pool)
                 .await
                 .context("failed to mark task failed")?;
@@ -202,17 +208,15 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
                     "attempts": attempts,
                     "last_error": error_msg,
                 });
-                sqlx::query!(
-                    r#"
-                    UPDATE covalence.slow_path_queue
+                sqlx::query(
+                    r#"UPDATE covalence.slow_path_queue
                     SET  status     = 'pending',
                          started_at = null,
                          result     = $1
-                    WHERE id = $2
-                    "#,
-                    result_json,
-                    task.id,
-                )
+                    WHERE id = $2"#,
+                    )
+                    .bind(&result_json)
+                    .bind(task.id)
                 .execute(pool)
                 .await
                 .context("failed to requeue task")?;
@@ -264,16 +268,17 @@ async fn handle_embed(
         .context("embed task requires node_id")?;
 
     // Fetch node content
-    let row = sqlx::query!(
-        "SELECT content, title FROM covalence.nodes WHERE id = $1",
-        node_id
-    )
+    let row = sqlx::query("SELECT content, title FROM covalence.nodes WHERE id = $1")
+    .bind(node_id)
     .fetch_optional(pool)
     .await?
     .context("node not found for embed")?;
 
-    let title = row.title.unwrap_or_default();
-    let content = row.content.unwrap_or_default();
+    use sqlx::Row as _;
+    let title: Option<String> = row.get("title");
+    let content: Option<String> = row.get("content");
+    let title = title.unwrap_or_default();
+    let content = content.unwrap_or_default();
 
     // Prepend title to content for richer embeddings
     let embed_input = if title.is_empty() {
@@ -338,9 +343,8 @@ async fn handle_contention_check(
         .unwrap_or(0.15);
 
     // Find candidate nodes ranked by ts_rank against this node's tsv
-    let candidates = sqlx::query!(
-        r#"
-        SELECT
+    let candidates = sqlx::query(
+        r#"SELECT
             candidate.id            AS candidate_id,
             candidate.content       AS candidate_content,
             source_node.content     AS source_content,
@@ -360,10 +364,9 @@ async fn handle_contention_check(
         WHERE source_node.id  = $1
           AND source_node.status = 'active'
         ORDER BY rank DESC
-        LIMIT 10
-        "#,
-        node_id,
+        LIMIT 10"#,
     )
+    .bind(node_id)
     .fetch_all(pool)
     .await
     .context("failed to query contention candidates")?;
@@ -371,65 +374,67 @@ async fn handle_contention_check(
     let mut contention_count = 0_i32;
 
     for row in &candidates {
-        let rank = row.rank.unwrap_or(0.0) as f32;
+        use sqlx::Row as _;
+        let rank: Option<f32> = row.try_get("rank").ok();
+        let rank = rank.unwrap_or(0.0);
         if rank < similarity_threshold {
             continue;
         }
 
+        let candidate_id: Uuid = row.get("candidate_id");
+
         // Check whether content is meaningfully different (simple heuristic:
         // if the content strings are identical, no contention needed).
-        let source_content   = row.source_content.as_deref().unwrap_or("");
-        let candidate_content = row.candidate_content.as_deref().unwrap_or("");
+        let source_content: Option<String> = row.get("source_content");
+        let candidate_content: Option<String> = row.get("candidate_content");
+        let source_content = source_content.as_deref().unwrap_or("");
+        let candidate_content = candidate_content.as_deref().unwrap_or("");
 
         if source_content.trim() == candidate_content.trim() {
             tracing::debug!(
                 node_id = %node_id,
-                candidate_id = %row.candidate_id,
+                candidate_id = %candidate_id,
                 "contention_check: identical content, skipping"
             );
             continue;
         }
 
         // Check if a contention between these two nodes already exists
-        let existing = sqlx::query!(
-            r#"
-            SELECT id FROM covalence.contentions
+        let existing = sqlx::query(
+            r#"SELECT id FROM covalence.contentions
             WHERE ((node_id = $1 AND source_node_id = $2)
                 OR (node_id = $2 AND source_node_id = $1))
               AND status != 'resolved'
-            LIMIT 1
-            "#,
-            node_id,
-            row.candidate_id,
+            LIMIT 1"#,
         )
+        .bind(node_id)
+        .bind(candidate_id)
         .fetch_optional(pool)
         .await?;
 
         if existing.is_some() {
             tracing::debug!(
                 node_id      = %node_id,
-                candidate_id = %row.candidate_id,
+                candidate_id = %candidate_id,
                 "contention_check: contention already exists, skipping"
             );
             continue;
         }
 
         // Insert new contention
-        sqlx::query!(
-            r#"
-            INSERT INTO covalence.contentions
+        sqlx::query(
+            r#"INSERT INTO covalence.contentions
                 (node_id, source_node_id, type, description, severity, status, materiality)
             VALUES
-                ($1, $2, 'contends', $3, 'medium', 'detected', $4)
-            "#,
-            node_id,
-            row.candidate_id,
-            format!(
-                "Content similarity detected (ts_rank={:.3}): nodes may be in conflict.",
-                rank
-            ),
-            rank as f64,
+                ($1, $2, 'contends', $3, 'medium', 'detected', $4)"#,
         )
+        .bind(node_id)
+        .bind(candidate_id)
+        .bind(format!(
+            "Content similarity detected (ts_rank={:.3}): nodes may be in conflict.",
+            rank
+        ))
+        .bind(rank as f64)
         .execute(pool)
         .await
         .context("failed to insert contention")?;
@@ -438,7 +443,7 @@ async fn handle_contention_check(
 
         tracing::info!(
             node_id      = %node_id,
-            candidate_id = %row.candidate_id,
+            candidate_id = %candidate_id,
             rank,
             "contention_check: new contention inserted"
         );
