@@ -115,7 +115,7 @@ INSERT INTO covalence.usage_traces (id, node_id, session_id, query_text, retriev
 SELECT id, node_id, session_id, query_text, retrieval_rank, accessed_at
 FROM dblink(
     'host=host.docker.internal port=5433 dbname=valence user=valence password=valence',
-    'SELECT id, article_id, session_id::text, query_text, retrieval_rank, accessed_at
+    'SELECT id, article_id, session_id::text, query_text, NULL::int, retrieved_at
      FROM usage_traces WHERE article_id IS NOT NULL'
 ) AS u(id uuid, node_id uuid, session_id text, query_text text, retrieval_rank int, accessed_at timestamptz)
 ON CONFLICT (id) DO NOTHING;
