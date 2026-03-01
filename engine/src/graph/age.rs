@@ -358,7 +358,7 @@ impl GraphRepository for AgeGraphRepository {
             SELECT DISTINCT ON (t.node_id) t.node_id, t.depth,
                    e.id AS edge_id, e.age_id AS edge_age_id,
                    e.source_node_id, e.target_node_id, e.edge_type,
-                   e.weight, e.confidence AS edge_confidence: confidence as f32,
+                   e.weight, e.confidence AS edge_confidence,
                    e.metadata AS edge_metadata, e.created_at AS edge_created_at,
                    e.created_by
             FROM traversal t
