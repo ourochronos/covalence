@@ -37,12 +37,12 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A row fetched from `slow_path_queue`.
 #[derive(Debug)]
-struct QueueTask {
-    id: Uuid,
-    task_type: String,
-    node_id: Option<Uuid>,
-    payload: Value,
-    result: Option<Value>,
+pub struct QueueTask {
+    pub id: Uuid,
+    pub task_type: String,
+    pub node_id: Option<Uuid>,
+    pub payload: Value,
+    pub result: Option<Value>,
 }
 
 /// Start the background worker loop.
@@ -243,7 +243,7 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
 }
 
 /// Dispatch to the appropriate handler for each task type.
-async fn execute_task(
+pub async fn execute_task(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
@@ -268,7 +268,7 @@ async fn execute_task(
 ///
 /// TODO: Integrate OpenAI text-embedding-3-small (or compatible) API.
 /// The stub currently returns a zero vector and skips the DB upsert.
-async fn handle_embed(
+pub async fn handle_embed(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
@@ -532,7 +532,7 @@ async fn enqueue_task(
 }
 
 /// `compile`: Synthesise a new article node from source nodes.
-async fn handle_compile(
+pub async fn handle_compile(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
@@ -843,7 +843,7 @@ SOURCE DOCUMENTS:\n\
 }
 
 /// `split`: Split an oversized article node into two smaller nodes.
-async fn handle_split(
+pub async fn handle_split(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
@@ -1139,7 +1139,7 @@ async fn handle_resolve_contention(
 
 /// `tree_index`: Build a tree index for a node using LLM decomposition.
 /// Payload: { "overlap": 0.20, "force": false }
-async fn handle_tree_index(
+pub async fn handle_tree_index(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,
@@ -1162,7 +1162,7 @@ async fn handle_tree_index(
 }
 
 /// `tree_embed`: Embed all sections of a tree-indexed node + compose node embedding.
-async fn handle_tree_embed(
+pub async fn handle_tree_embed(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
     task: &QueueTask,

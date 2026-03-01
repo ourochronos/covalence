@@ -13,6 +13,7 @@
 //! Section embeddings are stored in node_sections.
 
 use anyhow::Context;
+use futures::stream::{self, StreamExt};
 use md5;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -444,6 +445,13 @@ pub async fn build_tree_index(
 /// Also composes a node-level embedding (mean of leaf sections).
 ///
 /// Returns count of sections embedded.
+///
+/// # Structure
+/// Phase 1 (no tx): For each section, check content hash. If unchanged, fetch
+///   existing embedding from DB; otherwise mark for re-embedding.
+/// Phase 2 (no tx): Parallelize all pending embed API calls (buffer_unordered(5)).
+/// Phase 3 (tx):    Delete all existing sections, insert fresh rows, upsert
+///   composed node embedding, commit.  Any failure rolls back atomically.
 pub async fn embed_sections(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
@@ -478,8 +486,19 @@ pub async fn embed_sections(
     let model =
         std::env::var("COVALENCE_EMBED_MODEL").unwrap_or_else(|_| "text-embedding-3-small".into());
 
-    let mut embedded_count = 0;
-    let mut leaf_embeddings: Vec<Vec<f32>> = Vec::new();
+    // -----------------------------------------------------------------------
+    // Phase 1: Determine which sections need embedding; pre-load unchanged ones
+    // -----------------------------------------------------------------------
+
+    struct SectionWork {
+        section: FlatSection,
+        slice: String,
+        hash: String,
+        /// Some(_) if already resolved (unchanged hash), None if needs embedding.
+        embedding: Option<Vec<f32>>,
+    }
+
+    let mut section_works: Vec<SectionWork> = Vec::new();
 
     for section in &sections {
         let start = section.start_char;
@@ -487,61 +506,116 @@ pub async fn embed_sections(
         if start >= end {
             continue;
         }
-        let slice = &content[start..end];
-        let slice = slice.trim();
+        let slice = content[start..end].trim().to_string();
         if slice.len() < MIN_SECTION_CHARS {
             continue;
         }
 
-        // Content hash for change detection
         let hash = format!("{:x}", md5::compute(slice.as_bytes()));
 
-        // Check if section exists and is current
+        // Check whether an up-to-date embedding already exists in DB
         let existing = sqlx::query_as::<_, (Option<String>,)>(
-            "SELECT content_hash FROM covalence.node_sections WHERE node_id = $1 AND tree_path = $2",
+            "SELECT content_hash FROM covalence.node_sections \
+             WHERE node_id = $1 AND tree_path = $2",
         )
         .bind(node_id)
         .bind(&section.tree_path)
         .fetch_optional(pool)
         .await?;
 
-        if let Some((Some(existing_hash),)) = existing {
+        let preloaded = if let Some((Some(existing_hash),)) = existing {
             if existing_hash == hash {
-                // Unchanged — fetch existing embedding for composition
+                // Content unchanged — reuse stored embedding
                 let emb_row = sqlx::query_as::<_, (String,)>(
-                    "SELECT embedding::text FROM covalence.node_sections WHERE node_id = $1 AND tree_path = $2",
+                    "SELECT embedding::text FROM covalence.node_sections \
+                     WHERE node_id = $1 AND tree_path = $2",
                 )
                 .bind(node_id)
                 .bind(&section.tree_path)
                 .fetch_optional(pool)
                 .await?;
-
-                if let Some((emb_str,)) = emb_row {
-                    if section.children_count(&sections) == 0 {
-                        if let Some(vec) = parse_pgvector(&emb_str) {
-                            leaf_embeddings.push(vec);
-                        }
-                    }
-                }
-                embedded_count += 1;
-                continue;
+                emb_row.and_then(|(s,)| parse_pgvector(&s))
+            } else {
+                None
             }
-        }
-
-        // Embed — for sections larger than MAX_SECTION_EMBED_CHARS,
-        // we use a sliding window within the section and average
-        let embedding = if slice.len() > MAX_SECTION_EMBED_CHARS {
-            embed_long_section(
-                slice,
-                llm,
-                MAX_SECTION_EMBED_CHARS,
-                DEFAULT_OVERLAP_FRACTION,
-            )
-            .await?
         } else {
-            llm.embed(slice).await?
+            None
         };
 
+        section_works.push(SectionWork {
+            section: section.clone(),
+            slice,
+            hash,
+            embedding: preloaded,
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: Parallelize embed API calls for sections that need (re-)embedding
+    // -----------------------------------------------------------------------
+
+    // Collect (original_index, slice_string) for sections that need embedding
+    let pending: Vec<(usize, String)> = section_works
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.embedding.is_none())
+        .map(|(i, w)| (i, w.slice.clone()))
+        .collect();
+
+    let embed_results: Vec<(usize, anyhow::Result<Vec<f32>>)> =
+        stream::iter(pending.into_iter())
+            .map(|(i, slice)| {
+                let llm = llm.clone();
+                async move {
+                    let emb = if slice.len() > MAX_SECTION_EMBED_CHARS {
+                        embed_long_section(
+                            &slice,
+                            &llm,
+                            MAX_SECTION_EMBED_CHARS,
+                            DEFAULT_OVERLAP_FRACTION,
+                        )
+                        .await
+                    } else {
+                        llm.embed(&slice).await
+                    };
+                    (i, emb)
+                }
+            })
+            .buffer_unordered(5)
+            .collect::<Vec<_>>()
+            .await;
+
+    // Propagate any embed errors and store results
+    for (i, result) in embed_results {
+        section_works[i].embedding = Some(result?);
+    }
+
+    // Gather leaf embeddings for composition
+    let leaf_embeddings: Vec<Vec<f32>> = section_works
+        .iter()
+        .filter(|w| w.section.children_count(&sections) == 0)
+        .filter_map(|w| w.embedding.clone())
+        .collect();
+
+    let embedded_count = section_works.len();
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Atomic transaction — delete orphans, insert all, upsert composed
+    // -----------------------------------------------------------------------
+
+    let mut tx = pool.begin().await?;
+
+    // Fix 2: Delete existing sections to prevent orphans from stale tree paths
+    sqlx::query("DELETE FROM covalence.node_sections WHERE node_id = $1")
+        .bind(node_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete existing sections")?;
+
+    for work in &section_works {
+        let Some(ref embedding) = work.embedding else {
+            continue;
+        };
         let dims = embedding.len() as i32;
         let vec_literal = format!(
             "[{}]",
@@ -552,40 +626,24 @@ pub async fn embed_sections(
                 .join(",")
         );
 
-        // Track leaf embeddings for composition
-        if section.children_count(&sections) == 0 {
-            leaf_embeddings.push(embedding);
-        }
-
-        // Upsert section
         sqlx::query(&format!(
             "INSERT INTO covalence.node_sections
-                (node_id, tree_path, depth, title, summary, start_char, end_char, content_hash, embedding, model)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{vec_literal}'::halfvec({dims}), $9)
-             ON CONFLICT (node_id, tree_path) DO UPDATE SET
-                depth = EXCLUDED.depth,
-                title = EXCLUDED.title,
-                summary = EXCLUDED.summary,
-                start_char = EXCLUDED.start_char,
-                end_char = EXCLUDED.end_char,
-                content_hash = EXCLUDED.content_hash,
-                embedding = EXCLUDED.embedding,
-                model = EXCLUDED.model"
+                (node_id, tree_path, depth, title, summary, start_char, end_char, \
+                 content_hash, embedding, model)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{vec_literal}'::halfvec({dims}), $9)"
         ))
         .bind(node_id)
-        .bind(&section.tree_path)
-        .bind(section.depth)
-        .bind(&section.title)
-        .bind(&section.summary)
-        .bind(section.start_char as i32)
-        .bind(section.end_char as i32)
-        .bind(&hash)
+        .bind(&work.section.tree_path)
+        .bind(work.section.depth)
+        .bind(&work.section.title)
+        .bind(&work.section.summary)
+        .bind(work.section.start_char as i32)
+        .bind(work.section.end_char as i32)
+        .bind(&work.hash)
         .bind(&model)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
-        .context("failed to upsert section")?;
-
-        embedded_count += 1;
+        .context("failed to insert section")?;
     }
 
     // Compose node-level embedding from leaf section embeddings
@@ -610,7 +668,7 @@ pub async fn embed_sections(
         ))
         .bind(node_id)
         .bind(&format!("{model}:composed"))
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .context("failed to upsert composed embedding")?;
 
@@ -620,6 +678,8 @@ pub async fn embed_sections(
             "tree_index: composed embedding stored"
         );
     }
+
+    tx.commit().await?;
 
     tracing::info!(
         node_id = %node_id,
@@ -669,7 +729,11 @@ async fn embed_long_section(
     Ok(compose_embeddings(&embeddings))
 }
 
-/// Compute element-wise mean of embedding vectors.
+/// Compute element-wise mean of embedding vectors, then L2-normalize the result.
+///
+/// The arithmetic mean of unit vectors is NOT unit-length; normalization ensures
+/// the composed embedding lives on the same unit hypersphere as individual embeddings,
+/// keeping cosine-similarity scores meaningful.
 fn compose_embeddings(vecs: &[Vec<f32>]) -> Vec<f32> {
     if vecs.is_empty() {
         return vec![];
@@ -686,6 +750,13 @@ fn compose_embeddings(vecs: &[Vec<f32>]) -> Vec<f32> {
     }
     for v in result.iter_mut() {
         *v /= n;
+    }
+    // Fix 1: L2 normalize so the composed vector is unit-length
+    let norm: f32 = result.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in result.iter_mut() {
+            *v /= norm;
+        }
     }
     result
 }
