@@ -298,7 +298,11 @@ CREATE TABLE IF NOT EXISTS covalence.slow_path_queue (
                         'infer_edges',          -- causal/entity edge detection
                         'resolve_contention',   -- contention resolution
                         'split',                -- article split
-                        'merge'                 -- article merge
+                        'merge',                -- article merge
+                        'embed',                -- vector embedding
+                        'contention_check',     -- contention detection
+                        'tree_index',           -- hierarchical section indexing
+                        'tree_embed'            -- section embedding
                     )),
 
     node_id         UUID        REFERENCES covalence.nodes(id),
