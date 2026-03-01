@@ -784,11 +784,11 @@ SOURCE DOCUMENTS:\n\
             .unwrap_or("originates");
         // Map LLM relationship name to valid edge_type enum value
         let edge_type = match rel {
-            "confirms"    => "CONFIRMS",
-            "supersedes"  => "SUPERSEDES",
+            "confirms" => "CONFIRMS",
+            "supersedes" => "SUPERSEDES",
             "contradicts" => "CONTRADICTS",
-            "contends"    => "CONTENDS",
-            _             => "ORIGINATES",
+            "contends" => "CONTENDS",
+            _ => "ORIGINATES",
         };
         sqlx::query(
             "INSERT INTO covalence.edges \

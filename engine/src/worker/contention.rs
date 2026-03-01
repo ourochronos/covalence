@@ -576,9 +576,9 @@ If NOT a contention:
 
         // ── 6. Insert contentions row + queue resolve_contention ─────────────
         let mat_score: f64 = match materiality {
-            "high"   => 0.9,
+            "high" => 0.9,
             "medium" => 0.5,
-            _        => 0.2,
+            _ => 0.2,
         };
         let contention_id: Uuid = sqlx::query_scalar(
             r#"INSERT INTO covalence.contentions
@@ -679,9 +679,7 @@ async fn record_mutation(
     .execute(pool)
     .await
     .with_context(|| {
-        format!(
-            "record_mutation: failed to log {mutation_type} mutation for article {article_id}"
-        )
+        format!("record_mutation: failed to log {mutation_type} mutation for article {article_id}")
     })?;
     Ok(())
 }

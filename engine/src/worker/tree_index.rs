@@ -562,28 +562,27 @@ pub async fn embed_sections(
         .map(|(i, w)| (i, w.slice.clone()))
         .collect();
 
-    let embed_results: Vec<(usize, anyhow::Result<Vec<f32>>)> =
-        stream::iter(pending.into_iter())
-            .map(|(i, slice)| {
-                let llm = llm.clone();
-                async move {
-                    let emb = if slice.len() > MAX_SECTION_EMBED_CHARS {
-                        embed_long_section(
-                            &slice,
-                            &llm,
-                            MAX_SECTION_EMBED_CHARS,
-                            DEFAULT_OVERLAP_FRACTION,
-                        )
-                        .await
-                    } else {
-                        llm.embed(&slice).await
-                    };
-                    (i, emb)
-                }
-            })
-            .buffer_unordered(5)
-            .collect::<Vec<_>>()
-            .await;
+    let embed_results: Vec<(usize, anyhow::Result<Vec<f32>>)> = stream::iter(pending.into_iter())
+        .map(|(i, slice)| {
+            let llm = llm.clone();
+            async move {
+                let emb = if slice.len() > MAX_SECTION_EMBED_CHARS {
+                    embed_long_section(
+                        &slice,
+                        &llm,
+                        MAX_SECTION_EMBED_CHARS,
+                        DEFAULT_OVERLAP_FRACTION,
+                    )
+                    .await
+                } else {
+                    llm.embed(&slice).await
+                };
+                (i, emb)
+            }
+        })
+        .buffer_unordered(5)
+        .collect::<Vec<_>>()
+        .await;
 
     // Propagate any embed errors and store results
     for (i, result) in embed_results {

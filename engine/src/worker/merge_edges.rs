@@ -246,7 +246,11 @@ pub async fn handle_merge(
     let mutations: &[(Uuid, &str, String)] = &[
         (id_a, "merged", format!("Archived: merged into {new_id}")),
         (id_b, "merged", format!("Archived: merged into {new_id}")),
-        (new_id, "created", format!("Created by merging {id_a} and {id_b}")),
+        (
+            new_id,
+            "created",
+            format!("Created by merging {id_a} and {id_b}"),
+        ),
     ];
     for (article_id, mutation_type, summary) in mutations {
         let _entry = serde_json::json!([{"type": mutation_type, "summary": summary, "recorded_at": &_now_str}]);

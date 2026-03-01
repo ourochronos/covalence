@@ -29,17 +29,17 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use serial_test::serial;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
-use serial_test::serial;
 
 use covalence_engine::worker::{
     QueueTask,
-    handle_compile, handle_split, handle_embed, handle_tree_index, handle_tree_embed,
     contention::{handle_contention_check, handle_resolve_contention},
-    merge_edges::{handle_merge, handle_infer_edges},
+    handle_compile, handle_embed, handle_split, handle_tree_embed, handle_tree_index,
     llm::LlmClient,
+    merge_edges::{handle_infer_edges, handle_merge},
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,7 +137,9 @@ impl LlmClient for MockLlmClient {
         }
 
         // Dispatch on prompt keywords to return appropriate JSON
-        let response = if prompt.contains("knowledge synthesizer") || prompt.contains("synthesizes their information") {
+        let response = if prompt.contains("knowledge synthesizer")
+            || prompt.contains("synthesizes their information")
+        {
             // handle_compile prompt
             json!({
                 "title": "Synthesized Test Article",
@@ -146,7 +148,9 @@ impl LlmClient for MockLlmClient {
                 "source_relationships": []
             })
             .to_string()
-        } else if prompt.contains("split this article into two") || prompt.contains("best point to split") {
+        } else if prompt.contains("split this article into two")
+            || prompt.contains("best point to split")
+        {
             // handle_split prompt (no tree_index path)
             json!({
                 "split_index": 50,
@@ -180,7 +184,9 @@ impl LlmClient for MockLlmClient {
                 "explanation": "The source directly contradicts the article's key claim."
             })
             .to_string()
-        } else if prompt.contains("resolving a content contention") || prompt.contains("choose the most appropriate resolution") {
+        } else if prompt.contains("resolving a content contention")
+            || prompt.contains("choose the most appropriate resolution")
+        {
             // handle_resolve_contention prompt — default to supersede_b for testing
             json!({
                 "resolution": "supersede_b",
@@ -189,7 +195,10 @@ impl LlmClient for MockLlmClient {
                 "updated_content": "Updated article content incorporating the source's corrections."
             })
             .to_string()
-        } else if prompt.contains("tree decomposition") || prompt.contains("tree index") || prompt.contains("decompose") {
+        } else if prompt.contains("tree decomposition")
+            || prompt.contains("tree index")
+            || prompt.contains("decompose")
+        {
             // handle_tree_index prompt
             json!({
                 "nodes": [
@@ -437,7 +446,10 @@ async fn test_compile_creates_article() {
     .fetch_one(&pool)
     .await
     .expect("provenance edge count");
-    assert_eq!(edge_count, 2, "both sources should be linked via COMPILED_FROM edges");
+    assert_eq!(
+        edge_count, 2,
+        "both sources should be linked via COMPILED_FROM edges"
+    );
 
     // (article_mutations has no equivalent live table — tracked via nodes.metadata)
 
@@ -450,7 +462,10 @@ async fn test_compile_creates_article() {
     .fetch_one(&pool)
     .await
     .expect("embed queue count");
-    assert_eq!(embed_queued, 1, "an embed task should be queued for the new article");
+    assert_eq!(
+        embed_queued, 1,
+        "an embed task should be queued for the new article"
+    );
 
     // ── Cleanup ─────────────────────────────────────────────────────────────
     cleanup_nodes(&pool, &[src_a, src_b, article_id]).await;
@@ -479,7 +494,10 @@ async fn test_compile_dedup() {
     let dims = emb.len();
     let vec_literal = format!(
         "[{}]",
-        emb.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+        emb.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     );
     sqlx::query(&format!(
         "INSERT INTO covalence.node_embeddings (node_id, embedding, model) \
@@ -493,11 +511,7 @@ async fn test_compile_dedup() {
 
     let src = insert_test_source(&pool, "Source A", "Content about knowledge synthesis.").await;
 
-    let task = make_task(
-        "compile",
-        None,
-        json!({ "source_ids": [src.to_string()] }),
-    );
+    let task = make_task("compile", None, json!({ "source_ids": [src.to_string()] }));
 
     let result = handle_compile(&pool, &llm, &task)
         .await
@@ -559,13 +573,11 @@ async fn test_compile_fallback() {
     let article_id = Uuid::parse_str(result["article_id"].as_str().unwrap()).unwrap();
 
     // Content should be concatenation of sources
-    let content: String = sqlx::query_scalar(
-        "SELECT content FROM covalence.nodes WHERE id = $1",
-    )
-    .bind(article_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let content: String = sqlx::query_scalar("SELECT content FROM covalence.nodes WHERE id = $1")
+        .bind(article_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert!(
         content.contains("First source content."),
@@ -605,8 +617,7 @@ async fn test_split_with_tree_index() {
     ]);
     let meta = json!({ "tree_index": tree_index });
 
-    let article_id =
-        insert_test_article_with_meta(&pool, "Large Article", &content, &meta).await;
+    let article_id = insert_test_article_with_meta(&pool, "Large Article", &content, &meta).await;
 
     // Insert a provenance source to verify it gets copied
     let prov_src = insert_test_source(&pool, "Prov Source", "Some provenance content.").await;
@@ -631,13 +642,11 @@ async fn test_split_with_tree_index() {
 
     // ── Both new articles are active ────────────────────────────────────────
     for (label, part_id) in [("part_a", part_a), ("part_b", part_b)] {
-        let status: String = sqlx::query_scalar(
-            "SELECT status FROM covalence.nodes WHERE id = $1",
-        )
-        .bind(part_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap_or_else(|_| panic!("{label} node should exist"));
+        let status: String = sqlx::query_scalar("SELECT status FROM covalence.nodes WHERE id = $1")
+            .bind(part_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|_| panic!("{label} node should exist"));
         assert_eq!(status, "active", "{label} should be active");
     }
 
@@ -648,7 +657,10 @@ async fn test_split_with_tree_index() {
             .fetch_one(&pool)
             .await
             .expect("original article should still exist");
-    assert_eq!(orig_status, "archived", "original should be archived after split");
+    assert_eq!(
+        orig_status, "archived",
+        "original should be archived after split"
+    );
 
     // ── SPLIT_INTO edges ─────────────────────────────────────────────────────
     let split_edge_count: i64 = sqlx::query_scalar(
@@ -664,7 +676,11 @@ async fn test_split_with_tree_index() {
     assert!(result["split_at"].as_u64().unwrap() > 0);
     let a_len = result["part_a_len"].as_u64().unwrap() as usize;
     let b_len = result["part_b_len"].as_u64().unwrap() as usize;
-    assert_eq!(a_len + b_len, content.len(), "parts should cover full content");
+    assert_eq!(
+        a_len + b_len,
+        content.len(),
+        "parts should cover full content"
+    );
 
     cleanup_nodes(&pool, &[article_id, prov_src, part_a, part_b]).await;
     cleanup_queue_tasks(&pool, &["embed"]).await;
@@ -679,8 +695,7 @@ async fn test_split_without_tree_index() {
     let mock = Arc::new(MockLlmClient::new());
     let llm: Arc<dyn LlmClient> = mock.clone();
 
-    let content = "First half of the article with interesting content. "
-        .repeat(5)
+    let content = "First half of the article with interesting content. ".repeat(5)
         + &"Second half covering a different sub-topic entirely. ".repeat(5);
 
     let article_id = insert_test_article(&pool, "Article Without Tree Index", &content).await;
@@ -752,22 +767,20 @@ async fn test_merge() {
     assert_eq!(result["degraded"], json!(false));
 
     // ── New merged article is active ────────────────────────────────────────
-    let new_status: String =
-        sqlx::query_scalar("SELECT status FROM covalence.nodes WHERE id = $1")
-            .bind(new_id)
-            .fetch_one(&pool)
-            .await
-            .expect("merged article should exist");
+    let new_status: String = sqlx::query_scalar("SELECT status FROM covalence.nodes WHERE id = $1")
+        .bind(new_id)
+        .fetch_one(&pool)
+        .await
+        .expect("merged article should exist");
     assert_eq!(new_status, "active");
 
     // ── Originals are archived ──────────────────────────────────────────────
     for (label, id) in [("article_a", article_a), ("article_b", article_b)] {
-        let status: String =
-            sqlx::query_scalar("SELECT status FROM covalence.nodes WHERE id = $1")
-                .bind(id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let status: String = sqlx::query_scalar("SELECT status FROM covalence.nodes WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(status, "archived", "{label} should be archived after merge");
     }
 
@@ -792,7 +805,10 @@ async fn test_merge() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(embed_queued, 1, "embed task should be queued for merged article");
+    assert_eq!(
+        embed_queued, 1,
+        "embed task should be queued for merged article"
+    );
 
     cleanup_nodes(&pool, &[article_a, article_b, new_id]).await;
     cleanup_queue_tasks(&pool, &["embed"]).await;
@@ -912,7 +928,10 @@ async fn test_contention_check() {
         .fetch_one(&pool)
         .await
         .unwrap_or(false);
-        assert!(contention_exists, "contention row should exist in covalence.contentions");
+        assert!(
+            contention_exists,
+            "contention row should exist in covalence.contentions"
+        );
 
         // Verify a resolve_contention task was queued
         let resolver_queued: i64 = sqlx::query_scalar(
@@ -922,7 +941,10 @@ async fn test_contention_check() {
         .fetch_one(&pool)
         .await
         .unwrap_or(0);
-        assert_eq!(resolver_queued, 1, "resolve_contention task should be queued");
+        assert_eq!(
+            resolver_queued, 1,
+            "resolve_contention task should be queued"
+        );
     }
 
     cleanup_nodes(&pool, &[article, source]).await;
@@ -948,8 +970,9 @@ async fn test_resolve_contention_supersede_b() {
         "reasoning": "The source contains more accurate information.",
         "updated_content": "Corrected article content based on the source."
     });
-    let llm: Arc<dyn LlmClient> =
-        Arc::new(MockLlmClient::with_fixed_response(resolution_json.to_string()));
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::with_fixed_response(
+        resolution_json.to_string(),
+    ));
 
     let article = insert_test_article(
         &pool,
@@ -1057,13 +1080,11 @@ async fn test_tree_index_small_content() {
     );
 
     // tree_index should be stored in node metadata
-    let meta: Value = sqlx::query_scalar(
-        "SELECT metadata FROM covalence.nodes WHERE id = $1",
-    )
-    .bind(node_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let meta: Value = sqlx::query_scalar("SELECT metadata FROM covalence.nodes WHERE id = $1")
+        .bind(node_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(
         meta.get("tree_index").is_some(),
         "metadata.tree_index should be populated"
@@ -1107,7 +1128,10 @@ async fn test_tree_embed() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(embedding_exists, "node embedding should be stored after tree_embed");
+    assert!(
+        embedding_exists,
+        "node embedding should be stored after tree_embed"
+    );
 
     cleanup_nodes(&pool, &[node_id]).await;
 }
@@ -1128,10 +1152,7 @@ async fn test_embed_small_node() {
         .await
         .expect("handle_embed should succeed");
 
-    assert_eq!(
-        result["node_id"].as_str().unwrap(),
-        node_id.to_string()
-    );
+    assert_eq!(result["node_id"].as_str().unwrap(), node_id.to_string());
     assert_eq!(result["dimensions"], json!(1536));
 
     // Verify embedding row inserted
