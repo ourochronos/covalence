@@ -1,8 +1,8 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 // =============================================================================
 // Node types
@@ -52,16 +52,16 @@ impl fmt::Display for NodeType {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum EdgeType {
     // ── Provenance ──────────────────────────────────────────────
-    Originates,     // source directly contributed to article compilation
-    Confirms,       // source corroborates an existing article
-    Supersedes,     // this node replaces another (directional: new→old)
-    Contradicts,    // conflicting claims
-    Contends,       // softer disagreement / alternative interpretation
-    Extends,        // elaborates without superseding
-    DerivesFrom,    // article derived from another article
-    MergedFrom,     // article produced by merging parents
-    SplitInto,      // article was divided into fragments
-    SplitFrom,      // fragment produced by splitting a parent
+    Originates,  // source directly contributed to article compilation
+    Confirms,    // source corroborates an existing article
+    Supersedes,  // this node replaces another (directional: new→old)
+    Contradicts, // conflicting claims
+    Contends,    // softer disagreement / alternative interpretation
+    Extends,     // elaborates without superseding
+    DerivesFrom, // article derived from another article
+    MergedFrom,  // article produced by merging parents
+    SplitInto,   // article was divided into fragments
+    SplitFrom,   // fragment produced by splitting a parent
 
     // ── Temporal ────────────────────────────────────────────────
     Precedes,       // temporally before
@@ -69,21 +69,21 @@ pub enum EdgeType {
     ConcurrentWith, // overlapping time periods
 
     // ── Causal / Logical (slow-path inferred) ──────────────────
-    Causes,         // LLM-inferred causal relationship
-    MotivatedBy,    // decision motivated by this knowledge
-    Implements,     // concrete artifact implements abstract concept
+    Causes,      // LLM-inferred causal relationship
+    MotivatedBy, // decision motivated by this knowledge
+    Implements,  // concrete artifact implements abstract concept
 
     // ── Semantic ────────────────────────────────────────────────
-    RelatesTo,      // generic semantic relatedness
-    Generalizes,    // abstracts a more specific node
+    RelatesTo,   // generic semantic relatedness
+    Generalizes, // abstracts a more specific node
 
     // ── Session / Entity ────────────────────────────────────────
-    CapturedIn,     // source captured during session
-    Involves,       // node references a named entity
+    CapturedIn, // source captured during session
+    Involves,   // node references a named entity
 
     // ── Legacy aliases (from 001 schema, retained for migration) ─
-    CompiledFrom,   // alias for ORIGINATES
-    Elaborates,     // alias for EXTENDS
+    CompiledFrom, // alias for ORIGINATES
+    Elaborates,   // alias for EXTENDS
 }
 
 impl EdgeType {
@@ -375,8 +375,16 @@ impl SearchIntent {
     pub fn priority_edges(&self) -> &'static [EdgeType] {
         match self {
             SearchIntent::Factual => &[EdgeType::Confirms, EdgeType::Originates],
-            SearchIntent::Temporal => &[EdgeType::Precedes, EdgeType::Follows, EdgeType::ConcurrentWith],
-            SearchIntent::Causal => &[EdgeType::Causes, EdgeType::MotivatedBy, EdgeType::Implements],
+            SearchIntent::Temporal => &[
+                EdgeType::Precedes,
+                EdgeType::Follows,
+                EdgeType::ConcurrentWith,
+            ],
+            SearchIntent::Causal => &[
+                EdgeType::Causes,
+                EdgeType::MotivatedBy,
+                EdgeType::Implements,
+            ],
             SearchIntent::Entity => &[EdgeType::Involves, EdgeType::CapturedIn],
         }
     }

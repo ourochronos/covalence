@@ -1,7 +1,7 @@
 //! Article lifecycle — create, get, update, delete, split, merge, provenance (SPEC §5.4).
 
 use chrono::Utc;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
@@ -98,31 +98,44 @@ impl ArticleService {
              (id, node_type, title, content, status, epistemic_type, domain_path, \
               content_hash, size_tokens, metadata, confidence_overall, \
               created_at, modified_at, accessed_at) \
-             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $9, $9)"
+             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $9, $9)",
         )
-            .bind(id)
-            .bind(&req.title)
-            .bind(&req.content)
-            .bind(&epistemic_type)
-            .bind(&domain_path)
-            .bind(&content_hash)
-            .bind(size_tokens)
-            .bind(&metadata)
-            .bind(now)
-            .execute(&self.pool)
-            .await?;
+        .bind(id)
+        .bind(&req.title)
+        .bind(&req.content)
+        .bind(&epistemic_type)
+        .bind(&domain_path)
+        .bind(&content_hash)
+        .bind(size_tokens)
+        .bind(&metadata)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
 
         // Create AGE vertex
-        if let Err(e) = self.graph.create_vertex(id, NodeType::Article, serde_json::json!({})).await {
+        if let Err(e) = self
+            .graph
+            .create_vertex(id, NodeType::Article, serde_json::json!({}))
+            .await
+        {
             tracing::warn!(error = %e, "failed to create AGE vertex for article {id}");
         }
 
         // Create ORIGINATES edges if source_ids provided
         if let Some(source_ids) = req.source_ids {
             for source_id in source_ids {
-                if let Err(e) = self.graph.create_edge(
-                    source_id, id, EdgeType::Originates, 1.0, "agent_explicit", serde_json::json!({}),
-                ).await {
+                if let Err(e) = self
+                    .graph
+                    .create_edge(
+                        source_id,
+                        id,
+                        EdgeType::Originates,
+                        1.0,
+                        "agent_explicit",
+                        serde_json::json!({}),
+                    )
+                    .await
+                {
                     tracing::warn!(error = %e, "failed to create ORIGINATES edge {source_id} → {id}");
                 }
             }
@@ -131,12 +144,12 @@ impl ArticleService {
         // Queue embedding
         sqlx::query(
             "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-             VALUES ($1, 'embed', $2, 3, 'pending')"
+             VALUES ($1, 'embed', $2, 3, 'pending')",
         )
-            .bind(Uuid::new_v4())
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
 
         self.get(id).await
     }
@@ -150,12 +163,12 @@ impl ArticleService {
              (SELECT COUNT(*) FROM covalence.edges e \
               WHERE (e.source_node_id = n.id OR e.target_node_id = n.id) \
               AND e.edge_type IN ('CONTRADICTS', 'CONTENDS')) AS contention_count \
-             FROM covalence.nodes n WHERE n.id = $1 AND n.node_type = 'article'"
+             FROM covalence.nodes n WHERE n.id = $1 AND n.node_type = 'article'",
         )
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("article {id}")))?;
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("article {id}")))?;
 
         Ok(article_from_row(&row))
     }
@@ -165,7 +178,10 @@ impl ArticleService {
         // Verify it exists
         let _existing = self.get(id).await?;
 
-        let mut sets = vec!["modified_at = now()".to_string(), "version = version + 1".to_string()];
+        let mut sets = vec![
+            "modified_at = now()".to_string(),
+            "version = version + 1".to_string(),
+        ];
         let mut bind_idx = 2u32; // $1 is the id
 
         if let Some(ref content) = req.content {
@@ -195,33 +211,51 @@ impl ArticleService {
             let tokens = (content.split_whitespace().count() as f64 / 0.75) as i32;
             sqlx::query(
                 "UPDATE covalence.nodes SET content = $2, content_hash = $3, size_tokens = $4, \
-                 version = version + 1, modified_at = now() WHERE id = $1"
+                 version = version + 1, modified_at = now() WHERE id = $1",
             )
-                .bind(id).bind(content).bind(&hash).bind(tokens)
-                .execute(&self.pool).await?;
+            .bind(id)
+            .bind(content)
+            .bind(&hash)
+            .bind(tokens)
+            .execute(&self.pool)
+            .await?;
         }
         if let Some(ref title) = req.title {
             sqlx::query("UPDATE covalence.nodes SET title = $2, modified_at = now() WHERE id = $1")
-                .bind(id).bind(title).execute(&self.pool).await?;
+                .bind(id)
+                .bind(title)
+                .execute(&self.pool)
+                .await?;
         }
         if let Some(ref domain_path) = req.domain_path {
-            sqlx::query("UPDATE covalence.nodes SET domain_path = $2, modified_at = now() WHERE id = $1")
-                .bind(id).bind(domain_path).execute(&self.pool).await?;
+            sqlx::query(
+                "UPDATE covalence.nodes SET domain_path = $2, modified_at = now() WHERE id = $1",
+            )
+            .bind(id)
+            .bind(domain_path)
+            .execute(&self.pool)
+            .await?;
         }
         if let Some(pinned) = req.pinned {
-            sqlx::query("UPDATE covalence.nodes SET pinned = $2, modified_at = now() WHERE id = $1")
-                .bind(id).bind(pinned).execute(&self.pool).await?;
+            sqlx::query(
+                "UPDATE covalence.nodes SET pinned = $2, modified_at = now() WHERE id = $1",
+            )
+            .bind(id)
+            .bind(pinned)
+            .execute(&self.pool)
+            .await?;
         }
 
         // Re-queue embedding if content changed
         if req.content.is_some() {
             sqlx::query(
                 "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-                 VALUES ($1, 'embed', $2, 3, 'pending')"
+                 VALUES ($1, 'embed', $2, 3, 'pending')",
             )
-                .bind(Uuid::new_v4())
-                .bind(id)
-                .execute(&self.pool).await?;
+            .bind(Uuid::new_v4())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         }
 
         self.get(id).await
@@ -231,11 +265,11 @@ impl ArticleService {
     pub async fn delete(&self, id: Uuid) -> AppResult<()> {
         let result = sqlx::query(
             "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \
-             WHERE id = $1 AND node_type = 'article' AND status = 'active'"
+             WHERE id = $1 AND node_type = 'article' AND status = 'active'",
         )
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
 
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("article {id}")));
@@ -250,51 +284,92 @@ impl ArticleService {
 
         // Split at roughly the midpoint, on a paragraph boundary
         let mid = content.len() / 2;
-        let split_point = content[mid..].find("\n\n")
-            .map(|p| mid + p)
-            .unwrap_or(mid);
+        let split_point = content[mid..].find("\n\n").map(|p| mid + p).unwrap_or(mid);
 
         let part_a_content = &content[..split_point];
         let part_b_content = &content[split_point..].trim_start();
 
         // Create two new articles
-        let part_a = self.create(CreateArticleRequest {
-            content: part_a_content.to_string(),
-            title: original.title.as_ref().map(|t| format!("{t} (Part 1)")),
-            domain_path: Some(original.domain_path.clone()),
-            epistemic_type: original.epistemic_type.clone(),
-            source_ids: None,
-            metadata: Some(original.metadata.clone()),
-        }).await?;
+        let part_a = self
+            .create(CreateArticleRequest {
+                content: part_a_content.to_string(),
+                title: original.title.as_ref().map(|t| format!("{t} (Part 1)")),
+                domain_path: Some(original.domain_path.clone()),
+                epistemic_type: original.epistemic_type.clone(),
+                source_ids: None,
+                metadata: Some(original.metadata.clone()),
+            })
+            .await?;
 
-        let part_b = self.create(CreateArticleRequest {
-            content: part_b_content.to_string(),
-            title: original.title.as_ref().map(|t| format!("{t} (Part 2)")),
-            domain_path: Some(original.domain_path.clone()),
-            epistemic_type: original.epistemic_type.clone(),
-            source_ids: None,
-            metadata: Some(original.metadata.clone()),
-        }).await?;
+        let part_b = self
+            .create(CreateArticleRequest {
+                content: part_b_content.to_string(),
+                title: original.title.as_ref().map(|t| format!("{t} (Part 2)")),
+                domain_path: Some(original.domain_path.clone()),
+                epistemic_type: original.epistemic_type.clone(),
+                source_ids: None,
+                metadata: Some(original.metadata.clone()),
+            })
+            .await?;
 
         // Create SPLIT_INTO edges: original → each part
-        let _ = self.graph.create_edge(
-            id, part_a.id, EdgeType::SplitInto, 1.0, "algorithmic", serde_json::json!({}),
-        ).await;
-        let _ = self.graph.create_edge(
-            id, part_b.id, EdgeType::SplitInto, 1.0, "algorithmic", serde_json::json!({}),
-        ).await;
+        let _ = self
+            .graph
+            .create_edge(
+                id,
+                part_a.id,
+                EdgeType::SplitInto,
+                1.0,
+                "algorithmic",
+                serde_json::json!({}),
+            )
+            .await;
+        let _ = self
+            .graph
+            .create_edge(
+                id,
+                part_b.id,
+                EdgeType::SplitInto,
+                1.0,
+                "algorithmic",
+                serde_json::json!({}),
+            )
+            .await;
 
         // Inherit provenance edges from original
-        if let Ok(edges) = self.graph.list_edges(
-            id, TraversalDirection::Inbound, Some(&[EdgeType::Originates, EdgeType::CompiledFrom]), 100,
-        ).await {
+        if let Ok(edges) = self
+            .graph
+            .list_edges(
+                id,
+                TraversalDirection::Inbound,
+                Some(&[EdgeType::Originates, EdgeType::CompiledFrom]),
+                100,
+            )
+            .await
+        {
             for edge in edges {
-                let _ = self.graph.create_edge(
-                    edge.source_node_id, part_a.id, edge.edge_type, edge.confidence, "split_inherit", serde_json::json!({}),
-                ).await;
-                let _ = self.graph.create_edge(
-                    edge.source_node_id, part_b.id, edge.edge_type, edge.confidence, "split_inherit", serde_json::json!({}),
-                ).await;
+                let _ = self
+                    .graph
+                    .create_edge(
+                        edge.source_node_id,
+                        part_a.id,
+                        edge.edge_type,
+                        edge.confidence,
+                        "split_inherit",
+                        serde_json::json!({}),
+                    )
+                    .await;
+                let _ = self
+                    .graph
+                    .create_edge(
+                        edge.source_node_id,
+                        part_b.id,
+                        edge.edge_type,
+                        edge.confidence,
+                        "split_inherit",
+                        serde_json::json!({}),
+                    )
+                    .await;
             }
         }
 
@@ -326,38 +401,73 @@ impl ArticleService {
         };
 
         // Create merged article
-        let merged = self.create(CreateArticleRequest {
-            content: merged_content,
-            title: merged_title,
-            domain_path: Some({
-                let mut dp = a.domain_path.clone();
-                for p in &b.domain_path {
-                    if !dp.contains(p) { dp.push(p.clone()); }
-                }
-                dp
-            }),
-            epistemic_type: a.epistemic_type.clone(),
-            source_ids: None,
-            metadata: Some(a.metadata.clone()),
-        }).await?;
+        let merged = self
+            .create(CreateArticleRequest {
+                content: merged_content,
+                title: merged_title,
+                domain_path: Some({
+                    let mut dp = a.domain_path.clone();
+                    for p in &b.domain_path {
+                        if !dp.contains(p) {
+                            dp.push(p.clone());
+                        }
+                    }
+                    dp
+                }),
+                epistemic_type: a.epistemic_type.clone(),
+                source_ids: None,
+                metadata: Some(a.metadata.clone()),
+            })
+            .await?;
 
         // Create MERGED_FROM edges: merged ← each parent
-        let _ = self.graph.create_edge(
-            merged.id, req.article_id_a, EdgeType::MergedFrom, 1.0, "algorithmic", serde_json::json!({}),
-        ).await;
-        let _ = self.graph.create_edge(
-            merged.id, req.article_id_b, EdgeType::MergedFrom, 1.0, "algorithmic", serde_json::json!({}),
-        ).await;
+        let _ = self
+            .graph
+            .create_edge(
+                merged.id,
+                req.article_id_a,
+                EdgeType::MergedFrom,
+                1.0,
+                "algorithmic",
+                serde_json::json!({}),
+            )
+            .await;
+        let _ = self
+            .graph
+            .create_edge(
+                merged.id,
+                req.article_id_b,
+                EdgeType::MergedFrom,
+                1.0,
+                "algorithmic",
+                serde_json::json!({}),
+            )
+            .await;
 
         // Inherit provenance from both parents
         for parent_id in [req.article_id_a, req.article_id_b] {
-            if let Ok(edges) = self.graph.list_edges(
-                parent_id, TraversalDirection::Inbound, Some(&[EdgeType::Originates, EdgeType::CompiledFrom]), 100,
-            ).await {
+            if let Ok(edges) = self
+                .graph
+                .list_edges(
+                    parent_id,
+                    TraversalDirection::Inbound,
+                    Some(&[EdgeType::Originates, EdgeType::CompiledFrom]),
+                    100,
+                )
+                .await
+            {
                 for edge in edges {
-                    let _ = self.graph.create_edge(
-                        edge.source_node_id, merged.id, edge.edge_type, edge.confidence, "merge_inherit", serde_json::json!({}),
-                    ).await;
+                    let _ = self
+                        .graph
+                        .create_edge(
+                            edge.source_node_id,
+                            merged.id,
+                            edge.edge_type,
+                            edge.confidence,
+                            "merge_inherit",
+                            serde_json::json!({}),
+                        )
+                        .await;
                 }
             }
         }
@@ -375,15 +485,15 @@ impl ArticleService {
 
         sqlx::query(
             "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-             VALUES ($1, 'compile', $2, 2, 'pending')"
+             VALUES ($1, 'compile', $2, 2, 'pending')",
         )
-            .bind(job_id)
-            .bind(serde_json::json!({
-                "source_ids": req.source_ids,
-                "title_hint": req.title_hint,
-            }))
-            .execute(&self.pool)
-            .await?;
+        .bind(job_id)
+        .bind(serde_json::json!({
+            "source_ids": req.source_ids,
+            "title_hint": req.title_hint,
+        }))
+        .execute(&self.pool)
+        .await?;
 
         Ok(CompileJobResponse {
             job_id,
@@ -392,7 +502,11 @@ impl ArticleService {
     }
 
     /// Get provenance chain for an article.
-    pub async fn provenance(&self, id: Uuid, max_depth: Option<u32>) -> AppResult<Vec<ProvenanceLink>> {
+    pub async fn provenance(
+        &self,
+        id: Uuid,
+        max_depth: Option<u32>,
+    ) -> AppResult<Vec<ProvenanceLink>> {
         // Verify article exists
         let _ = self.get(id).await?;
 
@@ -403,7 +517,12 @@ impl ArticleService {
     }
 
     /// List articles with optional filters.
-    pub async fn list(&self, limit: i64, cursor: Option<Uuid>, status: Option<&str>) -> AppResult<Vec<ArticleResponse>> {
+    pub async fn list(
+        &self,
+        limit: i64,
+        cursor: Option<Uuid>,
+        status: Option<&str>,
+    ) -> AppResult<Vec<ArticleResponse>> {
         let limit = limit.min(100);
         let status_filter = status.unwrap_or("active");
 
@@ -415,10 +534,13 @@ impl ArticleService {
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
                  WHERE n.node_type = 'article' AND n.status = $1 AND n.id > $2 \
-                 ORDER BY n.created_at DESC LIMIT $3"
+                 ORDER BY n.created_at DESC LIMIT $3",
             )
-                .bind(status_filter).bind(cursor).bind(limit)
-                .fetch_all(&self.pool).await?
+            .bind(status_filter)
+            .bind(cursor)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
         } else {
             sqlx::query(
                 "SELECT n.id, n.title, n.content, n.status, n.confidence_overall, \
@@ -427,10 +549,12 @@ impl ArticleService {
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
                  WHERE n.node_type = 'article' AND n.status = $1 \
-                 ORDER BY n.created_at DESC LIMIT $2"
+                 ORDER BY n.created_at DESC LIMIT $2",
             )
-                .bind(status_filter).bind(limit)
-                .fetch_all(&self.pool).await?
+            .bind(status_filter)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
         };
 
         Ok(rows.iter().map(article_from_row).collect())
@@ -444,9 +568,13 @@ fn article_from_row(row: &PgRow) -> ArticleResponse {
         title: row.get("title"),
         content: row.get("content"),
         status: row.get("status"),
-        confidence: row.get::<Option<f64>, _>("confidence_overall").unwrap_or(0.5) as f32,
+        confidence: row
+            .get::<Option<f64>, _>("confidence_overall")
+            .unwrap_or(0.5) as f32,
         epistemic_type: row.get("epistemic_type"),
-        domain_path: row.get::<Option<Vec<String>>, _>("domain_path").unwrap_or_default(),
+        domain_path: row
+            .get::<Option<Vec<String>>, _>("domain_path")
+            .unwrap_or_default(),
         metadata: row.get::<serde_json::Value, _>("metadata"),
         version: row.get::<Option<i32>, _>("version").unwrap_or(1),
         pinned: row.get::<Option<bool>, _>("pinned").unwrap_or(false),

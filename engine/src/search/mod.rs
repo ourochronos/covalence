@@ -1,11 +1,11 @@
 pub mod dimension;
 pub mod fusion;
-pub mod vector;
-pub mod lexical;
 pub mod graph;
+pub mod lexical;
+pub mod vector;
 
 pub use dimension::DimensionAdaptor;
 pub use fusion::ScoreFusion;
-pub use vector::VectorAdaptor;
-pub use lexical::LexicalAdaptor;
 pub use graph::GraphAdaptor;
+pub use lexical::LexicalAdaptor;
+pub use vector::VectorAdaptor;

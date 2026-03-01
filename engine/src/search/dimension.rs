@@ -3,10 +3,10 @@
 //! Each adaptor represents one retrieval dimension (vector, lexical, graph).
 //! Adaptors produce scored results that are fused by ScoreFusion.
 
+use crate::models::SearchIntent;
 use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
-use crate::models::SearchIntent;
 
 /// A single scored result from one dimension.
 #[derive(Debug, Clone)]

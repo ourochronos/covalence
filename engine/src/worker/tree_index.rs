@@ -15,7 +15,7 @@
 use anyhow::Context;
 use md5;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -238,10 +238,7 @@ pub fn flatten_tree(nodes: &[TreeNode], prefix: &str, depth: i32) -> Vec<FlatSec
 }
 
 /// Build tree index for small sources (single LLM call).
-async fn build_tree_single(
-    content: &str,
-    llm: &Arc<dyn LlmClient>,
-) -> anyhow::Result<TreeIndex> {
+async fn build_tree_single(content: &str, llm: &Arc<dyn LlmClient>) -> anyhow::Result<TreeIndex> {
     let prompt = SINGLE_WINDOW_PROMPT
         .replace("SOURCE_CHARS", &content.len().to_string())
         .replace("SOURCE_TEXT", content);
@@ -268,7 +265,10 @@ async fn build_tree_windowed(
 
         let context_note = if let Some(prev) = local_trees.last() {
             if let Some(last_node) = prev.nodes.last() {
-                format!("The previous section ended with topic: '{}'", last_node.title)
+                format!(
+                    "The previous section ended with topic: '{}'",
+                    last_node.title
+                )
             } else {
                 String::new()
             }
@@ -377,7 +377,11 @@ pub async fn build_tree_index(
         let tree = TreeIndex {
             nodes: vec![TreeNode {
                 title: title.unwrap_or_else(|| "Full content".into()),
-                summary: content.chars().take(120).collect::<String>().replace('\n', " "),
+                summary: content
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+                    .replace('\n', " "),
                 start_char: 0,
                 end_char: content.len(),
                 children: vec![],
@@ -388,13 +392,8 @@ pub async fn build_tree_index(
         let tree = build_tree_single(&content, llm).await?;
         (tree, "single")
     } else {
-        let tree = build_tree_windowed(
-            &content,
-            llm,
-            DEFAULT_WINDOW_CHARS,
-            overlap_fraction,
-        )
-        .await?;
+        let tree =
+            build_tree_windowed(&content, llm, DEFAULT_WINDOW_CHARS, overlap_fraction).await?;
         (tree, "windowed")
     };
 
@@ -412,20 +411,18 @@ pub async fn build_tree_index(
     let tree_json = serde_json::to_value(&tree)?;
     let now = chrono::Utc::now().to_rfc3339();
 
-    sqlx::query(
-        "UPDATE covalence.nodes SET metadata = metadata || $1::jsonb WHERE id = $2",
-    )
-    .bind(json!({
-        "tree_index": tree_json,
-        "tree_indexed_at": now,
-        "tree_method": method,
-        "tree_node_count": node_count,
-        "tree_overlap": overlap_fraction,
-    }))
-    .bind(node_id)
-    .execute(pool)
-    .await
-    .context("failed to store tree index in metadata")?;
+    sqlx::query("UPDATE covalence.nodes SET metadata = metadata || $1::jsonb WHERE id = $2")
+        .bind(json!({
+            "tree_index": tree_json,
+            "tree_indexed_at": now,
+            "tree_method": method,
+            "tree_node_count": node_count,
+            "tree_overlap": overlap_fraction,
+        }))
+        .bind(node_id)
+        .execute(pool)
+        .await
+        .context("failed to store tree index in metadata")?;
 
     tracing::info!(
         node_id = %node_id,
@@ -469,8 +466,8 @@ pub async fn embed_sections(
         .get("tree_index")
         .context("node has no tree_index in metadata")?;
 
-    let tree: TreeIndex = serde_json::from_value(tree_value.clone())
-        .context("failed to deserialize tree_index")?;
+    let tree: TreeIndex =
+        serde_json::from_value(tree_value.clone()).context("failed to deserialize tree_index")?;
 
     // Flatten
     let sections = flatten_tree(&tree.nodes, "", 0);
@@ -478,8 +475,8 @@ pub async fn embed_sections(
         return Ok(json!({ "node_id": node_id, "sections_embedded": 0 }));
     }
 
-    let model = std::env::var("COVALENCE_EMBED_MODEL")
-        .unwrap_or_else(|_| "text-embedding-3-small".into());
+    let model =
+        std::env::var("COVALENCE_EMBED_MODEL").unwrap_or_else(|_| "text-embedding-3-small".into());
 
     let mut embedded_count = 0;
     let mut leaf_embeddings: Vec<Vec<f32>> = Vec::new();
@@ -534,7 +531,13 @@ pub async fn embed_sections(
         // Embed — for sections larger than MAX_SECTION_EMBED_CHARS,
         // we use a sliding window within the section and average
         let embedding = if slice.len() > MAX_SECTION_EMBED_CHARS {
-            embed_long_section(slice, llm, MAX_SECTION_EMBED_CHARS, DEFAULT_OVERLAP_FRACTION).await?
+            embed_long_section(
+                slice,
+                llm,
+                MAX_SECTION_EMBED_CHARS,
+                DEFAULT_OVERLAP_FRACTION,
+            )
+            .await?
         } else {
             llm.embed(slice).await?
         };
@@ -542,7 +545,11 @@ pub async fn embed_sections(
         let dims = embedding.len() as i32;
         let vec_literal = format!(
             "[{}]",
-            embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+            embedding
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         );
 
         // Track leaf embeddings for composition
@@ -587,7 +594,11 @@ pub async fn embed_sections(
         let dims = composed.len() as i32;
         let vec_literal = format!(
             "[{}]",
-            composed.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+            composed
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         );
 
         sqlx::query(&format!(
@@ -700,6 +711,8 @@ impl FlatSection {
     /// Count how many sections are children of this one.
     fn children_count(&self, all: &[FlatSection]) -> usize {
         let prefix = format!("{}.", self.tree_path);
-        all.iter().filter(|s| s.tree_path.starts_with(&prefix)).count()
+        all.iter()
+            .filter(|s| s.tree_path.starts_with(&prefix))
+            .count()
     }
 }

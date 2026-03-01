@@ -1,5 +1,5 @@
-pub mod repository;
 pub mod age;
+pub mod repository;
 
-pub use repository::*;
 pub use age::AgeGraphRepository;
+pub use repository::*;

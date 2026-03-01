@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::models::{EdgeType, SearchIntent};
 use super::dimension::{DimensionAdaptor, DimensionQuery, DimensionResult};
+use crate::models::{EdgeType, SearchIntent};
 
 pub struct GraphAdaptor;
 
@@ -33,9 +33,7 @@ impl GraphAdaptor {
                 EdgeType::MotivatedBy.as_label().to_string(),
                 EdgeType::Implements.as_label().to_string(),
             ],
-            Some(SearchIntent::Entity) => vec![
-                EdgeType::Involves.as_label().to_string(),
-            ],
+            Some(SearchIntent::Entity) => vec![EdgeType::Involves.as_label().to_string()],
             None => vec![], // all edges, no filter
         }
     }
@@ -133,7 +131,10 @@ impl DimensionAdaptor for GraphAdaptor {
         if results.is_empty() {
             return;
         }
-        let max = results.iter().map(|r| r.raw_score).fold(f64::NEG_INFINITY, f64::max);
+        let max = results
+            .iter()
+            .map(|r| r.raw_score)
+            .fold(f64::NEG_INFINITY, f64::max);
         if max > 0.0 {
             for r in results.iter_mut() {
                 r.normalized_score = r.raw_score / max;

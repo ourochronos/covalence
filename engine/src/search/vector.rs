@@ -23,7 +23,7 @@ impl DimensionAdaptor for VectorAdaptor {
     async fn check_availability(&self, pool: &PgPool) -> bool {
         // Check pgvector extension exists
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')",
         )
         .fetch_one(pool)
         .await
@@ -45,7 +45,11 @@ impl DimensionAdaptor for VectorAdaptor {
         // Convert f32 vec to pgvector format string: [0.1,0.2,...]
         let vec_str = format!(
             "[{}]",
-            embedding.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+            embedding
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         );
 
         // Search both node-level and section-level embeddings, taking best per node.
@@ -69,7 +73,7 @@ impl DimensionAdaptor for VectorAdaptor {
                 FROM candidates
                 GROUP BY node_id
                 ORDER BY distance
-                LIMIT $3"
+                LIMIT $3",
             )
             .bind(&vec_str)
             .bind(candidates)
@@ -95,7 +99,7 @@ impl DimensionAdaptor for VectorAdaptor {
                 FROM candidates
                 GROUP BY node_id
                 ORDER BY distance
-                LIMIT $2"
+                LIMIT $2",
             )
             .bind(&vec_str)
             .bind(limit as i64)

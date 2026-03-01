@@ -4,17 +4,17 @@
 //! Step 2 (sequential): Graph from candidate anchors
 //! Step 3: Score fusion via ScoreFusion
 
-use std::collections::HashMap;
-use sqlx::PgPool;
-use uuid::Uuid;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::collections::HashMap;
+use uuid::Uuid;
 
 use crate::models::SearchIntent;
 use crate::search::dimension::{DimensionAdaptor, DimensionQuery, DimensionResult};
 use crate::search::fusion::ScoreFusion;
-use crate::search::vector::VectorAdaptor;
-use crate::search::lexical::LexicalAdaptor;
 use crate::search::graph::GraphAdaptor;
+use crate::search::lexical::LexicalAdaptor;
+use crate::search::vector::VectorAdaptor;
 
 /// Request body for POST /search.
 #[derive(Debug, Deserialize)]
@@ -34,7 +34,9 @@ pub struct SearchRequest {
     pub weights: Option<WeightsInput>,
 }
 
-fn default_limit() -> usize { 10 }
+fn default_limit() -> usize {
+    10
+}
 
 #[derive(Debug, Deserialize)]
 pub struct WeightsInput {
@@ -88,10 +90,18 @@ impl SearchService {
         let v = self.vector.check_availability(&self.pool).await;
         let l = self.lexical.check_availability(&self.pool).await;
         let g = self.graph.check_availability(&self.pool).await;
-        tracing::info!(vector = v, lexical = l, graph = g, "search dimensions initialized");
+        tracing::info!(
+            vector = v,
+            lexical = l,
+            graph = g,
+            "search dimensions initialized"
+        );
     }
 
-    pub async fn search(&self, req: SearchRequest) -> anyhow::Result<(Vec<SearchResult>, SearchMeta)> {
+    pub async fn search(
+        &self,
+        req: SearchRequest,
+    ) -> anyhow::Result<(Vec<SearchResult>, SearchMeta)> {
         let start = std::time::Instant::now();
         let candidate_limit = req.limit * 5; // over-fetch for fusion
 
@@ -106,17 +116,27 @@ impl SearchService {
         // Resolve weights
         let (w_vec, w_lex, w_graph) = {
             let (v, l, g) = match &req.weights {
-                Some(w) => (w.vector.unwrap_or(0.50), w.lexical.unwrap_or(0.30), w.graph.unwrap_or(0.20)),
+                Some(w) => (
+                    w.vector.unwrap_or(0.50),
+                    w.lexical.unwrap_or(0.30),
+                    w.graph.unwrap_or(0.20),
+                ),
                 None => (0.50, 0.30, 0.20),
             };
             let sum = v + l + g;
-            if sum > 0.0 { (v / sum, l / sum, g / sum) } else { (0.50, 0.30, 0.20) }
+            if sum > 0.0 {
+                (v / sum, l / sum, g / sum)
+            } else {
+                (0.50, 0.30, 0.20)
+            }
         };
 
         // Step 1: Parallel lexical + vector
         let (mut vec_results, mut lex_results) = tokio::try_join!(
-            self.vector.search(&self.pool, &dim_query, None, candidate_limit),
-            self.lexical.search(&self.pool, &dim_query, None, candidate_limit),
+            self.vector
+                .search(&self.pool, &dim_query, None, candidate_limit),
+            self.lexical
+                .search(&self.pool, &dim_query, None, candidate_limit),
         )?;
 
         // Normalize
@@ -133,7 +153,14 @@ impl SearchService {
 
         // Step 2: Graph from candidates
         let mut graph_results = if !candidate_set.is_empty() {
-            self.graph.search(&self.pool, &dim_query, Some(&candidate_set), candidate_limit).await?
+            self.graph
+                .search(
+                    &self.pool,
+                    &dim_query,
+                    Some(&candidate_set),
+                    candidate_limit,
+                )
+                .await?
         } else {
             vec![]
         };
@@ -141,13 +168,20 @@ impl SearchService {
 
         // Track which dimensions produced results
         let mut dims_used = vec![];
-        if !vec_results.is_empty() { dims_used.push("vector".to_string()); }
-        if !lex_results.is_empty() { dims_used.push("lexical".to_string()); }
-        if !graph_results.is_empty() { dims_used.push("graph".to_string()); }
+        if !vec_results.is_empty() {
+            dims_used.push("vector".to_string());
+        }
+        if !lex_results.is_empty() {
+            dims_used.push("lexical".to_string());
+        }
+        if !graph_results.is_empty() {
+            dims_used.push("graph".to_string());
+        }
 
         // Step 3: Fusion
         // Build per-node score maps
-        let mut node_scores: HashMap<Uuid, (Option<f64>, Option<f64>, Option<f64>)> = HashMap::new();
+        let mut node_scores: HashMap<Uuid, (Option<f64>, Option<f64>, Option<f64>)> =
+            HashMap::new();
 
         for r in &vec_results {
             node_scores.entry(r.node_id).or_insert((None, None, None)).0 = Some(r.normalized_score);
@@ -164,7 +198,12 @@ impl SearchService {
         if node_ids.is_empty() {
             let meta = SearchMeta {
                 total_results: 0,
-                lexical_backend: if self.lexical.bm25_available() { "bm25" } else { "ts_rank" }.to_string(),
+                lexical_backend: if self.lexical.bm25_available() {
+                    "bm25"
+                } else {
+                    "ts_rank"
+                }
+                .to_string(),
                 dimensions_used: dims_used,
                 elapsed_ms: start.elapsed().as_millis() as u64,
             };
@@ -172,12 +211,22 @@ impl SearchService {
         }
 
         // Bulk fetch node info
-        let nodes = sqlx::query_as::<_, (Uuid, String, Option<String>, String, f64, chrono::DateTime<chrono::Utc>)>(
+        let nodes = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                Option<String>,
+                String,
+                f64,
+                chrono::DateTime<chrono::Utc>,
+            ),
+        >(
             "SELECT id, node_type, title, LEFT(content, 200) AS preview,
                     COALESCE(confidence_overall, 0.5)::float8 AS confidence,
                     modified_at
              FROM covalence.nodes
-             WHERE id = ANY($1) AND status = 'active'"
+             WHERE id = ANY($1) AND status = 'active'",
         )
         .bind(&node_ids)
         .fetch_all(&self.pool)
@@ -187,16 +236,31 @@ impl SearchService {
 
         let mut results: Vec<SearchResult> = Vec::new();
         for (node_id, (vs, ls, gs)) in &node_scores {
-            let Some(node) = node_map.get(node_id) else { continue };
+            let Some(node) = node_map.get(node_id) else {
+                continue;
+            };
             let (_, node_type, title, preview, confidence, modified_at) = node;
 
             // Weighted mean over present dimensions only
             let mut weighted_sum = 0.0f64;
             let mut weight_sum = 0.0f32;
-            if let Some(v) = vs { weighted_sum += v * w_vec as f64; weight_sum += w_vec; }
-            if let Some(l) = ls { weighted_sum += l * w_lex as f64; weight_sum += w_lex; }
-            if let Some(g) = gs { weighted_sum += g * w_graph as f64; weight_sum += w_graph; }
-            let dim_score = if weight_sum > 0.0 { weighted_sum / weight_sum as f64 } else { 0.0 };
+            if let Some(v) = vs {
+                weighted_sum += v * w_vec as f64;
+                weight_sum += w_vec;
+            }
+            if let Some(l) = ls {
+                weighted_sum += l * w_lex as f64;
+                weight_sum += w_lex;
+            }
+            if let Some(g) = gs {
+                weighted_sum += g * w_graph as f64;
+                weight_sum += w_graph;
+            }
+            let dim_score = if weight_sum > 0.0 {
+                weighted_sum / weight_sum as f64
+            } else {
+                0.0
+            };
 
             // Freshness decay
             let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
@@ -219,12 +283,21 @@ impl SearchService {
         }
 
         // Sort by final score descending
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(req.limit);
 
         let meta = SearchMeta {
             total_results: results.len(),
-            lexical_backend: if self.lexical.bm25_available() { "bm25" } else { "ts_rank" }.to_string(),
+            lexical_backend: if self.lexical.bm25_available() {
+                "bm25"
+            } else {
+                "ts_rank"
+            }
+            .to_string(),
             dimensions_used: dims_used,
             elapsed_ms: start.elapsed().as_millis() as u64,
         };

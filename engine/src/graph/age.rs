@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
-use crate::models::*;
 use super::repository::*;
+use crate::models::*;
 
 /// AGE-backed graph repository.
 pub struct AgeGraphRepository {
@@ -42,15 +42,20 @@ impl AgeGraphRepository {
     ) -> GraphResult<Vec<PgRow>> {
         // AGE requires LOAD + SET search_path before any cypher() call.
         // These must be separate statements (PG doesn't allow multi-command prepared stmts).
-        let mut conn = self.pool.acquire().await
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
             .map_err(|e| GraphError::Age(format!("pool acquire failed: {e}")))?;
 
         sqlx::query("LOAD 'age'")
-            .execute(&mut *conn).await
+            .execute(&mut *conn)
+            .await
             .map_err(|e| GraphError::Age(format!("LOAD age failed: {e}")))?;
 
         sqlx::query("SET search_path = ag_catalog, \"$user\", public")
-            .execute(&mut *conn).await
+            .execute(&mut *conn)
+            .await
             .map_err(|e| GraphError::Age(format!("SET search_path failed: {e}")))?;
 
         // Cast all agtype columns to text so sqlx can decode them.
@@ -61,7 +66,8 @@ impl AgeGraphRepository {
             .split(',')
             .map(|c| c.trim().split_whitespace().next().unwrap_or(""))
             .collect();
-        let select_cols = col_names.iter()
+        let select_cols = col_names
+            .iter()
             .map(|c| format!("t.{c}::text AS {c}"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -85,20 +91,21 @@ impl AgeGraphRepository {
     }
 
     /// Execute a Cypher statement that returns no rows.
-    async fn cypher_exec(
-        &self,
-        cypher: &str,
-        params: Option<&str>,
-    ) -> GraphResult<()> {
-        let mut conn = self.pool.acquire().await
+    async fn cypher_exec(&self, cypher: &str, params: Option<&str>) -> GraphResult<()> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
             .map_err(|e| GraphError::Age(format!("pool acquire failed: {e}")))?;
 
         sqlx::query("LOAD 'age'")
-            .execute(&mut *conn).await
+            .execute(&mut *conn)
+            .await
             .map_err(|e| GraphError::Age(format!("LOAD age failed: {e}")))?;
 
         sqlx::query("SET search_path = ag_catalog, \"$user\", public")
-            .execute(&mut *conn).await
+            .execute(&mut *conn)
+            .await
             .map_err(|e| GraphError::Age(format!("SET search_path failed: {e}")))?;
 
         let sql = if let Some(p) = params {
@@ -133,17 +140,17 @@ impl GraphRepository for AgeGraphRepository {
         let node_id_str = node_id.to_string();
 
         // Create vertex in AGE with the node UUID as a property
-        let cypher = format!(
-            "CREATE (n:{label} {{node_id: '{node_id_str}'}}) RETURN id(n)"
-        );
+        let cypher = format!("CREATE (n:{label} {{node_id: '{node_id_str}'}}) RETURN id(n)");
         let rows = self.cypher_query(&cypher, None, "(age_id agtype)").await?;
 
         let age_id: i64 = if let Some(row) = rows.first() {
             // AGE returns agtype — we need to extract the integer.
             // agtype integers can be read as text and parsed.
-            let raw: String = row.try_get("age_id")
+            let raw: String = row
+                .try_get("age_id")
                 .map_err(|e| GraphError::Age(format!("failed to read age_id: {e}")))?;
-            raw.trim_matches('"').parse::<i64>()
+            raw.trim_matches('"')
+                .parse::<i64>()
                 .map_err(|e| GraphError::Age(format!("failed to parse age_id: {e}")))?
         } else {
             return Err(GraphError::Age("vertex creation returned no rows".into()));
@@ -163,15 +170,11 @@ impl GraphRepository for AgeGraphRepository {
         let node_id_str = node_id.to_string();
 
         // Delete all edges connected to this vertex first, then the vertex
-        let cypher = format!(
-            "MATCH (n {{node_id: '{node_id_str}'}}) DETACH DELETE n"
-        );
+        let cypher = format!("MATCH (n {{node_id: '{node_id_str}'}}) DETACH DELETE n");
         self.cypher_exec(&cypher, None).await?;
 
         // Clean up SQL edges mirror
-        sqlx::query(
-            "DELETE FROM covalence.edges WHERE source_node_id = $1 OR target_node_id = $1"
-        )
+        sqlx::query("DELETE FROM covalence.edges WHERE source_node_id = $1 OR target_node_id = $1")
             .bind(node_id)
             .execute(&self.pool)
             .await?;
@@ -202,7 +205,8 @@ impl GraphRepository for AgeGraphRepository {
         let rows = self.cypher_query(&cypher, None, "(age_id agtype)").await?;
 
         let age_id: Option<i64> = if let Some(row) = rows.first() {
-            let raw: String = row.try_get("age_id")
+            let raw: String = row
+                .try_get("age_id")
                 .map_err(|e| GraphError::Age(format!("failed to read edge age_id: {e}")))?;
             raw.trim_matches('"').parse::<i64>().ok()
         } else {
@@ -214,20 +218,20 @@ impl GraphRepository for AgeGraphRepository {
         sqlx::query(
             "INSERT INTO covalence.edges (id, age_id, source_node_id, target_node_id, edge_type, \
              weight, confidence, metadata, created_at, created_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
-            .bind(edge_id)
-            .bind(age_id)
-            .bind(from_id)
-            .bind(to_id)
-            .bind(edge_type.as_label())
-            .bind(1.0f32)
-            .bind(confidence)
-            .bind(&properties)
-            .bind(now)
-            .bind(created_by)
-            .execute(&self.pool)
-            .await?;
+        .bind(edge_id)
+        .bind(age_id)
+        .bind(from_id)
+        .bind(to_id)
+        .bind(edge_type.as_label())
+        .bind(1.0f32)
+        .bind(confidence)
+        .bind(&properties)
+        .bind(now)
+        .bind(created_by)
+        .execute(&self.pool)
+        .await?;
 
         Ok(Edge {
             id: edge_id,
@@ -245,9 +249,7 @@ impl GraphRepository for AgeGraphRepository {
 
     async fn delete_edge(&self, edge_id: Uuid) -> GraphResult<()> {
         // Look up the AGE edge ID from SQL mirror
-        let row = sqlx::query(
-            "SELECT age_id FROM covalence.edges WHERE id = $1"
-        )
+        let row = sqlx::query("SELECT age_id FROM covalence.edges WHERE id = $1")
             .bind(edge_id)
             .fetch_optional(&self.pool)
             .await?
@@ -257,9 +259,7 @@ impl GraphRepository for AgeGraphRepository {
 
         // Delete from AGE if we have the internal ID
         if let Some(aid) = age_id {
-            let cypher = format!(
-                "MATCH ()-[e]->() WHERE id(e) = {aid} DELETE e"
-            );
+            let cypher = format!("MATCH ()-[e]->() WHERE id(e) = {aid} DELETE e");
             self.cypher_exec(&cypher, None).await?;
         }
 
@@ -283,17 +283,22 @@ impl GraphRepository for AgeGraphRepository {
         let mut sql = String::from(
             "SELECT id, age_id, source_node_id, target_node_id, edge_type, \
              weight, confidence, metadata, created_at, created_by \
-             FROM covalence.edges WHERE "
+             FROM covalence.edges WHERE ",
         );
 
         match direction {
             TraversalDirection::Outbound => sql.push_str("source_node_id = $1"),
             TraversalDirection::Inbound => sql.push_str("target_node_id = $1"),
-            TraversalDirection::Both => sql.push_str("(source_node_id = $1 OR target_node_id = $1)"),
+            TraversalDirection::Both => {
+                sql.push_str("(source_node_id = $1 OR target_node_id = $1)")
+            }
         }
 
         if let Some(types) = edge_types {
-            let labels: Vec<String> = types.iter().map(|t| format!("'{}'", t.as_label())).collect();
+            let labels: Vec<String> = types
+                .iter()
+                .map(|t| format!("'{}'", t.as_label()))
+                .collect();
             sql.push_str(&format!(" AND edge_type IN ({})", labels.join(",")));
         }
 
@@ -327,7 +332,9 @@ impl GraphRepository for AgeGraphRepository {
         let direction_clause = match direction {
             TraversalDirection::Outbound => "e.source_node_id = t.node_id",
             TraversalDirection::Inbound => "e.target_node_id = t.node_id",
-            TraversalDirection::Both => "(e.source_node_id = t.node_id OR e.target_node_id = t.node_id)",
+            TraversalDirection::Both => {
+                "(e.source_node_id = t.node_id OR e.target_node_id = t.node_id)"
+            }
         };
 
         let next_node = match direction {
@@ -339,7 +346,10 @@ impl GraphRepository for AgeGraphRepository {
         };
 
         let type_filter = if let Some(types) = edge_types {
-            let labels: Vec<String> = types.iter().map(|t| format!("'{}'", t.as_label())).collect();
+            let labels: Vec<String> = types
+                .iter()
+                .map(|t| format!("'{}'", t.as_label()))
+                .collect();
             format!("AND e.edge_type IN ({})", labels.join(","))
         } else {
             String::new()
@@ -438,7 +448,8 @@ impl GraphRepository for AgeGraphRepository {
             let confidence: f64 = row.try_get("confidence")?;
             let depth: i32 = row.try_get("depth")?;
 
-            let edge_type: EdgeType = edge_type_str.parse()
+            let edge_type: EdgeType = edge_type_str
+                .parse()
                 .map_err(|e: String| GraphError::Age(e))?;
 
             let node = self.fetch_node(node_id).await?;
@@ -460,17 +471,14 @@ impl GraphRepository for AgeGraphRepository {
             TraversalDirection::Both,
             Some(&[EdgeType::Contradicts, EdgeType::Contends]),
             100,
-        ).await
+        )
+        .await
     }
 
     async fn get_chain_tips(&self, limit: usize) -> GraphResult<Vec<Node>> {
         // Use the SQL function from 001 migration
-        let sql = format!(
-            "SELECT * FROM covalence.get_chain_tips() LIMIT {limit}"
-        );
-        let rows = sqlx::query(&sql)
-            .fetch_all(&self.pool)
-            .await?;
+        let sql = format!("SELECT * FROM covalence.get_chain_tips() LIMIT {limit}");
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
 
         let mut nodes = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -481,16 +489,16 @@ impl GraphRepository for AgeGraphRepository {
     }
 
     async fn count_edges(&self) -> GraphResult<i64> {
-        let rows = self.cypher_query(
-            "MATCH ()-[e]->() RETURN count(e)",
-            None,
-            "(cnt agtype)",
-        ).await?;
+        let rows = self
+            .cypher_query("MATCH ()-[e]->() RETURN count(e)", None, "(cnt agtype)")
+            .await?;
 
         if let Some(row) = rows.first() {
-            let raw: String = row.try_get("cnt")
+            let raw: String = row
+                .try_get("cnt")
                 .map_err(|e| GraphError::Age(format!("count_edges: {e}")))?;
-            raw.trim_matches('"').parse::<i64>()
+            raw.trim_matches('"')
+                .parse::<i64>()
                 .map_err(|e| GraphError::Age(format!("count_edges parse: {e}")))
         } else {
             Ok(0)
@@ -498,16 +506,16 @@ impl GraphRepository for AgeGraphRepository {
     }
 
     async fn count_vertices(&self) -> GraphResult<i64> {
-        let rows = self.cypher_query(
-            "MATCH (n) RETURN count(n)",
-            None,
-            "(cnt agtype)",
-        ).await?;
+        let rows = self
+            .cypher_query("MATCH (n) RETURN count(n)", None, "(cnt agtype)")
+            .await?;
 
         if let Some(row) = rows.first() {
-            let raw: String = row.try_get("cnt")
+            let raw: String = row
+                .try_get("cnt")
                 .map_err(|e| GraphError::Age(format!("count_vertices: {e}")))?;
-            raw.trim_matches('"').parse::<i64>()
+            raw.trim_matches('"')
+                .parse::<i64>()
                 .map_err(|e| GraphError::Age(format!("count_vertices parse: {e}")))
         } else {
             Ok(0)
@@ -537,12 +545,12 @@ impl AgeGraphRepository {
              confidence_applicability, epistemic_type, domain_path, metadata, \
              source_type, reliability, content_hash, fingerprint, size_tokens, \
              pinned, version, usage_score, created_at, modified_at, accessed_at, archived_at \
-             FROM covalence.nodes WHERE id = $1"
+             FROM covalence.nodes WHERE id = $1",
         )
-            .bind(node_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(GraphError::NodeNotFound(node_id))?;
+        .bind(node_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(GraphError::NodeNotFound(node_id))?;
 
         node_from_row(&row)
     }
@@ -559,7 +567,11 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
         "source" => NodeType::Source,
         "session" => NodeType::Session,
         "entity" => NodeType::Entity,
-        other => return Err(GraphError::QueryFailed(format!("unknown node_type: {other}"))),
+        other => {
+            return Err(GraphError::QueryFailed(format!(
+                "unknown node_type: {other}"
+            )));
+        }
     };
 
     let status = match status_str.as_str() {
@@ -586,19 +598,37 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
         content: row.try_get("content")?,
         status,
         confidence: Confidence {
-            overall: row.try_get::<Option<f64>, _>("confidence_overall")?.unwrap_or(0.5) as f32,
-            source: row.try_get::<Option<f64>, _>("confidence_source")?.unwrap_or(0.5) as f32,
-            method: row.try_get::<Option<f64>, _>("confidence_method")?.unwrap_or(0.5) as f32,
-            consistency: row.try_get::<Option<f64>, _>("confidence_consistency")?.unwrap_or(1.0) as f32,
-            freshness: row.try_get::<Option<f64>, _>("confidence_freshness")?.unwrap_or(1.0) as f32,
-            corroboration: row.try_get::<Option<f64>, _>("confidence_corroboration")?.unwrap_or(0.0) as f32,
-            applicability: row.try_get::<Option<f64>, _>("confidence_applicability")?.unwrap_or(1.0) as f32,
+            overall: row
+                .try_get::<Option<f64>, _>("confidence_overall")?
+                .unwrap_or(0.5) as f32,
+            source: row
+                .try_get::<Option<f64>, _>("confidence_source")?
+                .unwrap_or(0.5) as f32,
+            method: row
+                .try_get::<Option<f64>, _>("confidence_method")?
+                .unwrap_or(0.5) as f32,
+            consistency: row
+                .try_get::<Option<f64>, _>("confidence_consistency")?
+                .unwrap_or(1.0) as f32,
+            freshness: row
+                .try_get::<Option<f64>, _>("confidence_freshness")?
+                .unwrap_or(1.0) as f32,
+            corroboration: row
+                .try_get::<Option<f64>, _>("confidence_corroboration")?
+                .unwrap_or(0.0) as f32,
+            applicability: row
+                .try_get::<Option<f64>, _>("confidence_applicability")?
+                .unwrap_or(1.0) as f32,
         },
         epistemic_type,
-        domain_path: row.try_get::<Option<Vec<String>>, _>("domain_path")?.unwrap_or_default(),
+        domain_path: row
+            .try_get::<Option<Vec<String>>, _>("domain_path")?
+            .unwrap_or_default(),
         metadata: row.try_get::<serde_json::Value, _>("metadata")?,
         source_type: row.try_get("source_type")?,
-        reliability: row.try_get::<Option<f64>, _>("reliability")?.map(|v| v as f32),
+        reliability: row
+            .try_get::<Option<f64>, _>("reliability")?
+            .map(|v| v as f32),
         content_hash: row.try_get("content_hash")?,
         fingerprint: row.try_get("fingerprint")?,
         size_tokens: row.try_get("size_tokens")?,
@@ -614,22 +644,30 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
 
 fn edge_from_row(row: &PgRow) -> GraphResult<Edge> {
     let edge_type_str: String = row.try_get("edge_type")?;
-    let edge_type: EdgeType = edge_type_str.parse()
+    let edge_type: EdgeType = edge_type_str
+        .parse()
         .map_err(|e: String| GraphError::QueryFailed(e))?;
 
     Ok(Edge {
         id: row.try_get("id").or_else(|_| row.try_get("edge_id"))?,
-        age_id: row.try_get("age_id").or_else(|_| row.try_get("edge_age_id")).ok(),
+        age_id: row
+            .try_get("age_id")
+            .or_else(|_| row.try_get("edge_age_id"))
+            .ok(),
         source_node_id: row.try_get("source_node_id")?,
         target_node_id: row.try_get("target_node_id")?,
         edge_type,
         weight: row.try_get::<Option<f64>, _>("weight")?.unwrap_or(1.0) as f32,
-        confidence: row.try_get::<Option<f64>, _>("confidence")
-            .or_else(|_| row.try_get::<Option<f64>, _>("edge_confidence"))?.unwrap_or(1.0) as f32,
-        metadata: row.try_get::<serde_json::Value, _>("metadata")
+        confidence: row
+            .try_get::<Option<f64>, _>("confidence")
+            .or_else(|_| row.try_get::<Option<f64>, _>("edge_confidence"))?
+            .unwrap_or(1.0) as f32,
+        metadata: row
+            .try_get::<serde_json::Value, _>("metadata")
             .or_else(|_| row.try_get::<serde_json::Value, _>("edge_metadata"))
             .unwrap_or(serde_json::json!({})),
-        created_at: row.try_get("created_at")
+        created_at: row
+            .try_get("created_at")
             .or_else(|_| row.try_get("edge_created_at"))?,
         created_by: row.try_get("created_by").ok(),
     })

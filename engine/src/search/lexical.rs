@@ -32,7 +32,7 @@ impl DimensionAdaptor for LexicalAdaptor {
     async fn check_availability(&self, pool: &PgPool) -> bool {
         // Check if pg_textsearch (BM25) is available
         let bm25 = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_textsearch')"
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_textsearch')",
         )
         .fetch_one(pool)
         .await
@@ -106,8 +106,14 @@ impl DimensionAdaptor for LexicalAdaptor {
             return;
         }
         // Min-max normalization within result set
-        let min = results.iter().map(|r| r.raw_score).fold(f64::INFINITY, f64::min);
-        let max = results.iter().map(|r| r.raw_score).fold(f64::NEG_INFINITY, f64::max);
+        let min = results
+            .iter()
+            .map(|r| r.raw_score)
+            .fold(f64::INFINITY, f64::min);
+        let max = results
+            .iter()
+            .map(|r| r.raw_score)
+            .fold(f64::NEG_INFINITY, f64::max);
         let range = max - min;
 
         for r in results.iter_mut() {

@@ -1,9 +1,9 @@
 //! Session system — tracking agent interaction context.
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Serialize)]
 pub struct Session {
@@ -36,7 +36,7 @@ impl SessionService {
         let row = sqlx::query(
             "INSERT INTO covalence.sessions (id, label, metadata)
              VALUES ($1, $2, $3)
-             RETURNING id, label, status, created_at, last_active_at, metadata"
+             RETURNING id, label, status, created_at, last_active_at, metadata",
         )
         .bind(id)
         .bind(&req.label)
@@ -49,7 +49,7 @@ impl SessionService {
     pub async fn get(&self, id: Uuid) -> Result<Option<Session>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, label, status, created_at, last_active_at, metadata
-             FROM covalence.sessions WHERE id = $1"
+             FROM covalence.sessions WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -63,7 +63,7 @@ impl SessionService {
     pub async fn get_by_label(&self, label: &str) -> Result<Option<Session>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, label, status, created_at, last_active_at, metadata
-             FROM covalence.sessions WHERE label = $1"
+             FROM covalence.sessions WHERE label = $1",
         )
         .bind(label)
         .fetch_optional(&self.pool)
@@ -74,13 +74,17 @@ impl SessionService {
         }
     }
 
-    pub async fn list(&self, status: Option<&str>, limit: i64) -> Result<Vec<Session>, sqlx::Error> {
+    pub async fn list(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<Session>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, label, status, created_at, last_active_at, metadata
              FROM covalence.sessions
              WHERE ($1::text IS NULL OR status = $1)
              ORDER BY last_active_at DESC
-             LIMIT $2"
+             LIMIT $2",
         )
         .bind(status)
         .bind(limit)

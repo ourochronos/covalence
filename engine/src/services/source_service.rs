@@ -1,7 +1,7 @@
 //! Source lifecycle — ingest, get, list, delete (SPEC §5.4, §8.1).
 
 use chrono::Utc;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
@@ -66,11 +66,11 @@ impl SourceService {
 
         // 2. Check for existing source with same fingerprint (idempotent)
         let existing = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM covalence.nodes WHERE fingerprint = $1 AND node_type = 'source'"
+            "SELECT id FROM covalence.nodes WHERE fingerprint = $1 AND node_type = 'source'",
         )
-            .bind(&fingerprint)
-            .fetch_optional(&self.pool)
-            .await?;
+        .bind(&fingerprint)
+        .fetch_optional(&self.pool)
+        .await?;
 
         if let Some(id) = existing {
             return self.get(id).await;
@@ -79,7 +79,9 @@ impl SourceService {
         // 3. Create node
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let reliability = req.reliability.unwrap_or(default_reliability(req.source_type.as_deref()));
+        let reliability = req
+            .reliability
+            .unwrap_or(default_reliability(req.source_type.as_deref()));
         let metadata = req.metadata.unwrap_or(serde_json::json!({}));
         let source_type = req.source_type.unwrap_or_else(|| "document".into());
         let content_hash = hex::encode(Sha256::digest(req.content.as_bytes()));
@@ -108,15 +110,28 @@ impl SourceService {
             .await?;
 
         // 4. Create AGE vertex
-        if let Err(e) = self.graph.create_vertex(id, NodeType::Source, serde_json::json!({})).await {
+        if let Err(e) = self
+            .graph
+            .create_vertex(id, NodeType::Source, serde_json::json!({}))
+            .await
+        {
             tracing::warn!(error = %e, source_id = %id, "failed to create AGE vertex for source");
         }
 
         // 5. Create CAPTURED_IN edge if session provided
         if let Some(session_id) = req.session_id {
-            if let Err(e) = self.graph.create_edge(
-                id, session_id, EdgeType::CapturedIn, 1.0, "algorithmic", serde_json::json!({}),
-            ).await {
+            if let Err(e) = self
+                .graph
+                .create_edge(
+                    id,
+                    session_id,
+                    EdgeType::CapturedIn,
+                    1.0,
+                    "algorithmic",
+                    serde_json::json!({}),
+                )
+                .await
+            {
                 tracing::warn!(error = %e, "failed to create CAPTURED_IN edge");
             }
         }
@@ -133,12 +148,12 @@ impl SourceService {
             "SELECT id, title, content, source_type, status, \
              confidence_overall, reliability, fingerprint, metadata, version, \
              created_at, modified_at \
-             FROM covalence.nodes WHERE id = $1 AND node_type = 'source'"
+             FROM covalence.nodes WHERE id = $1 AND node_type = 'source'",
         )
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("source {id}")))?;
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("source {id}")))?;
 
         Ok(source_from_row(&row))
     }
@@ -150,7 +165,7 @@ impl SourceService {
             "SELECT id, title, content, source_type, status, \
              confidence_overall, reliability, fingerprint, metadata, version, \
              created_at, modified_at \
-             FROM covalence.nodes WHERE node_type = 'source'"
+             FROM covalence.nodes WHERE node_type = 'source'",
         );
 
         if let Some(ref st) = params.source_type {
@@ -188,10 +203,11 @@ impl SourceService {
             .await?;
 
         // Delete node
-        let result = sqlx::query("DELETE FROM covalence.nodes WHERE id = $1 AND node_type = 'source'")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let result =
+            sqlx::query("DELETE FROM covalence.nodes WHERE id = $1 AND node_type = 'source'")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
 
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("source {id}")));
@@ -205,22 +221,22 @@ impl SourceService {
         // Queue embedding generation
         sqlx::query(
             "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-             VALUES ($1, 'embed', $2, 3, 'pending')"
+             VALUES ($1, 'embed', $2, 3, 'pending')",
         )
-            .bind(Uuid::new_v4())
-            .bind(source_id)
-            .execute(&self.pool)
-            .await?;
+        .bind(Uuid::new_v4())
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
 
         // Queue contention check
         sqlx::query(
             "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-             VALUES ($1, 'contention_check', $2, 5, 'pending')"
+             VALUES ($1, 'contention_check', $2, 5, 'pending')",
         )
-            .bind(Uuid::new_v4())
-            .bind(source_id)
-            .execute(&self.pool)
-            .await?;
+        .bind(Uuid::new_v4())
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -234,9 +250,13 @@ fn source_from_row(row: &PgRow) -> SourceResponse {
         content: row.get("content"),
         source_type: row.get("source_type"),
         status: row.get("status"),
-        confidence: row.get::<Option<f64>, _>("confidence_overall").unwrap_or(0.5) as f32,
+        confidence: row
+            .get::<Option<f64>, _>("confidence_overall")
+            .unwrap_or(0.5) as f32,
         reliability: row.get::<Option<f64>, _>("reliability").unwrap_or(0.5) as f32,
-        fingerprint: row.get::<Option<String>, _>("fingerprint").unwrap_or_default(),
+        fingerprint: row
+            .get::<Option<String>, _>("fingerprint")
+            .unwrap_or_default(),
         metadata: row.get("metadata"),
         version: row.get::<Option<i32>, _>("version").unwrap_or(1),
         created_at: row.get("created_at"),

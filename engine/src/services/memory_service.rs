@@ -2,10 +2,10 @@
 //!
 //! Memories are sources with source_type='observation' and memory-specific metadata.
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Deserialize)]
 pub struct StoreMemoryRequest {
@@ -20,7 +20,9 @@ pub struct StoreMemoryRequest {
     pub supersedes_id: Option<Uuid>,
 }
 
-fn default_importance() -> f64 { 0.5 }
+fn default_importance() -> f64 {
+    0.5
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RecallRequest {
@@ -33,7 +35,9 @@ pub struct RecallRequest {
     pub min_confidence: Option<f64>,
 }
 
-fn default_recall_limit() -> usize { 5 }
+fn default_recall_limit() -> usize {
+    5
+}
 
 #[derive(Debug, Serialize)]
 pub struct Memory {
@@ -68,7 +72,7 @@ impl MemoryService {
         });
 
         let content_hash = {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let hash = Sha256::digest(req.content.as_bytes());
             hex::encode(hash)
         };
@@ -96,7 +100,7 @@ impl MemoryService {
             // Mark old memory as forgotten
             sqlx::query(
                 "UPDATE covalence.nodes SET metadata = jsonb_set(metadata, '{forgotten}', 'true')
-                 WHERE id = $1"
+                 WHERE id = $1",
             )
             .bind(old_id)
             .execute(&self.pool)
@@ -118,7 +122,7 @@ impl MemoryService {
         // Queue embedding
         sqlx::query(
             "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status)
-             VALUES ($1, 'embed', $2, 3, 'pending')"
+             VALUES ($1, 'embed', $2, 3, 'pending')",
         )
         .bind(Uuid::new_v4())
         .bind(id)
@@ -186,11 +190,32 @@ impl MemoryService {
         Ok(rows
             .into_iter()
             .map(|(id, content, metadata, confidence, created_at)| {
-                let tags = metadata.get("tags").cloned().unwrap_or(serde_json::json!([]));
-                let importance = metadata.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                let context = metadata.get("context").and_then(|v| v.as_str()).map(String::from);
-                let forgotten = metadata.get("forgotten").and_then(|v| v.as_bool()).unwrap_or(false);
-                Memory { id, content, tags, importance, context, confidence, created_at, forgotten }
+                let tags = metadata
+                    .get("tags")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]));
+                let importance = metadata
+                    .get("importance")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.5);
+                let context = metadata
+                    .get("context")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let forgotten = metadata
+                    .get("forgotten")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Memory {
+                    id,
+                    content,
+                    tags,
+                    importance,
+                    context,
+                    confidence,
+                    created_at,
+                    forgotten,
+                }
             })
             .collect())
     }
@@ -204,7 +229,7 @@ impl MemoryService {
         };
         sqlx::query(
             "UPDATE covalence.nodes SET metadata = metadata || $2
-             WHERE id = $1 AND node_type = 'source' AND source_type = 'observation'"
+             WHERE id = $1 AND node_type = 'source' AND source_type = 'observation'",
         )
         .bind(id)
         .bind(&meta_update)
@@ -218,7 +243,7 @@ impl MemoryService {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM covalence.nodes
              WHERE node_type = 'source' AND source_type = 'observation'
-               AND (metadata->>'memory')::boolean = true AND status = 'active'"
+               AND (metadata->>'memory')::boolean = true AND status = 'active'",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -228,7 +253,7 @@ impl MemoryService {
              WHERE node_type = 'source' AND source_type = 'observation'
                AND (metadata->>'memory')::boolean = true
                AND COALESCE((metadata->>'forgotten')::boolean, false) = false
-               AND status = 'active'"
+               AND status = 'active'",
         )
         .fetch_one(&self.pool)
         .await?;
