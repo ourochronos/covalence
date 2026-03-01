@@ -40,21 +40,46 @@ impl AgeGraphRepository {
         params: Option<&str>,
         columns: &str, // e.g. "(id agtype, name agtype)"
     ) -> GraphResult<Vec<PgRow>> {
-        let preamble = self.age_preamble();
+        // AGE requires LOAD + SET search_path before any cypher() call.
+        // These must be separate statements (PG doesn't allow multi-command prepared stmts).
+        let mut conn = self.pool.acquire().await
+            .map_err(|e| GraphError::Age(format!("pool acquire failed: {e}")))?;
+
+        sqlx::query("LOAD 'age'")
+            .execute(&mut *conn).await
+            .map_err(|e| GraphError::Age(format!("LOAD age failed: {e}")))?;
+
+        sqlx::query("SET search_path = ag_catalog, \"$user\", public")
+            .execute(&mut *conn).await
+            .map_err(|e| GraphError::Age(format!("SET search_path failed: {e}")))?;
+
+        // Cast all agtype columns to text so sqlx can decode them.
+        // columns is like "(age_id agtype, name agtype)" — we need to extract
+        // the column names and build "col1::text AS col1, col2::text AS col2".
+        let col_names: Vec<&str> = columns
+            .trim_matches(|c| c == '(' || c == ')')
+            .split(',')
+            .map(|c| c.trim().split_whitespace().next().unwrap_or(""))
+            .collect();
+        let select_cols = col_names.iter()
+            .map(|c| format!("t.{c}::text AS {c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
         let sql = if let Some(p) = params {
             format!(
-                "{preamble} SELECT * FROM cypher('{graph}', $$ {cypher} $$, '{p}') AS {columns};",
+                "SELECT {select_cols} FROM cypher('{graph}', $$ {cypher} $$, '{p}') AS t{columns}",
                 graph = self.graph_name,
             )
         } else {
             format!(
-                "{preamble} SELECT * FROM cypher('{graph}', $$ {cypher} $$) AS {columns};",
+                "SELECT {select_cols} FROM cypher('{graph}', $$ {cypher} $$) AS t{columns}",
                 graph = self.graph_name,
             )
         };
 
         sqlx::query(&sql)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await
             .map_err(|e| GraphError::Age(format!("cypher query failed: {e}")))
     }
@@ -65,21 +90,31 @@ impl AgeGraphRepository {
         cypher: &str,
         params: Option<&str>,
     ) -> GraphResult<()> {
-        let preamble = self.age_preamble();
+        let mut conn = self.pool.acquire().await
+            .map_err(|e| GraphError::Age(format!("pool acquire failed: {e}")))?;
+
+        sqlx::query("LOAD 'age'")
+            .execute(&mut *conn).await
+            .map_err(|e| GraphError::Age(format!("LOAD age failed: {e}")))?;
+
+        sqlx::query("SET search_path = ag_catalog, \"$user\", public")
+            .execute(&mut *conn).await
+            .map_err(|e| GraphError::Age(format!("SET search_path failed: {e}")))?;
+
         let sql = if let Some(p) = params {
             format!(
-                "{preamble} SELECT * FROM cypher('{graph}', $$ {cypher} $$, '{p}') AS (result agtype);",
+                "SELECT * FROM cypher('{graph}', $$ {cypher} $$, '{p}') AS (result agtype)",
                 graph = self.graph_name,
             )
         } else {
             format!(
-                "{preamble} SELECT * FROM cypher('{graph}', $$ {cypher} $$) AS (result agtype);",
+                "SELECT * FROM cypher('{graph}', $$ {cypher} $$) AS (result agtype)",
                 graph = self.graph_name,
             )
         };
 
         sqlx::query(&sql)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| GraphError::Age(format!("cypher exec failed: {e}")))?;
         Ok(())
@@ -201,7 +236,7 @@ impl GraphRepository for AgeGraphRepository {
             target_node_id: to_id,
             edge_type,
             weight: 1.0,
-            confidence,
+            confidence: confidence as f32,
             metadata: properties,
             created_at: now,
             created_by: Some(created_by.to_string()),
@@ -323,7 +358,7 @@ impl GraphRepository for AgeGraphRepository {
             SELECT DISTINCT ON (t.node_id) t.node_id, t.depth,
                    e.id AS edge_id, e.age_id AS edge_age_id,
                    e.source_node_id, e.target_node_id, e.edge_type,
-                   e.weight, e.confidence AS edge_confidence,
+                   e.weight, e.confidence AS edge_confidence: confidence as f32,
                    e.metadata AS edge_metadata, e.created_at AS edge_created_at,
                    e.created_by
             FROM traversal t
@@ -400,7 +435,7 @@ impl GraphRepository for AgeGraphRepository {
         for row in &rows {
             let node_id: Uuid = row.try_get("node_id")?;
             let edge_type_str: String = row.try_get("edge_type")?;
-            let confidence: f32 = row.try_get("confidence")?;
+            let confidence: f64 = row.try_get("confidence")?;
             let depth: i32 = row.try_get("depth")?;
 
             let edge_type: EdgeType = edge_type_str.parse()
@@ -411,7 +446,7 @@ impl GraphRepository for AgeGraphRepository {
             links.push(ProvenanceLink {
                 source_node: node,
                 edge_type,
-                confidence,
+                confidence: confidence as f32,
                 depth: depth as u32,
             });
         }
@@ -588,9 +623,9 @@ fn edge_from_row(row: &PgRow) -> GraphResult<Edge> {
         source_node_id: row.try_get("source_node_id")?,
         target_node_id: row.try_get("target_node_id")?,
         edge_type,
-        weight: row.try_get::<Option<f32>, _>("weight")?.unwrap_or(1.0),
-        confidence: row.try_get::<Option<f32>, _>("confidence")
-            .or_else(|_| row.try_get::<Option<f32>, _>("edge_confidence"))?.unwrap_or(1.0),
+        weight: row.try_get::<Option<f64>, _>("weight")?.unwrap_or(1.0) as f32,
+        confidence: row.try_get::<Option<f64>, _>("confidence")
+            .or_else(|_| row.try_get::<Option<f64>, _>("edge_confidence"))?.unwrap_or(1.0) as f32,
         metadata: row.try_get::<serde_json::Value, _>("metadata")
             .or_else(|_| row.try_get::<serde_json::Value, _>("edge_metadata"))
             .unwrap_or(serde_json::json!({})),
