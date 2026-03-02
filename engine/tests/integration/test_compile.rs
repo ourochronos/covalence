@@ -319,7 +319,7 @@ async fn compile_logs_inference() {
         "SELECT count(*) FROM covalence.inference_log \
          WHERE operation = 'compile' AND input_node_ids @> $1",
     )
-    .bind(&vec![src_a, src_b])
+    .bind(vec![src_a, src_b])
     .fetch_one(&fix.pool)
     .await
     .unwrap();

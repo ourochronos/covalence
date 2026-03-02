@@ -126,6 +126,12 @@ async fn setup_test_database(test_url: &str) -> PgPool {
 /// and falls back to the hard-coded default used in CI.
 pub async fn setup_pool() -> PgPool {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_TEST_DB_URL.to_string());
+    assert!(
+        url.contains("_test") || url.contains("5435"),
+        "Refusing to run integration tests against non-test database: '{}'. \
+         Use DATABASE_URL=...covalence_test or leave DATABASE_URL unset.",
+        url
+    );
     setup_test_database(&url).await
 }
 
@@ -413,8 +419,7 @@ impl TestFixture {
         let val = 1.0_f32 / (dims as f32).sqrt();
         let literal = format!(
             "[{}]",
-            std::iter::repeat(val.to_string())
-                .take(dims)
+            std::iter::repeat_n(val.to_string(), dims)
                 .collect::<Vec<_>>()
                 .join(",")
         );

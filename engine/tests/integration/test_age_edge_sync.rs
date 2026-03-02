@@ -68,7 +68,7 @@ async fn compile_edges_appear_in_sql() {
            AND edge_type IN ('ORIGINATES','CONFIRMS','SUPERSEDES','CONTRADICTS','CONTENDS')",
     )
     .bind(article_id)
-    .bind(&vec![src_a, src_b])
+    .bind(vec![src_a, src_b])
     .fetch_one(&fix.pool)
     .await
     .unwrap_or(0);
