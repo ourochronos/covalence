@@ -14,6 +14,7 @@ use crate::services::{
     admin_service::*, article_service::*, contention_service::*, edge_service::*,
     memory_service::*, search_service::*, session_service::*, source_service::*,
 };
+use crate::services::provenance_trace_service::{ProvenanceTraceService, TraceRequest};
 
 use super::AppState;
 
@@ -34,6 +35,7 @@ pub fn router() -> Router<AppState> {
         .route("/articles/{id}", delete(article_delete))
         .route("/articles/{id}/split", post(article_split))
         .route("/articles/{id}/provenance", get(article_provenance))
+        .route("/articles/{id}/trace", post(article_provenance_trace))
         // Edges
         .route("/edges", post(edge_create))
         .route("/edges/{id}", delete(edge_delete))
@@ -227,6 +229,22 @@ async fn article_provenance(
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+
+// ── Provenance trace handler ─────────────────────────────────────────────────
+
+async fn article_provenance_trace(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<TraceRequest>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = ProvenanceTraceService::new(state.pool.clone());
+    let results = svc.trace(id, req).await?;
+    Ok(Json(serde_json::json!({
+        "data": results,
+        "meta": {"count": results.len()}
+    })))
 }
 
 // ── Edge handlers ───────────────────────────────────────────────
