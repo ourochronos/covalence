@@ -175,7 +175,7 @@ async fn tree_embed_idempotent() {
     let mut fix = TestFixture::new().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
-    let content = "Stable section content for idempotency check.";
+    let content = "Stable section content for idempotency check, long enough to exceed the minimum section length.";
     let node_id = fix.insert_source("Idem Tree Embed Node", content).await;
     fix.track_task_type("tree_embed");
 

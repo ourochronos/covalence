@@ -78,7 +78,7 @@ pub async fn handle_decay_check(pool: &PgPool, task: &QueueTask) -> anyhow::Resu
 
     // ── 2. Age score ──────────────────────────────────────────────────────────
     let age_days: f64 = sqlx::query_scalar(
-        "SELECT EXTRACT(EPOCH FROM (now() - modified_at)) / 86400.0 \
+        "SELECT EXTRACT(EPOCH FROM (now() - modified_at))::float8 / 86400.0 \
          FROM   covalence.nodes \
          WHERE  id = $1",
     )

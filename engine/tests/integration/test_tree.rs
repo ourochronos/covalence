@@ -40,10 +40,10 @@ async fn tree_index_trivial_content_no_llm_call() {
         "LLM complete() must not be called for trivial content"
     );
 
-    // result carries section_count
+    // result carries node_count
     assert!(
-        result.get("section_count").is_some(),
-        "result should contain section_count"
+        result.get("node_count").is_some(),
+        "result should contain node_count"
     );
 
     // tree_index stored in metadata
@@ -79,8 +79,9 @@ async fn tree_index_trivial_content_single_section() {
     let meta = fix.node_metadata(node_id).await;
     let tree = meta
         .get("tree_index")
+        .and_then(|v| v.get("nodes"))
         .and_then(|v| v.as_array())
-        .expect("tree_index should be an array");
+        .expect("tree_index should be an object with a nodes array");
 
     assert_eq!(tree.len(), 1, "trivial content should yield one section");
 
@@ -188,25 +189,24 @@ async fn tree_index_skip_when_already_indexed() {
     mock.complete_calls
         .store(0, std::sync::atomic::Ordering::SeqCst);
 
-    // Second call without force should skip
+    // Second call without force should return an error (already indexed)
     let t2 = TestFixture::make_task(
         "tree_index",
         Some(node_id),
         json!({ "overlap": 0.1, "force": false }),
     );
-    let result = handle_tree_index(&fix.pool, &llm, &t2)
+    let err = handle_tree_index(&fix.pool, &llm, &t2)
         .await
-        .expect("second tree_index should succeed");
+        .expect_err("second tree_index should fail when already indexed");
 
-    assert_eq!(
-        result["skipped"],
-        json!(true),
-        "second call should be a no-op (skipped=true)"
+    assert!(
+        err.to_string().contains("already has tree_index"),
+        "error should mention 'already has tree_index': {err}"
     );
     assert_eq!(
         mock.complete_calls.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "LLM should not be called on a skip"
+        "LLM should not be called on an already-indexed node"
     );
 
     fix.cleanup().await;
