@@ -73,7 +73,9 @@ async function covalenceFetch(
         (data as any)?.error ||
         (data as any)?.message ||
         `HTTP ${response.status}: ${response.statusText}`;
-      return { success: false, data, error: errorMsg, status: response.status };
+      const errorMsgStr: string =
+        typeof errorMsg === "string" ? errorMsg : JSON.stringify(errorMsg);
+      return { success: false, data, error: errorMsgStr, status: response.status };
     }
 
     return { success: true, data, status: response.status };
