@@ -35,6 +35,7 @@ mod test_compile;
 mod test_contention;
 mod test_decay;
 mod test_embed;
+mod test_memory_recall;
 mod test_merge;
 mod test_split;
 mod test_tree;

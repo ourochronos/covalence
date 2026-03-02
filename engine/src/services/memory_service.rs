@@ -36,6 +36,15 @@ pub struct RecallRequest {
     pub tags: Vec<String>,
     #[serde(default)]
     pub min_confidence: Option<f64>,
+    /// Only return memories created at or after this timestamp.
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Only return memories whose `context` metadata field starts with this prefix.
+    ///
+    /// Matched via `LIKE '<prefix>%'`, so `"session:main"` matches both
+    /// `"session:main"` and `"session:main:2026-03-02"`.
+    #[serde(default)]
+    pub context_prefix: Option<String>,
 }
 
 fn default_recall_limit() -> usize {
@@ -155,54 +164,89 @@ impl MemoryService {
     }
 
     /// Search memories via ts_rank (embedding search added when slow-path generates embeddings).
+    ///
+    /// Supports optional filters:
+    /// - `min_confidence`: minimum confidence threshold (default 0.0)
+    /// - `tags`: only return memories whose `tags` metadata array contains all listed tags
+    /// - `since`: only return memories created at or after the given timestamp
+    /// - `context_prefix`: only return memories whose `context` metadata field starts with the prefix
     pub async fn recall(&self, req: RecallRequest) -> Result<Vec<Memory>, sqlx::Error> {
         let min_conf = req.min_confidence.unwrap_or(0.0);
 
-        let rows = if req.tags.is_empty() {
-            sqlx::query_as::<_, (Uuid, String, serde_json::Value, f64, DateTime<Utc>)>(
-                "SELECT id, content, metadata, COALESCE(confidence, 0.5)::float8, created_at
-                 FROM covalence.nodes
-                 WHERE node_type = 'source' AND source_type = 'observation'
-                   AND (metadata->>'memory')::boolean = true
-                   AND COALESCE((metadata->>'forgotten')::boolean, false) = false
-                   AND status = 'active'
-                   AND COALESCE(confidence, 0.5) >= $1
-                   AND content_tsv @@ websearch_to_tsquery('english', $2)
-                 ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', $2)) DESC
-                 LIMIT $3",
-            )
-            .bind(min_conf)
-            .bind(&req.query)
-            .bind(req.limit as i64)
-            .fetch_all(&self.pool)
-            .await?
+        // Fixed parameters: $1 = min_conf, $2 = query text, $3 = limit.
+        // Optional parameters follow in the order: tags, since, context_prefix.
+        let mut next_param: usize = 3;
+        let mut extra_clauses: Vec<String> = Vec::new();
+
+        let tags_json = if !req.tags.is_empty() {
+            next_param += 1;
+            extra_clauses.push(format!("metadata->'tags' @> ${next_param}"));
+            Some(serde_json::json!(req.tags))
         } else {
-            // Filter by tags using jsonb containment
-            let tags_json = serde_json::json!(req.tags);
-            sqlx::query_as::<_, (Uuid, String, serde_json::Value, f64, DateTime<Utc>)>(
-                "SELECT id, content, metadata, COALESCE(confidence, 0.5)::float8, created_at
-                 FROM covalence.nodes
-                 WHERE node_type = 'source' AND source_type = 'observation'
-                   AND (metadata->>'memory')::boolean = true
-                   AND COALESCE((metadata->>'forgotten')::boolean, false) = false
-                   AND status = 'active'
-                   AND COALESCE(confidence, 0.5) >= $1
-                   AND content_tsv @@ websearch_to_tsquery('english', $2)
-                   AND metadata->'tags' @> $4
-                 ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', $2)) DESC
-                 LIMIT $3",
-            )
-            .bind(min_conf)
-            .bind(&req.query)
-            .bind(req.limit as i64)
-            .bind(&tags_json)
-            .fetch_all(&self.pool)
-            .await?
+            None
         };
+
+        if req.since.is_some() {
+            next_param += 1;
+            extra_clauses.push(format!("created_at >= ${next_param}"));
+        }
+
+        if req.context_prefix.is_some() {
+            next_param += 1;
+            extra_clauses.push(format!("metadata->>'context' LIKE ${next_param}"));
+        }
+
+        let extra_sql = if extra_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("AND {}", extra_clauses.join(" AND "))
+        };
+
+        let sql = format!(
+            "SELECT id, content, metadata, COALESCE(confidence, 0.5)::float8, created_at,
+                    metadata->>'context'
+             FROM covalence.nodes
+             WHERE node_type = 'source' AND source_type = 'observation'
+               AND (metadata->>'memory')::boolean = true
+               AND COALESCE((metadata->>'forgotten')::boolean, false) = false
+               AND status = 'active'
+               AND COALESCE(confidence, 0.5) >= $1
+               AND content_tsv @@ websearch_to_tsquery('english', $2)
+               {extra_sql}
+             ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', $2)) DESC
+             LIMIT $3"
+        );
+
+        let mut q = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                serde_json::Value,
+                f64,
+                DateTime<Utc>,
+                Option<String>,
+            ),
+        >(&sql)
+        .bind(min_conf)
+        .bind(&req.query)
+        .bind(req.limit as i64);
+
+        if let Some(ref tags) = tags_json {
+            q = q.bind(tags);
+        }
+        if let Some(since) = req.since {
+            q = q.bind(since);
+        }
+        if let Some(ref prefix) = req.context_prefix {
+            q = q.bind(format!("{}%", prefix));
+        }
+
+        let rows = q.fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
-            .map(|(id, content, metadata, confidence, created_at)| {
+            .map(|(id, content, metadata, confidence, created_at, context)| {
                 let tags = metadata
                     .get("tags")
                     .cloned()
@@ -211,10 +255,6 @@ impl MemoryService {
                     .get("importance")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.5);
-                let context = metadata
-                    .get("context")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
                 let forgotten = metadata
                     .get("forgotten")
                     .and_then(|v| v.as_bool())
