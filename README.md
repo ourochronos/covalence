@@ -1,52 +1,238 @@
 # Covalence
 
-**Graph-native knowledge substrate for AI agent persistent memory.**
-
-Rust engine · Go CLI · PostgreSQL (AGE + PGVector + pg_textsearch) · REST/OpenAPI
+**A knowledge engine for AI agents** — PostgreSQL-backed persistent memory with pgvector semantic search, Apache AGE graph traversal, and a full epistemic model (confidence scoring, contention detection, provenance tracking). Covalence stores what agents learn as a living knowledge graph: raw **sources** are compiled into curated **articles**, relationships are typed **edges**, and every claim carries lineage back to its origin. Successor to Valence.
 
 ---
-
-## What is Covalence?
-
-Covalence is a persistent knowledge management system designed for AI agents. It provides a graph-native substrate where knowledge is stored as rich nodes with typed edges, enabling multi-dimensional retrieval across graph structure, semantic similarity, and lexical matching — all within a single PostgreSQL instance.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              OpenClaw Plugin (TS)            │
-├─────────────────────────────────────────────┤
-│              Go CLI (thin REST client)       │
-├─────────────────────────────────────────────┤
-│              REST API (OpenAPI spec)         │
-├─────────────────────────────────────────────┤
-│              Rust Engine                     │
-│  ┌─────────┬──────────┬───────────────────┐ │
-│  │  Graph   │ Semantic │ Lexical           │ │
-│  │  (AGE)   │(PGVector)│(pg_textsearch/FTS)│ │
-│  └─────────┴──────────┴───────────────────┘ │
-│              Score Fusion (RRF)             │
-├─────────────────────────────────────────────┤
-│              PostgreSQL 17                   │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│           AI Agents / LLM Orchestrators          │
+└──────────────────────┬──────────────────────────┘
+                       │  MCP tools / function calls
+┌──────────────────────▼──────────────────────────┐
+│           OpenClaw Plugin  (TypeScript)          │
+│   auto-recall · auto-capture · session ingest   │
+└──────────────────────┬──────────────────────────┘
+                       │  HTTP REST
+┌──────────────────────▼──────────────────────────┐
+│        Covalence Engine  (Rust / Actix-web)      │
+│  sources · articles · search · memory · admin   │
+│  slow-path queue → compile / embed / infer      │
+└──────────────────────┬──────────────────────────┘
+                       │  sqlx / pgvector / AGE
+┌──────────────────────▼──────────────────────────┐
+│            PostgreSQL 17  (custom image)         │
+│   pgvector (HNSW halfvec)  ·  Apache AGE graph  │
+│   full-text search  ·  JSONB metadata            │
+└─────────────────────────────────────────────────┘
 ```
 
-## Key Design Principles
+---
 
-- **Rich nodes + typed edges** — not triples. Articles are documents with metadata, connected by a growing vocabulary of relationship types.
-- **Graph for storage, flat list for retrieval, graph-walk for investigation** — search returns chain tips; the graph is there for provenance and exploration.
-- **Dual-stream architecture** — fast algorithmic path for retrieval/indexing, slow inference path for compilation/edge inference.
-- **Clean abstractions** — the graph backend (AGE today, SQL/PGQ tomorrow) is a pluggable implementation detail behind a trait boundary.
-- **16GB is enough** — designed for M4 Mac Mini. No profligate memory use.
+## Quick Start
 
-## Status
+### 1 — Start the database
 
-**Phase Zero** — spec complete, research done, implementation not yet started.
+```bash
+docker compose up -d
+```
 
-## Documentation
+The custom image (`./docker/Dockerfile`) bundles PostgreSQL 17, pgvector, and Apache AGE. Data is persisted in the `covalence-data` volume. The DB is exposed on **port 5434** (`localhost:5434/covalence`, user/pass: `covalence`).
 
-- [Phase Zero Spec](docs/phase-zero/SPEC.md) — the full specification
-- [Research](docs/research/) — literature review, extension ecosystem, SING translation guide, current substrate audit
+### 2 — Build and run the engine
+
+```bash
+cd engine
+cargo build --release
+cargo run --release
+```
+
+The engine listens on **http://localhost:8430** by default.
+
+### 3 — Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `DATABASE_URL` | ✅ | `postgres://covalence:covalence@localhost:5434/covalence` |
+| `OPENAI_API_KEY` | ✅ | Used for embedding generation (`text-embedding-3-small`) and LLM compilation |
+| `COVALENCE_PORT` | optional | HTTP listen port (default `8430`) |
+| `COVALENCE_LOG` | optional | Log level (`info`, `debug`, `trace`) |
+
+---
+
+## API Reference
+
+All endpoints return `{ "data": … }` JSON envelopes.
+
+### Sources
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/sources` | Ingest a new raw source |
+| `GET` | `/sources` | List sources |
+| `GET` | `/sources/{id}` | Get source by ID |
+| `DELETE` | `/sources/{id}` | Delete source (cascades to article provenance) |
+
+### Articles
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/articles` | Create an article manually |
+| `POST` | `/articles/compile` | Compile sources → article via LLM (async, `202`) |
+| `POST` | `/articles/merge` | Merge two articles into one |
+| `GET` | `/articles` | List articles (`?limit=`, `?cursor=`, `?status=`) |
+| `GET` | `/articles/{id}` | Get article by ID |
+| `PATCH` | `/articles/{id}` | Update article content |
+| `DELETE` | `/articles/{id}` | Archive / delete article |
+| `POST` | `/articles/{id}/split` | Split oversized article into two |
+| `GET` | `/articles/{id}/provenance` | Trace provenance graph for an article |
+
+### Search
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/search` | Hybrid search: vector + full-text + graph, RRF-fused |
+
+### Graph (Nodes & Edges)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/edges` | Create a typed edge between two nodes |
+| `DELETE` | `/edges/{id}` | Remove an edge |
+| `GET` | `/nodes/{id}/edges` | List edges for a node (`?direction=`, `?labels=`) |
+| `GET` | `/nodes/{id}/neighborhood` | Walk the graph neighborhood |
+
+### Contentions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/contentions` | List contentions (`?node_id=`, `?status=`) |
+| `GET` | `/contentions/{id}` | Get contention detail |
+| `POST` | `/contentions/{id}/resolve` | Resolve (`supersede_a`, `supersede_b`, `accept_both`, `dismiss`) |
+
+### Memory
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/memory` | Store a tagged observation memory |
+| `POST` | `/memory/search` | Recall memories by natural-language query |
+| `GET` | `/memory/status` | Memory system statistics |
+| `PATCH` | `/memory/{id}/forget` | Soft-delete a memory |
+
+### Sessions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/sessions` | Create a session |
+| `GET` | `/sessions` | List sessions |
+| `GET` | `/sessions/{id}` | Get session |
+| `POST` | `/sessions/{id}/close` | Close a session |
+
+### Admin
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/stats` | Knowledge base health and capacity stats |
+| `POST` | `/admin/maintenance` | Trigger maintenance (recompile, decay, evict) |
+| `GET` | `/admin/queue` | List slow-path queue entries |
+| `GET` | `/admin/queue/{id}` | Get queue entry |
+| `POST` | `/admin/queue/{id}/retry` | Retry a failed queue entry |
+| `DELETE` | `/admin/queue/{id}` | Remove a queue entry |
+| `POST` | `/admin/embed-all` | Queue embeddings for all un-embedded nodes |
+| `POST` | `/admin/tree-index-all` | Queue hierarchical tree-index for eligible nodes |
+
+---
+
+## OpenClaw Plugin
+
+Covalence ships a first-party [OpenClaw](https://openclaw.ai) plugin that exposes all engine tools to agents and handles automatic recall/capture lifecycle.
+
+### Install
+
+```bash
+cd plugin
+npm install
+npm run build
+```
+
+Point OpenClaw at the built plugin or reference the `plugin/` directory directly. The plugin registers as `memory-covalence`.
+
+### Key configuration options
+
+| Option | Default | Description |
+|---|---|---|
+| `serverUrl` | `http://localhost:8430` | Covalence engine URL |
+| `authToken` | — | Bearer token (or `$COVALENCE_AUTH_TOKEN`) |
+| `autoRecall` | `true` | Inject relevant memories before each agent run |
+| `autoCapture` | `true` | Extract insights from conversations |
+| `sessionIngestion` | `true` | Persist conversation transcripts as sources |
+| `autoCompileOnFlush` | `true` | Trigger queue processing on session flush |
+| `inferenceEnabled` | `true` | Proxy OpenAI-compatible `/chat/completions` + `/embeddings` |
+| `inferenceModel` | — | Provider/model for compilation (e.g. `github-copilot/gpt-4.1-mini`) |
+
+---
+
+## Epistemic Model
+
+Covalence models knowledge quality explicitly rather than treating all stored text as equally trustworthy.
+
+### Confidence
+
+Every node carries a `confidence` score (0–1), initialized by source type and decayed as knowledge ages or is superseded. Search ranking:
+
+```
+score = relevance × 0.5 + confidence × 0.35 + freshness × 0.15
+```
+
+### Provenance
+
+Articles are compiled **from** sources. Each link carries a relationship type:
+
+| Relationship | Meaning |
+|---|---|
+| `originates` | Source is the primary origin of the article |
+| `confirms` | Source corroborates an existing claim |
+| `supersedes` | Source replaces prior content |
+| `contradicts` | Source directly opposes the article |
+| `contends` | Source partially challenges the article |
+
+The `/articles/{id}/provenance` endpoint traverses this graph. Claim-level attribution uses TF-IDF similarity to rank which sources most contributed a specific sentence.
+
+### Contentions
+
+When an incoming source contradicts an existing article, a **contention** is automatically detected with severity and materiality scores. Contentions surface for explicit resolution — knowledge is never silently overwritten. Resolution options: `supersede_a` (article wins), `supersede_b` (source wins), `accept_both`, `dismiss`.
+
+### Node lifecycle
+
+```
+active → superseded | archived | disputed | tombstone
+```
+
+Tombstones preserve audit continuity on delete. The async slow-path queue handles: `compile`, `embed`, `split`, `merge`, `infer_edges`, `contention_check`, `tree_index`, `tree_embed`.
+
+---
+
+## Current Status
+
+**Active development — core engine functional.**
+
+| Component | Status |
+|---|---|
+| PostgreSQL schema (nodes, edges, contentions, embeddings, sessions, queue) | ✅ |
+| Rust/Actix engine with full REST API | ✅ |
+| pgvector HNSW embeddings (`halfvec(1536)`) | ✅ |
+| Apache AGE graph backend + neighborhood traversal | ✅ |
+| Hybrid search (vector + FTS + graph, RRF fusion) | ✅ |
+| Slow-path async queue | ✅ |
+| OpenClaw plugin (auto-recall, capture, session ingestion, inference proxy) | ✅ |
+| Epistemic model (confidence, provenance, contentions) | ✅ |
+| Automatic edge inference | 🔄 in progress |
+| Decay + organic eviction tuning | 🔄 in progress |
+| OpenAPI spec / Swagger UI | 📋 planned |
+
+---
 
 ## License
 
