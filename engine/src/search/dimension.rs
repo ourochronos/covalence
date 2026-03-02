@@ -1,7 +1,7 @@
 //! DimensionAdaptor trait — the SING cascade search pattern (SPEC §4.2).
 //!
 //! Each adaptor represents one retrieval dimension (vector, lexical, graph).
-//! Adaptors produce scored results that are fused by ScoreFusion.
+//! Adaptors produce scored results that are fused by the search service.
 
 use crate::models::SearchIntent;
 use async_trait::async_trait;

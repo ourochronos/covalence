@@ -133,7 +133,7 @@ async fn source_reliability_affects_ranking() {
         mode: None,
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -235,7 +235,7 @@ async fn article_trust_derived_from_source_reliability() {
         mode: None,
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -301,7 +301,7 @@ async fn article_without_sources_gets_default_trust() {
         mode: None,
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -365,7 +365,7 @@ async fn test_hierarchical_search_returns_articles_first() {
         mode: Some(SearchMode::Hierarchical),
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results, _meta) = svc
@@ -451,7 +451,7 @@ async fn test_hierarchical_search_expands_sources() {
         mode: Some(SearchMode::Hierarchical),
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results, _meta) = svc
@@ -543,7 +543,7 @@ async fn test_standard_mode_unchanged() {
         mode: Some(SearchMode::Standard),
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     // Default mode (mode = None).
@@ -558,7 +558,7 @@ async fn test_standard_mode_unchanged() {
         mode: None,
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results_explicit, _) = svc
@@ -634,7 +634,7 @@ async fn test_recency_bias_default_unchanged() {
         mode: None,
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     // Request with explicit recency_bias = 0.0.
@@ -649,7 +649,7 @@ async fn test_recency_bias_default_unchanged() {
         mode: None,
         recency_bias: Some(0.0),
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results_none, _) = svc
@@ -747,7 +747,7 @@ async fn test_recency_bias_favors_recent() {
         mode: None,
         recency_bias: Some(1.0),
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results, _meta) = svc
@@ -966,7 +966,7 @@ async fn test_domain_path_filter_none_returns_all() {
         mode: None,
         recency_bias: None,
         domain_path: None,
-    strategy: None,
+        strategy: None,
     };
 
     let (results, _meta) = svc

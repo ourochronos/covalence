@@ -2,7 +2,7 @@
 //!
 //! Step 1 (parallel): Lexical + Vector via tokio::try_join!
 //! Step 2 (sequential): Graph from candidate anchors
-//! Step 3: Score fusion via ScoreFusion
+//! Step 3: Score fusion (weighted dimensional + confidence + freshness)
 //!
 //! ## Search Modes
 //!
@@ -589,10 +589,7 @@ type DimScores = (Option<f64>, Option<f64>, Option<f64>);
 /// 1. Explicit `weights` field (caller override).
 /// 2. `strategy` field (preset dimension ratios).
 /// 3. [`SearchStrategy::Balanced`] defaults (current behaviour).
-fn resolve_weights(
-    w: &Option<WeightsInput>,
-    strategy: &Option<SearchStrategy>,
-) -> (f32, f32, f32) {
+fn resolve_weights(w: &Option<WeightsInput>, strategy: &Option<SearchStrategy>) -> (f32, f32, f32) {
     let (v, l, g) = match w {
         // Explicit caller weights always take precedence.
         Some(wi) => (
