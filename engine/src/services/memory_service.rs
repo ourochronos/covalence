@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::graph::{GraphRepository as _, SqlGraphRepository};
 use crate::models::EdgeType;
 
 #[derive(Debug, Deserialize)]
@@ -65,12 +65,12 @@ pub struct Memory {
 
 pub struct MemoryService {
     pool: PgPool,
-    graph: AgeGraphRepository,
+    graph: SqlGraphRepository,
 }
 
 impl MemoryService {
     pub fn new(pool: PgPool) -> Self {
-        let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+        let graph = SqlGraphRepository::new(pool.clone());
         Self { pool, graph }
     }
 

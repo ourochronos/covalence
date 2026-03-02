@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use super::QueueTask;
 use super::llm::LlmClient;
-use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::graph::{GraphRepository as _, SqlGraphRepository};
 use crate::models::EdgeType;
 
 // ─── JSON helpers ─────────────────────────────────────────────────────────────
@@ -266,7 +266,7 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
 
             // Create CONFIRMS edge: source → article via GraphRepository (dual-writes AGE + SQL).
             {
-                let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+                let graph = SqlGraphRepository::new(pool.clone());
                 if let Err(e) = graph
                     .create_edge(
                         source_id,

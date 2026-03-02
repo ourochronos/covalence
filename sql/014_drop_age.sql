@@ -1,0 +1,21 @@
+-- Migration 014: Drop Apache AGE extension
+--
+-- STATUS: MANUAL STEP — do NOT run automatically as part of Phase 1 deployment.
+--
+-- AGE is kept installed but unused after Phase 1 for rollback safety.
+-- Run this migration ONLY after confirming SqlGraphRepository works correctly
+-- in production AND the rollback window has passed.
+--
+-- Prerequisites:
+--   - SqlGraphRepository deployed and stable
+--   - No remaining references to AGE in application code (verified by cargo check)
+--   - age_id columns still present on nodes/edges tables (dropped in Phase 2)
+--
+-- Effect:
+--   - Drops the AGE extension and all associated objects (ag_catalog schema,
+--     graph metadata tables, Cypher operator definitions)
+--   - Irreversible without reinstalling the extension from source
+--
+-- Run as a superuser:
+
+DROP EXTENSION IF EXISTS age CASCADE;

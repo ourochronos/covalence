@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::errors::*;
-use crate::graph::{AgeGraphRepository, GraphRepository};
+use crate::graph::{GraphRepository, SqlGraphRepository};
 use crate::models::*;
 
 #[derive(Debug, serde::Deserialize)]
@@ -28,12 +28,12 @@ pub struct NeighborhoodParams {
 pub struct EdgeService {
     #[allow(dead_code)]
     pool: PgPool,
-    graph: AgeGraphRepository,
+    graph: SqlGraphRepository,
 }
 
 impl EdgeService {
     pub fn new(pool: PgPool) -> Self {
-        let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+        let graph = SqlGraphRepository::new(pool.clone());
         Self { pool, graph }
     }
 

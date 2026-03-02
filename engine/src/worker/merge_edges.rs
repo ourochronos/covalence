@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::QueueTask;
 use super::llm::LlmClient;
-use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::graph::{GraphRepository as _, SqlGraphRepository};
 use crate::models::{EdgeType, NodeType};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ pub async fn handle_merge(
     );
 
     // ── 5. Create AGE vertex for the new merged article ───────────────────────
-    let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+    let graph = SqlGraphRepository::new(pool.clone());
     if let Err(e) = graph
         .create_vertex(new_id, NodeType::Article, serde_json::json!({}))
         .await
@@ -659,7 +659,7 @@ pub async fn handle_infer_edges(
             }
         };
 
-        let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+        let graph = SqlGraphRepository::new(pool.clone());
         if let Err(e) = graph
             .create_edge(
                 node_id,

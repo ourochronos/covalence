@@ -6,7 +6,7 @@ use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
 use crate::errors::*;
-use crate::graph::{AgeGraphRepository, GraphRepository};
+use crate::graph::{GraphRepository, SqlGraphRepository};
 use crate::models::*;
 
 /// Request to ingest a new source.
@@ -61,12 +61,12 @@ pub struct SourceResponse {
 
 pub struct SourceService {
     pool: PgPool,
-    graph: AgeGraphRepository,
+    graph: SqlGraphRepository,
 }
 
 impl SourceService {
     pub fn new(pool: PgPool) -> Self {
-        let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+        let graph = SqlGraphRepository::new(pool.clone());
         Self { pool, graph }
     }
 

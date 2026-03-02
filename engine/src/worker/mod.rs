@@ -23,7 +23,7 @@ pub mod tree_index;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::graph::{GraphRepository as _, SqlGraphRepository};
 use crate::models::{EdgeType, NodeType};
 
 use anyhow::Context;
@@ -932,7 +932,7 @@ SOURCE DOCUMENTS:\n\
 
     // ── 7. Create AGE vertex + insert provenance edges via GraphRepository ───
     // All writes go through GraphRepository so both AGE and SQL are updated.
-    let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+    let graph = SqlGraphRepository::new(pool.clone());
 
     // Ensure the new article has an AGE vertex before creating edges.
     if let Err(e) = graph
@@ -1182,7 +1182,7 @@ Return ONLY valid JSON (no markdown fences):\n\
     .await
     .context("split: failed to archive original article")?;
 
-    let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+    let graph = SqlGraphRepository::new(pool.clone());
 
     // Remove the archived node from the live AGE graph (SQL edges are kept).
     if let Err(e) = graph.archive_vertex(node_id).await {

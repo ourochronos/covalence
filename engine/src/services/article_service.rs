@@ -6,7 +6,7 @@ use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
 use crate::errors::*;
-use crate::graph::{AgeGraphRepository, GraphRepository};
+use crate::graph::{GraphRepository, SqlGraphRepository};
 use crate::models::*;
 
 #[derive(Debug, serde::Deserialize)]
@@ -83,12 +83,12 @@ pub struct CompileJobResponse {
 
 pub struct ArticleService {
     pool: PgPool,
-    graph: AgeGraphRepository,
+    graph: SqlGraphRepository,
 }
 
 impl ArticleService {
     pub fn new(pool: PgPool) -> Self {
-        let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+        let graph = SqlGraphRepository::new(pool.clone());
         Self { pool, graph }
     }
 
