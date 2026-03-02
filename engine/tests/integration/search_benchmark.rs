@@ -580,6 +580,7 @@ async fn search_benchmark_precision_and_latency() {
             max_hops: None,
             after: None,
             before: None,
+            min_score: None,
         };
 
         let t0 = Instant::now();
@@ -710,6 +711,7 @@ async fn search_benchmark_no_total_miss() {
             max_hops: None,
             after: None,
             before: None,
+            min_score: None,
         };
 
         let (search_results, _meta) = svc
@@ -772,6 +774,7 @@ async fn search_benchmark_per_query_floor() {
             max_hops: None,
             after: None,
             before: None,
+            min_score: None,
         };
 
         let (search_results, _meta) = svc
@@ -823,6 +826,7 @@ async fn search_benchmark_single_query_latency_budget() {
             max_hops: None,
             after: None,
             before: None,
+            min_score: None,
         })
         .await;
 
@@ -844,6 +848,7 @@ async fn search_benchmark_single_query_latency_budget() {
             max_hops: None,
             after: None,
             before: None,
+            min_score: None,
         };
 
         let t0 = Instant::now();

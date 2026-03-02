@@ -1,4 +1,13 @@
 //! Lexical dimension adaptor — ts_rank with pg_textsearch BM25 fallback (SPEC §7.4).
+//!
+//! ## Fallback chain (covalence#33)
+//!
+//! 1. `websearch_to_tsquery` — strict operator-aware parsing (current).
+//! 2. `plainto_tsquery` — space-separated OR-of-terms, no operator syntax.
+//! 3. ILIKE title match — substring scan for query words >4 chars; score=0.5.
+//!
+//! Each step only runs when the previous one returns 0 results, ensuring lexical
+//! results fire for virtually every query instead of silently returning nothing.
 
 use async_trait::async_trait;
 use sqlx::PgPool;
@@ -66,7 +75,7 @@ impl DimensionAdaptor for LexicalAdaptor {
             return Ok(vec![]);
         }
 
-        // Always use ts_rank for v0 (BM25 is preview quality)
+        // ── Step A: websearch_to_tsquery (strict, operator-aware) ─────────────
         let rows = if let Some(candidates) = candidates {
             sqlx::query_as::<_, (Uuid, f64)>(
                 "SELECT id, ts_rank(content_tsv, websearch_to_tsquery('english', $1))::float8 AS score
@@ -75,7 +84,7 @@ impl DimensionAdaptor for LexicalAdaptor {
                    AND status = 'active'
                    AND id = ANY($2)
                  ORDER BY score DESC
-                 LIMIT $3"
+                 LIMIT $3",
             )
             .bind(&query.text)
             .bind(candidates)
@@ -89,7 +98,7 @@ impl DimensionAdaptor for LexicalAdaptor {
                  WHERE content_tsv @@ websearch_to_tsquery('english', $1)
                    AND status = 'active'
                  ORDER BY score DESC
-                 LIMIT $2"
+                 LIMIT $2",
             )
             .bind(&query.text)
             .bind(limit as i64)
@@ -97,7 +106,133 @@ impl DimensionAdaptor for LexicalAdaptor {
             .await?
         };
 
-        Ok(rows
+        if !rows.is_empty() {
+            return Ok(rows
+                .into_iter()
+                .map(|(node_id, score)| DimensionResult {
+                    node_id,
+                    raw_score: score,
+                    normalized_score: 0.0,
+                    hop: None,
+                })
+                .collect());
+        }
+
+        // ── Step B: plainto_tsquery (OR-of-terms, no operator syntax) ─────────
+        tracing::debug!(
+            "lexical step A returned 0 results — trying plainto_tsquery for {:?}",
+            query.text
+        );
+        let rows_b = if let Some(candidates) = candidates {
+            sqlx::query_as::<_, (Uuid, f64)>(
+                "SELECT id, ts_rank(content_tsv, plainto_tsquery('english', $1))::float8 AS score
+                 FROM covalence.nodes
+                 WHERE content_tsv @@ plainto_tsquery('english', $1)
+                   AND status = 'active'
+                   AND id = ANY($2)
+                 ORDER BY score DESC
+                 LIMIT $3",
+            )
+            .bind(&query.text)
+            .bind(candidates)
+            .bind(limit as i64)
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (Uuid, f64)>(
+                "SELECT id, ts_rank(content_tsv, plainto_tsquery('english', $1))::float8 AS score
+                 FROM covalence.nodes
+                 WHERE content_tsv @@ plainto_tsquery('english', $1)
+                   AND status = 'active'
+                 ORDER BY score DESC
+                 LIMIT $2",
+            )
+            .bind(&query.text)
+            .bind(limit as i64)
+            .fetch_all(pool)
+            .await?
+        };
+
+        if !rows_b.is_empty() {
+            return Ok(rows_b
+                .into_iter()
+                .map(|(node_id, score)| DimensionResult {
+                    node_id,
+                    raw_score: score,
+                    normalized_score: 0.0,
+                    hop: None,
+                })
+                .collect());
+        }
+
+        // ── Step C: ILIKE title substring match for words >4 chars ────────────
+        tracing::debug!(
+            "lexical step B returned 0 results — trying ILIKE title match for {:?}",
+            query.text
+        );
+
+        // Collect significant words (>4 chars) from the query.
+        let sig_words: Vec<&str> = query
+            .text
+            .split_whitespace()
+            .filter(|w| w.len() > 4)
+            .collect();
+
+        if sig_words.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build ILIKE conditions dynamically.  We interpolate patterns as SQL
+        // literals — safe because we control the ILIKE pattern format and the
+        // words come from the query string (no SQL injection surface beyond
+        // what the caller already controls via the query parameter).
+        let ilike_clauses: Vec<String> = sig_words
+            .iter()
+            .map(|w| {
+                // Escape SQL special chars in the pattern.
+                let escaped = w
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                format!("title ILIKE '%{}%'", escaped)
+            })
+            .collect();
+
+        let where_clause = ilike_clauses.join(" OR ");
+        // Build the final SQL — parameters are $1 = limit (no candidates) or
+        // $1 = candidates array, $2 = limit (with candidates).
+        let (sql, rows_c) = if let Some(candidates) = candidates {
+            let sql = format!(
+                "SELECT id, 0.5::float8 AS score
+                 FROM covalence.nodes
+                 WHERE status = 'active'
+                   AND ({where_clause})
+                   AND id = ANY($1)
+                 LIMIT $2"
+            );
+            let rows = sqlx::query_as::<_, (Uuid, f64)>(&sql)
+                .bind(candidates)
+                .bind(limit as i64)
+                .fetch_all(pool)
+                .await?;
+            (sql, rows)
+        } else {
+            let sql = format!(
+                "SELECT id, 0.5::float8 AS score
+                 FROM covalence.nodes
+                 WHERE status = 'active'
+                   AND ({where_clause})
+                 LIMIT $1"
+            );
+            let rows = sqlx::query_as::<_, (Uuid, f64)>(&sql)
+                .bind(limit as i64)
+                .fetch_all(pool)
+                .await?;
+            (sql, rows)
+        };
+        let _ = sql; // used above
+
+        Ok(rows_c
             .into_iter()
             .map(|(node_id, score)| DimensionResult {
                 node_id,

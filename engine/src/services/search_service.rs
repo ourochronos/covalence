@@ -123,6 +123,12 @@ pub struct SearchRequest {
     /// When `None`, no upper-bound date filter is applied.
     #[serde(default)]
     pub before: Option<DateTime<Utc>>,
+    /// Minimum score threshold (covalence#33). Results with a final score
+    /// strictly below this value are filtered out before returning. When
+    /// `None` (the default), all results are returned regardless of score.
+    /// Useful for precision queries: set to 0.6 to avoid weak matches.
+    #[serde(default)]
+    pub min_score: Option<f64>,
 }
 
 fn default_limit() -> usize {
@@ -330,12 +336,16 @@ impl SearchService {
             None,
             recency_bias,
             &graph_hops_map,
+            &req.query,
         );
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        if let Some(min) = req.min_score {
+            results.retain(|r| r.score >= min);
+        }
         if let Some(ref filter_paths) = req.domain_path {
             results.retain(|r| {
                 r.domain_path
@@ -491,6 +501,7 @@ impl SearchService {
             None,
             recency_bias,
             &graph_hops_map,
+            &req.query,
         );
         article_results.retain(|r| r.node_type == "article");
         article_results.sort_by(|a, b| {
@@ -609,6 +620,12 @@ impl SearchService {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        // min_score filter (covalence#33) — applied to both article and expanded results.
+        if let Some(min) = req.min_score {
+            article_results.retain(|r| r.score >= min);
+            expanded_results.retain(|r| r.score >= min);
+        }
 
         // Apply domain_path filter to both article and expanded results.
         if let Some(ref filter_paths) = req.domain_path {
@@ -809,6 +826,10 @@ async fn fetch_node_map(
 
 /// Assemble [`SearchResult`] values from dimension score maps and node metadata.
 ///
+/// `query`: the original search query string — used to compute title match
+/// bonuses (covalence#33). Words longer than 3 chars that appear in the node
+/// title each contribute up to `0.20` bonus spread across matched fraction.
+///
 /// `expanded_from_override`: when `Some(parent_id)`, all results get that
 /// parent — used by the hierarchical expander.  Pass `None` for normal use.
 ///
@@ -824,6 +845,7 @@ fn build_results(
     expanded_from_override: Option<Uuid>,
     recency_bias: f64,
     graph_hops_map: &HashMap<Uuid, u32>,
+    query: &str,
 ) -> Vec<SearchResult> {
     let mut results = Vec::new();
     for (node_id, (vs, ls, gs)) in node_scores {
@@ -852,10 +874,30 @@ fn build_results(
         let freshness_weight = 0.05 + bias * 0.35;
         // dim_weight absorbs the difference (trust and confidence stay at 0.05 each)
         let dim_weight = 1.0 - freshness_weight - 0.10; // 0.10 = trust + confidence
-        let final_score = weighted_sum * dim_weight
+        let base_score = weighted_sum * dim_weight
             + trust * 0.05
             + *confidence * 0.05
             + freshness * freshness_weight;
+
+        // Title match bonus (covalence#33): query words >3 chars that appear
+        // in the title boost relevance by up to 0.20 (proportional to the
+        // fraction of significant query words matched).
+        let title_bonus = if let Some(title) = title {
+            let query_words: Vec<&str> = query.split_whitespace().filter(|w| w.len() > 3).collect();
+            if query_words.is_empty() {
+                0.0
+            } else {
+                let title_lower = title.to_lowercase();
+                let matched = query_words
+                    .iter()
+                    .filter(|w| title_lower.contains(&w.to_lowercase()))
+                    .count();
+                0.20 * (matched as f64 / query_words.len() as f64)
+            }
+        } else {
+            0.0
+        };
+        let final_score = base_score + title_bonus;
 
         results.push(SearchResult {
             node_id: *node_id,

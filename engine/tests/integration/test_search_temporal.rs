@@ -86,6 +86,7 @@ async fn search_after_excludes_old_content() {
         max_hops: None,
         after: Some(cutoff),
         before: None,
+        min_score: None,
     };
 
     let (results, _meta) = svc
@@ -155,6 +156,7 @@ async fn search_before_excludes_new_content() {
         max_hops: None,
         after: None,
         before: Some(cutoff),
+        min_score: None,
     };
 
     let (results, _meta) = svc
@@ -234,6 +236,7 @@ async fn search_date_range_combined() {
         max_hops: None,
         after: Some(after_cutoff),
         before: Some(before_cutoff),
+        min_score: None,
     };
 
     let (results, _meta) = svc
