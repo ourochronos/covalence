@@ -28,6 +28,7 @@
 
 mod helpers;
 
+mod search_tests;
 mod test_compile;
 mod test_contention;
 mod test_decay;

@@ -53,6 +53,13 @@ pub struct SearchResult {
     pub lexical_score: Option<f64>,
     pub graph_score: Option<f64>,
     pub confidence: f64,
+    /// Trustworthiness score derived from source reliability.
+    ///
+    /// For source nodes this is the node's own `reliability` field.
+    /// For article nodes this is the average `reliability` of all linked
+    /// source nodes (via ORIGINATES / COMPILED_FROM / CONFIRMS edges).
+    /// Defaults to 0.5 when no linked sources carry a reliability value.
+    pub trust_score: Option<f64>,
     pub node_type: String,
     pub title: Option<String>,
     pub content_preview: String,
@@ -210,23 +217,49 @@ impl SearchService {
             return Ok((vec![], meta));
         }
 
-        // Bulk fetch node info
+        // Bulk fetch node info, including a per-node trust score.
+        //
+        // Trust derivation:
+        //   • source nodes → their own `reliability` (default 0.5 when NULL)
+        //   • article nodes → AVG reliability of linked sources via provenance
+        //     edges (ORIGINATES, COMPILED_FROM, CONFIRMS); default 0.5 when no
+        //     linked sources have a reliability value
         let nodes = sqlx::query_as::<
             _,
             (
-                Uuid,
-                String,
-                Option<String>,
-                String,
-                f64,
-                chrono::DateTime<chrono::Utc>,
+                Uuid,                          // id
+                String,                        // node_type
+                Option<String>,                // title
+                String,                        // content preview
+                f64,                           // confidence
+                chrono::DateTime<chrono::Utc>, // modified_at
+                f64,                           // trust_score
             ),
         >(
-            "SELECT id, node_type, title, LEFT(content, 200) AS preview,
-                    COALESCE(confidence, 0.5)::float8 AS confidence,
-                    modified_at
-             FROM covalence.nodes
-             WHERE id = ANY($1) AND status = 'active'",
+            "WITH article_trust AS (
+                 SELECT e.target_node_id                      AS node_id,
+                        AVG(COALESCE(s.reliability, 0.5))     AS avg_reliability
+                 FROM   covalence.edges e
+                 JOIN   covalence.nodes s ON s.id = e.source_node_id
+                 WHERE  e.target_node_id = ANY($1)
+                   AND  e.edge_type IN ('ORIGINATES', 'COMPILED_FROM', 'CONFIRMS')
+                 GROUP BY e.target_node_id
+             )
+             SELECT n.id,
+                    n.node_type,
+                    n.title,
+                    LEFT(n.content, 200)                      AS preview,
+                    COALESCE(n.confidence, 0.5)::float8       AS confidence,
+                    n.modified_at,
+                    CASE
+                        WHEN n.node_type = 'source'
+                            THEN COALESCE(n.reliability, 0.5)
+                        ELSE COALESCE(at.avg_reliability, 0.5)
+                    END::float8                               AS trust_score
+             FROM   covalence.nodes n
+             LEFT JOIN article_trust at ON at.node_id = n.id
+             WHERE  n.id = ANY($1)
+               AND  n.status = 'active'",
         )
         .bind(&node_ids)
         .fetch_all(&self.pool)
@@ -239,7 +272,7 @@ impl SearchService {
             let Some(node) = node_map.get(node_id) else {
                 continue;
             };
-            let (_, node_type, title, preview, confidence, modified_at) = node;
+            let (_, node_type, title, preview, confidence, modified_at, trust) = node;
 
             // Weighted sum — absent dimensions contribute 0 (no inflation)
             let mut weighted_sum = 0.0f64;
@@ -258,8 +291,11 @@ impl SearchService {
             let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
             let freshness = (-0.01 * days).exp();
 
-            // Final score: dimensional score is dominant, confidence/freshness are tiebreakers
-            let final_score = dim_score * 0.85 + *confidence * 0.10 + freshness * 0.05;
+            // Final score: dimensional score is dominant; trust, confidence,
+            // and freshness each contribute 5 % as tiebreakers.
+            // trust replaces half of the old confidence weight (covalence#31).
+            let final_score =
+                dim_score * 0.85 + trust * 0.05 + *confidence * 0.05 + freshness * 0.05;
 
             results.push(SearchResult {
                 node_id: *node_id,
@@ -268,6 +304,7 @@ impl SearchService {
                 lexical_score: *ls,
                 graph_score: *gs,
                 confidence: *confidence,
+                trust_score: Some(*trust),
                 node_type: node_type.clone(),
                 title: title.clone(),
                 content_preview: preview.clone(),
