@@ -70,6 +70,15 @@ pub struct SyncEdgesResponse {
     pub already_synced: i64,
 }
 
+/// Result returned by [`AdminService::staleness_scan`].
+#[derive(Debug, serde::Serialize)]
+pub struct StalenessResult {
+    /// Number of active articles deemed stale.
+    pub stale_count: usize,
+    /// Number of articles newly queued for recompilation (excludes already-queued).
+    pub queued_count: usize,
+}
+
 pub struct AdminService {
     pool: PgPool,
     graph: AgeGraphRepository,
@@ -504,5 +513,97 @@ impl AdminService {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Scan for stale articles and enqueue them for recompilation.
+    ///
+    /// An article is considered **stale** when there exist active source nodes
+    /// that:
+    /// * were created *after* the article's `modified_at` timestamp, AND
+    /// * share at least one `domain_path` element with the article (or are
+    ///   linked via `ORIGINATES` edges to another article in the same domain),
+    ///   AND
+    /// * are **not** already linked to the article via an `ORIGINATES` edge.
+    ///
+    /// Each stale article is queued with `task_type = 'recompile'` if it does
+    /// not already have a pending/processing recompile entry.
+    pub async fn staleness_scan(&self) -> AppResult<StalenessResult> {
+        // ── Step 1: find stale articles ───────────────────────────────────────
+        let stale_ids = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT DISTINCT a.id
+            FROM covalence.nodes a
+            WHERE a.node_type = 'article'
+              AND a.status    = 'active'
+              AND EXISTS (
+                SELECT 1
+                FROM   covalence.nodes s
+                WHERE  s.node_type = 'source'
+                  AND  s.status    = 'active'
+                  AND  s.created_at > a.modified_at
+                  AND (
+                    -- direct domain overlap
+                    (    a.domain_path IS NOT NULL
+                     AND s.domain_path IS NOT NULL
+                     AND a.domain_path && s.domain_path)
+                    OR
+                    -- source is already linked to another article in the same domain
+                    EXISTS (
+                      SELECT 1
+                      FROM   covalence.edges     ars
+                      JOIN   covalence.nodes      a2  ON ars.target_node_id = a2.id
+                      WHERE  ars.source_node_id = s.id
+                        AND  ars.edge_type      = 'ORIGINATES'
+                        AND  a2.domain_path IS NOT NULL
+                        AND  a.domain_path  IS NOT NULL
+                        AND  a2.domain_path && a.domain_path
+                    )
+                  )
+                  -- not already linked to this article
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM   covalence.edges ars2
+                    WHERE  ars2.source_node_id = s.id
+                      AND  ars2.target_node_id = a.id
+                      AND  ars2.edge_type      = 'ORIGINATES'
+                  )
+              )
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let stale_count = stale_ids.len();
+        let mut queued_count = 0usize;
+
+        // ── Step 2: queue each stale article (skip if already queued) ─────────
+        for article_id in &stale_ids {
+            let result = sqlx::query(
+                r#"
+                INSERT INTO covalence.slow_path_queue
+                    (id, task_type, node_id, payload, status)
+                SELECT gen_random_uuid(), 'recompile', $1, '{}'::jsonb, 'pending'
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM   covalence.slow_path_queue
+                    WHERE  task_type = 'recompile'
+                      AND  node_id   = $1
+                      AND  status    IN ('pending', 'processing')
+                )
+                "#,
+            )
+            .bind(article_id)
+            .execute(&self.pool)
+            .await?;
+
+            if result.rows_affected() > 0 {
+                queued_count += 1;
+            }
+        }
+
+        Ok(StalenessResult {
+            stale_count,
+            queued_count,
+        })
     }
 }

@@ -61,6 +61,11 @@ pub struct ArticleResponse {
     pub contention_count: i64,
     pub created_at: chrono::DateTime<Utc>,
     pub modified_at: chrono::DateTime<Utc>,
+    /// `true` when newer unlinked sources exist in the same domain — the
+    /// article may benefit from recompilation.  `None` when not computed
+    /// (e.g. in list responses).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -174,7 +179,42 @@ impl ArticleService {
         .await?
         .ok_or_else(|| AppError::NotFound(format!("article {id}")))?;
 
-        Ok(article_from_row(&row))
+        let mut article = article_from_row(&row);
+
+        // Populate staleness hint: true when a newer unlinked source shares a
+        // domain_path element with this article.
+        let is_stale: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+               SELECT 1
+               FROM   covalence.nodes s
+               WHERE  s.node_type    = 'source'
+                 AND  s.status       = 'active'
+                 AND  s.created_at   > $1
+                 AND  s.domain_path IS NOT NULL
+                 AND  EXISTS (
+                       SELECT 1
+                       FROM   covalence.nodes a
+                       WHERE  a.id          = $2
+                         AND  a.domain_path IS NOT NULL
+                         AND  a.domain_path && s.domain_path
+                 )
+                 AND NOT EXISTS (
+                       SELECT 1
+                       FROM   covalence.edges e
+                       WHERE  e.source_node_id = s.id
+                         AND  e.target_node_id = $2
+                         AND  e.edge_type      = 'ORIGINATES'
+                 )
+             )",
+        )
+        .bind(article.modified_at)
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(false);
+
+        article.stale = Some(is_stale);
+        Ok(article)
     }
 
     /// Update an article — bumps version, updates modified_at.
@@ -587,6 +627,7 @@ fn article_from_row(row: &PgRow) -> ArticleResponse {
         node_type: "article".into(),
         title: row.get("title"),
         content: row.get("content"),
+        stale: None,
         status: row.get("status"),
         confidence: row.get::<Option<f64>, _>("confidence").unwrap_or(0.5) as f32,
         epistemic_type: row.get("epistemic_type"),

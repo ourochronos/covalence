@@ -44,4 +44,5 @@ mod test_search_temporal;
 mod test_session_ingestion;
 mod test_source_quality;
 mod test_split;
+mod test_staleness;
 mod test_tree;

@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS covalence.slow_path_queue (
                                      CHECK (task_type IN (
                                          'compile', 'infer_edges', 'resolve_contention',
                                          'split', 'merge', 'embed', 'contention_check',
-                                         'tree_index', 'tree_embed'
+                                         'tree_index', 'tree_embed', 'recompile'
                                      )),
     node_id         UUID             REFERENCES covalence.nodes(id),
     payload         JSONB            DEFAULT '{}',
@@ -140,6 +140,18 @@ CREATE TABLE IF NOT EXISTS covalence.slow_path_queue (
     completed_at    TIMESTAMPTZ,
     result          JSONB
 );
+
+-- Idempotently refresh the task_type CHECK constraint so that new task types
+-- (e.g. 'recompile') are accepted even on databases created before this update.
+ALTER TABLE covalence.slow_path_queue
+    DROP CONSTRAINT IF EXISTS slow_path_queue_task_type_check;
+ALTER TABLE covalence.slow_path_queue
+    ADD CONSTRAINT slow_path_queue_task_type_check
+    CHECK (task_type IN (
+        'compile', 'infer_edges', 'resolve_contention',
+        'split', 'merge', 'embed', 'contention_check',
+        'tree_index', 'tree_embed', 'recompile'
+    ));
 
 -- -----------------------------------------------------------------------------
 -- inference_log

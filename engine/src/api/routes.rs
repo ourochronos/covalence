@@ -72,6 +72,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/sync-edges", get(admin_sync_edges))
         .route("/admin/embed-all", post(admin_embed_all))
         .route("/admin/tree-index-all", post(admin_tree_index_all))
+        .route("/admin/staleness-scan", post(admin_staleness_scan))
 }
 
 // ── Source handlers ─────────────────────────────────────────────
@@ -631,6 +632,14 @@ async fn admin_embed_all(State(state): State<AppState>) -> impl IntoResponse {
     let svc = AdminService::new(state.pool);
     match svc.queue_embed_all().await {
         Ok(queued) => Json(serde_json::json!({"queued": queued})).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn admin_staleness_scan(State(state): State<AppState>) -> impl IntoResponse {
+    let svc = AdminService::new(state.pool);
+    match svc.staleness_scan().await {
+        Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
     }
 }
