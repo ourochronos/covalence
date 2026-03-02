@@ -44,6 +44,30 @@ pub enum SearchMode {
     Hierarchical,
 }
 
+// ─── Search Strategy ──────────────────────────────────────────────────────────
+
+/// Adaptive fusion strategy — controls the relative weighting of the three
+/// search dimensions for different query types.
+///
+/// When [`SearchRequest::weights`] is explicitly provided it always takes
+/// precedence; `strategy` only applies when no explicit weights are given.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchStrategy {
+    /// Current behaviour: vector=0.65, lexical=0.25, graph=0.10.
+    #[default]
+    Balanced,
+    /// Lexical-heavy for factual/specific lookups: vector=0.35, lexical=0.50,
+    /// graph=0.15.  Prioritises exact-term matches over semantic similarity.
+    Precise,
+    /// Vector-heavy for conceptual/broad queries: vector=0.80, lexical=0.10,
+    /// graph=0.10.  Prioritises semantic similarity over exact-term matches.
+    Exploratory,
+    /// Graph-heavy for relationship queries: vector=0.30, lexical=0.15,
+    /// graph=0.55.  Prioritises graph-neighbourhood signals.
+    Graph,
+}
+
 // ─── Request / Response types ─────────────────────────────────────────────────
 
 /// Request body for POST /search.
@@ -75,6 +99,11 @@ pub struct SearchRequest {
     /// Nodes with an empty or NULL `domain_path` are excluded when filtering.
     #[serde(default)]
     pub domain_path: Option<Vec<String>>,
+    /// Search strategy — adjusts dimension weights for different query types.
+    /// Overrides `weights` when set to a non-`Balanced` value.
+    /// When both `weights` and `strategy` are provided, `weights` wins.
+    #[serde(default)]
+    pub strategy: Option<SearchStrategy>,
 }
 
 fn default_limit() -> usize {
@@ -121,6 +150,10 @@ pub struct SearchMeta {
     pub lexical_backend: String,
     pub dimensions_used: Vec<String>,
     pub elapsed_ms: u64,
+    /// The effective fusion strategy used for this request (for transparency).
+    /// One of `"balanced"`, `"precise"`, `"exploratory"`, `"graph"`, or
+    /// `"custom"` (when caller-supplied weights override the strategy).
+    pub strategy: String,
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -182,7 +215,8 @@ impl SearchService {
             node_types: req.node_types,
         };
 
-        let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights);
+        let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights, &req.strategy);
+        let effective_strategy = strategy_label(&req.weights, &req.strategy);
         let recency_bias = req.recency_bias.unwrap_or(0.0).clamp(0.0, 1.0);
 
         let (mut vec_results, mut lex_results) = tokio::try_join!(
@@ -234,7 +268,12 @@ impl SearchService {
         if node_ids.is_empty() {
             return Ok((
                 vec![],
-                empty_meta(self.lexical.bm25_available(), dims_used, &start),
+                empty_meta(
+                    self.lexical.bm25_available(),
+                    dims_used,
+                    &start,
+                    effective_strategy,
+                ),
             ));
         }
 
@@ -268,6 +307,7 @@ impl SearchService {
             lexical_backend: lexical_backend_name(self.lexical.bm25_available()),
             dimensions_used: dims_used,
             elapsed_ms: start.elapsed().as_millis() as u64,
+            strategy: effective_strategy,
         };
         Ok((results, meta))
     }
@@ -298,7 +338,8 @@ impl SearchService {
             node_types: Some(vec!["article".into()]),
         };
 
-        let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights);
+        let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights, &req.strategy);
+        let effective_strategy = strategy_label(&req.weights, &req.strategy);
         let recency_bias = req.recency_bias.unwrap_or(0.0).clamp(0.0, 1.0);
 
         let (mut vec_results, mut lex_results) = tokio::try_join!(
@@ -358,7 +399,12 @@ impl SearchService {
         if article_scores.is_empty() {
             return Ok((
                 vec![],
-                empty_meta(self.lexical.bm25_available(), dims_used, &start),
+                empty_meta(
+                    self.lexical.bm25_available(),
+                    dims_used,
+                    &start,
+                    effective_strategy,
+                ),
             ));
         }
 
@@ -524,6 +570,7 @@ impl SearchService {
             lexical_backend: lexical_backend_name(self.lexical.bm25_available()),
             dimensions_used: dims_used,
             elapsed_ms: start.elapsed().as_millis() as u64,
+            strategy: effective_strategy,
         };
         Ok((combined, meta))
     }
@@ -537,20 +584,48 @@ type DimScores = (Option<f64>, Option<f64>, Option<f64>);
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 /// Parse and normalise weights from the request (or use defaults).
-fn resolve_weights(w: &Option<WeightsInput>) -> (f32, f32, f32) {
+///
+/// Priority order (highest wins):
+/// 1. Explicit `weights` field (caller override).
+/// 2. `strategy` field (preset dimension ratios).
+/// 3. [`SearchStrategy::Balanced`] defaults (current behaviour).
+fn resolve_weights(
+    w: &Option<WeightsInput>,
+    strategy: &Option<SearchStrategy>,
+) -> (f32, f32, f32) {
     let (v, l, g) = match w {
+        // Explicit caller weights always take precedence.
         Some(wi) => (
             wi.vector.unwrap_or(0.65),
             wi.lexical.unwrap_or(0.25),
             wi.graph.unwrap_or(0.10),
         ),
-        None => (0.65, 0.25, 0.10),
+        None => match strategy {
+            Some(SearchStrategy::Precise) => (0.35, 0.50, 0.15),
+            Some(SearchStrategy::Exploratory) => (0.80, 0.10, 0.10),
+            Some(SearchStrategy::Graph) => (0.30, 0.15, 0.55),
+            // Balanced (or absent) → existing defaults, unchanged.
+            Some(SearchStrategy::Balanced) | None => (0.65, 0.25, 0.10),
+        },
     };
     let sum = v + l + g;
     if sum > 0.0 {
         (v / sum, l / sum, g / sum)
     } else {
         (0.50, 0.30, 0.20)
+    }
+}
+
+/// Return the human-readable label for the effective fusion strategy.
+fn strategy_label(w: &Option<WeightsInput>, strategy: &Option<SearchStrategy>) -> String {
+    if w.is_some() {
+        return "custom".to_string();
+    }
+    match strategy {
+        Some(SearchStrategy::Precise) => "precise".to_string(),
+        Some(SearchStrategy::Exploratory) => "exploratory".to_string(),
+        Some(SearchStrategy::Graph) => "graph".to_string(),
+        Some(SearchStrategy::Balanced) | None => "balanced".to_string(),
     }
 }
 
@@ -577,12 +652,18 @@ fn lexical_backend_name(bm25: bool) -> String {
     if bm25 { "bm25" } else { "ts_rank" }.to_string()
 }
 
-fn empty_meta(bm25: bool, dims_used: Vec<String>, start: &std::time::Instant) -> SearchMeta {
+fn empty_meta(
+    bm25: bool,
+    dims_used: Vec<String>,
+    start: &std::time::Instant,
+    strategy: String,
+) -> SearchMeta {
     SearchMeta {
         total_results: 0,
         lexical_backend: lexical_backend_name(bm25),
         dimensions_used: dims_used,
         elapsed_ms: start.elapsed().as_millis() as u64,
+        strategy,
     }
 }
 
