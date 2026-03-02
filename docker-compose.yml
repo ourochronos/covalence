@@ -1,4 +1,10 @@
 services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 17 — pgvector + Apache AGE extensions baked in
+  # Extensions are created automatically on first boot via init-extensions.sql
+  # Data is persisted in the `covalence-data` named volume.
+  # Exposed on host port 5434 so it can still be reached from outside compose.
+  # ---------------------------------------------------------------------------
   postgres:
     build:
       context: ./docker
@@ -16,7 +22,39 @@ services:
       test: ["CMD-SHELL", "pg_isready -U covalence"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Covalence Engine — Rust HTTP API
+  # The entrypoint script (run-migrations.sh) waits for Postgres, applies all
+  # sql/*.sql migrations in order, then exec's the engine binary.
+  # ---------------------------------------------------------------------------
+  engine:
+    build:
+      context: .
+      dockerfile: docker/engine.Dockerfile
+    container_name: covalence-engine
+    ports:
+      - "8430:8430"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://covalence:covalence@postgres:5432/covalence
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: covalence
+      DB_USER: covalence
+      DB_PASSWORD: covalence
+      BIND_ADDR: "0.0.0.0:8430"
+      RUST_LOG: "covalence_engine=info,tower_http=info"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./sql:/app/sql:ro
+    restart: unless-stopped
 
 volumes:
   covalence-data:
