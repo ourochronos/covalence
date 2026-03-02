@@ -131,6 +131,7 @@ async fn source_reliability_affects_ranking() {
         limit: 10,
         weights: None,
         mode: None,
+        recency_bias: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -230,6 +231,7 @@ async fn article_trust_derived_from_source_reliability() {
         limit: 10,
         weights: None,
         mode: None,
+        recency_bias: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -293,6 +295,7 @@ async fn article_without_sources_gets_default_trust() {
         limit: 5,
         weights: None,
         mode: None,
+        recency_bias: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -354,6 +357,7 @@ async fn test_hierarchical_search_returns_articles_first() {
         limit: 10,
         weights: None,
         mode: Some(SearchMode::Hierarchical),
+        recency_bias: None,
     };
 
     let (results, _meta) = svc
@@ -437,6 +441,7 @@ async fn test_hierarchical_search_expands_sources() {
         limit: 10,
         weights: None,
         mode: Some(SearchMode::Hierarchical),
+        recency_bias: None,
     };
 
     let (results, _meta) = svc
@@ -526,6 +531,7 @@ async fn test_standard_mode_unchanged() {
         limit: 10,
         weights: None,
         mode: Some(SearchMode::Standard),
+        recency_bias: None,
     };
 
     // Default mode (mode = None).
@@ -538,6 +544,7 @@ async fn test_standard_mode_unchanged() {
         limit: 10,
         weights: None,
         mode: None,
+        recency_bias: None,
     };
 
     let (results_explicit, _) = svc
@@ -573,6 +580,179 @@ async fn test_standard_mode_unchanged() {
             r.node_id
         );
     }
+
+    fix.cleanup().await;
+}
+
+// ─── Recency bias tests (tracking#92 Phase B, item 2) ────────────────────────
+
+/// `recency_bias` absent (or `None`) must produce exactly the same scores as
+/// an explicit `recency_bias: Some(0.0)` request, preserving existing ranking
+/// behaviour.
+///
+/// We insert two sources with identical content and compare their scores under
+/// both request forms.  The score vectors must be element-wise equal (within
+/// floating-point tolerance).
+#[tokio::test]
+#[serial]
+async fn test_recency_bias_default_unchanged() {
+    let mut fix = TestFixture::new().await;
+
+    let content = "recency bias default unchanged test unique phrase xi chi psi omega";
+
+    let src_a = fix.insert_source("Recency Default Source A", content).await;
+    let src_b = fix.insert_source("Recency Default Source B", content).await;
+
+    fix.insert_embedding(src_a).await;
+    fix.insert_embedding(src_b).await;
+
+    let svc = SearchService::new(fix.pool.clone());
+
+    // Request with no recency_bias (defaults to 0.0 internally).
+    let req_none = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: Some(vec!["source".to_string()]),
+        limit: 10,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+    };
+
+    // Request with explicit recency_bias = 0.0.
+    let req_zero = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: Some(vec!["source".to_string()]),
+        limit: 10,
+        weights: None,
+        mode: None,
+        recency_bias: Some(0.0),
+    };
+
+    let (results_none, _) = svc
+        .search(req_none)
+        .await
+        .expect("search without recency_bias should succeed");
+    let (results_zero, _) = svc
+        .search(req_zero)
+        .await
+        .expect("search with recency_bias=0.0 should succeed");
+
+    // Both result sets must contain both sources.
+    assert!(
+        results_none.iter().any(|r| r.node_id == src_a),
+        "src_a should appear in results_none"
+    );
+    assert!(
+        results_none.iter().any(|r| r.node_id == src_b),
+        "src_b should appear in results_none"
+    );
+
+    // Scores for each node must be identical between the two requests
+    // (within floating-point rounding tolerance).
+    for id in [src_a, src_b] {
+        let score_none = results_none
+            .iter()
+            .find(|r| r.node_id == id)
+            .map(|r| r.score)
+            .unwrap_or_else(|| panic!("node {id} missing from results_none"));
+        let score_zero = results_zero
+            .iter()
+            .find(|r| r.node_id == id)
+            .map(|r| r.score)
+            .unwrap_or_else(|| panic!("node {id} missing from results_zero"));
+        assert!(
+            (score_none - score_zero).abs() < 1e-12,
+            "node {id}: score with recency_bias=None ({score_none}) should equal \
+             score with recency_bias=Some(0.0) ({score_zero})"
+        );
+    }
+
+    fix.cleanup().await;
+}
+
+/// With `recency_bias: Some(1.0)` a freshly-inserted source must rank strictly
+/// above an otherwise-identical source that is 365 days old, even when the
+/// older source has a marginally better content-match score.
+///
+/// Math check:
+///   freshness_weight = 0.05 + 1.0 * 0.35 = 0.40
+///   dim_weight       = 1.0 - 0.40 - 0.10 = 0.50
+///   freshness_new  ≈ exp(0)        = 1.0
+///   freshness_old  ≈ exp(-3.65)    ≈ 0.026
+///
+/// Score difference from freshness alone (assuming equal dim scores):
+///   Δ = 0.40 * (1.0 - 0.026) = 0.390  — overwhelms any dim-score gap.
+///
+/// To simulate a slightly worse content match for the new source we give it
+/// a distinct title while keeping the body identical so lexical recall still
+/// picks both up.  The freshness advantage easily covers the small dim delta.
+#[tokio::test]
+#[serial]
+async fn test_recency_bias_favors_recent() {
+    let mut fix = TestFixture::new().await;
+
+    let content = "recency bias ranking test unique phrase alpha gamma epsilon zeta eta";
+
+    // Insert two sources with identical content.
+    let new_src = fix.insert_source("Recency Bias New Source", content).await;
+    let old_src = fix.insert_source("Recency Bias Old Source", content).await;
+
+    fix.insert_embedding(new_src).await;
+    fix.insert_embedding(old_src).await;
+
+    // Age the old source by backdating modified_at by 365 days.
+    sqlx::query(
+        "UPDATE covalence.nodes \
+         SET modified_at = now() - interval '365 days' \
+         WHERE id = $1",
+    )
+    .bind(old_src)
+    .execute(&fix.pool)
+    .await
+    .expect("backdating old_src modified_at should succeed");
+
+    let svc = SearchService::new(fix.pool.clone());
+    let req = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: Some(vec!["source".to_string()]),
+        limit: 10,
+        weights: None,
+        mode: None,
+        recency_bias: Some(1.0),
+    };
+
+    let (results, _meta) = svc
+        .search(req)
+        .await
+        .expect("recency-bias search should succeed");
+
+    // Both sources must be present.
+    let new_result = results
+        .iter()
+        .find(|r| r.node_id == new_src)
+        .expect("new source should appear in results");
+    let old_result = results
+        .iter()
+        .find(|r| r.node_id == old_src)
+        .expect("old source should appear in results");
+
+    // The newer source must score strictly higher.
+    assert!(
+        new_result.score > old_result.score,
+        "newer source (score={:.6}) should outrank 365-day-old source \
+         (score={:.6}) when recency_bias=1.0",
+        new_result.score,
+        old_result.score,
+    );
 
     fix.cleanup().await;
 }

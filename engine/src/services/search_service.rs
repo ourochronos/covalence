@@ -65,6 +65,11 @@ pub struct SearchRequest {
     /// Search mode — defaults to [`SearchMode::Standard`].
     #[serde(default)]
     pub mode: Option<SearchMode>,
+    /// Recency bias factor (0.0–1.0). Higher values favor newer content.
+    /// At 0.0 (default), freshness gets 5% weight (current behavior).
+    /// At 1.0, freshness gets 40% weight (strongly favor recent).
+    #[serde(default)]
+    pub recency_bias: Option<f64>,
 }
 
 fn default_limit() -> usize {
@@ -172,6 +177,7 @@ impl SearchService {
         };
 
         let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights);
+        let recency_bias = req.recency_bias.unwrap_or(0.0).clamp(0.0, 1.0);
 
         let (mut vec_results, mut lex_results) = tokio::try_join!(
             self.vector
@@ -228,7 +234,15 @@ impl SearchService {
 
         let node_map = fetch_node_map(&self.pool, &node_ids).await?;
 
-        let mut results = build_results(&node_scores, &node_map, w_vec, w_lex, w_graph, None);
+        let mut results = build_results(
+            &node_scores,
+            &node_map,
+            w_vec,
+            w_lex,
+            w_graph,
+            None,
+            recency_bias,
+        );
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -272,6 +286,7 @@ impl SearchService {
         };
 
         let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights);
+        let recency_bias = req.recency_bias.unwrap_or(0.0).clamp(0.0, 1.0);
 
         let (mut vec_results, mut lex_results) = tokio::try_join!(
             self.vector
@@ -348,6 +363,7 @@ impl SearchService {
             w_lex,
             w_graph,
             None,
+            recency_bias,
         );
         article_results.retain(|r| r.node_type == "article");
         article_results.sort_by(|a, b| {
@@ -416,11 +432,17 @@ impl SearchService {
                     let parent_score = *parent_score_map.get(parent_article_id).unwrap_or(&0.5);
                     let derived_score = parent_score * SOURCE_SCORE_FACTOR;
 
-                    // Apply the same freshness tiebreaker as standard mode.
+                    // Apply the same freshness tiebreaker as standard mode,
+                    // honouring the caller's recency_bias setting.
                     let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
                     let freshness = (-0.01 * days).exp();
-                    let final_score =
-                        derived_score * 0.85 + trust * 0.05 + confidence * 0.05 + freshness * 0.05;
+                    let bias = recency_bias;
+                    let freshness_weight = 0.05 + bias * 0.35;
+                    let dim_weight = 1.0 - freshness_weight - 0.10;
+                    let final_score = derived_score * dim_weight
+                        + trust * 0.05
+                        + confidence * 0.05
+                        + freshness * freshness_weight;
 
                     Some(SearchResult {
                         node_id: *source_id,
@@ -597,6 +619,7 @@ fn build_results(
     w_lex: f32,
     w_graph: f32,
     expanded_from_override: Option<Uuid>,
+    recency_bias: f64,
 ) -> Vec<SearchResult> {
     let mut results = Vec::new();
     for (node_id, (vs, ls, gs)) in node_scores {
@@ -619,8 +642,15 @@ fn build_results(
         let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
         let freshness = (-0.01 * days).exp();
 
-        let final_score =
-            weighted_sum * 0.85 + trust * 0.05 + *confidence * 0.05 + freshness * 0.05;
+        let bias = recency_bias.clamp(0.0, 1.0);
+        // freshness_weight scales from 0.05 (bias=0) to 0.40 (bias=1)
+        let freshness_weight = 0.05 + bias * 0.35;
+        // dim_weight absorbs the difference (trust and confidence stay at 0.05 each)
+        let dim_weight = 1.0 - freshness_weight - 0.10; // 0.10 = trust + confidence
+        let final_score = weighted_sum * dim_weight
+            + trust * 0.05
+            + *confidence * 0.05
+            + freshness * freshness_weight;
 
         results.push(SearchResult {
             node_id: *node_id,
