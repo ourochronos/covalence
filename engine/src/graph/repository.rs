@@ -122,4 +122,35 @@ pub trait GraphRepository: Send + Sync {
     /// Returns (age_count, sql_count).
     #[allow(dead_code)]
     async fn verify_sync(&self) -> GraphResult<(i64, i64)>;
+
+    // ── Archive / sync helpers ──────────────────────────────────────────
+
+    /// Remove a vertex and its incident edges from AGE only.
+    /// The SQL `covalence.edges` mirror is intentionally preserved — historical
+    /// provenance data must outlive the live graph representation.
+    /// Call this when archiving nodes (not hard-deleting them).
+    async fn archive_vertex(&self, node_id: Uuid) -> GraphResult<()>;
+
+    /// List all edges present in the AGE graph as `(age_internal_id, sql_edge_uuid)`.
+    /// Edges that were written directly to AGE without a SQL counterpart will
+    /// have `None` for the UUID (these are "orphaned" AGE edges).
+    async fn list_age_edge_refs(&self) -> GraphResult<Vec<(i64, Option<Uuid>)>>;
+
+    /// Delete a single edge from the AGE graph by its internal AGE ID.
+    /// Does NOT touch `covalence.edges`. Used by the sync endpoint to prune
+    /// orphaned AGE edges.
+    async fn delete_age_edge_by_internal_id(&self, age_internal_id: i64) -> GraphResult<()>;
+
+    /// For a SQL edge that has no AGE counterpart (`age_id IS NULL`), create the
+    /// edge in AGE and return the new AGE internal ID.  Used by the sync
+    /// endpoint to repair gaps.  Returns `None` if either node vertex is absent
+    /// in AGE (the SQL edge is retained for history regardless).
+    async fn create_age_edge_for_sql(
+        &self,
+        edge_id: Uuid,
+        from_id: Uuid,
+        to_id: Uuid,
+        edge_type: EdgeType,
+        confidence: f32,
+    ) -> GraphResult<Option<i64>>;
 }

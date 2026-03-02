@@ -64,6 +64,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/queue/{id}", delete(admin_queue_delete))
         .route("/admin/stats", get(admin_stats))
         .route("/admin/maintenance", post(admin_maintenance))
+        .route("/admin/sync-edges", get(admin_sync_edges))
         .route("/admin/embed-all", post(admin_embed_all))
         .route("/admin/tree-index-all", post(admin_tree_index_all))
 }
@@ -326,6 +327,14 @@ async fn admin_maintenance(
 ) -> impl IntoResponse {
     let svc = AdminService::new(state.pool);
     match svc.maintenance(req).await {
+        Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn admin_sync_edges(State(state): State<AppState>) -> impl IntoResponse {
+    let svc = AdminService::new(state.pool);
+    match svc.sync_edges().await {
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
     }

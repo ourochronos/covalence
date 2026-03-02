@@ -30,6 +30,7 @@ mod helpers;
 
 mod search_benchmark;
 mod search_tests;
+mod test_age_edge_sync;
 mod test_compile;
 mod test_contention;
 mod test_decay;

@@ -170,11 +170,17 @@ impl GraphRepository for AgeGraphRepository {
     async fn delete_vertex(&self, node_id: Uuid) -> GraphResult<()> {
         let node_id_str = node_id.to_string();
 
-        // Delete all edges connected to this vertex first, then the vertex
+        // Best-effort: remove from AGE (vertex may not exist for legacy data).
         let cypher = format!("MATCH (n {{node_id: '{node_id_str}'}}) DETACH DELETE n");
-        self.cypher_exec(&cypher, None).await?;
+        if let Err(e) = self.cypher_exec(&cypher, None).await {
+            tracing::warn!(
+                node_id = %node_id,
+                "delete_vertex: AGE DETACH DELETE failed (continuing SQL cleanup): {e}"
+            );
+        }
 
-        // Clean up SQL edges mirror
+        // Always clean the SQL edges mirror — this must not be skipped even when
+        // the AGE step above fails, so callers don't end up with orphan SQL rows.
         sqlx::query("DELETE FROM covalence.edges WHERE source_node_id = $1 OR target_node_id = $1")
             .bind(node_id)
             .execute(&self.pool)
@@ -531,6 +537,103 @@ impl GraphRepository for AgeGraphRepository {
             .await?;
 
         Ok((age_count, sql_count))
+    }
+
+    async fn archive_vertex(&self, node_id: Uuid) -> GraphResult<()> {
+        let node_id_str = node_id.to_string();
+        // Remove the vertex (and all its incident edges) from the live AGE graph.
+        // The SQL covalence.edges mirror is intentionally left intact as history.
+        let cypher = format!("MATCH (n {{node_id: '{node_id_str}'}}) DETACH DELETE n");
+        if let Err(e) = self.cypher_exec(&cypher, None).await {
+            tracing::warn!(
+                node_id = %node_id,
+                "archive_vertex: AGE DETACH DELETE failed (non-fatal): {e}"
+            );
+        }
+        Ok(())
+    }
+
+    async fn list_age_edge_refs(&self) -> GraphResult<Vec<(i64, Option<Uuid>)>> {
+        // Return (age_internal_id, edge_id_property) for every edge in AGE.
+        // Edges created before the GraphRepository was used won't have the
+        // edge_id property, so they come back with NULL / None.
+        let rows = self
+            .cypher_query(
+                "MATCH ()-[e]->() RETURN id(e), \
+                 CASE WHEN e.edge_id IS NULL THEN NULL ELSE e.edge_id END",
+                None,
+                "(age_id agtype, edge_uuid agtype)",
+            )
+            .await?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let age_id_raw: String = row
+                .try_get("age_id")
+                .map_err(|e| GraphError::Age(format!("list_age_edge_refs: age_id: {e}")))?;
+            let age_id: i64 = age_id_raw
+                .trim_matches('"')
+                .parse()
+                .map_err(|e| GraphError::Age(format!("list_age_edge_refs: parse age_id: {e}")))?;
+
+            let edge_uuid_raw: Option<String> = row.try_get("edge_uuid").ok();
+            let edge_uuid: Option<Uuid> = edge_uuid_raw
+                .as_deref()
+                .filter(|s| *s != "null")
+                .and_then(|s| s.trim_matches('"').parse::<Uuid>().ok());
+
+            result.push((age_id, edge_uuid));
+        }
+        Ok(result)
+    }
+
+    async fn delete_age_edge_by_internal_id(&self, age_internal_id: i64) -> GraphResult<()> {
+        let cypher = format!("MATCH ()-[e]->() WHERE id(e) = {age_internal_id} DELETE e");
+        self.cypher_exec(&cypher, None).await?;
+        Ok(())
+    }
+
+    async fn create_age_edge_for_sql(
+        &self,
+        edge_id: Uuid,
+        from_id: Uuid,
+        to_id: Uuid,
+        edge_type: EdgeType,
+        confidence: f32,
+    ) -> GraphResult<Option<i64>> {
+        let label = edge_type.as_label();
+        let from_str = from_id.to_string();
+        let to_str = to_id.to_string();
+        let edge_id_str = edge_id.to_string();
+
+        let cypher = format!(
+            "MATCH (a {{node_id: '{from_str}'}}), (b {{node_id: '{to_str}'}}) \
+             CREATE (a)-[e:{label} {{edge_id: '{edge_id_str}', confidence: {confidence}}}]->(b) \
+             RETURN id(e)"
+        );
+
+        let rows = self.cypher_query(&cypher, None, "(age_id agtype)").await?;
+
+        let age_id: Option<i64> = if let Some(row) = rows.first() {
+            let raw: String = row
+                .try_get("age_id")
+                .map_err(|e| GraphError::Age(format!("create_age_edge_for_sql: {e}")))?;
+            raw.trim_matches('"').parse::<i64>().ok()
+        } else {
+            // MATCH found nothing — one or both vertices missing in AGE.
+            return Ok(None);
+        };
+
+        if let Some(aid) = age_id {
+            // Backfill the age_id on the SQL row.
+            sqlx::query("UPDATE covalence.edges SET age_id = $1 WHERE id = $2")
+                .bind(aid)
+                .bind(edge_id)
+                .execute(&self.pool)
+                .await?;
+        }
+
+        Ok(age_id)
     }
 }
 

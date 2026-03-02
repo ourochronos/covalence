@@ -20,6 +20,8 @@ use uuid::Uuid;
 
 use super::QueueTask;
 use super::llm::LlmClient;
+use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::models::EdgeType;
 
 // ─── JSON helpers ─────────────────────────────────────────────────────────────
 
@@ -262,20 +264,27 @@ Respond ONLY with valid JSON matching this schema (no prose, no fences):
             .await
             .context("supersede_b: failed to increment article version")?;
 
-            // Create CONFIRMS edge: source → article (Item 7)
-            // The winning source now confirms the updated article content.
-            sqlx::query(
-                "INSERT INTO covalence.edges
-                     (id, source_node_id, target_node_id, edge_type, weight, confidence, created_by)
-                 VALUES ($1, $2, $3, 'CONFIRMS', 1.0, 1.0, 'resolve_contention')
-                 ON CONFLICT (source_node_id, target_node_id, edge_type) DO NOTHING",
-            )
-            .bind(Uuid::new_v4())
-            .bind(source_id)
-            .bind(article_id)
-            .execute(pool)
-            .await
-            .context("supersede_b: failed to insert CONFIRMS edge")?;
+            // Create CONFIRMS edge: source → article via GraphRepository (dual-writes AGE + SQL).
+            {
+                let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+                if let Err(e) = graph
+                    .create_edge(
+                        source_id,
+                        article_id,
+                        EdgeType::Confirms,
+                        1.0,
+                        "resolve_contention",
+                        serde_json::json!({}),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        source_id  = %source_id,
+                        article_id = %article_id,
+                        "supersede_b: failed to create CONFIRMS edge via GraphRepository: {e}"
+                    );
+                }
+            }
 
             sqlx::query(
                 "UPDATE covalence.contentions

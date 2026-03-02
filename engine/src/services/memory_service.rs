@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::models::EdgeType;
+
 #[derive(Debug, Deserialize)]
 pub struct StoreMemoryRequest {
     pub content: String,
@@ -53,11 +56,13 @@ pub struct Memory {
 
 pub struct MemoryService {
     pool: PgPool,
+    graph: AgeGraphRepository,
 }
 
 impl MemoryService {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+        Self { pool, graph }
     }
 
     /// Store a memory (source_type='observation' with memory metadata).
@@ -106,17 +111,25 @@ impl MemoryService {
             .execute(&self.pool)
             .await?;
 
-            // Create SUPERSEDES edge
-            let edge_id = Uuid::new_v4();
-            sqlx::query(
-                "INSERT INTO covalence.edges (id, source_node_id, target_node_id, edge_type, weight, confidence, created_by)
-                 VALUES ($1, $2, $3, 'SUPERSEDES', 1.0, 1.0, 'system')"
-            )
-            .bind(edge_id)
-            .bind(id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
+            // Create SUPERSEDES edge via GraphRepository (dual-writes AGE + SQL).
+            if let Err(e) = self
+                .graph
+                .create_edge(
+                    id,
+                    old_id,
+                    EdgeType::Supersedes,
+                    1.0,
+                    "system",
+                    serde_json::json!({}),
+                )
+                .await
+            {
+                tracing::warn!(
+                    new_id = %id,
+                    old_id = %old_id,
+                    "memory store: failed to create SUPERSEDES edge via GraphRepository: {e}"
+                );
+            }
         }
 
         // Queue embedding

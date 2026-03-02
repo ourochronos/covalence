@@ -60,6 +60,16 @@ pub struct MaintenanceResponse {
     pub actions_taken: Vec<String>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct SyncEdgesResponse {
+    /// AGE edges with no SQL counterpart that were deleted.
+    pub orphaned_deleted: i64,
+    /// SQL edges missing from AGE that were created.
+    pub missing_created: i64,
+    /// SQL edges that already had an AGE counterpart (no action needed).
+    pub already_synced: i64,
+}
+
 pub struct AdminService {
     pool: PgPool,
     graph: AgeGraphRepository,
@@ -178,21 +188,33 @@ impl AdminService {
             ).fetch_one(&self.pool).await?;
 
             if active_count > max_active {
-                let result = sqlx::query(
+                // RETURNING id lets us remove each evicted node from the live
+                // AGE graph while preserving the SQL edges for history.
+                let evicted_rows = sqlx::query(
                     "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \
                      WHERE id IN ( \
                        SELECT id FROM covalence.nodes \
                        WHERE node_type = 'article' AND status = 'active' AND pinned = false \
                        ORDER BY usage_score ASC LIMIT $1 \
-                     )",
+                     ) \
+                     RETURNING id",
                 )
                 .bind(evict_count)
-                .execute(&self.pool)
+                .fetch_all(&self.pool)
                 .await?;
-                actions.push(format!(
-                    "evicted {} low-usage articles",
-                    result.rows_affected()
-                ));
+
+                let evicted_count = evicted_rows.len();
+                for row in &evicted_rows {
+                    let node_id: Uuid = row.get("id");
+                    if let Err(e) = self.graph.archive_vertex(node_id).await {
+                        tracing::warn!(
+                            node_id = %node_id,
+                            "eviction: archive_vertex failed (non-fatal): {e}"
+                        );
+                    }
+                }
+
+                actions.push(format!("evicted {evicted_count} low-usage articles"));
             } else {
                 actions.push(format!(
                     "no eviction needed ({active_count}/{max_active} active)"
@@ -206,6 +228,123 @@ impl AdminService {
 
         Ok(MaintenanceResponse {
             actions_taken: actions,
+        })
+    }
+
+    /// Synchronise AGE graph edges with the SQL `covalence.edges` mirror.
+    ///
+    /// Three passes:
+    /// 1. **Orphan cleanup** — AGE edges whose `edge_id` property is absent from SQL are deleted.
+    /// 2. **Missing creation** — SQL edges with `age_id IS NULL` are written into AGE (if both
+    ///    endpoint vertices already exist in AGE).
+    /// 3. Counts everything else as already-synced.
+    pub async fn sync_edges(&self) -> AppResult<SyncEdgesResponse> {
+        use crate::graph::GraphRepository as _;
+
+        let mut orphaned_deleted: i64 = 0;
+        let mut missing_created: i64 = 0;
+
+        // ── Pass 1: Orphan cleanup ─────────────────────────────────────────────
+        // Get every (age_internal_id, sql_edge_uuid) pair from the AGE graph.
+        let age_refs = self.graph.list_age_edge_refs().await.map_err(|e| {
+            crate::errors::AppError::Internal(anyhow::anyhow!("sync_edges AGE query: {e}"))
+        })?;
+
+        // Build a set of all SQL edge UUIDs for O(1) lookup.
+        let sql_edge_ids: std::collections::HashSet<Uuid> =
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM covalence.edges")
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .collect();
+
+        for (age_internal_id, maybe_sql_uuid) in &age_refs {
+            let is_orphan = match maybe_sql_uuid {
+                None => true, // no edge_id property — legacy edge with no SQL counterpart
+                Some(uuid) => !sql_edge_ids.contains(uuid),
+            };
+            if is_orphan {
+                if let Err(e) = self
+                    .graph
+                    .delete_age_edge_by_internal_id(*age_internal_id)
+                    .await
+                {
+                    tracing::warn!(
+                        age_id = age_internal_id,
+                        "sync_edges: failed to delete orphaned AGE edge: {e}"
+                    );
+                } else {
+                    orphaned_deleted += 1;
+                }
+            }
+        }
+
+        // ── Pass 2: Missing creation ───────────────────────────────────────────
+        // SQL edges that were never written to AGE (age_id IS NULL).
+        let missing_rows = sqlx::query(
+            "SELECT e.id, e.source_node_id, e.target_node_id, e.edge_type, \
+                    COALESCE(e.confidence, 1.0) AS confidence \
+             FROM   covalence.edges e \
+             WHERE  e.age_id IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        for row in &missing_rows {
+            use sqlx::Row as _;
+            let edge_id: Uuid = row.get("id");
+            let from_id: Uuid = row.get("source_node_id");
+            let to_id: Uuid = row.get("target_node_id");
+            let edge_type_str: String = row.get("edge_type");
+            let confidence: f64 = row.try_get("confidence").unwrap_or(1.0);
+
+            let edge_type: crate::models::EdgeType = match edge_type_str.parse() {
+                Ok(et) => et,
+                Err(_) => {
+                    tracing::warn!(
+                        edge_id    = %edge_id,
+                        edge_type  = %edge_type_str,
+                        "sync_edges: unknown edge_type, skipping"
+                    );
+                    continue;
+                }
+            };
+
+            match self
+                .graph
+                .create_age_edge_for_sql(edge_id, from_id, to_id, edge_type, confidence as f32)
+                .await
+            {
+                Ok(Some(_)) => missing_created += 1,
+                Ok(None) => {
+                    // One or both vertices missing in AGE — not an error, but we
+                    // can't create the edge yet.
+                    tracing::debug!(
+                        edge_id = %edge_id,
+                        "sync_edges: vertices not yet in AGE, skipping edge"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        edge_id = %edge_id,
+                        "sync_edges: failed to create AGE edge: {e}"
+                    );
+                }
+            }
+        }
+
+        // ── Pass 3: Already-synced count ──────────────────────────────────────
+        let total_sql: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM covalence.edges WHERE age_id IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await?;
+        // Subtract newly created ones (they now have age_id set after Pass 2).
+        let already_synced = total_sql.saturating_sub(missing_created);
+
+        Ok(SyncEdgesResponse {
+            orphaned_deleted,
+            missing_created,
+            already_synced,
         })
     }
 }

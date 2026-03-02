@@ -207,14 +207,9 @@ impl SourceService {
         .execute(&self.pool)
         .await?;
 
-        // 2. edges — references nodes(id); no CASCADE.
-        sqlx::query(
-            "DELETE FROM covalence.edges \
-             WHERE source_node_id = $1 OR target_node_id = $1",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
+        // 2. edges — `graph.delete_vertex()` above already removes both the AGE
+        //    vertex and the SQL edges mirror in `covalence.edges`.  A raw DELETE
+        //    here would be a bypass of the GraphRepository layer (covalence#28).
 
         // 3. slow_path_queue — references nodes(id); no CASCADE.
         sqlx::query("DELETE FROM covalence.slow_path_queue WHERE node_id = $1")

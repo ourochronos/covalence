@@ -277,6 +277,15 @@ impl ArticleService {
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("article {id}")));
         }
+
+        // Remove from the live AGE graph — SQL edges are retained as history.
+        if let Err(e) = self.graph.archive_vertex(id).await {
+            tracing::warn!(
+                article_id = %id,
+                "article delete: archive_vertex failed (non-fatal): {e}"
+            );
+        }
+
         Ok(())
     }
 

@@ -17,6 +17,8 @@ use uuid::Uuid;
 
 use super::QueueTask;
 use super::llm::LlmClient;
+use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::models::{EdgeType, NodeType};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -233,7 +235,19 @@ pub async fn handle_merge(
         "merge: new article node created"
     );
 
-    // ── 5. Archive both originals ─────────────────────────────────────────────
+    // ── 5. Create AGE vertex for the new merged article ───────────────────────
+    let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+    if let Err(e) = graph
+        .create_vertex(new_id, NodeType::Article, serde_json::json!({}))
+        .await
+    {
+        tracing::warn!(
+            new_id = %new_id,
+            "merge: failed to create AGE vertex for merged article (non-fatal): {e}"
+        );
+    }
+
+    // ── 6. Archive both originals + remove from AGE live graph ───────────────
     for id in [id_a, id_b] {
         sqlx::query(
             "UPDATE covalence.nodes SET status = 'archived', modified_at = now() WHERE id = $1",
@@ -242,39 +256,87 @@ pub async fn handle_merge(
         .execute(pool)
         .await
         .with_context(|| format!("failed to archive article {id}"))?;
+
+        // Remove archived vertex from AGE (SQL edges are preserved as history).
+        if let Err(e) = graph.archive_vertex(id).await {
+            tracing::warn!(
+                id = %id,
+                "merge: archive_vertex failed for original article (non-fatal): {e}"
+            );
+        }
     }
 
-    // ── 6. MERGED_FROM edges: new_article → each original ────────────────────
+    // ── 7. MERGED_FROM edges via GraphRepository ──────────────────────────────
     for original_id in [id_a, id_b] {
-        sqlx::query(
-            r#"INSERT INTO covalence.edges
-                   (id, source_node_id, target_node_id, edge_type, weight, metadata)
-               VALUES ($1, $2, $3, 'MERGED_FROM', 1.0, '{"inferred":false}'::jsonb)"#,
-        )
-        .bind(Uuid::new_v4())
-        .bind(new_id)
-        .bind(original_id)
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to insert MERGED_FROM edge to {original_id}"))?;
+        if let Err(e) = graph
+            .create_edge(
+                new_id,
+                original_id,
+                EdgeType::MergedFrom,
+                1.0,
+                "merge",
+                serde_json::json!({"inferred": false}),
+            )
+            .await
+        {
+            tracing::warn!(
+                new_id      = %new_id,
+                original_id = %original_id,
+                "merge: failed to create MERGED_FROM edge via GraphRepository: {e}"
+            );
+        }
     }
 
-    // ── 7. Union provenance — copy inbound edges from both originals to new node ──
-    // ON CONFLICT (node_id, source_id) absorbs duplicates that appear in both.
-    sqlx::query(
-        r#"INSERT INTO covalence.edges
-               (id, source_node_id, target_node_id, edge_type, weight, created_by)
-           SELECT gen_random_uuid(), source_node_id, $1, edge_type, weight, 'merge_inherit'
-           FROM   covalence.edges
-           WHERE  target_node_id IN ($2, $3)
-             AND  edge_type IN ('ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','CONTRADICTS','CONTENDS')"#,
+    // ── 8. Union provenance — copy inbound edges from both originals ──────────
+    // Fetch the candidate rows from SQL, then write each via GraphRepository
+    // so both AGE and SQL are kept in sync.
+    let prov_rows = sqlx::query(
+        "SELECT DISTINCT source_node_id, edge_type, weight \
+         FROM   covalence.edges \
+         WHERE  target_node_id IN ($1, $2) \
+           AND  edge_type IN ('ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','CONTRADICTS','CONTENDS')",
     )
-    .bind(new_id)
     .bind(id_a)
     .bind(id_b)
-    .execute(pool)
+    .fetch_all(pool)
     .await
-    .context("failed to copy provenance edges to merged node")?;
+    .context("merge: failed to fetch provenance edges for union")?;
+
+    for prow in &prov_rows {
+        let src_id: Uuid = prow.get("source_node_id");
+        let edge_type_str: String = prow.get("edge_type");
+        let weight: f64 = prow.try_get("weight").unwrap_or(1.0);
+
+        let edge_type: EdgeType = match edge_type_str.parse() {
+            Ok(et) => et,
+            Err(e) => {
+                tracing::warn!(
+                    edge_type = %edge_type_str,
+                    "merge: unknown provenance edge_type, skipping: {e}"
+                );
+                continue;
+            }
+        };
+
+        if let Err(e) = graph
+            .create_edge(
+                src_id,
+                new_id,
+                edge_type,
+                weight as f32,
+                "merge_inherit",
+                serde_json::json!({}),
+            )
+            .await
+        {
+            tracing::warn!(
+                src_id     = %src_id,
+                new_id     = %new_id,
+                edge_type  = %edge_type_str,
+                "merge: failed to copy provenance edge via GraphRepository: {e}"
+            );
+        }
+    }
 
     // ── 8. Record mutations ───────────────────────────────────────────────────
     let _now_str = chrono::Utc::now().to_rfc3339();
@@ -576,29 +638,48 @@ pub async fn handle_infer_edges(
             continue;
         }
 
-        // ── 7. Upsert inferred edge ───────────────────────────────────────────
+        // ── 7. Create inferred edge via GraphRepository (dual-writes AGE + SQL) ──
         let edge_metadata = json!({
             "inferred":        true,
             "reasoning":       reasoning,
             "cosine_distance": cosine_distance,
         });
 
-        sqlx::query(
-            r#"INSERT INTO covalence.edges
-                   (id, source_node_id, target_node_id, edge_type, weight, metadata)
-               VALUES ($1, $2, $3, $4, $5, $6)"#,
-        )
-        .bind(Uuid::new_v4())
-        .bind(node_id)
-        .bind(candidate_id)
-        .bind(&relationship)
-        .bind(confidence as f64)
-        .bind(&edge_metadata)
-        .execute(pool)
-        .await
-        .with_context(|| {
-            format!("failed to upsert edge {node_id} -{relationship}-> {candidate_id}")
-        })?;
+        let infer_edge_type: EdgeType = match relationship.parse() {
+            Ok(et) => et,
+            Err(e) => {
+                tracing::warn!(
+                    node_id      = %node_id,
+                    candidate_id = %candidate_id,
+                    relationship = %relationship,
+                    "infer_edges: unknown relationship type, skipping: {e}"
+                );
+                edges_skipped += 1;
+                continue;
+            }
+        };
+
+        let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+        if let Err(e) = graph
+            .create_edge(
+                node_id,
+                candidate_id,
+                infer_edge_type,
+                confidence,
+                "infer_edges",
+                edge_metadata,
+            )
+            .await
+        {
+            tracing::warn!(
+                node_id      = %node_id,
+                candidate_id = %candidate_id,
+                relationship = %relationship,
+                "infer_edges: failed to create edge via GraphRepository: {e}"
+            );
+            edges_skipped += 1;
+            continue;
+        }
 
         tracing::info!(
             node_id      = %node_id,

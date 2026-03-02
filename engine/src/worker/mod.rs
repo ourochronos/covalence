@@ -23,6 +23,9 @@ pub mod tree_index;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::graph::{AgeGraphRepository, GraphRepository as _};
+use crate::models::{EdgeType, NodeType};
+
 use anyhow::Context;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -901,7 +904,21 @@ SOURCE DOCUMENTS:\n\
         new_id
     };
 
-    // ── 7. Insert provenance links via edges table ─────────────────────────
+    // ── 7. Create AGE vertex + insert provenance edges via GraphRepository ───
+    // All writes go through GraphRepository so both AGE and SQL are updated.
+    let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+
+    // Ensure the new article has an AGE vertex before creating edges.
+    if let Err(e) = graph
+        .create_vertex(article_id, NodeType::Article, serde_json::json!({}))
+        .await
+    {
+        tracing::warn!(
+            article_id = %article_id,
+            "compile: failed to create AGE vertex (edges will still be written to SQL): {e}"
+        );
+    }
+
     let rel_map: std::collections::HashMap<Uuid, String> =
         source_relationships.into_iter().collect();
 
@@ -910,26 +927,31 @@ SOURCE DOCUMENTS:\n\
             .get(&src.id)
             .map(|s| s.as_str())
             .unwrap_or("originates");
-        // Map LLM relationship name to valid edge_type enum value
+        // Map LLM relationship name to EdgeType enum value.
         let edge_type = match rel {
-            "confirms" => "CONFIRMS",
-            "supersedes" => "SUPERSEDES",
-            "contradicts" => "CONTRADICTS",
-            "contends" => "CONTENDS",
-            _ => "ORIGINATES",
+            "confirms" => EdgeType::Confirms,
+            "supersedes" => EdgeType::Supersedes,
+            "contradicts" => EdgeType::Contradicts,
+            "contends" => EdgeType::Contends,
+            _ => EdgeType::Originates,
         };
-        sqlx::query(
-            "INSERT INTO covalence.edges \
-                 (id, source_node_id, target_node_id, edge_type, weight, created_by) \
-             VALUES ($1, $2, $3, $4, 1.0, 'compile')",
-        )
-        .bind(Uuid::new_v4())
-        .bind(src.id)
-        .bind(article_id)
-        .bind(edge_type)
-        .execute(pool)
-        .await
-        .context("compile: failed to insert provenance edge")?;
+        if let Err(e) = graph
+            .create_edge(
+                src.id,
+                article_id,
+                edge_type,
+                1.0,
+                "compile",
+                serde_json::json!({}),
+            )
+            .await
+        {
+            tracing::warn!(
+                src_id = %src.id,
+                article_id = %article_id,
+                "compile: failed to create provenance edge via GraphRepository: {e}"
+            );
+        }
     }
 
     // ── 8. Record mutation in node metadata ────────────────────────────────
@@ -1124,7 +1146,7 @@ Return ONLY valid JSON (no markdown fences):\n\
         .with_context(|| format!("split: failed to insert new article {new_id}"))?;
     }
 
-    // ── 4. Archive original ─────────────────────────────────────────────────
+    // ── 4. Archive original + clean up AGE vertex ───────────────────────────
     sqlx::query(
         "UPDATE covalence.nodes \
          SET status = 'archived', modified_at = now() WHERE id = $1",
@@ -1134,22 +1156,51 @@ Return ONLY valid JSON (no markdown fences):\n\
     .await
     .context("split: failed to archive original article")?;
 
-    // ── 5. Create SPLIT_INTO edges ──────────────────────────────────────────
-    for target in [id_a, id_b] {
-        sqlx::query(
-            "INSERT INTO covalence.edges \
-                 (id, source_node_id, target_node_id, edge_type, weight, metadata) \
-             VALUES ($1, $2, $3, 'SPLIT_INTO', 1.0, '{}'::jsonb)",
-        )
-        .bind(Uuid::new_v4())
-        .bind(node_id)
-        .bind(target)
-        .execute(pool)
-        .await
-        .context("split: failed to insert SPLIT_INTO edge")?;
+    let graph = AgeGraphRepository::new(pool.clone(), "covalence");
+
+    // Remove the archived node from the live AGE graph (SQL edges are kept).
+    if let Err(e) = graph.archive_vertex(node_id).await {
+        tracing::warn!(
+            node_id = %node_id,
+            "split: archive_vertex failed for original (non-fatal): {e}"
+        );
     }
 
-    // ── 6. Copy provenance edges from original to both new articles ────────
+    // ── 5. Create AGE vertices for new articles ─────────────────────────────
+    for new_id in [id_a, id_b] {
+        if let Err(e) = graph
+            .create_vertex(new_id, NodeType::Article, serde_json::json!({}))
+            .await
+        {
+            tracing::warn!(
+                new_id = %new_id,
+                "split: failed to create AGE vertex (non-fatal): {e}"
+            );
+        }
+    }
+
+    // ── 6. Create SPLIT_INTO edges via GraphRepository ──────────────────────
+    for target in [id_a, id_b] {
+        if let Err(e) = graph
+            .create_edge(
+                node_id,
+                target,
+                EdgeType::SplitInto,
+                1.0,
+                "split",
+                serde_json::json!({}),
+            )
+            .await
+        {
+            tracing::warn!(
+                node_id = %node_id,
+                target  = %target,
+                "split: failed to create SPLIT_INTO edge via GraphRepository: {e}"
+            );
+        }
+    }
+
+    // ── 7. Copy provenance edges from original to both new articles ────────
     let prov_rows = sqlx::query(
         "SELECT source_node_id, edge_type \
          FROM covalence.edges \
@@ -1163,20 +1214,36 @@ Return ONLY valid JSON (no markdown fences):\n\
 
     for prow in &prov_rows {
         let src_id: Uuid = prow.get("source_node_id");
-        let edge_type: String = prow.get("edge_type");
+        let edge_type_str: String = prow.get("edge_type");
+        // Parse the string label to a typed EdgeType.
+        let edge_type: EdgeType = match edge_type_str.parse() {
+            Ok(et) => et,
+            Err(e) => {
+                tracing::warn!(
+                    edge_type = %edge_type_str,
+                    "split: unknown edge_type in provenance copy, skipping: {e}"
+                );
+                continue;
+            }
+        };
         for &new_article in &[id_a, id_b] {
-            sqlx::query(
-                "INSERT INTO covalence.edges \
-                     (id, source_node_id, target_node_id, edge_type, weight, created_by) \
-                 VALUES ($1, $2, $3, $4, 1.0, 'split_inherit')",
-            )
-            .bind(Uuid::new_v4())
-            .bind(src_id)
-            .bind(new_article)
-            .bind(&edge_type)
-            .execute(pool)
-            .await
-            .context("split: failed to copy provenance edge")?;
+            if let Err(e) = graph
+                .create_edge(
+                    src_id,
+                    new_article,
+                    edge_type,
+                    1.0,
+                    "split_inherit",
+                    serde_json::json!({}),
+                )
+                .await
+            {
+                tracing::warn!(
+                    src_id      = %src_id,
+                    new_article = %new_article,
+                    "split: failed to copy provenance edge via GraphRepository: {e}"
+                );
+            }
         }
     }
 
