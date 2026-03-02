@@ -52,3 +52,5 @@ features = ["json"]
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 async-trait = "0.1"
+tower = { version = "0.5", features = ["util"] }
+http = "1"

@@ -4,7 +4,7 @@ use axum::{
     Router,
     extract::{Json, Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     routing::{delete, get, patch, post},
 };
 use serde::Deserialize;
@@ -62,6 +62,8 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{id}/messages", get(session_get_messages))
         .route("/sessions/{id}/flush", post(session_flush))
         .route("/sessions/{id}/finalize", post(session_finalize))
+        // Dashboard
+        .route("/dashboard", get(dashboard_handler))
         // Admin
         .route("/admin/queue", get(admin_queue_list))
         .route("/admin/queue/{id}", get(admin_queue_get))
@@ -709,3 +711,330 @@ async fn admin_tree_index_all(
     }))
     .into_response()
 }
+
+// ── Dashboard handler ───────────────────────────────────────────
+
+/// Serve the self-contained browser dashboard at GET /dashboard.
+async fn dashboard_handler() -> impl IntoResponse {
+    Html(DASHBOARD_HTML)
+}
+
+const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Covalence Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:        #1a1a2e;
+    --surface:   #16213e;
+    --card:      #0f3460;
+    --accent:    #e94560;
+    --accent2:   #533483;
+    --text:      #e0e0e0;
+    --muted:     #8888aa;
+    --success:   #4caf50;
+    --warning:   #ff9800;
+    --radius:    8px;
+    --gap:       16px;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 2px solid var(--accent);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: 0.5px; }
+  header span.version { color: var(--muted); font-size: 0.8rem; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px var(--gap); display: flex; flex-direction: column; gap: 28px; }
+  section { background: var(--surface); border-radius: var(--radius); padding: 20px; border: 1px solid #253260; }
+  section h2 { font-size: 1rem; font-weight: 600; color: var(--accent); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.8px; }
+  /* Stats grid */
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--gap); }
+  .stat-card { background: var(--card); border-radius: var(--radius); padding: 14px; text-align: center; }
+  .stat-card .value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+  .stat-card .label { font-size: 0.75rem; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card.warn .value { color: var(--warning); }
+  /* Buttons */
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 8px 18px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { background: var(--accent2); }
+  /* Search */
+  .search-row { display: flex; gap: 8px; margin-bottom: 16px; }
+  .search-row input {
+    flex: 1;
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid #334080;
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 0.9rem;
+  }
+  .search-row input:focus { outline: none; border-color: var(--accent); }
+  /* Result cards */
+  .results { display: flex; flex-direction: column; gap: 10px; }
+  .result-card { background: var(--card); border-radius: var(--radius); padding: 12px 14px; border-left: 3px solid var(--accent2); }
+  .result-card.article { border-left-color: var(--accent); }
+  .result-card .rc-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .result-card .rc-title { font-weight: 600; font-size: 0.95rem; }
+  .result-card .rc-meta { font-size: 0.75rem; color: var(--muted); white-space: nowrap; margin-left: 8px; }
+  .result-card .rc-preview { font-size: 0.85rem; color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; }
+  .badge.article { background: var(--accent); color: #fff; }
+  .badge.source  { background: var(--accent2); color: #fff; }
+  /* Article browser */
+  .article-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+  .article-item { background: var(--card); border-radius: var(--radius); padding: 10px 14px; cursor: pointer; transition: background 0.12s; display: flex; justify-content: space-between; align-items: center; }
+  .article-item:hover { background: #1a3a5c; }
+  .article-item .ai-title { font-weight: 600; font-size: 0.9rem; }
+  .article-item .ai-meta  { font-size: 0.75rem; color: var(--muted); text-align: right; min-width: 110px; }
+  /* Detail pane */
+  #article-detail { display: none; margin-top: 16px; background: var(--card); border-radius: var(--radius); padding: 16px; }
+  #article-detail.visible { display: block; }
+  #article-detail h3 { font-size: 1rem; font-weight: 700; margin-bottom: 10px; color: var(--accent); }
+  #article-detail .detail-meta { font-size: 0.75rem; color: var(--muted); margin-bottom: 12px; }
+  #article-detail .detail-content { white-space: pre-wrap; font-size: 0.85rem; line-height: 1.7; max-height: 360px; overflow-y: auto; }
+  /* Error / empty states */
+  .error-state { color: var(--warning); font-size: 0.85rem; padding: 10px 0; }
+  .empty-state  { color: var(--muted);   font-size: 0.85rem; padding: 10px 0; }
+  /* Spinner */
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* Scrollbar (webkit) */
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg); } ::-webkit-scrollbar-thumb { background: var(--accent2); border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="14" cy="14" r="13" stroke="#e94560" stroke-width="2"/>
+    <circle cx="14" cy="14" r="5" fill="#e94560"/>
+    <line x1="14" y1="1" x2="14" y2="7"  stroke="#533483" stroke-width="2"/>
+    <line x1="14" y1="21" x2="14" y2="27" stroke="#533483" stroke-width="2"/>
+    <line x1="1"  y1="14" x2="7"  y2="14" stroke="#533483" stroke-width="2"/>
+    <line x1="21" y1="14" x2="27" y2="14" stroke="#533483" stroke-width="2"/>
+  </svg>
+  <h1>Covalence Dashboard</h1>
+  <span class="version">knowledge engine</span>
+</header>
+<main>
+
+  <!-- ── Section 1: System Status ── -->
+  <section id="section-stats">
+    <h2>System Status
+      <button id="btn-refresh" style="float:right;font-size:0.75rem;padding:5px 12px" onclick="loadStats()">↻ Refresh</button>
+    </h2>
+    <div id="stats-content"><span class="spinner"></span> Loading…</div>
+  </section>
+
+  <!-- ── Section 2: Search ── -->
+  <section id="section-search">
+    <h2>Search</h2>
+    <div class="search-row">
+      <input id="search-input" type="text" placeholder="Enter search query…" onkeydown="if(event.key==='Enter')runSearch()"/>
+      <button onclick="runSearch()">Search</button>
+    </div>
+    <div id="search-results"></div>
+  </section>
+
+  <!-- ── Section 3: Article Browser ── -->
+  <section id="section-articles">
+    <h2>Article Browser
+      <button id="btn-reload-articles" style="float:right;font-size:0.75rem;padding:5px 12px" onclick="loadArticles()">↻ Reload</button>
+    </h2>
+    <div id="articles-list"><span class="spinner"></span> Loading…</div>
+    <div id="article-detail"></div>
+  </section>
+
+</main>
+<script>
+// ── Utilities ──────────────────────────────────────────────────────────────
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function fmtScore(n) {
+  if (n == null) return '—';
+  return (typeof n === 'number') ? n.toFixed(3) : n;
+}
+
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+async function apiFetch(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`HTTP ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+// ── Section 1: System Status ───────────────────────────────────────────────
+
+async function loadStats() {
+  const el = document.getElementById('stats-content');
+  el.innerHTML = '<span class="spinner"></span> Loading…';
+  document.getElementById('btn-refresh').disabled = true;
+  try {
+    const body = await apiFetch('/admin/stats');
+    const d = body.data;
+    el.innerHTML = renderStats(d);
+  } catch (e) {
+    el.innerHTML = `<p class="error-state">⚠ Failed to load stats: ${escHtml(e.message)}</p>`;
+  } finally {
+    document.getElementById('btn-refresh').disabled = false;
+  }
+}
+
+function renderStats(d) {
+  const cards = [
+    { label: 'Active Nodes',    value: d?.nodes?.active    ?? '—' },
+    { label: 'Sources',         value: d?.nodes?.sources   ?? '—' },
+    { label: 'Articles',        value: d?.nodes?.articles  ?? '—' },
+    { label: 'Pinned',          value: d?.nodes?.pinned    ?? '—' },
+    { label: 'Queue Pending',   value: d?.queue?.pending   ?? '—', warn: (d?.queue?.pending > 0) },
+    { label: 'Queue Failed',    value: d?.queue?.failed    ?? '—', warn: (d?.queue?.failed  > 0) },
+    { label: 'Embeddings',      value: d?.embeddings?.total       ?? '—' },
+    { label: 'Missing Embeds',  value: d?.embeddings?.nodes_without ?? '—', warn: (d?.embeddings?.nodes_without > 0) },
+  ];
+  return `<div class="stats-grid">${cards.map(c => `
+    <div class="stat-card${c.warn ? ' warn' : ''}">
+      <div class="value">${escHtml(c.value)}</div>
+      <div class="label">${escHtml(c.label)}</div>
+    </div>`).join('')}</div>`;
+}
+
+// ── Section 2: Search ──────────────────────────────────────────────────────
+
+async function runSearch() {
+  const input = document.getElementById('search-input');
+  const query = input.value.trim();
+  const el = document.getElementById('search-results');
+  if (!query) { el.innerHTML = '<p class="empty-state">Enter a query above.</p>'; return; }
+
+  el.innerHTML = '<span class="spinner"></span> Searching…';
+  try {
+    const body = await apiFetch('/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, limit: 10 }),
+    });
+    const results = body.data ?? [];
+    if (results.length === 0) {
+      el.innerHTML = '<p class="empty-state">No results found.</p>';
+      return;
+    }
+    el.innerHTML = `<div class="results">${results.map(renderSearchResult).join('')}</div>`;
+  } catch (e) {
+    el.innerHTML = `<p class="error-state">⚠ Search failed: ${escHtml(e.message)}</p>`;
+  }
+}
+
+function renderSearchResult(r) {
+  const isArticle = r.node_type === 'article';
+  const title     = r.title || r.node_id || '(untitled)';
+  const preview   = r.content_preview || '';
+  return `
+  <div class="result-card${isArticle ? ' article' : ''}">
+    <div class="rc-header">
+      <span class="rc-title"><span class="badge ${isArticle ? 'article' : 'source'}">${escHtml(r.node_type)}</span>
+        &nbsp;${escHtml(title)}</span>
+      <span class="rc-meta">score: ${fmtScore(r.score)}</span>
+    </div>
+    <div class="rc-preview">${escHtml(preview)}</div>
+  </div>`;
+}
+
+// ── Section 3: Article Browser ─────────────────────────────────────────────
+
+async function loadArticles() {
+  const listEl  = document.getElementById('articles-list');
+  const detailEl = document.getElementById('article-detail');
+  listEl.innerHTML = '<span class="spinner"></span> Loading…';
+  detailEl.classList.remove('visible');
+  detailEl.innerHTML = '';
+  document.getElementById('btn-reload-articles').disabled = true;
+  try {
+    const body = await apiFetch('/articles?limit=20');
+    const articles = body.data ?? [];
+    if (articles.length === 0) {
+      listEl.innerHTML = '<p class="empty-state">No articles found.</p>';
+      return;
+    }
+    listEl.innerHTML = `<div class="article-list">${articles.map(a => `
+      <div class="article-item" onclick="loadArticle('${escHtml(a.id)}')">
+        <span class="ai-title">${escHtml(a.title || '(untitled)')}</span>
+        <span class="ai-meta">
+          conf: ${fmtScore(a.confidence)}<br/>
+          ${escHtml(fmtDate(a.created_at))}
+        </span>
+      </div>`).join('')}</div>`;
+  } catch (e) {
+    listEl.innerHTML = `<p class="error-state">⚠ Failed to load articles: ${escHtml(e.message)}</p>`;
+  } finally {
+    document.getElementById('btn-reload-articles').disabled = false;
+  }
+}
+
+async function loadArticle(id) {
+  const detailEl = document.getElementById('article-detail');
+  detailEl.innerHTML = '<span class="spinner"></span> Loading…';
+  detailEl.classList.add('visible');
+  try {
+    const body = await apiFetch(`/articles/${id}`);
+    const a = body.data;
+    const domains = (a.domain_path || []).join(', ') || '—';
+    detailEl.innerHTML = `
+      <h3>${escHtml(a.title || '(untitled)')}</h3>
+      <div class="detail-meta">
+        ID: ${escHtml(a.id)} &nbsp;|&nbsp;
+        Confidence: ${fmtScore(a.confidence)} &nbsp;|&nbsp;
+        Version: ${escHtml(a.version)} &nbsp;|&nbsp;
+        Status: ${escHtml(a.status)}<br/>
+        Domain: ${escHtml(domains)} &nbsp;|&nbsp;
+        Created: ${escHtml(fmtDate(a.created_at))} &nbsp;|&nbsp;
+        Modified: ${escHtml(fmtDate(a.modified_at))}
+      </div>
+      <div class="detail-content">${escHtml(a.content || '(no content)')}</div>`;
+  } catch (e) {
+    detailEl.innerHTML = `<p class="error-state">⚠ Failed to load article: ${escHtml(e.message)}</p>`;
+  }
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+
+loadStats();
+loadArticles();
+</script>
+</body>
+</html>
+"##;

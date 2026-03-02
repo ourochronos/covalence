@@ -35,6 +35,7 @@ mod test_age_edge_sync;
 mod test_compilation;
 mod test_compile;
 mod test_contention;
+mod test_dashboard;
 mod test_decay;
 mod test_embed;
 mod test_memory_recall;
