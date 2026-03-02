@@ -50,6 +50,7 @@ impl ScoreFusion {
         node_metadata: &HashMap<Uuid, (f64, DateTime<Utc>, DateTime<Utc>)>,
         limit: usize,
     ) -> Vec<FusedResult> {
+        #[allow(clippy::type_complexity)]
         let mut scores: HashMap<Uuid, (Option<f64>, Option<f64>, Option<f64>)> = HashMap::new();
 
         for r in vector_results {
@@ -131,19 +132,15 @@ fn weighted_sum_present(
     wg: f64,
 ) -> f64 {
     let mut sum = 0.0;
-    let mut weight_sum = 0.0;
 
     if let Some(score) = v {
         sum += score * wv;
-        weight_sum += wv;
     }
     if let Some(score) = l {
         sum += score * wl;
-        weight_sum += wl;
     }
     if let Some(score) = g {
         sum += score * wg;
-        weight_sum += wg;
     }
 
     sum

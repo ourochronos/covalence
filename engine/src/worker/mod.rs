@@ -537,6 +537,7 @@ pub(super) async fn enqueue_task(
 /// Write an inference log entry after a successful LLM completion.
 /// Errors are logged as warnings but not propagated — inference logging is
 /// best-effort and must never fail a handler.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn log_inference(
     pool: &PgPool,
     operation: &str,
@@ -1094,8 +1095,7 @@ Return ONLY valid JSON (no markdown fences):\n\
     let split_at = orig_content
         .char_indices()
         .map(|(i, _)| i)
-        .filter(|&i| i >= split_index)
-        .next()
+        .find(|&i| i >= split_index)
         .unwrap_or(orig_content.len());
 
     let content_a = orig_content[..split_at].to_string();

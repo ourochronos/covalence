@@ -65,7 +65,7 @@ impl AgeGraphRepository {
         let col_names: Vec<&str> = columns
             .trim_matches(|c| c == '(' || c == ')')
             .split(',')
-            .map(|c| c.trim().split_whitespace().next().unwrap_or(""))
+            .map(|c| c.split_whitespace().next().unwrap_or(""))
             .collect();
         let select_cols = col_names
             .iter()
@@ -241,7 +241,7 @@ impl GraphRepository for AgeGraphRepository {
             target_node_id: to_id,
             edge_type,
             weight: 1.0,
-            confidence: confidence as f32,
+            confidence,
             metadata: properties,
             created_at: now,
             created_by: Some(created_by.to_string()),

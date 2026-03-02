@@ -119,8 +119,8 @@ impl SourceService {
         }
 
         // 5. Create CAPTURED_IN edge if session provided
-        if let Some(session_id) = req.session_id {
-            if let Err(e) = self
+        if let Some(session_id) = req.session_id
+            && let Err(e) = self
                 .graph
                 .create_edge(
                     id,
@@ -131,9 +131,8 @@ impl SourceService {
                     serde_json::json!({}),
                 )
                 .await
-            {
-                tracing::warn!(error = %e, "failed to create CAPTURED_IN edge");
-            }
+        {
+            tracing::warn!(error = %e, "failed to create CAPTURED_IN edge");
         }
 
         // 6. Enqueue slow-path tasks
@@ -191,18 +190,58 @@ impl SourceService {
 
     /// Delete a source (hard delete with cascade).
     pub async fn delete(&self, id: Uuid) -> AppResult<()> {
-        // Delete AGE vertex (cascades edges)
+        // Delete AGE vertex (cascades AGE-layer edges)
         if let Err(e) = self.graph.delete_vertex(id).await {
             tracing::warn!(error = %e, "failed to delete AGE vertex for source {id}");
         }
 
-        // Delete embedding
+        // ── Relational FK cleanup (order matters) ──────────────────────────
+        //
+        // 1. contentions — references both nodes(id) AND edges(id); must come
+        //    before edges.
+        sqlx::query(
+            "DELETE FROM covalence.contentions \
+             WHERE node_id = $1 OR source_node_id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        // 2. edges — references nodes(id); no CASCADE.
+        sqlx::query(
+            "DELETE FROM covalence.edges \
+             WHERE source_node_id = $1 OR target_node_id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        // 3. slow_path_queue — references nodes(id); no CASCADE.
+        sqlx::query("DELETE FROM covalence.slow_path_queue WHERE node_id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        // 4. usage_traces — references nodes(id); no CASCADE.
+        sqlx::query("DELETE FROM covalence.usage_traces WHERE node_id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        // 5. session_nodes — references nodes(id); no CASCADE.
+        sqlx::query("DELETE FROM covalence.session_nodes WHERE node_id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        // 6. node_embeddings — has ON DELETE CASCADE but delete explicitly for
+        //    clarity (idempotent).
         sqlx::query("DELETE FROM covalence.node_embeddings WHERE node_id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
 
-        // Delete node
+        // 7. Delete the node itself.
         let result =
             sqlx::query("DELETE FROM covalence.nodes WHERE id = $1 AND node_type = 'source'")
                 .bind(id)

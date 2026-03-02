@@ -182,8 +182,7 @@ fn make_snippet(content: &str, claim: &str, max_chars: usize) -> String {
         for word in content.split_whitespace() {
             let tok = word
                 .split(|c: char| !c.is_alphanumeric())
-                .filter(|t| !t.is_empty())
-                .next()
+                .find(|t| !t.is_empty())
                 .map(|t| t.to_lowercase())
                 .unwrap_or_default();
             if claim_tokens.contains(&tok) {

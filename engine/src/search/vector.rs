@@ -120,7 +120,7 @@ impl DimensionAdaptor for VectorAdaptor {
     fn normalize_scores(&self, results: &mut [DimensionResult]) {
         // Cosine distance → similarity: normalized = 1.0 - distance
         for r in results.iter_mut() {
-            r.normalized_score = (1.0 - r.raw_score).max(0.0).min(1.0);
+            r.normalized_score = (1.0 - r.raw_score).clamp(0.0, 1.0);
         }
     }
 

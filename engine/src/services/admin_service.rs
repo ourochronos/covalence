@@ -257,7 +257,7 @@ impl AdminService {
                 })
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()
-            .map_err(|e| AppError::Database(e))
+            .map_err(AppError::Database)
     }
 
     pub async fn get_queue_entry(&self, id: Uuid) -> AppResult<Option<QueueEntry>> {

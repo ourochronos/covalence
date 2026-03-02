@@ -486,9 +486,13 @@ impl ArticleService {
     pub async fn compile(&self, req: CompileRequest) -> AppResult<CompileJobResponse> {
         let job_id = Uuid::new_v4();
 
+        // node_id is NULL for compile tasks — the JSON payload carries
+        // source_ids and title_hint.  Binding the JSON object to the UUID
+        // node_id column caused a type-mismatch database_error (covalence#30).
         sqlx::query(
-            "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-             VALUES ($1, 'compile', $2, 2, 'pending')",
+            "INSERT INTO covalence.slow_path_queue \
+             (id, task_type, node_id, payload, priority, status) \
+             VALUES ($1, 'compile', NULL, $2, 2, 'pending')",
         )
         .bind(job_id)
         .bind(serde_json::json!({

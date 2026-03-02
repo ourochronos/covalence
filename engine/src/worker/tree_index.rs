@@ -365,12 +365,11 @@ pub async fn build_tree_index(
     }
 
     // Check existing tree index
-    if !force {
-        if let Some(tree) = metadata.get("tree_index") {
-            if !tree.is_null() {
-                anyhow::bail!("node already has tree_index. Use force=true to rebuild.");
-            }
-        }
+    if !force
+        && let Some(tree) = metadata.get("tree_index")
+        && !tree.is_null()
+    {
+        anyhow::bail!("node already has tree_index. Use force=true to rebuild.");
     }
 
     let (tree, method) = if content.len() < TRIVIAL_THRESHOLD_CHARS {
@@ -668,7 +667,7 @@ pub async fn embed_sections(
                    model = EXCLUDED.model"
         ))
         .bind(node_id)
-        .bind(&format!("{model}:composed"))
+        .bind(format!("{model}:composed"))
         .execute(&mut *tx)
         .await
         .context("failed to upsert composed embedding")?;

@@ -179,6 +179,7 @@ impl SearchService {
 
         // Step 3: Fusion
         // Build per-node score maps
+        #[allow(clippy::type_complexity)]
         let mut node_scores: HashMap<Uuid, (Option<f64>, Option<f64>, Option<f64>)> =
             HashMap::new();
 

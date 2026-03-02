@@ -354,7 +354,7 @@ async fn search_handler(
     let (results, meta) = service
         .search(req)
         .await
-        .map_err(|e| crate::errors::AppError::Internal(e))?;
+        .map_err(crate::errors::AppError::Internal)?;
     Ok(Json(serde_json::json!({
         "data": results,
         "meta": meta,
