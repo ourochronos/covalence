@@ -449,8 +449,18 @@ impl SearchService {
         });
 
         // Combine: articles first (already sorted), then expanded sources.
-        // Truncate to req.limit; guarantee articles fill slots before sources.
-        let article_slots = req.limit.min(article_results.len());
+        // Reserve at least 30% of slots for expanded sources when available,
+        // so the expansion isn't crowded out by a large article corpus.
+        let max_article_slots = if expanded_results.is_empty() {
+            req.limit
+        } else {
+            // 70% articles, 30% sources — but use all slots for articles if
+            // there aren't enough sources to fill the reserved portion.
+            let reserved_source = (req.limit * 3) / 10;
+            let reserved_source = reserved_source.min(expanded_results.len());
+            req.limit.saturating_sub(reserved_source)
+        };
+        let article_slots = max_article_slots.min(article_results.len());
         article_results.truncate(article_slots);
 
         let source_slots = req.limit.saturating_sub(article_slots);
