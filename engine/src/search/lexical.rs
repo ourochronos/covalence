@@ -103,6 +103,7 @@ impl DimensionAdaptor for LexicalAdaptor {
                 node_id,
                 raw_score: score,
                 normalized_score: 0.0,
+                hop: None,
             })
             .collect())
     }

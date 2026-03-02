@@ -104,6 +104,16 @@ pub struct SearchRequest {
     /// When both `weights` and `strategy` are provided, `weights` wins.
     #[serde(default)]
     pub strategy: Option<SearchStrategy>,
+    /// Maximum graph traversal hops (1-3, default 1). Higher values discover
+    /// structurally distant but related nodes via edge chains.
+    ///
+    /// When absent, the effective default is determined by `strategy`:
+    /// - [`SearchStrategy::Graph`] → 2 hops
+    /// - All other strategies → 1 hop
+    ///
+    /// Explicit `max_hops` always wins over the strategy-derived default.
+    #[serde(default)]
+    pub max_hops: Option<u32>,
 }
 
 fn default_limit() -> usize {
@@ -141,6 +151,9 @@ pub struct SearchResult {
     /// article that caused this source to be included.  `None` for directly-
     /// matched results (articles or standard-mode results).
     pub expanded_from: Option<Uuid>,
+    /// Number of graph hops from the nearest anchor node.
+    /// `None` if this result was not discovered via graph traversal.
+    pub graph_hops: Option<u32>,
 }
 
 /// Metadata about the search execution.
@@ -207,12 +220,23 @@ impl SearchService {
         let start = std::time::Instant::now();
         let candidate_limit = req.limit * 5;
 
+        // Resolve effective max_hops: explicit request value wins; otherwise
+        // derive from strategy (Graph → 2, everything else → 1).
+        let effective_max_hops = req.max_hops.unwrap_or({
+            if matches!(req.strategy, Some(SearchStrategy::Graph)) {
+                2
+            } else {
+                1
+            }
+        });
+
         let dim_query = DimensionQuery {
             text: req.query.clone(),
             embedding: req.embedding,
             intent: req.intent,
             session_id: req.session_id,
             node_types: req.node_types,
+            max_hops: Some(effective_max_hops),
         };
 
         let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights, &req.strategy);
@@ -249,6 +273,12 @@ impl SearchService {
             vec![]
         };
         self.graph.normalize_scores(&mut graph_results);
+
+        // Build a hop-count map from graph results for SearchResult transparency.
+        let graph_hops_map: HashMap<Uuid, u32> = graph_results
+            .iter()
+            .filter_map(|r| r.hop.map(|h| (r.node_id, h)))
+            .collect();
 
         let dims_used = collect_dims_used(&vec_results, &lex_results, &graph_results);
 
@@ -287,6 +317,7 @@ impl SearchService {
             w_graph,
             None,
             recency_bias,
+            &graph_hops_map,
         );
         results.sort_by(|a, b| {
             b.score
@@ -329,6 +360,16 @@ impl SearchService {
         let start = std::time::Instant::now();
         let candidate_limit = req.limit * 5;
 
+        // Resolve effective max_hops: explicit request value wins; otherwise
+        // derive from strategy (Graph → 2, everything else → 1).
+        let effective_max_hops = req.max_hops.unwrap_or({
+            if matches!(req.strategy, Some(SearchStrategy::Graph)) {
+                2
+            } else {
+                1
+            }
+        });
+
         // Phase 1: restrict dimension queries to articles only.
         let article_dim_query = DimensionQuery {
             text: req.query.clone(),
@@ -336,6 +377,7 @@ impl SearchService {
             intent: req.intent,
             session_id: req.session_id,
             node_types: Some(vec!["article".into()]),
+            max_hops: Some(effective_max_hops),
         };
 
         let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights, &req.strategy);
@@ -372,6 +414,12 @@ impl SearchService {
             vec![]
         };
         self.graph.normalize_scores(&mut graph_results);
+
+        // Build a hop-count map from graph results for SearchResult transparency.
+        let graph_hops_map: HashMap<Uuid, u32> = graph_results
+            .iter()
+            .filter_map(|r| r.hop.map(|h| (r.node_id, h)))
+            .collect();
 
         let dims_used = collect_dims_used(&vec_results, &lex_results, &graph_results);
 
@@ -423,6 +471,7 @@ impl SearchService {
             w_graph,
             None,
             recency_bias,
+            &graph_hops_map,
         );
         article_results.retain(|r| r.node_type == "article");
         article_results.sort_by(|a, b| {
@@ -516,6 +565,7 @@ impl SearchService {
                         content_preview: preview.clone(),
                         domain_path: domain_path.clone(),
                         expanded_from: Some(*parent_article_id),
+                        graph_hops: None, // expanded via provenance, not graph traversal
                     })
                 })
                 .collect()
@@ -720,6 +770,10 @@ async fn fetch_node_map(
 ///
 /// `expanded_from_override`: when `Some(parent_id)`, all results get that
 /// parent — used by the hierarchical expander.  Pass `None` for normal use.
+///
+/// `graph_hops_map`: maps node ID → hop distance discovered via graph traversal.
+/// Nodes absent from this map receive `graph_hops: None`.
+#[allow(clippy::too_many_arguments)]
 fn build_results(
     node_scores: &HashMap<Uuid, DimScores>,
     node_map: &HashMap<Uuid, NodeRow>,
@@ -728,6 +782,7 @@ fn build_results(
     w_graph: f32,
     expanded_from_override: Option<Uuid>,
     recency_bias: f64,
+    graph_hops_map: &HashMap<Uuid, u32>,
 ) -> Vec<SearchResult> {
     let mut results = Vec::new();
     for (node_id, (vs, ls, gs)) in node_scores {
@@ -773,6 +828,7 @@ fn build_results(
             content_preview: preview.clone(),
             domain_path: domain_path.clone(),
             expanded_from: expanded_from_override,
+            graph_hops: graph_hops_map.get(node_id).copied(),
         });
     }
     results

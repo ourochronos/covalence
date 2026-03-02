@@ -1,5 +1,6 @@
 //! Integration tests for search ranking (trust-aware: covalence#31;
-//! hierarchical mode: tracking#92 Phase B item 1).
+//! hierarchical mode: tracking#92 Phase B item 1;
+//! multi-hop graph traversal: tracking#92 Phase B item 5).
 //!
 //! ## Trust-aware tests (existing)
 //!
@@ -20,11 +21,22 @@
 //!   articles appear with `expanded_from` set to the parent article id.
 //! * `test_standard_mode_unchanged` — standard mode returns mixed node types
 //!   as before (no change to default behaviour).
+//!
+//! ## Multi-hop graph traversal tests (tracking#92 Phase B item 5)
+//!
+//! * `test_graph_multi_hop_reaches_distant_nodes` — 1-hop finds direct
+//!   neighbours only; 2-hop also reaches neighbours-of-neighbours.
+//! * `test_graph_multi_hop_score_decay` — hop-2 nodes score lower than hop-1
+//!   nodes due to the 0.7× per-hop decay factor.
+//! * `test_graph_strategy_defaults_to_2_hops` — `SearchStrategy::Graph` with
+//!   no explicit `max_hops` behaves as `max_hops=2`.
 
 use serial_test::serial;
 use uuid::Uuid;
 
-use covalence_engine::services::search_service::{SearchMode, SearchRequest, SearchService};
+use covalence_engine::services::search_service::{
+    SearchMode, SearchRequest, SearchService, SearchStrategy,
+};
 
 use super::helpers::TestFixture;
 
@@ -134,6 +146,7 @@ async fn source_reliability_affects_ranking() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -236,6 +249,7 @@ async fn article_trust_derived_from_source_reliability() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -302,6 +316,7 @@ async fn article_without_sources_gets_default_trust() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -366,6 +381,7 @@ async fn test_hierarchical_search_returns_articles_first() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc
@@ -452,6 +468,7 @@ async fn test_hierarchical_search_expands_sources() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc
@@ -544,6 +561,7 @@ async fn test_standard_mode_unchanged() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     // Default mode (mode = None).
@@ -559,6 +577,7 @@ async fn test_standard_mode_unchanged() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results_explicit, _) = svc
@@ -635,6 +654,7 @@ async fn test_recency_bias_default_unchanged() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     // Request with explicit recency_bias = 0.0.
@@ -650,6 +670,7 @@ async fn test_recency_bias_default_unchanged() {
         recency_bias: Some(0.0),
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results_none, _) = svc
@@ -748,6 +769,7 @@ async fn test_recency_bias_favors_recent() {
         recency_bias: Some(1.0),
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc
@@ -836,6 +858,7 @@ async fn test_domain_path_filter_includes_matching() {
         recency_bias: None,
         domain_path: Some(vec!["research".to_string()]),
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc
@@ -901,6 +924,7 @@ async fn test_domain_path_filter_excludes_untagged() {
         recency_bias: None,
         domain_path: Some(vec!["research".to_string()]),
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc
@@ -967,6 +991,7 @@ async fn test_domain_path_filter_none_returns_all() {
         recency_bias: None,
         domain_path: None,
         strategy: None,
+        max_hops: None,
     };
 
     let (results, _meta) = svc
@@ -982,6 +1007,297 @@ async fn test_domain_path_filter_none_returns_all() {
     assert!(
         results.iter().any(|r| r.node_id == untagged_id),
         "untagged article should appear when domain_path=None"
+    );
+
+    fix.cleanup().await;
+}
+
+// ─── Multi-hop graph traversal tests (tracking#92 Phase B, item 5) ───────────
+
+/// Helper: insert a directed edge between two nodes using a given edge type.
+async fn insert_edge(fix: &TestFixture, src: uuid::Uuid, dst: uuid::Uuid, edge_type: &str) {
+    sqlx::query(
+        "INSERT INTO covalence.edges \
+             (source_node_id, target_node_id, edge_type) \
+         VALUES ($1, $2, $3)",
+    )
+    .bind(src)
+    .bind(dst)
+    .bind(edge_type)
+    .execute(&fix.pool)
+    .await
+    .unwrap_or_else(|e| panic!("insert_edge({src}→{dst} [{edge_type}]) failed: {e}"));
+}
+
+/// With `max_hops: Some(1)` only direct (1-hop) neighbours of the anchor are
+/// returned.  With `max_hops: Some(2)` the 2-hop neighbour is also discovered.
+///
+/// Setup: linear chain A → B → C (RELATES_TO edges).
+///   • A has unique content matching the query (so it becomes the anchor).
+///   • B and C have non-matching content (only reachable via graph).
+///
+/// Expectations:
+///   max_hops=1 → B in results, C absent.
+///   max_hops=2 → B and C both in results.
+#[tokio::test]
+#[serial]
+async fn test_graph_multi_hop_reaches_distant_nodes() {
+    let mut fix = TestFixture::new().await;
+
+    // Node A: unique phrase that the query will match.
+    let content_a = "multi hop traversal test anchor node unique phrase zorblax frimbly quux alpha";
+    // Nodes B and C: deliberately distinct content, only reachable via edges.
+    let content_b = "fjord distant node B xyzzy plugh twisty passages maze multi hop";
+    let content_c = "fjord distant node C xyzzy deeper maze multi hop unique nonsense";
+
+    let node_a = fix.insert_source("Chain Node A", content_a).await;
+    let node_b = fix.insert_source("Chain Node B", content_b).await;
+    let node_c = fix.insert_source("Chain Node C", content_c).await;
+
+    fix.insert_embedding(node_a).await;
+    fix.insert_embedding(node_b).await;
+    fix.insert_embedding(node_c).await;
+
+    // A → B → C chain
+    insert_edge(&fix, node_a, node_b, "RELATES_TO").await;
+    insert_edge(&fix, node_b, node_c, "RELATES_TO").await;
+
+    let svc = SearchService::new(fix.pool.clone());
+
+    // ── 1-hop: B must appear, C must not ─────────────────────────────────────
+    let req_1hop = SearchRequest {
+        query: content_a.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 20,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: None,
+        strategy: None,
+        max_hops: Some(1),
+    };
+
+    let (results_1hop, _) = svc
+        .search(req_1hop)
+        .await
+        .expect("1-hop search should succeed");
+
+    assert!(
+        results_1hop.iter().any(|r| r.node_id == node_b),
+        "1-hop: direct neighbour B should appear in results"
+    );
+    assert!(
+        !results_1hop.iter().any(|r| r.node_id == node_c),
+        "1-hop: 2-hop-distant node C must NOT appear in results"
+    );
+
+    // ── 2-hop: both B and C must appear ──────────────────────────────────────
+    let req_2hop = SearchRequest {
+        query: content_a.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 20,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: None,
+        strategy: None,
+        max_hops: Some(2),
+    };
+
+    let (results_2hop, _) = svc
+        .search(req_2hop)
+        .await
+        .expect("2-hop search should succeed");
+
+    assert!(
+        results_2hop.iter().any(|r| r.node_id == node_b),
+        "2-hop: direct neighbour B should appear in results"
+    );
+    assert!(
+        results_2hop.iter().any(|r| r.node_id == node_c),
+        "2-hop: 2-hop-distant node C should appear in results"
+    );
+
+    fix.cleanup().await;
+}
+
+/// Hop-2 results must have a strictly lower `graph_score` than hop-1 results
+/// because the 0.7× per-hop decay reduces the raw edge score.
+///
+/// Setup: same A → B → C chain as above.  With `max_hops=2`:
+///   • B (hop-1): raw = 1.0 × 1.0 × 0.7⁰ = 1.0  → normalized = 1.0
+///   • C (hop-2): raw = 1.0 × 1.0 × 0.7¹ = 0.7  → normalized = 0.7
+///
+/// So B.graph_score (1.0) > C.graph_score (0.7).
+#[tokio::test]
+#[serial]
+async fn test_graph_multi_hop_score_decay() {
+    let mut fix = TestFixture::new().await;
+
+    let content_a =
+        "score decay multi hop anchor unique phrase wibble wobble snark boojum alpha beta";
+    let content_b = "score decay hop one node B unique nonsense vorpal slithy toves";
+    let content_c = "score decay hop two node C unique nonsense brillig mimsy borogoves";
+
+    let node_a = fix.insert_source("Decay Chain A", content_a).await;
+    let node_b = fix.insert_source("Decay Chain B", content_b).await;
+    let node_c = fix.insert_source("Decay Chain C", content_c).await;
+
+    fix.insert_embedding(node_a).await;
+    fix.insert_embedding(node_b).await;
+    fix.insert_embedding(node_c).await;
+
+    insert_edge(&fix, node_a, node_b, "RELATES_TO").await;
+    insert_edge(&fix, node_b, node_c, "RELATES_TO").await;
+
+    let svc = SearchService::new(fix.pool.clone());
+    let req = SearchRequest {
+        query: content_a.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 20,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: None,
+        strategy: None,
+        max_hops: Some(2),
+    };
+
+    let (results, _) = svc
+        .search(req)
+        .await
+        .expect("decay test search should succeed");
+
+    // Both B and C must appear.
+    let b_result = results
+        .iter()
+        .find(|r| r.node_id == node_b)
+        .expect("hop-1 node B should appear in 2-hop results");
+    let c_result = results
+        .iter()
+        .find(|r| r.node_id == node_c)
+        .expect("hop-2 node C should appear in 2-hop results");
+
+    // graph_score must reflect the decay.
+    let b_graph_score = b_result
+        .graph_score
+        .expect("hop-1 node B should have a graph_score");
+    let c_graph_score = c_result
+        .graph_score
+        .expect("hop-2 node C should have a graph_score");
+
+    assert!(
+        b_graph_score > c_graph_score,
+        "hop-1 node B graph_score ({b_graph_score:.4}) should exceed \
+         hop-2 node C graph_score ({c_graph_score:.4}) due to 0.7× decay"
+    );
+
+    // graph_hops transparency field must reflect the correct hop numbers.
+    assert_eq!(
+        b_result.graph_hops,
+        Some(1),
+        "hop-1 node B should have graph_hops = Some(1)"
+    );
+    assert_eq!(
+        c_result.graph_hops,
+        Some(2),
+        "hop-2 node C should have graph_hops = Some(2)"
+    );
+
+    fix.cleanup().await;
+}
+
+/// `SearchStrategy::Graph` with no explicit `max_hops` must default to 2 hops,
+/// reaching 2-hop-distant nodes that would be missed with the default 1-hop
+/// traversal used by other strategies.
+///
+/// The test verifies this by confirming:
+///   1. With `strategy=Graph` (no `max_hops`): C appears in results.
+///   2. With `strategy=Balanced` (no `max_hops`): C does NOT appear.
+#[tokio::test]
+#[serial]
+async fn test_graph_strategy_defaults_to_2_hops() {
+    let mut fix = TestFixture::new().await;
+
+    let content_a =
+        "strategy default hops anchor unique phrase flibbertigibbet snollygoster absquatulate";
+    let content_b = "strategy default hops node B unique nonsense lollygag bumfuzzle cattywampus";
+    let content_c = "strategy default hops node C unique nonsense kerfuffle malarkey hullabaloo";
+
+    let node_a = fix.insert_source("Strategy Hops A", content_a).await;
+    let node_b = fix.insert_source("Strategy Hops B", content_b).await;
+    let node_c = fix.insert_source("Strategy Hops C", content_c).await;
+
+    fix.insert_embedding(node_a).await;
+    fix.insert_embedding(node_b).await;
+    fix.insert_embedding(node_c).await;
+
+    insert_edge(&fix, node_a, node_b, "RELATES_TO").await;
+    insert_edge(&fix, node_b, node_c, "RELATES_TO").await;
+
+    let svc = SearchService::new(fix.pool.clone());
+
+    // ── Graph strategy: should behave as max_hops=2 ──────────────────────────
+    let req_graph_strategy = SearchRequest {
+        query: content_a.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 20,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: None,
+        strategy: Some(SearchStrategy::Graph),
+        max_hops: None, // must be derived from strategy → 2
+    };
+
+    let (results_graph, _) = svc
+        .search(req_graph_strategy)
+        .await
+        .expect("graph-strategy search should succeed");
+
+    assert!(
+        results_graph.iter().any(|r| r.node_id == node_c),
+        "strategy=Graph with no max_hops should default to 2 hops, \
+         reaching 2-hop-distant node C"
+    );
+
+    // ── Balanced strategy: should behave as max_hops=1 ───────────────────────
+    let req_balanced = SearchRequest {
+        query: content_a.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 20,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: None,
+        strategy: Some(SearchStrategy::Balanced),
+        max_hops: None, // must be derived from strategy → 1
+    };
+
+    let (results_balanced, _) = svc
+        .search(req_balanced)
+        .await
+        .expect("balanced-strategy search should succeed");
+
+    assert!(
+        !results_balanced.iter().any(|r| r.node_id == node_c),
+        "strategy=Balanced with no max_hops should default to 1 hop, \
+         NOT reaching 2-hop-distant node C"
     );
 
     fix.cleanup().await;

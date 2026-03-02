@@ -16,6 +16,9 @@ pub struct DimensionResult {
     pub raw_score: f64,
     /// Normalized score in [0.0, 1.0] (set by normalize_scores).
     pub normalized_score: f64,
+    /// For graph results: the hop distance from the nearest anchor node.
+    /// `None` for vector and lexical results.
+    pub hop: Option<u32>,
 }
 
 /// Query parameters for a dimension search.
@@ -32,6 +35,9 @@ pub struct DimensionQuery {
     pub session_id: Option<Uuid>,
     /// Node type filter.
     pub node_types: Option<Vec<String>>,
+    /// Maximum number of graph traversal hops (1–3). Only used by
+    /// [`GraphAdaptor`]; other adaptors ignore this field.
+    pub max_hops: Option<u32>,
 }
 
 #[async_trait]

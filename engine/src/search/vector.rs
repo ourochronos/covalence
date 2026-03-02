@@ -119,6 +119,7 @@ impl DimensionAdaptor for VectorAdaptor {
                 node_id,
                 raw_score: distance,
                 normalized_score: 0.0, // set by normalize_scores
+                hop: None,
             })
             .collect())
     }
