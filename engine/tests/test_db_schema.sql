@@ -222,6 +222,17 @@ CREATE TABLE IF NOT EXISTS covalence.node_sections (
     CONSTRAINT node_sections_unique UNIQUE (node_id, tree_path)
 );
 
+-- -----------------------------------------------------------------------------
+-- standing_concerns
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.standing_concerns (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT        NOT NULL UNIQUE,
+    status      TEXT        NOT NULL CHECK (status IN ('green', 'yellow', 'red')),
+    notes       TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- =============================================================================
 -- INDEXES
 -- =============================================================================

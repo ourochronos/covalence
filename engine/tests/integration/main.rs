@@ -34,6 +34,7 @@ mod search_tests;
 mod test_age_edge_sync;
 mod test_compilation;
 mod test_compile;
+mod test_concerns;
 mod test_contention;
 mod test_dashboard;
 mod test_decay;
