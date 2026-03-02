@@ -1,7 +1,9 @@
 //! Shared test infrastructure for the slow-path worker integration tests.
 //!
 //! # Responsibilities
-//! * [`setup_pool`] — obtain a connection pool to the test database.
+//! * [`setup_pool`] — obtain a connection pool to the test database, creating
+//!   `covalence_test` and its schema on first use, then truncating all tables
+//!   so every test starts with a clean slate.
 //! * [`MockLlmClient`] — a configurable fake that returns pre-canned JSON
 //!   responses keyed on prompt keywords and produces deterministic embeddings.
 //! * [`TestFixture`] — a RAII guard that tracks every UUID created during a
@@ -12,33 +14,117 @@
 
 #![allow(dead_code)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use sqlx::{PgPool, Row};
+use sqlx::{Connection, PgPool};
 use uuid::Uuid;
 
 use covalence_engine::worker::{QueueTask, llm::LlmClient};
 
-// ─── database connection ──────────────────────────────────────────────────────
+// ─── constants ────────────────────────────────────────────────────────────────
 
-const DEFAULT_TEST_DB_URL: &str = "postgres://covalence:covalence@localhost:5434/covalence";
+/// Default test database URL.  Points at `covalence_test`, a disposable
+/// database that is created and schema-initialised automatically by
+/// [`setup_pool`].  Override with the `DATABASE_URL` environment variable.
+const DEFAULT_TEST_DB_URL: &str = "postgres://covalence:covalence@localhost:5434/covalence_test";
 
-/// Connect to the test Postgres instance.
+/// Full DDL for the `covalence_test` schema, embedded at compile time.
+/// Idempotent: every statement uses `IF NOT EXISTS`.
+const SCHEMA_SQL: &str = include_str!("../test_db_schema.sql");
+
+// ─── database setup ───────────────────────────────────────────────────────────
+
+/// Derive the maintenance-database URL from a covalence test URL by replacing
+/// the trailing database name with `postgres`.
+///
+/// e.g. `postgres://covalence:covalence@localhost:5434/covalence_test`
+///    → `postgres://covalence:covalence@localhost:5434/postgres`
+fn maintenance_url(test_url: &str) -> String {
+    match test_url.rfind('/') {
+        Some(pos) => format!("{}/postgres", &test_url[..pos]),
+        None => test_url.to_string(),
+    }
+}
+
+/// Create `covalence_test` (if absent), apply the full schema, then truncate
+/// every table so the test run starts from a known-clean state.
+///
+/// Called once per test via [`setup_pool`].  Because tests run serially
+/// (`--test-threads=1`) the truncation effectively replaces per-test cleanup
+/// while also handling the "panic before cleanup" leak scenario.
+async fn setup_test_database(test_url: &str) -> PgPool {
+    // ── Step 1: ensure the test database exists ───────────────────────────
+    let maint_url = maintenance_url(test_url);
+    if let Ok(mut admin_conn) = sqlx::PgConnection::connect(&maint_url).await {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = 'covalence_test')",
+        )
+        .fetch_one(&mut admin_conn)
+        .await
+        .unwrap_or(false);
+
+        if !exists {
+            // CREATE DATABASE cannot run inside a transaction; PgConnection
+            // uses the simple-query protocol (autocommit) so this is safe.
+            sqlx::query("CREATE DATABASE covalence_test")
+                .execute(&mut admin_conn)
+                .await
+                .ok();
+        }
+        admin_conn.close().await.ok();
+    }
+    // If we can't reach the maintenance DB we carry on — the test DB may
+    // already exist (e.g. created by the CI `createdb` step).
+
+    // ── Step 2: connect to the test database ─────────────────────────────
+    let pool = PgPool::connect(test_url).await.unwrap_or_else(|e| {
+        panic!(
+            "Could not connect to test DB at {test_url}: {e}\n\
+             Make sure `covalence-pg` is running on port 5434 \
+             and that `covalence_test` exists."
+        )
+    });
+
+    // ── Step 3: apply schema (idempotent CREATE … IF NOT EXISTS) ─────────
+    sqlx::raw_sql(SCHEMA_SQL)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to apply test schema to {test_url}: {e}"));
+
+    // ── Step 4: truncate all tables for a clean slate ─────────────────────
+    // Cascade handles FK ordering automatically.
+    sqlx::raw_sql(
+        "TRUNCATE \
+            covalence.session_nodes, \
+            covalence.usage_traces, \
+            covalence.contentions, \
+            covalence.slow_path_queue, \
+            covalence.inference_log, \
+            covalence.node_sections, \
+            covalence.node_embeddings, \
+            covalence.edges, \
+            covalence.sessions, \
+            covalence.nodes \
+         RESTART IDENTITY CASCADE",
+    )
+    .execute(&pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to truncate test tables: {e}"));
+
+    pool
+}
+
+/// Connect to the test Postgres instance, bootstrapping `covalence_test` if
+/// needed.
 ///
 /// Reads `DATABASE_URL` from the environment (matching `main.rs` behaviour)
 /// and falls back to the hard-coded default used in CI.
 pub async fn setup_pool() -> PgPool {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_TEST_DB_URL.to_string());
-    PgPool::connect(&url).await.unwrap_or_else(|e| {
-        panic!(
-            "Could not connect to test DB at {url}: {e}\n\
-                 Make sure `covalence-pg` is running on port 5434."
-        )
-    })
+    setup_test_database(&url).await
 }
 
 // ─── MockLlmClient ────────────────────────────────────────────────────────────
@@ -462,6 +548,11 @@ impl TestFixture {
     /// Call this at the end of every test — even if assertions fail — by
     /// storing the fixture in a variable that stays in scope to the end of
     /// the test function body.
+    ///
+    /// Note: because [`setup_pool`] truncates all tables at the *start* of
+    /// each test, any rows leaked by a panic are cleaned up automatically
+    /// before the next test runs.  This method is retained for symmetry and
+    /// to keep the DB tidy within a single test run.
     pub async fn cleanup(self) {
         let pool = &self.pool;
 
@@ -490,8 +581,23 @@ impl TestFixture {
             .ok();
         }
 
-        // 3. Per-node cleanup (FK order: queue → contentions → edges → embeddings → node).
+        // 3. Per-node cleanup in FK dependency order:
+        //    session_nodes → usage_traces → queue → contentions → edges
+        //    → embeddings → sections → node
         for &id in &self.node_ids {
+            // FK tables that reference nodes (must precede node deletion)
+            sqlx::query("DELETE FROM covalence.session_nodes WHERE node_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+
+            sqlx::query("DELETE FROM covalence.usage_traces WHERE node_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+
             sqlx::query("DELETE FROM covalence.slow_path_queue WHERE node_id = $1")
                 .bind(id)
                 .execute(pool)
@@ -516,6 +622,8 @@ impl TestFixture {
             .await
             .ok();
 
+            // ON DELETE CASCADE handles node_embeddings and node_sections,
+            // but we delete explicitly for clarity.
             sqlx::query("DELETE FROM covalence.node_embeddings WHERE node_id = $1")
                 .bind(id)
                 .execute(pool)

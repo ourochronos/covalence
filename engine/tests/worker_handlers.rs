@@ -2,9 +2,13 @@
 //!
 //! # Running
 //! ```
-//! DATABASE_URL=postgres://covalence:covalence@localhost:5434/covalence \
-//!   cargo test --test worker_handlers -- --test-threads=1
+//! cargo test --test worker_handlers -- --test-threads=1
 //! ```
+//!
+//! Tests run against `covalence_test`, a disposable database that is
+//! bootstrapped automatically by [`setup_test_db`] → [`test_helpers::setup_pool`].
+//! The database is truncated at the start of every test, so a panic in a
+//! previous run never leaves stale rows.
 //!
 //! # Schema alignment
 //! All INSERT/SELECT statements use the **actual** live DB column names:
@@ -43,16 +47,21 @@ use covalence_engine::worker::{
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test database URL
+// Shared test helpers (re-use integration helper infrastructure)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TEST_DB_URL: &str = "postgres://covalence:covalence@localhost:5434/covalence";
+/// Pull in the integration test helpers as a private module so we can reuse
+/// `setup_pool()` (which bootstraps `covalence_test`, applies the schema, and
+/// truncates all tables) without duplicating that logic here.
+#[path = "integration/helpers.rs"]
+mod test_helpers;
 
-/// Connect to the test Postgres database.
+/// Connect to the test Postgres database, bootstrapping `covalence_test` if
+/// needed.  Delegates to [`test_helpers::setup_pool`] which reads
+/// `DATABASE_URL` from the environment (falling back to the `covalence_test`
+/// default) and ensures a clean state before each test.
 async fn setup_test_db() -> PgPool {
-    PgPool::connect(TEST_DB_URL)
-        .await
-        .expect("failed to connect to test DB — is `covalence-pg` running on port 5434?")
+    test_helpers::setup_pool().await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

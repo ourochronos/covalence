@@ -39,11 +39,14 @@ jobs:
           for f in sql/[0-9]*.sql; do
             docker compose exec -T postgres psql -U covalence -d covalence -f /dev/stdin < "$f"
           done
+      - name: Create test database
+        run: |
+          docker compose exec -T postgres createdb -U covalence covalence_test
       - name: Cargo test
         working-directory: engine
         env:
-          DATABASE_URL: postgresql://covalence:covalence@localhost:5434/covalence
-        run: cargo test
+          DATABASE_URL: postgresql://covalence:covalence@localhost:5434/covalence_test
+        run: cargo test -- --test-threads=1
       - name: Cleanup
         if: always()
         run: docker compose down -v

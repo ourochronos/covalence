@@ -1,0 +1,278 @@
+-- =============================================================================
+-- Test database schema for covalence_test
+-- Applied by setup_test_database() before each test run.
+-- Idempotent: every statement uses IF NOT EXISTS / DO-blocks.
+-- AGE extension is intentionally omitted; integration tests use the
+-- relational layer only and do not require Cypher traversal.
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE SCHEMA IF NOT EXISTS covalence;
+
+-- -----------------------------------------------------------------------------
+-- nodes
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.nodes (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    age_id          BIGINT,
+    node_type       TEXT             NOT NULL
+                                     CONSTRAINT nodes_node_type_check
+                                     CHECK (node_type IN ('article', 'source', 'entity')),
+    title           TEXT,
+    content         TEXT,
+    status          TEXT             DEFAULT 'active'
+                                     CONSTRAINT nodes_status_check
+                                     CHECK (status IN (
+                                         'active', 'superseded', 'archived',
+                                         'disputed', 'tombstone'
+                                     )),
+    confidence      DOUBLE PRECISION DEFAULT 0.5,
+    epistemic_type  TEXT
+                                     CONSTRAINT nodes_epistemic_type_check
+                                     CHECK (epistemic_type IN (
+                                         'semantic', 'episodic', 'procedural', 'declarative'
+                                     )),
+    domain_path     TEXT[],
+    metadata        JSONB            DEFAULT '{}',
+    source_type     TEXT,
+    reliability     DOUBLE PRECISION,
+    content_hash    TEXT,
+    fingerprint     TEXT,
+    size_tokens     INTEGER,
+    pinned          BOOLEAN          DEFAULT false,
+    version         INTEGER          DEFAULT 1,
+    created_at      TIMESTAMPTZ      DEFAULT now(),
+    modified_at     TIMESTAMPTZ      DEFAULT now(),
+    accessed_at     TIMESTAMPTZ      DEFAULT now(),
+    archived_at     TIMESTAMPTZ,
+    usage_score     DOUBLE PRECISION DEFAULT 0.5,
+    content_tsv     TSVECTOR         GENERATED ALWAYS AS (
+                        to_tsvector('english',
+                            COALESCE(title, '') || ' ' || COALESCE(content, ''))
+                    ) STORED
+);
+
+-- -----------------------------------------------------------------------------
+-- edges
+-- (No edge_type CHECK constraint — extensible string label, validated in Rust)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.edges (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    age_id          BIGINT,
+    source_node_id  UUID             REFERENCES covalence.nodes(id),
+    target_node_id  UUID             REFERENCES covalence.nodes(id),
+    edge_type       TEXT             NOT NULL,
+    weight          DOUBLE PRECISION DEFAULT 1.0,
+    confidence      DOUBLE PRECISION DEFAULT 1.0,
+    metadata        JSONB            DEFAULT '{}',
+    created_at      TIMESTAMPTZ      DEFAULT now(),
+    created_by      TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS edges_dedup_idx
+    ON covalence.edges (source_node_id, target_node_id, edge_type);
+
+-- -----------------------------------------------------------------------------
+-- node_embeddings
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.node_embeddings (
+    node_id         UUID             PRIMARY KEY
+                                     REFERENCES covalence.nodes(id) ON DELETE CASCADE,
+    embedding       halfvec(1536),
+    model           TEXT             DEFAULT 'text-embedding-3-small',
+    created_at      TIMESTAMPTZ      DEFAULT now()
+);
+
+-- -----------------------------------------------------------------------------
+-- usage_traces
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.usage_traces (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_id         UUID             REFERENCES covalence.nodes(id),
+    session_id      TEXT,
+    query_text      TEXT,
+    retrieval_rank  INTEGER,
+    accessed_at     TIMESTAMPTZ      DEFAULT now()
+);
+
+-- -----------------------------------------------------------------------------
+-- contentions
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.contentions (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_id         UUID             REFERENCES covalence.nodes(id),
+    source_node_id  UUID             REFERENCES covalence.nodes(id),
+    edge_id         UUID             REFERENCES covalence.edges(id),
+    type            TEXT,
+    description     TEXT,
+    severity        TEXT,
+    status          TEXT             DEFAULT 'detected',
+    resolution      TEXT,
+    materiality     DOUBLE PRECISION,
+    detected_at     TIMESTAMPTZ      DEFAULT now(),
+    resolved_at     TIMESTAMPTZ
+);
+
+-- -----------------------------------------------------------------------------
+-- slow_path_queue
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.slow_path_queue (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_type       TEXT             NOT NULL
+                                     CONSTRAINT slow_path_queue_task_type_check
+                                     CHECK (task_type IN (
+                                         'compile', 'infer_edges', 'resolve_contention',
+                                         'split', 'merge', 'embed', 'contention_check',
+                                         'tree_index', 'tree_embed'
+                                     )),
+    node_id         UUID             REFERENCES covalence.nodes(id),
+    payload         JSONB            DEFAULT '{}',
+    status          TEXT             DEFAULT 'pending'
+                                     CONSTRAINT slow_path_queue_status_check
+                                     CHECK (status IN (
+                                         'pending', 'processing', 'complete', 'failed'
+                                     )),
+    priority        INTEGER          DEFAULT 0,
+    created_at      TIMESTAMPTZ      DEFAULT now(),
+    started_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+    result          JSONB
+);
+
+-- -----------------------------------------------------------------------------
+-- inference_log
+-- (inputs/output carry DEFAULT '{}' so the engine's newer input_node_ids-based
+--  inserts that omit those columns still satisfy NOT NULL.)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.inference_log (
+    id                  UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    operation           TEXT             NOT NULL,
+    inputs              JSONB            NOT NULL DEFAULT '{}',
+    output              JSONB            NOT NULL DEFAULT '{}',
+    input_node_ids      UUID[],
+    input_summary       TEXT,
+    output_decision     TEXT,
+    output_confidence   DOUBLE PRECISION,
+    output_rationale    TEXT,
+    model               TEXT,
+    latency_ms          INTEGER,
+    created_at          TIMESTAMPTZ      DEFAULT now()
+);
+
+-- -----------------------------------------------------------------------------
+-- sessions
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.sessions (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    label           TEXT             UNIQUE,
+    created_at      TIMESTAMPTZ      DEFAULT now(),
+    last_active_at  TIMESTAMPTZ      DEFAULT now(),
+    metadata        JSONB            DEFAULT '{}',
+    status          TEXT             DEFAULT 'active'
+                                     CHECK (status IN ('active', 'expired', 'closed'))
+);
+
+-- -----------------------------------------------------------------------------
+-- session_nodes
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.session_nodes (
+    session_id      UUID             REFERENCES covalence.sessions(id),
+    node_id         UUID             REFERENCES covalence.nodes(id),
+    first_accessed  TIMESTAMPTZ      DEFAULT now(),
+    access_count    INTEGER          DEFAULT 1,
+    PRIMARY KEY (session_id, node_id)
+);
+
+-- -----------------------------------------------------------------------------
+-- node_sections
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS covalence.node_sections (
+    id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_id         UUID             NOT NULL
+                                     REFERENCES covalence.nodes(id) ON DELETE CASCADE,
+    tree_path       TEXT             NOT NULL,
+    depth           INT              NOT NULL DEFAULT 0,
+    title           TEXT,
+    summary         TEXT,
+    start_char      INT              NOT NULL,
+    end_char        INT              NOT NULL,
+    content_hash    TEXT,
+    embedding       halfvec(1536),
+    model           TEXT             DEFAULT 'text-embedding-3-small',
+    created_at      TIMESTAMPTZ      DEFAULT now(),
+    CONSTRAINT node_sections_unique UNIQUE (node_id, tree_path)
+);
+
+-- =============================================================================
+-- INDEXES
+-- =============================================================================
+
+-- HNSW for approximate nearest-neighbour semantic search
+CREATE INDEX IF NOT EXISTS node_embeddings_hnsw_idx
+    ON covalence.node_embeddings
+    USING hnsw (embedding halfvec_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX IF NOT EXISTS node_sections_hnsw_idx
+    ON covalence.node_sections
+    USING hnsw (embedding halfvec_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+-- GIN indexes
+CREATE INDEX IF NOT EXISTS nodes_metadata_gin_idx
+    ON covalence.nodes USING gin (metadata);
+
+CREATE INDEX IF NOT EXISTS nodes_content_tsv_gin_idx
+    ON covalence.nodes USING gin (content_tsv);
+
+-- B-tree indexes
+CREATE INDEX IF NOT EXISTS nodes_type_status_idx
+    ON covalence.nodes (node_type, status);
+
+CREATE INDEX IF NOT EXISTS nodes_active_status_idx
+    ON covalence.nodes (status)
+    WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS edges_source_node_idx
+    ON covalence.edges (source_node_id);
+
+CREATE INDEX IF NOT EXISTS edges_target_node_idx
+    ON covalence.edges (target_node_id);
+
+CREATE INDEX IF NOT EXISTS edges_edge_type_idx
+    ON covalence.edges (edge_type);
+
+CREATE INDEX IF NOT EXISTS contentions_status_idx
+    ON covalence.contentions (status);
+
+CREATE INDEX IF NOT EXISTS slow_path_queue_status_priority_idx
+    ON covalence.slow_path_queue (status, priority);
+
+CREATE INDEX IF NOT EXISTS usage_traces_node_accessed_idx
+    ON covalence.usage_traces (node_id, accessed_at);
+
+CREATE INDEX IF NOT EXISTS inference_log_operation_created_idx
+    ON covalence.inference_log (operation, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS sessions_label_idx
+    ON covalence.sessions (label);
+
+CREATE INDEX IF NOT EXISTS sessions_status_idx
+    ON covalence.sessions (status);
+
+CREATE INDEX IF NOT EXISTS node_sections_node_id_idx
+    ON covalence.node_sections (node_id);
+
+CREATE INDEX IF NOT EXISTS node_sections_depth_idx
+    ON covalence.node_sections (depth);
+
+-- =============================================================================
+-- PERMISSIONS
+-- =============================================================================
+
+GRANT USAGE ON SCHEMA covalence TO covalence;
+GRANT ALL ON ALL TABLES IN SCHEMA covalence TO covalence;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA covalence TO covalence;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA covalence TO covalence;
