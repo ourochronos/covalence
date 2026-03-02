@@ -10,6 +10,7 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::services::concerns_service::{ConcernsService, UpsertConcernRequest};
 use crate::services::provenance_trace_service::{ProvenanceTraceService, TraceRequest};
 use crate::services::{
     admin_service::*, article_service::*, contention_service::*, edge_service::*,
@@ -75,6 +76,10 @@ pub fn router() -> Router<AppState> {
         .route("/admin/embed-all", post(admin_embed_all))
         .route("/admin/tree-index-all", post(admin_tree_index_all))
         .route("/admin/staleness-scan", post(admin_staleness_scan))
+        .route(
+            "/admin/concerns",
+            post(admin_upsert_concerns).get(admin_list_concerns),
+        )
 }
 
 // ── Source handlers ─────────────────────────────────────────────
@@ -712,6 +717,31 @@ async fn admin_tree_index_all(
     .into_response()
 }
 
+// ── Standing concerns handlers ──────────────────────────────────
+
+async fn admin_upsert_concerns(
+    State(state): State<AppState>,
+    Json(concerns): Json<Vec<UpsertConcernRequest>>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = ConcernsService::new(state.pool);
+    let results = svc.upsert_many(concerns).await?;
+    Ok(Json(serde_json::json!({
+        "data": results,
+        "meta": { "count": results.len() }
+    })))
+}
+
+async fn admin_list_concerns(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = ConcernsService::new(state.pool);
+    let results = svc.list().await?;
+    Ok(Json(serde_json::json!({
+        "data": results,
+        "meta": { "count": results.len() }
+    })))
+}
+
 // ── Dashboard handler ───────────────────────────────────────────
 
 /// Serve the self-contained browser dashboard at GET /dashboard.
@@ -823,6 +853,17 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   /* Spinner */
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* Standing concerns */
+  .concerns-table { width: 100%; border-collapse: collapse; }
+  .concerns-table td { padding: 8px 10px; border-bottom: 1px solid #253260; font-size: 0.85rem; vertical-align: middle; }
+  .concerns-table tr:last-child td { border-bottom: none; }
+  .concerns-table .cn-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .cn-dot.green  { background: #4caf50; box-shadow: 0 0 6px #4caf5088; }
+  .cn-dot.yellow { background: #ff9800; box-shadow: 0 0 6px #ff980088; }
+  .cn-dot.red    { background: #e94560; box-shadow: 0 0 6px #e9456088; }
+  .concerns-table .cn-name  { font-weight: 600; }
+  .concerns-table .cn-notes { color: var(--muted); }
+  .concerns-table .cn-ts    { color: var(--muted); white-space: nowrap; font-size: 0.75rem; }
   /* Scrollbar (webkit) */
   ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg); } ::-webkit-scrollbar-thumb { background: var(--accent2); border-radius: 4px; }
 </style>
@@ -850,7 +891,15 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     <div id="stats-content"><span class="spinner"></span> Loading…</div>
   </section>
 
-  <!-- ── Section 2: Search ── -->
+  <!-- ── Section 2: Standing Concerns ── -->
+  <section id="section-concerns">
+    <h2>Standing Concerns
+      <button id="btn-refresh-concerns" style="float:right;font-size:0.75rem;padding:5px 12px" onclick="loadConcerns()">↻ Refresh</button>
+    </h2>
+    <div id="concerns-content"><span class="spinner"></span> Loading…</div>
+  </section>
+
+  <!-- ── Section 3: Search ── -->
   <section id="section-search">
     <h2>Search</h2>
     <div class="search-row">
@@ -860,7 +909,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     <div id="search-results"></div>
   </section>
 
-  <!-- ── Section 3: Article Browser ── -->
+  <!-- ── Section 4: Article Browser ── -->
   <section id="section-articles">
     <h2>Article Browser
       <button id="btn-reload-articles" style="float:right;font-size:0.75rem;padding:5px 12px" onclick="loadArticles()">↻ Reload</button>
@@ -1030,9 +1079,44 @@ async function loadArticle(id) {
   }
 }
 
+// ── Section 2: Standing Concerns ──────────────────────────────────────────
+
+async function loadConcerns() {
+  const el  = document.getElementById('concerns-content');
+  const btn = document.getElementById('btn-refresh-concerns');
+  el.innerHTML = '<span class="spinner"></span> Loading…';
+  if (btn) btn.disabled = true;
+  try {
+    const body = await apiFetch('/admin/concerns');
+    const concerns = body.data ?? [];
+    if (concerns.length === 0) {
+      el.innerHTML = '<p class="empty-state">No concerns data — heartbeat has not written yet.</p>';
+      return;
+    }
+    const rows = concerns.map(c => {
+      const dot   = `<span class="cn-dot ${escHtml(c.status)}"></span>`;
+      const name  = `<span class="cn-name">${escHtml(c.name)}</span>`;
+      const notes = `<span class="cn-notes">${escHtml(c.notes ?? '')}</span>`;
+      const ts    = `<span class="cn-ts">${escHtml(fmtDate(c.updated_at))}</span>`;
+      return `<tr>
+        <td style="width:20px">${dot}</td>
+        <td>${name}</td>
+        <td>${notes}</td>
+        <td>${ts}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<table class="concerns-table"><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    el.innerHTML = `<p class="error-state">⚠ Failed to load concerns: ${escHtml(e.message)}</p>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 
 loadStats();
+loadConcerns();
 loadArticles();
 </script>
 </body>

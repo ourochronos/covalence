@@ -108,7 +108,8 @@ async fn setup_test_database(test_url: &str) -> PgPool {
             covalence.node_embeddings, \
             covalence.edges, \
             covalence.sessions, \
-            covalence.nodes \
+            covalence.nodes, \
+            covalence.standing_concerns \
          RESTART IDENTITY CASCADE",
     )
     .execute(&pool)
