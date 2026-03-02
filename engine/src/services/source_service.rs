@@ -91,9 +91,9 @@ impl SourceService {
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, source_type, reliability, \
               fingerprint, content_hash, size_tokens, metadata, \
-              confidence, confidence_source, \
+              confidence, \
               created_at, modified_at, accessed_at) \
-             VALUES ($1, 'source', $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $10, $11, $11, $11)"
+             VALUES ($1, 'source', $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $11, $11)"
         )
             .bind(id)
             .bind(&req.title)

@@ -83,8 +83,8 @@ impl MemoryService {
         // Insert as source node
         sqlx::query(
             "INSERT INTO covalence.nodes (id, node_type, source_type, title, content, content_hash, fingerprint,
-                 size_tokens, reliability, metadata, status, confidence, confidence_source)
-             VALUES ($1, 'source', 'observation', 'memory', $2, $3, $3, $4, $5, $6, 'active', $5, $5)"
+                 size_tokens, reliability, metadata, status, confidence)
+             VALUES ($1, 'source', 'observation', 'memory', $2, $3, $3, $4, $5, $6, 'active', $5)"
         )
         .bind(id)
         .bind(&req.content)
