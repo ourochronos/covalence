@@ -8,6 +8,12 @@ use super::dimension::{DimensionAdaptor, DimensionQuery, DimensionResult};
 
 pub struct VectorAdaptor;
 
+impl Default for VectorAdaptor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VectorAdaptor {
     pub fn new() -> Self {
         Self

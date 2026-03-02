@@ -15,3 +15,7 @@ pub use graph::GraphAdaptor;
 pub use lexical::LexicalAdaptor;
 #[allow(unused_imports)]
 pub use vector::VectorAdaptor;
+
+// Re-export SearchMode so callers can use `covalence_engine::search::SearchMode`.
+#[allow(unused_imports)]
+pub use crate::services::search_service::SearchMode;

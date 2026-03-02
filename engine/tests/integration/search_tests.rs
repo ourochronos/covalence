@@ -1,7 +1,7 @@
-//! Integration tests for trust-aware search ranking (covalence#31).
+//! Integration tests for search ranking (trust-aware: covalence#31;
+//! hierarchical mode: tracking#92 Phase B item 1).
 //!
-//! These tests verify that source reliability is correctly propagated into
-//! the final search score:
+//! ## Trust-aware tests (existing)
 //!
 //! * A source node with high reliability should outrank an identical source
 //!   node with low reliability (all other factors equal).
@@ -11,11 +11,20 @@
 //! Both tests use identical content / embeddings so the three dimensional
 //! scores (vector, lexical, graph) are equal, making trust the sole
 //! differentiating factor in the fusion formula.
+//!
+//! ## Hierarchical mode tests (tracking#92)
+//!
+//! * `test_hierarchical_search_returns_articles_first` — articles precede
+//!   sources in hierarchical results.
+//! * `test_hierarchical_search_expands_sources` — sources linked to top
+//!   articles appear with `expanded_from` set to the parent article id.
+//! * `test_standard_mode_unchanged` — standard mode returns mixed node types
+//!   as before (no change to default behaviour).
 
 use serial_test::serial;
 use uuid::Uuid;
 
-use covalence_engine::services::search_service::{SearchRequest, SearchService};
+use covalence_engine::services::search_service::{SearchMode, SearchRequest, SearchService};
 
 use super::helpers::TestFixture;
 
@@ -121,6 +130,7 @@ async fn source_reliability_affects_ranking() {
         node_types: Some(vec!["source".to_string()]),
         limit: 10,
         weights: None,
+        mode: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -219,6 +229,7 @@ async fn article_trust_derived_from_source_reliability() {
         node_types: Some(vec!["article".to_string()]),
         limit: 10,
         weights: None,
+        mode: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -281,6 +292,7 @@ async fn article_without_sources_gets_default_trust() {
         node_types: Some(vec!["article".to_string()]),
         limit: 5,
         weights: None,
+        mode: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -298,6 +310,269 @@ async fn article_without_sources_gets_default_trust() {
         (trust - 0.5).abs() < 1e-9,
         "orphan article (no linked sources) should have default trust 0.5, got {trust}"
     );
+
+    fix.cleanup().await;
+}
+
+// ─── Hierarchical search tests (tracking#92 Phase B, item 1) ─────────────────
+
+/// In hierarchical mode the result list must contain all directly-matched
+/// articles **before** any hierarchically-expanded source nodes.
+///
+/// Setup:
+///   • One article (with embedding) containing the query phrase.
+///   • One source (with embedding) containing the same phrase.
+///   • The source is linked to the article via an ORIGINATES edge.
+///
+/// Because the source is linked to the article it will be expanded into the
+/// result set by the hierarchical logic — but only after the article itself.
+#[tokio::test]
+#[serial]
+async fn test_hierarchical_search_returns_articles_first() {
+    let mut fix = TestFixture::new().await;
+
+    let content =
+        "hierarchical ordering test unique phrase kappa iota theta eta zeta epsilon delta";
+
+    // Insert one article and one source with identical content/embeddings.
+    let article_id = fix.insert_article("Hierarchical Article", content).await;
+    let source_id = fix.insert_source("Hierarchical Source", content).await;
+
+    fix.insert_embedding(article_id).await;
+    fix.insert_embedding(source_id).await;
+
+    // Link source → article.
+    fix.insert_originates_edge(source_id, article_id).await;
+
+    let svc = SearchService::new(fix.pool.clone());
+    let req = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 10,
+        weights: None,
+        mode: Some(SearchMode::Hierarchical),
+    };
+
+    let (results, _meta) = svc
+        .search(req)
+        .await
+        .expect("hierarchical search should succeed");
+
+    // At least the article must be returned.
+    assert!(
+        !results.is_empty(),
+        "hierarchical search should return at least one result"
+    );
+
+    // All article-type results must appear before any source-type results.
+    let mut seen_source = false;
+    for r in &results {
+        if r.node_type == "source" {
+            seen_source = true;
+        }
+        if r.node_type == "article" && seen_source {
+            panic!(
+                "article result (id={}) appeared after a source result — \
+                 hierarchical mode must return articles first",
+                r.node_id
+            );
+        }
+    }
+
+    // The article itself must be present.
+    assert!(
+        results.iter().any(|r| r.node_id == article_id),
+        "article should appear in hierarchical results"
+    );
+
+    fix.cleanup().await;
+}
+
+/// Hierarchical mode must expand linked source nodes and mark them with
+/// `expanded_from` pointing to the parent article.
+///
+/// Setup:
+///   • One article with an embedding.
+///   • Two sources (no direct embedding needed for expansion — they are
+///     looked up by provenance, not by dimensional search), each linked to
+///     the article via an ORIGINATES edge.
+///
+/// We give the sources embeddings too so they would appear in standard search;
+/// the point is that in hierarchical mode they appear **because of provenance**
+/// and carry `expanded_from = article_id`.
+#[tokio::test]
+#[serial]
+async fn test_hierarchical_search_expands_sources() {
+    let mut fix = TestFixture::new().await;
+
+    let article_content =
+        "hierarchical expansion test unique phrase alpha beta gamma sigma rho pi omicron";
+    let source_content_a = "backing source A for hierarchical expansion test unique phrase";
+    let source_content_b = "backing source B for hierarchical expansion test unique phrase";
+
+    let article_id = fix
+        .insert_article("Hierarchical Expansion Article", article_content)
+        .await;
+    let source_a = fix.insert_source("Source A", source_content_a).await;
+    let source_b = fix.insert_source("Source B", source_content_b).await;
+
+    fix.insert_embedding(article_id).await;
+    fix.insert_embedding(source_a).await;
+    fix.insert_embedding(source_b).await;
+
+    // Link both sources to the article.
+    fix.insert_originates_edge(source_a, article_id).await;
+    fix.insert_originates_edge(source_b, article_id).await;
+
+    let svc = SearchService::new(fix.pool.clone());
+    let req = SearchRequest {
+        query: article_content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 10,
+        weights: None,
+        mode: Some(SearchMode::Hierarchical),
+    };
+
+    let (results, _meta) = svc
+        .search(req)
+        .await
+        .expect("hierarchical search should succeed");
+
+    // The article must appear.
+    assert!(
+        results.iter().any(|r| r.node_id == article_id),
+        "article_id should be in hierarchical results"
+    );
+
+    // Both sources should appear as expanded results.
+    let src_a_result = results.iter().find(|r| r.node_id == source_a);
+    let src_b_result = results.iter().find(|r| r.node_id == source_b);
+
+    assert!(
+        src_a_result.is_some(),
+        "source_a should appear in expanded hierarchical results"
+    );
+    assert!(
+        src_b_result.is_some(),
+        "source_b should appear in expanded hierarchical results"
+    );
+
+    // Both expanded sources must have expanded_from = article_id.
+    let a_expanded_from = src_a_result
+        .unwrap()
+        .expanded_from
+        .expect("source_a should have expanded_from set");
+    let b_expanded_from = src_b_result
+        .unwrap()
+        .expanded_from
+        .expect("source_b should have expanded_from set");
+
+    assert_eq!(
+        a_expanded_from, article_id,
+        "source_a.expanded_from should equal article_id"
+    );
+    assert_eq!(
+        b_expanded_from, article_id,
+        "source_b.expanded_from should equal article_id"
+    );
+
+    // The article result itself must NOT have expanded_from set.
+    let art_result = results
+        .iter()
+        .find(|r| r.node_id == article_id)
+        .expect("article should be in results");
+    assert!(
+        art_result.expanded_from.is_none(),
+        "directly-matched article should have expanded_from = None"
+    );
+
+    fix.cleanup().await;
+}
+
+/// Standard mode (the default) must continue returning mixed node types in
+/// score order — the introduction of `mode` must not change existing behaviour.
+///
+/// We insert one article and one source with the same content/embeddings and
+/// confirm both appear in results regardless of which comes first.
+#[tokio::test]
+#[serial]
+async fn test_standard_mode_unchanged() {
+    let mut fix = TestFixture::new().await;
+
+    let content =
+        "standard mode unchanged test unique phrase nu xi omicron pi rho sigma tau upsilon";
+
+    let article_id = fix.insert_article("Standard Mode Article", content).await;
+    let source_id = fix.insert_source("Standard Mode Source", content).await;
+
+    fix.insert_embedding(article_id).await;
+    fix.insert_embedding(source_id).await;
+
+    let svc = SearchService::new(fix.pool.clone());
+
+    // Explicit Standard mode.
+    let req_explicit = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 10,
+        weights: None,
+        mode: Some(SearchMode::Standard),
+    };
+
+    // Default mode (mode = None).
+    let req_default = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 10,
+        weights: None,
+        mode: None,
+    };
+
+    let (results_explicit, _) = svc
+        .search(req_explicit)
+        .await
+        .expect("explicit standard search should succeed");
+    let (results_default, _) = svc
+        .search(req_default)
+        .await
+        .expect("default mode search should succeed");
+
+    // Both modes must return results containing both node types (no type filter
+    // should have been applied).
+    for (label, results) in [
+        ("explicit", &results_explicit),
+        ("default", &results_default),
+    ] {
+        assert!(
+            results.iter().any(|r| r.node_id == article_id),
+            "{label}: article should appear in standard results"
+        );
+        assert!(
+            results.iter().any(|r| r.node_id == source_id),
+            "{label}: source should appear in standard results"
+        );
+    }
+
+    // Standard mode must NOT set expanded_from on any result.
+    for r in results_explicit.iter().chain(results_default.iter()) {
+        assert!(
+            r.expanded_from.is_none(),
+            "standard mode result {} should have expanded_from = None",
+            r.node_id
+        );
+    }
 
     fix.cleanup().await;
 }

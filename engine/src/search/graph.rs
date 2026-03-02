@@ -12,6 +12,12 @@ use crate::models::{EdgeType, SearchIntent};
 
 pub struct GraphAdaptor;
 
+impl Default for GraphAdaptor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GraphAdaptor {
     pub fn new() -> Self {
         Self

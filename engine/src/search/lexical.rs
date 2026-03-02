@@ -11,6 +11,12 @@ pub struct LexicalAdaptor {
     bm25_available: AtomicBool,
 }
 
+impl Default for LexicalAdaptor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LexicalAdaptor {
     pub fn new() -> Self {
         Self {
