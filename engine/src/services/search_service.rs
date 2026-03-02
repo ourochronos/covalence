@@ -116,11 +116,11 @@ impl SearchService {
         let (w_vec, w_lex, w_graph) = {
             let (v, l, g) = match &req.weights {
                 Some(w) => (
-                    w.vector.unwrap_or(0.50),
-                    w.lexical.unwrap_or(0.30),
-                    w.graph.unwrap_or(0.20),
+                    w.vector.unwrap_or(0.65),
+                    w.lexical.unwrap_or(0.25),
+                    w.graph.unwrap_or(0.10),
                 ),
-                None => (0.50, 0.30, 0.20),
+                None => (0.65, 0.25, 0.10),
             };
             let sum = v + l + g;
             if sum > 0.0 {
@@ -240,33 +240,25 @@ impl SearchService {
             };
             let (_, node_type, title, preview, confidence, modified_at) = node;
 
-            // Weighted mean over present dimensions only
+            // Weighted sum — absent dimensions contribute 0 (no inflation)
             let mut weighted_sum = 0.0f64;
-            let mut weight_sum = 0.0f32;
             if let Some(v) = vs {
                 weighted_sum += v * w_vec as f64;
-                weight_sum += w_vec;
             }
             if let Some(l) = ls {
                 weighted_sum += l * w_lex as f64;
-                weight_sum += w_lex;
             }
             if let Some(g) = gs {
                 weighted_sum += g * w_graph as f64;
-                weight_sum += w_graph;
             }
-            let dim_score = if weight_sum > 0.0 {
-                weighted_sum / weight_sum as f64
-            } else {
-                0.0
-            };
+            let dim_score = weighted_sum;
 
             // Freshness decay
             let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
             let freshness = (-0.01 * days).exp();
 
-            // Final score (SPEC §7.3)
-            let final_score = dim_score * 0.50 + *confidence * 0.35 + freshness * 0.15;
+            // Final score: dimensional score is dominant, confidence/freshness are tiebreakers
+            let final_score = dim_score * 0.85 + *confidence * 0.10 + freshness * 0.05;
 
             results.push(SearchResult {
                 node_id: *node_id,

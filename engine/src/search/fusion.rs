@@ -67,7 +67,7 @@ impl ScoreFusion {
             .into_iter()
             .map(|(node_id, (v, l, g))| {
                 // Weighted mean over present dimensions
-                let dimensional_score = weighted_mean_present(
+                let dimensional_score = weighted_sum_present(
                     v,
                     l,
                     g,
@@ -87,7 +87,7 @@ impl ScoreFusion {
                 let freshness = (-DECAY_RATE * days_since).exp();
 
                 // Base composite
-                let mut composite = dimensional_score * 0.50 + confidence * 0.35 + freshness * 0.15;
+                let mut composite = dimensional_score * 0.85 + confidence * 0.10 + freshness * 0.05;
 
                 // Novelty boost for new nodes
                 let hours_since_created = (now - created_at).num_seconds() as f64 / 3600.0;
@@ -122,7 +122,7 @@ impl ScoreFusion {
 
 /// Weighted mean over present dimensions only.
 /// Absent dimensions don't dilute the score.
-fn weighted_mean_present(
+fn weighted_sum_present(
     v: Option<f64>,
     l: Option<f64>,
     g: Option<f64>,
@@ -146,11 +146,7 @@ fn weighted_mean_present(
         weight_sum += wg;
     }
 
-    if weight_sum > 0.0 {
-        sum / weight_sum
-    } else {
-        0.0
-    }
+    sum
 }
 
 #[cfg(test)]
