@@ -37,5 +37,6 @@ mod test_decay;
 mod test_embed;
 mod test_memory_recall;
 mod test_merge;
+mod test_search_temporal;
 mod test_split;
 mod test_tree;

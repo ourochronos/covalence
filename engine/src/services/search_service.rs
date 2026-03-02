@@ -18,6 +18,7 @@
 //!   truncated to `req.limit`.  Expanded sources carry an `expanded_from`
 //!   field that identifies the parent article.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -114,6 +115,14 @@ pub struct SearchRequest {
     /// Explicit `max_hops` always wins over the strategy-derived default.
     #[serde(default)]
     pub max_hops: Option<u32>,
+    /// Include only nodes whose `created_at` is strictly after this timestamp.
+    /// When `None`, no lower-bound date filter is applied.
+    #[serde(default)]
+    pub after: Option<DateTime<Utc>>,
+    /// Include only nodes whose `created_at` is strictly before this timestamp.
+    /// When `None`, no upper-bound date filter is applied.
+    #[serde(default)]
+    pub before: Option<DateTime<Utc>>,
 }
 
 fn default_limit() -> usize {
@@ -154,6 +163,9 @@ pub struct SearchResult {
     /// Number of graph hops from the nearest anchor node.
     /// `None` if this result was not discovered via graph traversal.
     pub graph_hops: Option<u32>,
+    /// When this node was created. Populated from the `created_at` column on
+    /// the `nodes` table; used by the `after`/`before` temporal filters.
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// Metadata about the search execution.
@@ -330,6 +342,13 @@ impl SearchService {
                     .as_ref()
                     .is_some_and(|dp| dp.iter().any(|d| filter_paths.contains(d)))
             });
+        }
+        // Temporal post-filters: exclude nodes outside the requested date range.
+        if let Some(after) = req.after {
+            results.retain(|r| r.created_at.is_none_or(|ca| ca > after));
+        }
+        if let Some(before) = req.before {
+            results.retain(|r| r.created_at.is_none_or(|ca| ca < before));
         }
         results.truncate(req.limit);
 
@@ -535,7 +554,17 @@ impl SearchService {
                 .iter()
                 .filter_map(|(source_id, parent_article_id)| {
                     let node = source_node_map.get(source_id)?;
-                    let (_, node_type, title, preview, confidence, modified_at, trust, domain_path) = node;
+                    let (
+                        _,
+                        node_type,
+                        title,
+                        preview,
+                        confidence,
+                        modified_at,
+                        trust,
+                        domain_path,
+                        created_at,
+                    ) = node;
 
                     let parent_score = *parent_score_map.get(parent_article_id).unwrap_or(&0.5);
                     let derived_score = parent_score * SOURCE_SCORE_FACTOR;
@@ -566,6 +595,7 @@ impl SearchService {
                         domain_path: domain_path.clone(),
                         expanded_from: Some(*parent_article_id),
                         graph_hops: None, // expanded via provenance, not graph traversal
+                        created_at: Some(*created_at),
                     })
                 })
                 .collect()
@@ -592,6 +622,15 @@ impl SearchService {
                     .as_ref()
                     .is_some_and(|dp| dp.iter().any(|d| filter_paths.contains(d)))
             });
+        }
+        // Temporal post-filters applied to both article and expanded results.
+        if let Some(after) = req.after {
+            article_results.retain(|r| r.created_at.is_none_or(|ca| ca > after));
+            expanded_results.retain(|r| r.created_at.is_none_or(|ca| ca > after));
+        }
+        if let Some(before) = req.before {
+            article_results.retain(|r| r.created_at.is_none_or(|ca| ca < before));
+            expanded_results.retain(|r| r.created_at.is_none_or(|ca| ca < before));
         }
 
         // Combine: articles first (already sorted), then expanded sources.
@@ -722,9 +761,10 @@ type NodeRow = (
     Option<String>,
     String,
     f64,
-    chrono::DateTime<chrono::Utc>,
+    DateTime<Utc>,
     f64,
     Option<Vec<String>>,
+    DateTime<Utc>,
 );
 
 /// Bulk-fetch node metadata (including trust scores) for the given IDs.
@@ -753,7 +793,8 @@ async fn fetch_node_map(
                         THEN COALESCE(n.reliability, 0.5)
                     ELSE COALESCE(at.avg_reliability, 0.5)
                 END::float8                               AS trust_score,
-                n.domain_path
+                n.domain_path,
+                n.created_at
          FROM   covalence.nodes n
          LEFT JOIN article_trust at ON at.node_id = n.id
          WHERE  n.id = ANY($1)
@@ -789,7 +830,8 @@ fn build_results(
         let Some(node) = node_map.get(node_id) else {
             continue;
         };
-        let (_, node_type, title, preview, confidence, modified_at, trust, domain_path) = node;
+        let (_, node_type, title, preview, confidence, modified_at, trust, domain_path, created_at) =
+            node;
 
         let mut weighted_sum = 0.0f64;
         if let Some(v) = vs {
@@ -829,6 +871,7 @@ fn build_results(
             domain_path: domain_path.clone(),
             expanded_from: expanded_from_override,
             graph_hops: graph_hops_map.get(node_id).copied(),
+            created_at: Some(*created_at),
         });
     }
     results
