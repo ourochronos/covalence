@@ -662,6 +662,12 @@ pub async fn handle_compile(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let compilation_focus: Option<String> = task
+        .payload
+        .get("compilation_focus")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     // ── 2. Fetch source content ─────────────────────────────────────────────
     let rows = sqlx::query("SELECT id, title, content FROM covalence.nodes WHERE id = ANY($1)")
         .bind(&source_ids)
@@ -702,12 +708,32 @@ pub async fn handle_compile(
         .map(|h| format!("Suggested title: {h}\n"))
         .unwrap_or_default();
 
+    // Optional focus instruction injected when the caller supplies one.
+    let focus_line = compilation_focus
+        .as_deref()
+        .map(|f| format!("\nCompilation focus: {f}\n"))
+        .unwrap_or_default();
+
     let prompt = format!(
         "You are a knowledge synthesizer. Read the following source documents and \
 produce a well-structured article that synthesizes their information.\n\
 \n\
 {title_hint_line}\
+{focus_line}\
 Target length: ~2000 tokens (minimum 200, maximum 4000 tokens).\n\
+\n\
+CRITICAL — Preserve with HIGH FIDELITY:\n\
+- Decisions and their rationale: write \"We chose X over Y because Z\", not just \"X was chosen\".\n\
+- Rejected alternatives: explicitly note what was considered but not done, and why.\n\
+- Open questions: capture unresolved issues and uncertainties flagged in the sources.\n\
+- Reasoning chains: when sources explain WHY something works, keep that explanation.\n\
+\n\
+DO NOT compress decisions into bare facts. Reasoning is knowledge.\n\
+\n\
+When the source material contains distinct decisions, findings, open questions, or \
+rejected approaches, reflect that structure using Markdown headers such as \
+## Key Decisions, ## Findings, ## Open Questions, ## Rejected Approaches — \
+but only when the content warrants it; do not force headers onto homogeneous material.\n\
 \n\
 Respond ONLY with valid JSON (no markdown fences), exactly:\n\
 {{\n\

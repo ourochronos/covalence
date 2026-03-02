@@ -206,10 +206,26 @@ impl LlmClient for MockLlmClient {
 
         let resp = if prompt.contains("knowledge synthesizer")
             || prompt.contains("synthesizes their information")
+            || prompt.contains("Preserve with HIGH FIDELITY")
         {
+            // Extract only the source documents section so that keywords in the
+            // instruction boilerplate (e.g. "chose" in the CRITICAL example) don't
+            // influence the content selection branch.
+            let sources_section = prompt.split("SOURCE DOCUMENTS:").nth(1).unwrap_or(prompt);
+            let content = if sources_section.contains("chose")
+                || sources_section.contains("rejected")
+            {
+                "We chose X over Y because Z provides better performance characteristics. \
+                 Y was considered but rejected because it would introduce additional latency. \
+                 ## Key Decisions\nSelected X for its throughput advantages.\n\
+                 ## Rejected Approaches\nY was evaluated and set aside due to latency concerns."
+            } else {
+                "This article synthesizes the provided source documents into a coherent knowledge unit. \
+                 It covers the key facts and relationships described across the source material."
+            };
             json!({
                 "title": "Synthesized Test Article",
-                "content": "This article synthesizes the provided source documents into a coherent knowledge unit. It covers the key facts and relationships described across the source material.",
+                "content": content,
                 "epistemic_type": "semantic",
                 "source_relationships": []
             })

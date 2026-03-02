@@ -33,6 +33,9 @@ pub struct UpdateArticleRequest {
 pub struct CompileRequest {
     pub source_ids: Vec<Uuid>,
     pub title_hint: Option<String>,
+    /// Optional compilation focus hint injected into the LLM prompt.
+    /// Example: "focus on architectural decisions and trade-offs".
+    pub compilation_focus: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -507,6 +510,7 @@ impl ArticleService {
         .bind(serde_json::json!({
             "source_ids": req.source_ids,
             "title_hint": req.title_hint,
+            "compilation_focus": req.compilation_focus,
         }))
         .execute(&self.pool)
         .await?;

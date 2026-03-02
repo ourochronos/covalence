@@ -21,6 +21,7 @@
 //! | `test_embed`       | `embed`, `tree_embed`                             |
 //! | `test_tree`        | `tree_index`                                      |
 //! | `test_compile`     | `compile`                                         |
+//! | `test_compilation` | smarter compilation — decision preservation (#35) |
 //! | `test_split`       | `split`                                           |
 //! | `test_merge`       | `merge`, `infer_edges`                            |
 //! | `test_contention`  | `contention_check`, `resolve_contention`          |
@@ -31,6 +32,7 @@ mod helpers;
 mod search_benchmark;
 mod search_tests;
 mod test_age_edge_sync;
+mod test_compilation;
 mod test_compile;
 mod test_contention;
 mod test_decay;
