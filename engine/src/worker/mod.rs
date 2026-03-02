@@ -14,6 +14,7 @@
 //! `{"attempts": N, ...}` since the table has no dedicated attempts column.
 
 pub mod contention;
+pub mod decay;
 pub mod llm;
 pub mod merge_edges;
 pub mod openai;
@@ -258,6 +259,7 @@ pub async fn execute_task(
         "merge" => merge_edges::handle_merge(pool, llm, task).await,
         "infer_edges" => merge_edges::handle_infer_edges(pool, llm, task).await,
         "resolve_contention" => contention::handle_resolve_contention(pool, llm, task).await,
+        "decay_check" => decay::handle_decay_check(pool, task).await,
         other => anyhow::bail!("unknown task_type: {other}"),
     }
 }
