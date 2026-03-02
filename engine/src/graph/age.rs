@@ -203,21 +203,25 @@ impl GraphRepository for AgeGraphRepository {
         let to_str = to_id.to_string();
         let edge_id = Uuid::new_v4();
 
-        // Create edge in AGE
+        // Create edge in AGE (best-effort — SQL is the source of truth)
         let cypher = format!(
             "MATCH (a {{node_id: '{from_str}'}}), (b {{node_id: '{to_str}'}}) \
              CREATE (a)-[e:{label} {{edge_id: '{edge_id}', confidence: {confidence}}}]->(b) \
              RETURN id(e)"
         );
-        let rows = self.cypher_query(&cypher, None, "(age_id agtype)").await?;
-
-        let age_id: Option<i64> = if let Some(row) = rows.first() {
-            let raw: String = row
-                .try_get("age_id")
-                .map_err(|e| GraphError::Age(format!("failed to read edge age_id: {e}")))?;
-            raw.trim_matches('"').parse::<i64>().ok()
-        } else {
-            None
+        let age_id: Option<i64> = match self.cypher_query(&cypher, None, "(age_id agtype)").await {
+            Ok(rows) => {
+                if let Some(row) = rows.first() {
+                    let raw: String = row.try_get("age_id").unwrap_or_default();
+                    raw.trim_matches('"').parse::<i64>().ok()
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                tracing::warn!("AGE create_edge failed (best-effort): {e}");
+                None
+            }
         };
 
         // Write to SQL edges mirror (same transaction would require a TX — for now, best effort)
