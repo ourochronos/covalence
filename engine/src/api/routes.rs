@@ -58,6 +58,8 @@ pub fn router() -> Router<AppState> {
         // Admin
         .route("/admin/queue", get(admin_queue_list))
         .route("/admin/queue/{id}", get(admin_queue_get))
+        .route("/admin/queue/{id}/retry", post(admin_queue_retry))
+        .route("/admin/queue/{id}", delete(admin_queue_delete))
         .route("/admin/stats", get(admin_stats))
         .route("/admin/maintenance", post(admin_maintenance))
         .route("/admin/embed-all", post(admin_embed_all))
@@ -446,6 +448,28 @@ async fn admin_queue_get(
         None => Err(crate::errors::AppError::NotFound(
             "queue entry not found".into(),
         )),
+    }
+}
+
+async fn admin_queue_retry(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = AdminService::new(state.pool.clone());
+    let entry = svc.retry_queue_entry(id).await?;
+    Ok(Json(serde_json::json!({"data": entry})))
+}
+
+async fn admin_queue_delete(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, crate::errors::AppError> {
+    let svc = AdminService::new(state.pool.clone());
+    let deleted = svc.delete_queue_entry(id).await?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(crate::errors::AppError::NotFound("queue entry not found".into()))
     }
 }
 

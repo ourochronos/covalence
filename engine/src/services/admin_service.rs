@@ -330,4 +330,41 @@ impl AdminService {
         ).execute(&self.pool).await?;
         Ok(result.rows_affected() as i64)
     }
+
+    pub async fn retry_queue_entry(&self, id: Uuid) -> AppResult<QueueEntry> {
+        // Verify entry exists and is failed
+        let entry = self.get_queue_entry(id).await?;
+        match entry {
+            None => return Err(AppError::NotFound("queue entry not found".into())),
+            Some(ref e) if e.status != "failed" => {
+                return Err(AppError::BadRequest(format!(
+                    "queue entry has status '{}'; only failed entries can be retried",
+                    e.status
+                )));
+            }
+            _ => {}
+        }
+
+        sqlx::query(
+            "UPDATE covalence.slow_path_queue
+             SET status = 'pending', started_at = NULL, completed_at = NULL, result = NULL
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_queue_entry(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("queue entry not found after retry reset".into()))
+    }
+
+    pub async fn delete_queue_entry(&self, id: Uuid) -> AppResult<bool> {
+        let result = sqlx::query("DELETE FROM covalence.slow_path_queue WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
 }
