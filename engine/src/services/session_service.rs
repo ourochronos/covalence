@@ -309,6 +309,7 @@ impl SessionService {
             metadata: Some(metadata),
             session_id: Some(session_id),
             reliability: None,
+            capture_method: Some("system".to_string()),
         };
 
         let source = source_svc.ingest(ingest_req).await?;
