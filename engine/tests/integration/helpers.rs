@@ -98,6 +98,7 @@ async fn setup_test_database(test_url: &str) -> PgPool {
     // Cascade handles FK ordering automatically.
     sqlx::raw_sql(
         "TRUNCATE \
+            covalence.session_messages, \
             covalence.session_nodes, \
             covalence.usage_traces, \
             covalence.contentions, \

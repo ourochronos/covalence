@@ -52,11 +52,16 @@ pub fn router() -> Router<AppState> {
         .route("/memory/search", post(memory_recall))
         .route("/memory/status", get(memory_status))
         .route("/memory/{id}/forget", patch(memory_forget))
-        // Sessions
+        // Sessions — static sub-routes MUST come before the /{id} catch-all
+        .route("/sessions/flush-stale", post(session_flush_stale))
         .route("/sessions", post(session_create))
         .route("/sessions", get(session_list))
         .route("/sessions/{id}", get(session_get))
         .route("/sessions/{id}/close", post(session_close))
+        .route("/sessions/{id}/messages", post(session_append_messages))
+        .route("/sessions/{id}/messages", get(session_get_messages))
+        .route("/sessions/{id}/flush", post(session_flush))
+        .route("/sessions/{id}/finalize", post(session_finalize))
         // Admin
         .route("/admin/queue", get(admin_queue_list))
         .route("/admin/queue/{id}", get(admin_queue_get))
@@ -549,6 +554,77 @@ async fn session_close(
     let svc = SessionService::new(state.pool.clone());
     svc.close(id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn session_append_messages(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<AppendMessagesRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    let messages = svc.append_messages(id, req).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({"data": messages})),
+    ))
+}
+
+#[derive(Deserialize)]
+struct GetMessagesQuery {
+    include_flushed: Option<bool>,
+}
+
+async fn session_get_messages(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<GetMessagesQuery>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    let include_flushed = params.include_flushed.unwrap_or(true);
+    let messages = svc.get_messages(id, include_flushed).await?;
+    Ok(Json(
+        serde_json::json!({"data": messages, "meta": {"count": messages.len()}}),
+    ))
+}
+
+async fn session_flush(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    let source_svc = SourceService::new(state.pool.clone());
+    let result = svc.flush(id, &source_svc).await?;
+    Ok(Json(serde_json::json!({"data": result})))
+}
+
+async fn session_finalize(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<FinalizeRequest>,
+) -> Result<StatusCode, crate::errors::AppError> {
+    let svc = SessionService::new(state.pool.clone());
+    let source_svc = SourceService::new(state.pool.clone());
+    svc.finalize(id, req.compile.unwrap_or(false), &source_svc)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct FlushStaleBody {
+    threshold_minutes: Option<i64>,
+}
+
+async fn session_flush_stale(
+    State(state): State<AppState>,
+    body: Option<Json<FlushStaleBody>>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let threshold_minutes = body.and_then(|b| b.threshold_minutes).unwrap_or(60);
+    let svc = SessionService::new(state.pool.clone());
+    let source_svc = SourceService::new(state.pool.clone());
+    let results = svc.flush_stale(threshold_minutes, &source_svc).await?;
+    Ok(Json(
+        serde_json::json!({"data": results, "meta": {"count": results.len()}}),
+    ))
 }
 
 async fn admin_embed_all(State(state): State<AppState>) -> impl IntoResponse {
