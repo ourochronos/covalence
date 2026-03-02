@@ -74,7 +74,11 @@ impl ProvenanceTraceService {
 
         // 4. Compute TF-IDF cosine similarity and sort
         let mut results = tfidf_rank(&req.claim_text, &sources);
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(results)
     }
@@ -103,10 +107,7 @@ fn term_freq(tokens: &[String]) -> HashMap<String, f64> {
     tf
 }
 
-fn tfidf_rank(
-    claim: &str,
-    sources: &[(Uuid, Option<String>, String)],
-) -> Vec<TraceResult> {
+fn tfidf_rank(claim: &str, sources: &[(Uuid, Option<String>, String)]) -> Vec<TraceResult> {
     let claim_tokens = tokenize(claim);
     let claim_tf = term_freq(&claim_tokens);
 

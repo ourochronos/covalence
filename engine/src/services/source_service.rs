@@ -93,21 +93,21 @@ impl SourceService {
               fingerprint, content_hash, size_tokens, metadata, \
               confidence, \
               created_at, modified_at, accessed_at) \
-             VALUES ($1, 'source', $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $11, $11)"
+             VALUES ($1, 'source', $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $11, $11)",
         )
-            .bind(id)
-            .bind(&req.title)
-            .bind(&req.content)
-            .bind(&source_type)
-            .bind(reliability as f64)
-            .bind(&fingerprint)
-            .bind(&content_hash)
-            .bind(size_tokens)
-            .bind(&metadata)
-            .bind(reliability as f64)
-            .bind(now)
-            .execute(&self.pool)
-            .await?;
+        .bind(id)
+        .bind(&req.title)
+        .bind(&req.content)
+        .bind(&source_type)
+        .bind(reliability as f64)
+        .bind(&fingerprint)
+        .bind(&content_hash)
+        .bind(size_tokens)
+        .bind(&metadata)
+        .bind(reliability as f64)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
 
         // 4. Create AGE vertex
         if let Err(e) = self

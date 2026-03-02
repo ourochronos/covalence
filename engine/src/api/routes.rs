@@ -10,11 +10,11 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::services::provenance_trace_service::{ProvenanceTraceService, TraceRequest};
 use crate::services::{
     admin_service::*, article_service::*, contention_service::*, edge_service::*,
     memory_service::*, search_service::*, session_service::*, source_service::*,
 };
-use crate::services::provenance_trace_service::{ProvenanceTraceService, TraceRequest};
 
 use super::AppState;
 
@@ -230,7 +230,6 @@ async fn article_provenance(
         Err(e) => e.into_response(),
     }
 }
-
 
 // ── Provenance trace handler ─────────────────────────────────────────────────
 
@@ -487,7 +486,9 @@ async fn admin_queue_delete(
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(crate::errors::AppError::NotFound("queue entry not found".into()))
+        Err(crate::errors::AppError::NotFound(
+            "queue entry not found".into(),
+        ))
     }
 }
 

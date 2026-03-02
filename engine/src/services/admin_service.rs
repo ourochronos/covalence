@@ -366,5 +366,4 @@ impl AdminService {
             .await?;
         Ok(result.rows_affected() > 0)
     }
-
 }
