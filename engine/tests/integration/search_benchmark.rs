@@ -575,6 +575,7 @@ async fn search_benchmark_precision_and_latency() {
             weights: None,
             mode: None,
             recency_bias: None,
+            domain_path: None,
         };
 
         let t0 = Instant::now();
@@ -700,6 +701,7 @@ async fn search_benchmark_no_total_miss() {
             weights: None,
             mode: None,
             recency_bias: None,
+            domain_path: None,
         };
 
         let (search_results, _meta) = svc
@@ -757,6 +759,7 @@ async fn search_benchmark_per_query_floor() {
             weights: None,
             mode: None,
             recency_bias: None,
+            domain_path: None,
         };
 
         let (search_results, _meta) = svc
@@ -803,6 +806,7 @@ async fn search_benchmark_single_query_latency_budget() {
             weights: None,
             mode: None,
             recency_bias: None,
+            domain_path: None,
         })
         .await;
 
@@ -819,6 +823,7 @@ async fn search_benchmark_single_query_latency_budget() {
             weights: None,
             mode: None,
             recency_bias: None,
+            domain_path: None,
         };
 
         let t0 = Instant::now();

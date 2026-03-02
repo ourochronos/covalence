@@ -132,6 +132,7 @@ async fn source_reliability_affects_ranking() {
         weights: None,
         mode: None,
         recency_bias: None,
+        domain_path: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -232,6 +233,7 @@ async fn article_trust_derived_from_source_reliability() {
         weights: None,
         mode: None,
         recency_bias: None,
+        domain_path: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -296,6 +298,7 @@ async fn article_without_sources_gets_default_trust() {
         weights: None,
         mode: None,
         recency_bias: None,
+        domain_path: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -358,6 +361,7 @@ async fn test_hierarchical_search_returns_articles_first() {
         weights: None,
         mode: Some(SearchMode::Hierarchical),
         recency_bias: None,
+        domain_path: None,
     };
 
     let (results, _meta) = svc
@@ -442,6 +446,7 @@ async fn test_hierarchical_search_expands_sources() {
         weights: None,
         mode: Some(SearchMode::Hierarchical),
         recency_bias: None,
+        domain_path: None,
     };
 
     let (results, _meta) = svc
@@ -532,6 +537,7 @@ async fn test_standard_mode_unchanged() {
         weights: None,
         mode: Some(SearchMode::Standard),
         recency_bias: None,
+        domain_path: None,
     };
 
     // Default mode (mode = None).
@@ -545,6 +551,7 @@ async fn test_standard_mode_unchanged() {
         weights: None,
         mode: None,
         recency_bias: None,
+        domain_path: None,
     };
 
     let (results_explicit, _) = svc
@@ -619,6 +626,7 @@ async fn test_recency_bias_default_unchanged() {
         weights: None,
         mode: None,
         recency_bias: None,
+        domain_path: None,
     };
 
     // Request with explicit recency_bias = 0.0.
@@ -632,6 +640,7 @@ async fn test_recency_bias_default_unchanged() {
         weights: None,
         mode: None,
         recency_bias: Some(0.0),
+        domain_path: None,
     };
 
     let (results_none, _) = svc
@@ -728,6 +737,7 @@ async fn test_recency_bias_favors_recent() {
         weights: None,
         mode: None,
         recency_bias: Some(1.0),
+        domain_path: None,
     };
 
     let (results, _meta) = svc
@@ -752,6 +762,213 @@ async fn test_recency_bias_favors_recent() {
          (score={:.6}) when recency_bias=1.0",
         new_result.score,
         old_result.score,
+    );
+
+    fix.cleanup().await;
+}
+
+// ─── Domain-path filter tests (tracking#92 Phase B, item 3) ──────────────────
+
+/// Searching with `domain_path: Some(vec!["research"])` must return only nodes
+/// whose `domain_path` column contains `"research"` and must exclude nodes
+/// tagged with a different domain (e.g. `"infrastructure"`).
+#[tokio::test]
+#[serial]
+async fn test_domain_path_filter_includes_matching() {
+    let mut fix = TestFixture::new().await;
+
+    let content_research = "domain path filter research test unique phrase alpha beta phi";
+    let content_infra = "domain path filter infrastructure test unique phrase alpha beta phi";
+
+    // Insert research-tagged article.
+    let research_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, domain_path, metadata) \
+         VALUES ($1, 'article', 'active', 'Research Article', $2, \
+                 ARRAY['research']::text[], '{}'::jsonb)",
+    )
+    .bind(research_id)
+    .bind(content_research)
+    .execute(&fix.pool)
+    .await
+    .expect("insert research article failed");
+    fix.track(research_id);
+
+    // Insert infrastructure-tagged article.
+    let infra_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, domain_path, metadata) \
+         VALUES ($1, 'article', 'active', 'Infrastructure Article', $2, \
+                 ARRAY['infrastructure']::text[], '{}'::jsonb)",
+    )
+    .bind(infra_id)
+    .bind(content_infra)
+    .execute(&fix.pool)
+    .await
+    .expect("insert infra article failed");
+    fix.track(infra_id);
+
+    fix.insert_embedding(research_id).await;
+    fix.insert_embedding(infra_id).await;
+
+    let svc = SearchService::new(fix.pool.clone());
+    let req = SearchRequest {
+        query: "domain path filter test unique phrase alpha beta phi".to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 10,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: Some(vec!["research".to_string()]),
+    };
+
+    let (results, _meta) = svc
+        .search(req)
+        .await
+        .expect("domain_path search should succeed");
+
+    // The research article must appear.
+    assert!(
+        results.iter().any(|r| r.node_id == research_id),
+        "research article should appear when domain_path=['research']"
+    );
+
+    // The infrastructure article must be excluded.
+    assert!(
+        !results.iter().any(|r| r.node_id == infra_id),
+        "infrastructure article should be excluded when domain_path=['research']"
+    );
+
+    fix.cleanup().await;
+}
+
+/// When filtering by domain_path, nodes with NULL/empty `domain_path` must be
+/// excluded even though they would otherwise match the query text.
+#[tokio::test]
+#[serial]
+async fn test_domain_path_filter_excludes_untagged() {
+    let mut fix = TestFixture::new().await;
+
+    let content = "domain path filter untagged exclusion test unique phrase omega psi chi";
+
+    // Insert a tagged article.
+    let tagged_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, domain_path, metadata) \
+         VALUES ($1, 'article', 'active', 'Tagged Article', $2, \
+                 ARRAY['research']::text[], '{}'::jsonb)",
+    )
+    .bind(tagged_id)
+    .bind(content)
+    .execute(&fix.pool)
+    .await
+    .expect("insert tagged article failed");
+    fix.track(tagged_id);
+
+    // Insert an untagged article (domain_path = NULL).
+    let untagged_id = fix.insert_article("Untagged Article", content).await;
+
+    fix.insert_embedding(tagged_id).await;
+    fix.insert_embedding(untagged_id).await;
+
+    let svc = SearchService::new(fix.pool.clone());
+    let req = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 10,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: Some(vec!["research".to_string()]),
+    };
+
+    let (results, _meta) = svc
+        .search(req)
+        .await
+        .expect("domain_path filter search should succeed");
+
+    // Tagged article must appear.
+    assert!(
+        results.iter().any(|r| r.node_id == tagged_id),
+        "tagged article should appear in filtered results"
+    );
+
+    // Untagged article must be excluded.
+    assert!(
+        !results.iter().any(|r| r.node_id == untagged_id),
+        "untagged article should be excluded by domain_path filter"
+    );
+
+    fix.cleanup().await;
+}
+
+/// With `domain_path: None` (no filter), all matching nodes are returned
+/// regardless of their `domain_path` value — this preserves backward
+/// compatibility for callers that do not send the new field.
+#[tokio::test]
+#[serial]
+async fn test_domain_path_filter_none_returns_all() {
+    let mut fix = TestFixture::new().await;
+
+    let content = "domain path filter none returns all test unique phrase delta epsilon zeta";
+
+    // Insert a tagged article.
+    let tagged_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, domain_path, metadata) \
+         VALUES ($1, 'article', 'active', 'Tagged For None Test', $2, \
+                 ARRAY['research']::text[], '{}'::jsonb)",
+    )
+    .bind(tagged_id)
+    .bind(content)
+    .execute(&fix.pool)
+    .await
+    .expect("insert tagged article failed");
+    fix.track(tagged_id);
+
+    // Insert an untagged article.
+    let untagged_id = fix.insert_article("Untagged For None Test", content).await;
+
+    fix.insert_embedding(tagged_id).await;
+    fix.insert_embedding(untagged_id).await;
+
+    let svc = SearchService::new(fix.pool.clone());
+    let req = SearchRequest {
+        query: content.to_string(),
+        embedding: None,
+        intent: None,
+        session_id: None,
+        node_types: None,
+        limit: 10,
+        weights: None,
+        mode: None,
+        recency_bias: None,
+        domain_path: None,
+    };
+
+    let (results, _meta) = svc
+        .search(req)
+        .await
+        .expect("no-filter search should succeed");
+
+    // Both articles must appear when domain_path is None.
+    assert!(
+        results.iter().any(|r| r.node_id == tagged_id),
+        "tagged article should appear when domain_path=None"
+    );
+    assert!(
+        results.iter().any(|r| r.node_id == untagged_id),
+        "untagged article should appear when domain_path=None"
     );
 
     fix.cleanup().await;

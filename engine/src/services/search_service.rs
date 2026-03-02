@@ -70,6 +70,11 @@ pub struct SearchRequest {
     /// At 1.0, freshness gets 40% weight (strongly favor recent).
     #[serde(default)]
     pub recency_bias: Option<f64>,
+    /// Optional domain-path filter. When set, only nodes whose `domain_path`
+    /// array shares at least one element with this list are returned.
+    /// Nodes with an empty or NULL `domain_path` are excluded when filtering.
+    #[serde(default)]
+    pub domain_path: Option<Vec<String>>,
 }
 
 fn default_limit() -> usize {
@@ -102,6 +107,7 @@ pub struct SearchResult {
     pub node_type: String,
     pub title: Option<String>,
     pub content_preview: String,
+    pub domain_path: Option<Vec<String>>,
     /// For results returned by hierarchical expansion: the UUID of the parent
     /// article that caused this source to be included.  `None` for directly-
     /// matched results (articles or standard-mode results).
@@ -248,6 +254,13 @@ impl SearchService {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        if let Some(ref filter_paths) = req.domain_path {
+            results.retain(|r| {
+                r.domain_path
+                    .as_ref()
+                    .is_some_and(|dp| dp.iter().any(|d| filter_paths.contains(d)))
+            });
+        }
         results.truncate(req.limit);
 
         let meta = SearchMeta {
@@ -427,7 +440,7 @@ impl SearchService {
                 .iter()
                 .filter_map(|(source_id, parent_article_id)| {
                     let node = source_node_map.get(source_id)?;
-                    let (_, node_type, title, preview, confidence, modified_at, trust) = node;
+                    let (_, node_type, title, preview, confidence, modified_at, trust, domain_path) = node;
 
                     let parent_score = *parent_score_map.get(parent_article_id).unwrap_or(&0.5);
                     let derived_score = parent_score * SOURCE_SCORE_FACTOR;
@@ -455,6 +468,7 @@ impl SearchService {
                         node_type: node_type.clone(),
                         title: title.clone(),
                         content_preview: preview.clone(),
+                        domain_path: domain_path.clone(),
                         expanded_from: Some(*parent_article_id),
                     })
                 })
@@ -469,6 +483,20 @@ impl SearchService {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        // Apply domain_path filter to both article and expanded results.
+        if let Some(ref filter_paths) = req.domain_path {
+            article_results.retain(|r| {
+                r.domain_path
+                    .as_ref()
+                    .is_some_and(|dp| dp.iter().any(|d| filter_paths.contains(d)))
+            });
+            expanded_results.retain(|r| {
+                r.domain_path
+                    .as_ref()
+                    .is_some_and(|dp| dp.iter().any(|d| filter_paths.contains(d)))
+            });
+        }
 
         // Combine: articles first (already sorted), then expanded sources.
         // Reserve at least 30% of slots for expanded sources when available,
@@ -568,6 +596,7 @@ type NodeRow = (
     f64,
     chrono::DateTime<chrono::Utc>,
     f64,
+    Option<Vec<String>>,
 );
 
 /// Bulk-fetch node metadata (including trust scores) for the given IDs.
@@ -595,7 +624,8 @@ async fn fetch_node_map(
                     WHEN n.node_type = 'source'
                         THEN COALESCE(n.reliability, 0.5)
                     ELSE COALESCE(at.avg_reliability, 0.5)
-                END::float8                               AS trust_score
+                END::float8                               AS trust_score,
+                n.domain_path
          FROM   covalence.nodes n
          LEFT JOIN article_trust at ON at.node_id = n.id
          WHERE  n.id = ANY($1)
@@ -626,7 +656,7 @@ fn build_results(
         let Some(node) = node_map.get(node_id) else {
             continue;
         };
-        let (_, node_type, title, preview, confidence, modified_at, trust) = node;
+        let (_, node_type, title, preview, confidence, modified_at, trust, domain_path) = node;
 
         let mut weighted_sum = 0.0f64;
         if let Some(v) = vs {
@@ -663,6 +693,7 @@ fn build_results(
             node_type: node_type.clone(),
             title: title.clone(),
             content_preview: preview.clone(),
+            domain_path: domain_path.clone(),
             expanded_from: expanded_from_override,
         });
     }
