@@ -107,9 +107,7 @@ async fn decay_check_inferred_edge_reduces_staleness() {
             "This article has an inferred outbound edge.",
         )
         .await;
-    let target = fix
-        .insert_article("Edge Target", "Target article.")
-        .await;
+    let target = fix.insert_article("Edge Target", "Target article.").await;
 
     // Insert one inferred edge.
     sqlx::query(
@@ -156,7 +154,9 @@ async fn decay_check_inferred_edge_reduces_staleness() {
 async fn decay_check_archived_node_skipped() {
     let mut fix = TestFixture::new().await;
 
-    let node_id = fix.insert_article("Archived Node", "Will be archived.").await;
+    let node_id = fix
+        .insert_article("Archived Node", "Will be archived.")
+        .await;
 
     // Manually archive the node.
     sqlx::query("UPDATE covalence.nodes SET status = 'archived' WHERE id = $1")
@@ -256,7 +256,10 @@ async fn decay_check_no_recompile_below_threshold() {
     let mut fix = TestFixture::new().await;
 
     let node_id = fix
-        .insert_article("Fresh Healthy Article", "Content that does not need recompile.")
+        .insert_article(
+            "Fresh Healthy Article",
+            "Content that does not need recompile.",
+        )
         .await;
 
     let task = TestFixture::make_task("decay_check", Some(node_id), json!({}));

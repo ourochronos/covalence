@@ -36,7 +36,9 @@ async fn split_with_tree_index_no_llm() {
         ]
     });
 
-    let article_id = fix.insert_article_with_meta("Large Article", &content, &tree_meta).await;
+    let article_id = fix
+        .insert_article_with_meta("Large Article", &content, &tree_meta)
+        .await;
 
     // Insert a provenance source + ORIGINATES edge.
     let prov_src = fix
@@ -53,7 +55,8 @@ async fn split_with_tree_index_no_llm() {
 
     // LLM must not have been called.
     assert_eq!(
-        mock.complete_calls.load(std::sync::atomic::Ordering::SeqCst),
+        mock.complete_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
         0,
         "LLM must not be called when tree_index is present"
     );
@@ -64,8 +67,16 @@ async fn split_with_tree_index_no_llm() {
     fix.track(part_b);
 
     // Both new articles are active.
-    assert_eq!(fix.node_status(part_a).await, "active", "part_a should be active");
-    assert_eq!(fix.node_status(part_b).await, "active", "part_b should be active");
+    assert_eq!(
+        fix.node_status(part_a).await,
+        "active",
+        "part_a should be active"
+    );
+    assert_eq!(
+        fix.node_status(part_b).await,
+        "active",
+        "part_b should be active"
+    );
 
     // Original is archived.
     assert_eq!(
@@ -125,7 +136,9 @@ async fn split_without_tree_index_calls_llm() {
     let content = "First half of the article with interesting content. ".repeat(5)
         + &"Second half covering a different sub-topic. ".repeat(5);
 
-    let article_id = fix.insert_article("Article Without Tree Index", &content).await;
+    let article_id = fix
+        .insert_article("Article Without Tree Index", &content)
+        .await;
     fix.track_task_type("embed");
     fix.track_task_type("tree_embed");
 
@@ -135,7 +148,9 @@ async fn split_without_tree_index_calls_llm() {
         .expect("handle_split should succeed without tree_index");
 
     assert!(
-        mock.complete_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        mock.complete_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            >= 1,
         "LLM must be consulted when tree_index is absent"
     );
 

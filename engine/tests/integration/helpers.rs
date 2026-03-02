@@ -25,24 +25,20 @@ use covalence_engine::worker::{QueueTask, llm::LlmClient};
 
 // ─── database connection ──────────────────────────────────────────────────────
 
-const DEFAULT_TEST_DB_URL: &str =
-    "postgres://covalence:covalence@localhost:5434/covalence";
+const DEFAULT_TEST_DB_URL: &str = "postgres://covalence:covalence@localhost:5434/covalence";
 
 /// Connect to the test Postgres instance.
 ///
 /// Reads `DATABASE_URL` from the environment (matching `main.rs` behaviour)
 /// and falls back to the hard-coded default used in CI.
 pub async fn setup_pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| DEFAULT_TEST_DB_URL.to_string());
-    PgPool::connect(&url)
-        .await
-        .unwrap_or_else(|e| {
-            panic!(
-                "Could not connect to test DB at {url}: {e}\n\
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_TEST_DB_URL.to_string());
+    PgPool::connect(&url).await.unwrap_or_else(|e| {
+        panic!(
+            "Could not connect to test DB at {url}: {e}\n\
                  Make sure `covalence-pg` is running on port 5434."
-            )
-        })
+        )
+    })
 }
 
 // ─── MockLlmClient ────────────────────────────────────────────────────────────
@@ -496,13 +492,11 @@ impl TestFixture {
 
         // 3. Per-node cleanup (FK order: queue → contentions → edges → embeddings → node).
         for &id in &self.node_ids {
-            sqlx::query(
-                "DELETE FROM covalence.slow_path_queue WHERE node_id = $1",
-            )
-            .bind(id)
-            .execute(pool)
-            .await
-            .ok();
+            sqlx::query("DELETE FROM covalence.slow_path_queue WHERE node_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
 
             sqlx::query(
                 "DELETE FROM covalence.contentions \
@@ -522,13 +516,11 @@ impl TestFixture {
             .await
             .ok();
 
-            sqlx::query(
-                "DELETE FROM covalence.node_embeddings WHERE node_id = $1",
-            )
-            .bind(id)
-            .execute(pool)
-            .await
-            .ok();
+            sqlx::query("DELETE FROM covalence.node_embeddings WHERE node_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
 
             sqlx::query("DELETE FROM covalence.nodes WHERE id = $1")
                 .bind(id)

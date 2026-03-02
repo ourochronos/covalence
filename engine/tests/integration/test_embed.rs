@@ -24,7 +24,10 @@ async fn embed_small_node_stores_embedding() {
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
     let node_id = fix
-        .insert_source("Small Embed Node", "Short content for direct embedding test.")
+        .insert_source(
+            "Small Embed Node",
+            "Short content for direct embedding test.",
+        )
         .await;
     fix.track_task_type("embed");
 
@@ -74,15 +77,17 @@ async fn embed_idempotent() {
             .expect("handle_embed should succeed on repeated call");
     }
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM covalence.node_embeddings WHERE node_id = $1",
-    )
-    .bind(node_id)
-    .fetch_one(&fix.pool)
-    .await
-    .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM covalence.node_embeddings WHERE node_id = $1")
+            .bind(node_id)
+            .fetch_one(&fix.pool)
+            .await
+            .unwrap();
 
-    assert_eq!(count, 1, "ON CONFLICT should keep exactly one embedding row");
+    assert_eq!(
+        count, 1,
+        "ON CONFLICT should keep exactly one embedding row"
+    );
 
     fix.cleanup().await;
 }
@@ -195,15 +200,17 @@ async fn tree_embed_idempotent() {
             .expect("tree_embed should succeed on repeat");
     }
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM covalence.node_embeddings WHERE node_id = $1",
-    )
-    .bind(node_id)
-    .fetch_one(&fix.pool)
-    .await
-    .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM covalence.node_embeddings WHERE node_id = $1")
+            .bind(node_id)
+            .fetch_one(&fix.pool)
+            .await
+            .unwrap();
 
-    assert_eq!(count, 1, "ON CONFLICT should keep exactly one embedding row");
+    assert_eq!(
+        count, 1,
+        "ON CONFLICT should keep exactly one embedding row"
+    );
 
     fix.cleanup().await;
 }

@@ -33,15 +33,44 @@
 
 ## Quick Start
 
-### 1 — Start the database
+### One-command setup (Docker)
 
 ```bash
+git clone https://github.com/ourochronos/covalence.git
+cd covalence
 docker compose up -d
+curl http://localhost:8430/health
+```
+
+`docker compose up` builds and starts **both** the PostgreSQL 17 database (with pgvector + Apache AGE) and the Covalence engine.  Migrations in `sql/` are applied automatically on first boot before the engine accepts traffic.
+
+> **Optional LLM support** — create a `.env` from the example and add your
+> OpenAI key to enable embeddings and article compilation:
+> ```bash
+> cp .env.example .env
+> # edit .env — set OPENAI_API_KEY (and optionally OPENAI_BASE_URL)
+> docker compose up -d
+> ```
+
+### Manual / local development setup
+
+#### 1 — Start the database
+
+```bash
+docker compose up -d postgres
 ```
 
 The custom image (`./docker/Dockerfile`) bundles PostgreSQL 17, pgvector, and Apache AGE. Data is persisted in the `covalence-data` volume. The DB is exposed on **port 5434** (`localhost:5434/covalence`, user/pass: `covalence`).
 
-### 2 — Build and run the engine
+#### 2 — Apply migrations
+
+```bash
+for f in sql/*.sql; do
+    psql postgres://covalence:covalence@localhost:5434/covalence -f "$f"
+done
+```
+
+#### 3 — Build and run the engine
 
 ```bash
 cd engine
@@ -51,14 +80,19 @@ cargo run --release
 
 The engine listens on **http://localhost:8430** by default.
 
-### 3 — Environment variables
+### Environment variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `DATABASE_URL` | ✅ | `postgres://covalence:covalence@localhost:5434/covalence` |
-| `OPENAI_API_KEY` | ✅ | Used for embedding generation (`text-embedding-3-small`) and LLM compilation |
-| `COVALENCE_PORT` | optional | HTTP listen port (default `8430`) |
-| `COVALENCE_LOG` | optional | Log level (`info`, `debug`, `trace`) |
+See **`.env.example`** for the full reference. Key variables:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | ✅ | `postgres://covalence:covalence@localhost:5434/covalence` | PostgreSQL connection string |
+| `OPENAI_API_KEY` | optional | — | Enables embeddings (`text-embedding-3-small`) and LLM compilation |
+| `OPENAI_BASE_URL` | optional | `https://api.openai.com/v1` | Override for compatible proxies / local models |
+| `COVALENCE_EMBED_MODEL` | optional | `text-embedding-3-small` | Embedding model name |
+| `INFERENCE_URL` | optional | — | OpenAI-compatible proxy URL for the OpenClaw plugin |
+| `BIND_ADDR` | optional | `0.0.0.0:8430` | HTTP listen address |
+| `RUST_LOG` | optional | `covalence_engine=debug` | Tracing log filter |
 
 ---
 

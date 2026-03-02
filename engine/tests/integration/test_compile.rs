@@ -77,9 +77,7 @@ async fn compile_creates_article_from_two_sources() {
     );
 
     // ── Provenance edges ──────────────────────────────────────────────────────
-    let edge_count = fix
-        .edge_count_to(article_id, "ORIGINATES")
-        .await
+    let edge_count = fix.edge_count_to(article_id, "ORIGINATES").await
         + fix.edge_count_to(article_id, "COMPILED_FROM").await;
     assert_eq!(
         edge_count, 2,
@@ -110,11 +108,7 @@ async fn compile_single_source() {
     fix.track_task_type("contention_check");
     fix.track_inference_log("compile", vec![src]);
 
-    let task = TestFixture::make_task(
-        "compile",
-        None,
-        json!({ "source_ids": [src.to_string()] }),
-    );
+    let task = TestFixture::make_task("compile", None, json!({ "source_ids": [src.to_string()] }));
 
     let result = handle_compile(&fix.pool, &llm, &task)
         .await
@@ -139,7 +133,9 @@ async fn compile_fallback_on_llm_error() {
     let mut fix = TestFixture::new().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::always_fail());
 
-    let src_a = fix.insert_source("Fallback A", "First source content.").await;
+    let src_a = fix
+        .insert_source("Fallback A", "First source content.")
+        .await;
     let src_b = fix
         .insert_source("Fallback B", "Second source content.")
         .await;
@@ -195,14 +191,19 @@ async fn compile_deduplicates_against_existing_article() {
     // the exact same content the mock would return and embed it with the same
     // deterministic vector.
     let existing_content = "This article synthesizes the provided source documents into a coherent knowledge unit. It covers the key facts and relationships described across the source material.";
-    let existing_id = fix.insert_article("Existing Article", existing_content).await;
+    let existing_id = fix
+        .insert_article("Existing Article", existing_content)
+        .await;
 
     // Insert embedding for the existing article using the deterministic vector.
     let emb = MockLlmClient::deterministic_embedding(existing_content);
     let dims = emb.len();
     let vec_literal = format!(
         "[{}]",
-        emb.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+        emb.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     );
     sqlx::query(&format!(
         "INSERT INTO covalence.node_embeddings (node_id, embedding, model) \
@@ -221,11 +222,7 @@ async fn compile_deduplicates_against_existing_article() {
     fix.track_task_type("contention_check");
     fix.track_inference_log("compile", vec![src]);
 
-    let task = TestFixture::make_task(
-        "compile",
-        None,
-        json!({ "source_ids": [src.to_string()] }),
-    );
+    let task = TestFixture::make_task("compile", None, json!({ "source_ids": [src.to_string()] }));
     let result = handle_compile(&fix.pool, &llm, &task)
         .await
         .expect("compile should succeed");

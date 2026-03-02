@@ -27,10 +27,16 @@ async fn merge_creates_merged_article() {
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
     let a = fix
-        .insert_article("Article A", "Article A discusses the first set of concepts.")
+        .insert_article(
+            "Article A",
+            "Article A discusses the first set of concepts.",
+        )
         .await;
     let b = fix
-        .insert_article("Article B", "Article B covers complementary related topics.")
+        .insert_article(
+            "Article B",
+            "Article B covers complementary related topics.",
+        )
         .await;
     fix.track_task_type("embed");
     fix.track_task_type("tree_embed");
@@ -52,7 +58,11 @@ async fn merge_creates_merged_article() {
         .expect("new_article_id should be a valid UUID");
     fix.track(new_id);
 
-    assert_eq!(result["degraded"], json!(false), "merge should not be degraded");
+    assert_eq!(
+        result["degraded"],
+        json!(false),
+        "merge should not be degraded"
+    );
 
     // New merged article is active.
     assert_eq!(fix.node_status(new_id).await, "active");
@@ -114,7 +124,10 @@ async fn merge_content_includes_both_articles() {
 
     // The mock LLM returns a fixed title; the content_len must be > 0.
     let content_len = result["content_len"].as_u64().unwrap_or(0);
-    assert!(content_len > 0, "merged article must have non-empty content");
+    assert!(
+        content_len > 0,
+        "merged article must have non-empty content"
+    );
 
     fix.cleanup().await;
 }
@@ -148,7 +161,11 @@ async fn merge_fallback_on_llm_error() {
         .await
         .expect("merge should succeed in degraded mode");
 
-    assert_eq!(result["degraded"], json!(true), "should be degraded when LLM fails");
+    assert_eq!(
+        result["degraded"],
+        json!(true),
+        "should be degraded when LLM fails"
+    );
 
     let new_id = Uuid::parse_str(result["new_article_id"].as_str().unwrap()).unwrap();
     fix.track(new_id);
@@ -175,10 +192,18 @@ async fn merge_inherits_provenance_edges() {
     let mut fix = TestFixture::new().await;
     let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
 
-    let src_a = fix.insert_source("Prov Src A", "Source A provenance.").await;
-    let src_b = fix.insert_source("Prov Src B", "Source B provenance.").await;
-    let art_a = fix.insert_article("Art A Prov", "Article A with provenance.").await;
-    let art_b = fix.insert_article("Art B Prov", "Article B with provenance.").await;
+    let src_a = fix
+        .insert_source("Prov Src A", "Source A provenance.")
+        .await;
+    let src_b = fix
+        .insert_source("Prov Src B", "Source B provenance.")
+        .await;
+    let art_a = fix
+        .insert_article("Art A Prov", "Article A with provenance.")
+        .await;
+    let art_b = fix
+        .insert_article("Art B Prov", "Article B with provenance.")
+        .await;
     fix.track_task_type("embed");
     fix.track_task_type("tree_embed");
 

@@ -175,14 +175,15 @@ async fn resolve_contention_supersede_b_updates_article() {
         )
         .await;
     let source = fix
-        .insert_source("Superseding Source", "Source with more accurate information.")
+        .insert_source(
+            "Superseding Source",
+            "Source with more accurate information.",
+        )
         .await;
     fix.track_task_type("embed");
     fix.track_task_type("tree_embed");
 
-    let contention_id = fix
-        .insert_contention(article, source, "high", 0.9)
-        .await;
+    let contention_id = fix.insert_contention(article, source, "high", 0.9).await;
 
     let task = TestFixture::make_task(
         "resolve_contention",
@@ -250,9 +251,7 @@ async fn resolve_contention_supersede_a_leaves_article_unchanged() {
         Arc::new(MockLlmClient::with_fixed_response(fixed_resp.to_string()));
 
     let original_content = "This article content should remain intact.";
-    let article = fix
-        .insert_article("Intact Article", original_content)
-        .await;
+    let article = fix.insert_article("Intact Article", original_content).await;
     let source = fix
         .insert_source("Weaker Source", "Source that is superseded by the article.")
         .await;
@@ -322,9 +321,7 @@ async fn resolve_contention_accept_both_no_content_change() {
     fix.track_task_type("embed");
     fix.track_task_type("tree_embed");
 
-    let contention_id = fix
-        .insert_contention(article, source, "medium", 0.5)
-        .await;
+    let contention_id = fix.insert_contention(article, source, "medium", 0.5).await;
 
     let task = TestFixture::make_task(
         "resolve_contention",

@@ -17,7 +17,7 @@
 //! `decay_score = 0.5·age + 0.3·contention + 0.2·edge_staleness`
 
 use anyhow::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use super::QueueTask;
@@ -45,9 +45,7 @@ pub const RECOMPILE_THRESHOLD: f64 = 0.70;
 pub async fn handle_decay_check(pool: &PgPool, task: &QueueTask) -> anyhow::Result<Value> {
     use sqlx::Row as _;
 
-    let node_id = task
-        .node_id
-        .context("decay_check task requires node_id")?;
+    let node_id = task.node_id.context("decay_check task requires node_id")?;
 
     // ── 1. Fetch node ─────────────────────────────────────────────────────────
     let row = sqlx::query(
@@ -102,8 +100,7 @@ pub async fn handle_decay_check(pool: &PgPool, task: &QueueTask) -> anyhow::Resu
     .unwrap_or(0_i64);
 
     // Monotonically-increasing ratio that saturates towards 1 but never reaches it.
-    let contention_score: f64 =
-        open_contentions as f64 / (open_contentions as f64 + 1.0_f64);
+    let contention_score: f64 = open_contentions as f64 / (open_contentions as f64 + 1.0_f64);
 
     // ── 4. Edge-staleness score ───────────────────────────────────────────────
     let inferred_edges: i64 = sqlx::query_scalar(
@@ -121,8 +118,7 @@ pub async fn handle_decay_check(pool: &PgPool, task: &QueueTask) -> anyhow::Resu
     let edge_staleness_score: f64 = if inferred_edges == 0 { 1.0 } else { 0.0 };
 
     // ── 5. Composite decay score ──────────────────────────────────────────────
-    let decay_score: f64 =
-        0.5 * age_score + 0.3 * contention_score + 0.2 * edge_staleness_score;
+    let decay_score: f64 = 0.5 * age_score + 0.3 * contention_score + 0.2 * edge_staleness_score;
 
     tracing::debug!(
         node_id             = %node_id,

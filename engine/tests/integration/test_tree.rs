@@ -35,7 +35,8 @@ async fn tree_index_trivial_content_no_llm_call() {
 
     // LLM should NOT be consulted.
     assert_eq!(
-        mock.complete_calls.load(std::sync::atomic::Ordering::SeqCst),
+        mock.complete_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
         0,
         "LLM complete() must not be called for trivial content"
     );
@@ -124,13 +125,12 @@ async fn tree_index_force_rebuilds() {
         .expect("first tree_index should succeed");
 
     // Capture first timestamp
-    let ts1: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
-        "SELECT modified_at FROM covalence.nodes WHERE id = $1",
-    )
-    .bind(node_id)
-    .fetch_one(&fix.pool)
-    .await
-    .unwrap();
+    let ts1: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT modified_at FROM covalence.nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_one(&fix.pool)
+            .await
+            .unwrap();
 
     // Small sleep so wall clock moves.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -145,13 +145,12 @@ async fn tree_index_force_rebuilds() {
         .await
         .expect("force rebuild should succeed");
 
-    let ts2: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
-        "SELECT modified_at FROM covalence.nodes WHERE id = $1",
-    )
-    .bind(node_id)
-    .fetch_one(&fix.pool)
-    .await
-    .unwrap();
+    let ts2: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT modified_at FROM covalence.nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_one(&fix.pool)
+            .await
+            .unwrap();
 
     assert!(
         ts2 >= ts1,
@@ -204,7 +203,8 @@ async fn tree_index_skip_when_already_indexed() {
         "error should mention 'already has tree_index': {err}"
     );
     assert_eq!(
-        mock.complete_calls.load(std::sync::atomic::Ordering::SeqCst),
+        mock.complete_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
         0,
         "LLM should not be called on an already-indexed node"
     );
