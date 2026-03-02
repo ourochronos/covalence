@@ -27,7 +27,7 @@ jobs:
         working-directory: engine
         run: cargo clippy -- -W warnings 2>&1 || true
       - name: Start test database
-        run: docker compose up -d --build
+        run: docker compose up -d --build postgres
       - name: Wait for database
         run: |
           for i in $(seq 1 30); do

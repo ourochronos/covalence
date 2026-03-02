@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1 — Builder
 # =============================================================================
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 # Install system deps needed by sqlx / openssl / etc.
 RUN apt-get update && apt-get install -y \
