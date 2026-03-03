@@ -468,10 +468,35 @@ pub async fn embed_sections(
     let (content, metadata) = row;
     let content = content.unwrap_or_default();
 
-    // Get tree index from metadata
+    // Get tree index from metadata — build it on-the-fly if missing (covalence#70).
+    // Nodes ingested via source_ingest API may not have gone through the tree_index
+    // pipeline yet.  Rather than failing, we build the index now, store it back in
+    // metadata (so subsequent embeds don't repeat the work), and continue.
+    let metadata = if metadata
+        .get("tree_index")
+        .map(|v| !v.is_null())
+        .unwrap_or(false)
+    {
+        metadata
+    } else {
+        tracing::info!(
+            node_id = %node_id,
+            "embed_sections: tree_index missing — building on-the-fly (covalence#70)"
+        );
+        build_tree_index(pool, llm, node_id, DEFAULT_OVERLAP_FRACTION, false).await?;
+        // Re-fetch metadata now that the tree index has been written.
+        let refreshed =
+            sqlx::query_as::<_, (Value,)>("SELECT metadata FROM covalence.nodes WHERE id = $1")
+                .bind(node_id)
+                .fetch_optional(pool)
+                .await?
+                .context("node not found after building tree index")?;
+        refreshed.0
+    };
+
     let tree_value = metadata
         .get("tree_index")
-        .context("node has no tree_index in metadata")?;
+        .context("tree_index still missing after build — this is a bug")?;
 
     let tree: TreeIndex =
         serde_json::from_value(tree_value.clone()).context("failed to deserialize tree_index")?;

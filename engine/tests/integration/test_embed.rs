@@ -172,6 +172,52 @@ async fn tree_embed_stores_node_embedding() {
     fix.cleanup().await;
 }
 
+/// covalence#70 — `tree_embed` (and therefore `embed_sections`) must **not**
+/// fail when a node has no `tree_index` in its metadata.  This is the common
+/// case for sources ingested via the `source_ingest` API.
+///
+/// Expected behaviour: the handler auto-builds a tree index, stores it in
+/// metadata, and then embeds the sections — all without returning an error.
+#[tokio::test]
+#[serial]
+async fn tree_embed_succeeds_without_prior_tree_index() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    // Insert a source with no tree_index in metadata (raw ingestion path).
+    let content = "A source ingested via the API that never went through the tree_index pipeline.";
+    let node_id = fix.insert_source("No Tree Index Node", content).await;
+    fix.track_task_type("tree_embed");
+
+    // Verify precondition: no tree_index in metadata yet.
+    let meta_before = fix.node_metadata(node_id).await;
+    assert!(
+        meta_before.get("tree_index").is_none(),
+        "precondition: node must not have tree_index before the test"
+    );
+
+    // The handler must not error even though tree_index is absent.
+    let te_task = TestFixture::make_task("tree_embed", Some(node_id), json!({}));
+    handle_tree_embed(&fix.pool, &llm, &te_task)
+        .await
+        .expect("handle_tree_embed must succeed even when tree_index is missing (covalence#70)");
+
+    // tree_index must now be present in metadata (stored by the on-the-fly build).
+    let meta_after = fix.node_metadata(node_id).await;
+    assert!(
+        meta_after.get("tree_index").is_some(),
+        "metadata.tree_index must be populated after auto-build"
+    );
+
+    // A node-level embedding must have been composed.
+    assert!(
+        fix.embedding_exists(node_id).await,
+        "node embedding must exist after tree_embed with auto-built tree index"
+    );
+
+    fix.cleanup().await;
+}
+
 /// `tree_embed` called on a node that already has a tree index must not create
 /// duplicate embedding rows.
 #[tokio::test]
