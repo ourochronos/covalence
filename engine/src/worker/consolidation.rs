@@ -1,0 +1,413 @@
+//! `consolidate_article` slow-path task handler (covalence#67).
+//!
+//! Implements a spacing-effect (expanding-interval) recompilation schedule
+//! for articles, mirroring the neuroscience spacing effect:
+//!
+//! | Pass | Delay from creation |
+//! |------|---------------------|
+//! | 1    | ~1 hour             |
+//! | 2    | ~18 hours           |
+//! | 3    | ~5 days             |
+//! | 4+   | weekly (admin_maintenance) |
+//!
+//! After pass 3, `next_consolidation_at` is set to NULL, signalling that all
+//! scheduled passes are complete.  Weekly consolidation beyond pass 3 is the
+//! responsibility of the admin_maintenance endpoint.
+//!
+//! # Payload shape
+//! ```json
+//! { "article_id": "<uuid>", "pass": 1 }
+//! ```
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use anyhow::Context;
+use chrono::Utc;
+use serde_json::{Value, json};
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use super::QueueTask;
+use super::llm::LlmClient;
+
+// ─── internal helpers ─────────────────────────────────────────────────────────
+
+/// Strip markdown code fences from an LLM response.
+fn strip_fences(text: &str) -> String {
+    let text = text.trim();
+    if text.starts_with("```") {
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() >= 3 {
+            return lines[1..lines.len() - 1].join("\n");
+        }
+    }
+    text.to_string()
+}
+
+struct SourceDoc {
+    id: Uuid,
+    title: String,
+    content: String,
+}
+
+/// Concatenate source documents into a plain-text fallback article body.
+fn concatenate_sources(sources: &[SourceDoc]) -> String {
+    let mut out = String::new();
+    for s in sources {
+        if !s.title.is_empty() {
+            out.push_str(&format!("## {}\n\n", s.title));
+        }
+        out.push_str(&s.content);
+        out.push_str("\n\n");
+    }
+    out
+}
+
+/// Compute the delay for the next pass after the given pass number.
+/// Returns `None` if there is no next scheduled pass (pass >= MAX_PASS).
+fn next_pass_delay(completed_pass: i32) -> Option<chrono::Duration> {
+    match completed_pass {
+        1 => Some(chrono::Duration::hours(18)),
+        2 => Some(chrono::Duration::days(5)),
+        _ => None,
+    }
+}
+
+// ─── handler ──────────────────────────────────────────────────────────────────
+
+/// Handle a `consolidate_article` task.
+///
+/// Steps:
+/// 1. Parse `article_id` and `pass` from the payload.
+/// 2. Fetch the article — skip if not found or archived.
+/// 3. Check for new sources ingested since `modified_at` that are not yet
+///    linked to the article (mirrors the orphan-detection logic from
+///    reconsolidation.rs).
+/// 4. If new sources exist: re-compile using the same LLM synthesis prompt
+///    as reconsolidation, then update article content + create provenance edges.
+/// 5. Increment `consolidation_count` regardless of whether recompilation ran.
+/// 6. Schedule the next pass:
+///    - Pass 1 done → enqueue pass 2 with `execute_after = now() + 18h`
+///    - Pass 2 done → enqueue pass 3 with `execute_after = now() + 5d`
+///    - Pass 3 done → set `next_consolidation_at = NULL` (all passes complete)
+pub async fn handle_consolidate_article(
+    pool: &PgPool,
+    llm: &Arc<dyn LlmClient>,
+    task: &QueueTask,
+) -> anyhow::Result<Value> {
+    use sqlx::Row as _;
+
+    // ── 1. Parse payload ────────────────────────────────────────────────────
+    let article_id: Uuid = task
+        .payload
+        .get("article_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .context("consolidate_article: missing or invalid article_id in payload")?;
+
+    let pass: i32 = task
+        .payload
+        .get("pass")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32)
+        .unwrap_or(1);
+
+    tracing::info!(
+        task_id    = %task.id,
+        article_id = %article_id,
+        pass,
+        "consolidate_article: starting"
+    );
+
+    // ── 2. Fetch article ────────────────────────────────────────────────────
+    let article_row = sqlx::query(
+        "SELECT title, content, modified_at \
+         FROM   covalence.nodes \
+         WHERE  id = $1 AND status = 'active' AND node_type = 'article'",
+    )
+    .bind(article_id)
+    .fetch_optional(pool)
+    .await
+    .context("consolidate_article: failed to fetch article")?;
+
+    let article_row = match article_row {
+        Some(r) => r,
+        None => {
+            tracing::info!(
+                task_id    = %task.id,
+                article_id = %article_id,
+                "consolidate_article: article not found or inactive, skipping"
+            );
+            return Ok(json!({"skipped": true, "reason": "article_not_found"}));
+        }
+    };
+
+    let article_title: String =
+        article_row.get::<Option<String>, _>("title").unwrap_or_default();
+    let article_modified_at: chrono::DateTime<Utc> = article_row.get("modified_at");
+
+    // ── 3. Check for new sources since article's modified_at ────────────────
+    // Find active source nodes that:
+    //  - were created after the article's modified_at
+    //  - are not already linked to this article via any edge
+    let new_source_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT s.id
+         FROM   covalence.nodes s
+         WHERE  s.node_type = 'source'
+           AND  s.status    = 'active'
+           AND  s.created_at > $1
+           AND  NOT EXISTS (
+               SELECT 1
+               FROM   covalence.edges e
+               WHERE  e.source_node_id = s.id
+                 AND  e.target_node_id = $2
+           )",
+    )
+    .bind(article_modified_at)
+    .bind(article_id)
+    .fetch_all(pool)
+    .await
+    .context("consolidate_article: failed to query new sources")?;
+
+    let has_new_sources = !new_source_ids.is_empty();
+    let mut new_source_count = 0usize;
+
+    if has_new_sources {
+        tracing::info!(
+            task_id    = %task.id,
+            article_id = %article_id,
+            pass,
+            new_count  = new_source_ids.len(),
+            "consolidate_article: new sources found, recompiling"
+        );
+
+        // ── 4. Collect all linked sources + new sources ─────────────────────
+        let existing_source_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT e.source_node_id
+             FROM   covalence.edges e
+             JOIN   covalence.nodes n ON n.id = e.source_node_id
+             WHERE  e.target_node_id = $1
+               AND  e.edge_type IN ('ORIGINATES', 'COMPILED_FROM', 'CONFIRMS')
+               AND  n.node_type = 'source'
+               AND  n.status    = 'active'",
+        )
+        .bind(article_id)
+        .fetch_all(pool)
+        .await
+        .context("consolidate_article: failed to fetch existing source IDs")?;
+
+        let mut all_source_ids = existing_source_ids;
+        all_source_ids.extend_from_slice(&new_source_ids);
+
+        // ── 5. Fetch all source content ──────────────────────────────────────
+        let source_rows =
+            sqlx::query("SELECT id, title, content FROM covalence.nodes WHERE id = ANY($1)")
+                .bind(&all_source_ids)
+                .fetch_all(pool)
+                .await
+                .context("consolidate_article: failed to fetch source nodes")?;
+
+        let sources: Vec<SourceDoc> = source_rows
+            .iter()
+            .map(|r| SourceDoc {
+                id: r.get("id"),
+                title: r.get::<Option<String>, _>("title").unwrap_or_default(),
+                content: r.get::<Option<String>, _>("content").unwrap_or_default(),
+            })
+            .collect();
+
+        // ── 6. Build LLM synthesis prompt (identical to reconsolidation) ─────
+        let mut sources_block = String::new();
+        for s in &sources {
+            sources_block.push_str(&format!(
+                "=== SOURCE {} ===\nTitle: {}\n\n{}\n\n",
+                s.id, s.title, s.content
+            ));
+        }
+
+        let prompt = format!(
+            "You are a knowledge synthesizer. Read the following source documents and \
+produce a well-structured article that synthesizes their information.\n\
+\n\
+Suggested title: {article_title}\n\
+\n\
+Target length: ~2000 tokens (minimum 200, maximum 4000 tokens).\n\
+\n\
+CRITICAL — Preserve with HIGH FIDELITY:\n\
+- Decisions and their rationale: write \"We chose X over Y because Z\", not just \"X was chosen\".\n\
+- Rejected alternatives: explicitly note what was considered but not done, and why.\n\
+- Open questions: capture unresolved issues and uncertainties flagged in the sources.\n\
+- Reasoning chains: when sources explain WHY something works, keep that explanation.\n\
+\n\
+DO NOT compress decisions into bare facts. Reasoning is knowledge.\n\
+\n\
+Respond ONLY with valid JSON (no markdown fences), exactly:\n\
+{{\n\
+  \"title\": \"...\",\n\
+  \"content\": \"...\",\n\
+  \"epistemic_type\": \"episodic|semantic|procedural\",\n\
+  \"source_relationships\": [\n\
+    {{\"source_id\": \"<uuid>\", \"relationship\": \"originates|confirms|supersedes|contradicts|contends\"}}\n\
+  ]\n\
+}}\n\
+\n\
+SOURCE DOCUMENTS:\n\
+{sources_block}"
+        );
+
+        // ── 7. LLM completion ────────────────────────────────────────────────
+        let t0 = Instant::now();
+        let llm_result = llm.complete(&prompt, 4096).await;
+        let _llm_latency_ms = t0.elapsed().as_millis() as i32;
+
+        let (new_title, new_content): (String, String) = match llm_result {
+            Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
+                Ok(v) => {
+                    let title = v
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&article_title)
+                        .to_string();
+                    let content = v
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    (title, content)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        task_id    = %task.id,
+                        article_id = %article_id,
+                        "consolidate_article: JSON parse error ({e}), falling back to concatenation"
+                    );
+                    (article_title.clone(), concatenate_sources(&sources))
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    task_id    = %task.id,
+                    article_id = %article_id,
+                    "consolidate_article: LLM error ({e}), falling back to concatenation"
+                );
+                (article_title.clone(), concatenate_sources(&sources))
+            }
+        };
+
+        // ── 8. Update article in-place ───────────────────────────────────────
+        sqlx::query(
+            "UPDATE covalence.nodes
+             SET    title       = $1,
+                    content     = $2,
+                    modified_at = now()
+             WHERE  id = $3",
+        )
+        .bind(&new_title)
+        .bind(&new_content)
+        .bind(article_id)
+        .execute(pool)
+        .await
+        .context("consolidate_article: failed to update article content")?;
+
+        // ── 9. Create provenance edges for newly-linked sources ──────────────
+        new_source_count = new_source_ids.len();
+        for src_id in &new_source_ids {
+            sqlx::query(
+                "INSERT INTO covalence.edges \
+                 (source_node_id, target_node_id, edge_type, weight, confidence, created_by) \
+                 VALUES ($1, $2, 'ORIGINATES', 1.0, 1.0, 'consolidate_article') \
+                 ON CONFLICT (source_node_id, target_node_id, edge_type) DO NOTHING",
+            )
+            .bind(src_id)
+            .bind(article_id)
+            .execute(pool)
+            .await
+            .context("consolidate_article: failed to insert provenance edge")?;
+        }
+
+        // ── 10. Queue re-embed for the updated article ───────────────────────
+        super::enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;
+    } else {
+        tracing::info!(
+            task_id    = %task.id,
+            article_id = %article_id,
+            pass,
+            "consolidate_article: no new sources, advancing pass without recompile"
+        );
+    }
+
+    // ── 11. Increment consolidation_count and schedule next pass ────────────
+    // consolidation_count = the pass number just completed.
+    let new_count = pass;
+
+    if let Some(delay) = next_pass_delay(pass) {
+        let execute_after = Utc::now() + delay;
+        let next_pass = pass + 1;
+
+        // Update node: increment count, record when the next pass is due.
+        sqlx::query(
+            "UPDATE covalence.nodes
+             SET consolidation_count    = $1,
+                 next_consolidation_at  = $2
+             WHERE id = $3",
+        )
+        .bind(new_count)
+        .bind(execute_after)
+        .bind(article_id)
+        .execute(pool)
+        .await
+        .context("consolidate_article: failed to update consolidation state")?;
+
+        // Insert a delayed task for the next pass.
+        super::enqueue_task_at(
+            pool,
+            "consolidate_article",
+            None,
+            json!({
+                "article_id": article_id.to_string(),
+                "pass": next_pass,
+            }),
+            3,
+            Some(execute_after),
+        )
+        .await?;
+
+        tracing::info!(
+            task_id      = %task.id,
+            article_id   = %article_id,
+            pass,
+            next_pass,
+            execute_after = %execute_after,
+            "consolidate_article: scheduled next pass"
+        );
+    } else {
+        // Pass 3+ complete — no more scheduled passes.
+        sqlx::query(
+            "UPDATE covalence.nodes
+             SET consolidation_count   = $1,
+                 next_consolidation_at = NULL
+             WHERE id = $2",
+        )
+        .bind(new_count)
+        .bind(article_id)
+        .execute(pool)
+        .await
+        .context("consolidate_article: failed to clear consolidation schedule")?;
+
+        tracing::info!(
+            task_id    = %task.id,
+            article_id = %article_id,
+            pass,
+            "consolidate_article: all scheduled passes complete, next_consolidation_at = NULL"
+        );
+    }
+
+    Ok(json!({
+        "article_id":      article_id,
+        "pass":            pass,
+        "had_new_sources": has_new_sources,
+        "new_source_count": new_source_count,
+        "new_count":       new_count,
+    }))
+}

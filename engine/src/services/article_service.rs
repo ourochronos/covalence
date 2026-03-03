@@ -129,8 +129,10 @@ impl ArticleService {
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, epistemic_type, domain_path, \
               content_hash, size_tokens, metadata, confidence, namespace, \
-              created_at, modified_at, accessed_at) \
-             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $10, $10, $10)",
+              created_at, modified_at, accessed_at, \
+              next_consolidation_at, consolidation_count) \
+             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $10, $10, $10, \
+                     now() + INTERVAL '1 hour', 0)",
         )
         .bind(id)
         .bind(&req.title)

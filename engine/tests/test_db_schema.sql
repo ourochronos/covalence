@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS covalence.nodes (
 ALTER TABLE covalence.nodes
     ADD COLUMN IF NOT EXISTS last_reconsolidated_at TIMESTAMPTZ;
 
+-- Migration 020: expanding-interval consolidation schedule (covalence#67).
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS next_consolidation_at TIMESTAMPTZ NULL;
+
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS consolidation_count INT NOT NULL DEFAULT 0;
+
 -- -----------------------------------------------------------------------------
 -- edges
 -- (No edge_type CHECK constraint — extensible string label, validated in Rust)
@@ -163,8 +170,17 @@ CREATE TABLE IF NOT EXISTS covalence.slow_path_queue (
     result          JSONB
 );
 
+-- Migration 020: execute_after for delayed task scheduling (covalence#67).
+ALTER TABLE covalence.slow_path_queue
+    ADD COLUMN IF NOT EXISTS execute_after TIMESTAMPTZ NULL;
+
+CREATE INDEX IF NOT EXISTS idx_slow_path_queue_execute_after
+    ON covalence.slow_path_queue (execute_after)
+    WHERE execute_after IS NOT NULL;
+
 -- Idempotently refresh the task_type CHECK constraint so that new task types
--- (e.g. 'reconsolidate') are accepted even on databases created before this update.
+-- (e.g. 'reconsolidate', 'consolidate_article') are accepted even on databases
+-- created before this update.
 ALTER TABLE covalence.slow_path_queue
     DROP CONSTRAINT IF EXISTS slow_path_queue_task_type_check;
 ALTER TABLE covalence.slow_path_queue
@@ -174,7 +190,7 @@ ALTER TABLE covalence.slow_path_queue
         'split', 'merge', 'embed', 'contention_check',
         'tree_index', 'tree_embed', 'recompile',
         'decay_check', 'divergence_scan', 'recompute_graph_embeddings',
-        'reconsolidate'
+        'reconsolidate', 'consolidate_article'
     ));
 
 -- -----------------------------------------------------------------------------

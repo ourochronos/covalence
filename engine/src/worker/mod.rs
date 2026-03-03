@@ -13,6 +13,7 @@
 //! Attempt count is tracked in the `result` JSONB column as
 //! `{"attempts": N, ...}` since the table has no dedicated attempts column.
 
+pub mod consolidation;
 pub mod contention;
 pub mod decay;
 pub mod divergence;
@@ -40,6 +41,9 @@ const MAX_ATTEMPTS: i64 = 3;
 
 /// How long we wait between poll cycles.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Number of poll cycles between consolidation heartbeat scans (~60 s).
+const CONSOLIDATION_HEARTBEAT_INTERVAL: u64 = 30;
 
 /// A row fetched from `slow_path_queue`.
 #[derive(Debug)]
@@ -81,7 +85,18 @@ pub async fn run(pool: PgPool) {
         POLL_INTERVAL.as_secs()
     );
 
+    let mut heartbeat_tick: u64 = 0;
+
     loop {
+        heartbeat_tick += 1;
+
+        // Periodically enqueue consolidation tasks for due articles.
+        if heartbeat_tick % CONSOLIDATION_HEARTBEAT_INTERVAL == 0 {
+            if let Err(e) = enqueue_due_consolidations(&pool).await {
+                tracing::error!("consolidation heartbeat error: {e:#}");
+            }
+        }
+
         match poll_and_execute(&pool, &llm).await {
             Ok(n) if n > 0 => tracing::debug!("worker processed {n} task(s)"),
             Ok(_) => {}
@@ -89,6 +104,61 @@ pub async fn run(pool: PgPool) {
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Enqueue `consolidate_article` tasks for every active article whose
+/// `next_consolidation_at` has arrived and that has no pending/processing
+/// consolidation task already.
+async fn enqueue_due_consolidations(pool: &PgPool) -> anyhow::Result<()> {
+    use sqlx::Row as _;
+
+    let rows = sqlx::query(
+        "SELECT n.id, COALESCE(n.consolidation_count, 0) AS consolidation_count
+         FROM   covalence.nodes n
+         WHERE  n.node_type              = 'article'
+           AND  n.status                 = 'active'
+           AND  n.next_consolidation_at  IS NOT NULL
+           AND  n.next_consolidation_at  <= now()
+           AND  NOT EXISTS (
+               SELECT 1
+               FROM   covalence.slow_path_queue q
+               WHERE  q.task_type               = 'consolidate_article'
+                 AND  q.payload->>'article_id'  = n.id::text
+                 AND  q.status IN ('pending', 'processing')
+           )",
+    )
+    .fetch_all(pool)
+    .await
+    .context("enqueue_due_consolidations: query failed")?;
+
+    for row in &rows {
+        let article_id: Uuid = row.get("id");
+        let count: i32 = row.get("consolidation_count");
+        let next_pass = count + 1;
+
+        enqueue_task(
+            pool,
+            "consolidate_article",
+            None,
+            serde_json::json!({
+                "article_id": article_id.to_string(),
+                "pass": next_pass,
+            }),
+            3,
+        )
+        .await
+        .with_context(|| {
+            format!("enqueue_due_consolidations: failed to enqueue for {article_id}")
+        })?;
+
+        tracing::debug!(
+            article_id = %article_id,
+            next_pass,
+            "consolidation heartbeat: enqueued consolidate_article"
+        );
+    }
+
+    Ok(())
 }
 
 /// Poll for one pending task, execute it, and return how many tasks were processed.
@@ -104,6 +174,7 @@ async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Re
             SELECT id
             FROM   covalence.slow_path_queue
             WHERE  status = 'pending'
+              AND  (execute_after IS NULL OR execute_after <= now())
             ORDER  BY priority DESC, created_at ASC
             LIMIT  1
             FOR UPDATE SKIP LOCKED
@@ -267,6 +338,7 @@ pub async fn execute_task(
         "decay_check" => decay::handle_decay_check(pool, task).await,
         "divergence_scan" => divergence::handle_divergence_scan(pool, task).await,
         "reconsolidate" => reconsolidation::handle_reconsolidate(pool, llm, task).await,
+        "consolidate_article" => consolidation::handle_consolidate_article(pool, llm, task).await,
         "recompute_graph_embeddings" => {
             let method = task
                 .payload
@@ -598,6 +670,35 @@ pub async fn enqueue_task(
     .execute(pool)
     .await
     .with_context(|| format!("failed to enqueue {task_type} task"))?;
+    Ok(())
+}
+
+/// Enqueue a slow-path task that should not be processed until `execute_after`.
+///
+/// When `execute_after` is `None`, the task is eligible for processing
+/// immediately (equivalent to [`enqueue_task`]).
+pub async fn enqueue_task_at(
+    pool: &PgPool,
+    task_type: &str,
+    node_id: Option<Uuid>,
+    payload: Value,
+    priority: i32,
+    execute_after: Option<chrono::DateTime<chrono::Utc>>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO covalence.slow_path_queue \
+             (id, task_type, node_id, payload, status, priority, execute_after) \
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(task_type)
+    .bind(node_id)
+    .bind(&payload)
+    .bind(priority)
+    .bind(execute_after)
+    .execute(pool)
+    .await
+    .with_context(|| format!("failed to enqueue {task_type} task (at)"))?;
     Ok(())
 }
 
@@ -993,6 +1094,21 @@ SOURCE DOCUMENTS:\n\
         .context("compile: failed to insert article node")?;
         new_id
     };
+
+    // ── 6b. Schedule first consolidation pass ────────────────────────────────
+    // Set next_consolidation_at = now() + 1h so the heartbeat can trigger
+    // pass 1.  Reset consolidation_count to 0 whether this is a new article or
+    // a dedup-update.
+    sqlx::query(
+        "UPDATE covalence.nodes \
+         SET next_consolidation_at = now() + INTERVAL '1 hour', \
+             consolidation_count   = 0 \
+         WHERE id = $1",
+    )
+    .bind(article_id)
+    .execute(pool)
+    .await
+    .context("compile: failed to schedule consolidation")?;
 
     // ── 7. Create AGE vertex + insert provenance edges via GraphRepository ───
     // All writes go through GraphRepository so both AGE and SQL are updated.
