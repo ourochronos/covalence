@@ -285,6 +285,135 @@ async fn infer_edges_completes_with_embeddings() {
     fix.cleanup().await;
 }
 
+// ─── covalence#77 — UTF-8 byte-boundary safety ───────────────────────────────
+
+/// Regression test for covalence#77.
+///
+/// Build a source whose content places a multi-byte character (em-dash U+2014,
+/// 3 UTF-8 bytes: 0xE2 0x80 0x94) exactly at the 1 200-byte truncation point
+/// used by `infer_edges` when it assembles the LLM prompt snippets.
+///
+/// Before the fix, `&content[..1200]` would panic with:
+///   "byte index 1200 is not a char boundary; it is inside '—' (bytes 1199..1202)"
+///
+/// After the fix, `safe_truncate` walks back to a valid char boundary so the
+/// handler completes successfully and the result contains `edges_created`.
+#[tokio::test]
+#[serial]
+async fn infer_edges_no_panic_on_multibyte_boundary() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    // Build content whose byte length is slightly above 1 200 with an em-dash
+    // (3 bytes: 0xE2 0x80 0x94) starting at byte offset 1 199.
+    //
+    // Strategy:
+    //   • Fill 1 199 bytes with ASCII 'a' characters.
+    //   • Append the em-dash '—' (bytes 1199–1201, inclusive).
+    //   • Append more ASCII to push total length > 1 200.
+    //
+    // After this construction:
+    //   content[..1200] would land inside the em-dash → panic without the fix.
+    //   safe_truncate(&content, 1200) safely steps back to offset 1199.
+    let mut content = "a".repeat(1199); // 1199 ASCII bytes
+    content.push('—'); // em-dash: 3 bytes → total now 1202
+    content.push_str(&"b".repeat(100)); // padding so len > 1200
+
+    assert!(
+        content.len() > 1200,
+        "content must be longer than 1200 bytes for the truncation to trigger"
+    );
+    assert!(
+        !content.is_char_boundary(1200),
+        "byte 1200 must be inside the em-dash for this test to be meaningful"
+    );
+
+    let node_a = fix.insert_source("Em-Dash Node A", &content).await;
+
+    // node_b uses similar content so the cosine distance < 0.3 threshold is met
+    // (identical embeddings → distance = 0).
+    let node_b = fix.insert_source("Em-Dash Node B", &content).await;
+
+    fix.insert_embedding(node_a).await;
+    fix.insert_embedding(node_b).await;
+
+    let task = TestFixture::make_task("infer_edges", Some(node_a), json!({}));
+
+    // Must not panic — the whole point of the regression test.
+    let result = handle_infer_edges(&fix.pool, &llm, &task)
+        .await
+        .expect("handle_infer_edges must not panic on multi-byte char at boundary");
+
+    // Sanity: result must be a well-formed object with the expected keys.
+    assert!(
+        result.get("edges_created").is_some(),
+        "result should contain edges_created; got: {result}"
+    );
+    assert!(
+        result.get("candidates_found").is_some(),
+        "result should contain candidates_found; got: {result}"
+    );
+
+    fix.cleanup().await;
+}
+
+/// Same boundary regression for the keyword-extraction snippet (800-byte limit).
+///
+/// The combined `"{title}\n\n{content}"` string is constructed so that an
+/// em-dash straddles byte 800.  Without the fix this panics; with the fix
+/// `safe_truncate` steps back to the last valid boundary.
+#[tokio::test]
+#[serial]
+async fn infer_edges_no_panic_on_multibyte_keyword_snippet_boundary() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    // title + "\n\n" = title_len + 2 bytes of prefix inside `combined`.
+    // We want the em-dash to start at byte 799 inside `combined`.
+    // combined = "{title}\n\n{content}"
+    // prefix length = title.len() + 2
+    // So we need content to start at offset (title.len() + 2), and we want
+    // offset 799 to be inside the em-dash.
+    // Simplest: title = "" (0 bytes), prefix = 2 bytes ("\n\n").
+    // → content[797] starts the em-dash (797 + 2 = 799).
+    let title = "T"; // 1 byte
+    // prefix is "{title}\n\n" = 1 + 2 = 3 bytes
+    // em-dash should start at offset 799 → content offset = 799 - 3 = 796
+    let mut content = "a".repeat(796);
+    content.push('—'); // em-dash at bytes 796–798 of content → bytes 799–801 of combined
+    content.push_str(&"c".repeat(100));
+
+    let combined_preview = format!("{title}\n\n{content}");
+    assert!(
+        combined_preview.len() > 800,
+        "combined must exceed 800 bytes"
+    );
+    assert!(
+        !combined_preview.is_char_boundary(800),
+        "byte 800 must be inside the em-dash"
+    );
+
+    let node = fix.insert_source(title, &content).await;
+    // No embedding needed — keyword extraction runs before the embedding check.
+
+    let task = TestFixture::make_task("infer_edges", Some(node), json!({}));
+
+    // The node has no embedding so infer_edges will defer, but keyword
+    // extraction (which contains the 800-byte slice) runs before that check.
+    // Must not panic.
+    let result = handle_infer_edges(&fix.pool, &llm, &task)
+        .await
+        .expect("handle_infer_edges must not panic on em-dash at keyword snippet boundary");
+
+    let status = result["status"].as_str().unwrap_or("");
+    assert!(
+        status.contains("deferred"),
+        "node without embedding should defer; got: {result}"
+    );
+
+    fix.cleanup().await;
+}
+
 /// When the node has no embedding, `infer_edges` should defer (queue embed and
 /// re-queue itself) and return a `status: deferred` result.
 #[tokio::test]

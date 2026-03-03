@@ -22,6 +22,23 @@ use crate::models::{EdgeType, NodeType};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+/// Truncate `s` to at most `max_bytes` bytes, walking back to a valid UTF-8
+/// char boundary when necessary.
+///
+/// This avoids the classic `byte index N is not a char boundary` panic that
+/// occurs when a multi-byte character (e.g. em-dash U+2014, 3 bytes) straddles
+/// a hard byte limit.  The returned slice is always a valid sub-slice of `s`.
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Strip markdown code fences from an LLM response and parse it as JSON.
 fn parse_json_response(text: &str) -> anyhow::Result<Value> {
     let text = text.trim();
@@ -437,11 +454,7 @@ pub async fn handle_infer_edges(
         if !kw_exists {
             let snippet = {
                 let combined = format!("{node_title}\n\n{node_content}");
-                if combined.len() > 800 {
-                    combined[..800].to_string()
-                } else {
-                    combined
-                }
+                safe_truncate(&combined, 800).to_string()
             };
             let kw_prompt = format!(
                 "You are a knowledge indexing assistant. Extract keywords and topic tags \
@@ -582,16 +595,10 @@ pub async fn handle_infer_edges(
         let cosine_distance: f32 = row.get("cosine_distance");
 
         // Truncate snippets so the prompt stays within the context window.
-        let src_snippet = if node_content.len() > 1200 {
-            &node_content[..1200]
-        } else {
-            &node_content
-        };
-        let cand_snippet = if candidate_content.len() > 1200 {
-            &candidate_content[..1200]
-        } else {
-            &candidate_content
-        };
+        // safe_truncate walks back to a char boundary, preventing panics on
+        // multi-byte characters (e.g. em-dash U+2014) at the cut point.
+        let src_snippet = safe_truncate(&node_content, 1200);
+        let cand_snippet = safe_truncate(&candidate_content, 1200);
 
         let prompt = format!(
             "You are a knowledge-graph edge classifier. Analyse the relationship between the \
