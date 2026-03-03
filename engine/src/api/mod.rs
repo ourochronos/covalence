@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod extractors;
 pub mod openapi;
 pub mod routes;
@@ -12,4 +13,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub llm: Arc<dyn LlmClient>,
     pub graph: SharedGraph,
+    /// Optional API key read from `COVALENCE_API_KEY`.
+    /// `None` → dev mode (no auth required).
+    pub api_key: Option<String>,
 }

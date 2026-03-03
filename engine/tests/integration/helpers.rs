@@ -673,5 +673,10 @@ pub async fn make_test_state(pool: sqlx::PgPool) -> covalence_engine::api::AppSt
     let graph = Arc::new(tokio::sync::RwLock::new(
         covalence_engine::graph::CovalenceGraph::new(),
     ));
-    covalence_engine::api::AppState { pool, llm, graph }
+    covalence_engine::api::AppState {
+        pool,
+        llm,
+        graph,
+        api_key: None,
+    }
 }

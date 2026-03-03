@@ -25,6 +25,8 @@ use super::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        // Health — always public (also exempted by auth middleware)
+        .route("/health", get(health_handler))
         // OpenAPI / docs
         .route("/openapi.json", get(openapi_json))
         .route("/docs", get(swagger_ui))
@@ -1015,6 +1017,15 @@ async fn admin_knowledge_audit(
     let svc = AuditService::new(state.pool.clone(), state.graph.clone());
     let report = svc.audit(&params.q).await?;
     Ok(Json(serde_json::json!({ "data": report })))
+}
+
+// ── Health handler ──────────────────────────────────────────────
+
+/// `GET /health` — liveness probe.  Always returns `200 OK`.
+/// Exempted from API-key authentication so load-balancers and container
+/// orchestrators can probe the server without credentials.
+async fn health_handler() -> impl IntoResponse {
+    StatusCode::OK
 }
 
 // ── Dashboard handler ───────────────────────────────────────────

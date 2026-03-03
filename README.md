@@ -91,6 +91,7 @@ See **`.env.example`** for the full reference. Key variables:
 | `OPENAI_BASE_URL` | optional | `https://api.openai.com/v1` | Override for compatible proxies / local models |
 | `COVALENCE_EMBED_MODEL` | optional | `text-embedding-3-small` | Embedding model name |
 | `INFERENCE_URL` | optional | — | OpenAI-compatible proxy URL for the OpenClaw plugin |
+| `COVALENCE_API_KEY` | optional | — | When set, all requests must include `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Leave unset for unauthenticated dev mode. `GET /health` is always exempt. |
 | `BIND_ADDR` | optional | `0.0.0.0:8430` | HTTP listen address |
 | `RUST_LOG` | optional | `covalence_engine=debug` | Tracing log filter |
 

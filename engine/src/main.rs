@@ -83,13 +83,29 @@ async fn main() -> anyhow::Result<()> {
     let shared_graph: crate::graph::SharedGraph =
         std::sync::Arc::new(tokio::sync::RwLock::new(startup_graph));
 
+    // Optional API key — when set, all requests (except /health) must present it
+    // via `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
+    let api_key = std::env::var("COVALENCE_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty());
+    if api_key.is_some() {
+        tracing::info!("API key authentication enabled (COVALENCE_API_KEY is set)");
+    } else {
+        tracing::warn!("COVALENCE_API_KEY is not set — running in unauthenticated dev mode");
+    }
+
     let state = AppState {
         pool,
         llm,
         graph: shared_graph,
+        api_key,
     };
     let app = api::routes::router()
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            api::auth::require_api_key,
+        ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::permissive());
 

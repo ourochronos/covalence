@@ -49,6 +49,9 @@ services:
       DB_PASSWORD: covalence
       BIND_ADDR: "0.0.0.0:8430"
       RUST_LOG: "covalence_engine=info,tower_http=info"
+      # Optional: set to require API key auth on all endpoints (except /health).
+      # Leave unset (or empty) for dev mode — no auth required.
+      # COVALENCE_API_KEY: "your-secret-key-here"
     env_file:
       - path: .env
         required: false
