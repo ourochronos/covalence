@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::graph::{GraphRepository as _, SqlGraphRepository};
 use crate::models::EdgeType;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct StoreMemoryRequest {
     pub content: String,
     #[serde(default)]
@@ -20,6 +20,7 @@ pub struct StoreMemoryRequest {
     #[serde(default)]
     pub context: Option<String>,
     #[serde(default)]
+    #[schema(value_type = Option<String>)]
     pub supersedes_id: Option<Uuid>,
 }
 
@@ -27,7 +28,7 @@ fn default_importance() -> f64 {
     0.5
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RecallRequest {
     pub query: String,
     #[serde(default = "default_recall_limit")]
@@ -38,6 +39,7 @@ pub struct RecallRequest {
     pub min_confidence: Option<f64>,
     /// Only return memories created at or after this timestamp.
     #[serde(default)]
+    #[schema(value_type = Option<String>)]
     pub since: Option<DateTime<Utc>>,
     /// Only return memories whose `context` metadata field starts with this prefix.
     ///
@@ -51,14 +53,17 @@ fn default_recall_limit() -> usize {
     5
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Memory {
+    #[schema(value_type = String)]
     pub id: Uuid,
     pub content: String,
+    #[schema(value_type = Object)]
     pub tags: serde_json::Value,
     pub importance: f64,
     pub context: Option<String>,
     pub confidence: f64,
+    #[schema(value_type = String)]
     pub created_at: DateTime<Utc>,
     pub forgotten: bool,
 }

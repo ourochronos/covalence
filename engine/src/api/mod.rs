@@ -1,3 +1,4 @@
+pub mod openapi;
 pub mod routes;
 
 use crate::worker::llm::LlmClient;

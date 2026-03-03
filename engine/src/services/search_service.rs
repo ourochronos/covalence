@@ -33,7 +33,7 @@ use crate::search::vector::VectorAdaptor;
 // ─── Search Mode ──────────────────────────────────────────────────────────────
 
 /// Controls how the search engine retrieves and returns results.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
     /// Flat search over all node types (current behaviour). This is the
@@ -52,7 +52,7 @@ pub enum SearchMode {
 ///
 /// When [`SearchRequest::weights`] is explicitly provided it always takes
 /// precedence; `strategy` only applies when no explicit weights are given.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchStrategy {
     /// Current behaviour: vector=0.65, lexical=0.25, graph=0.10.
@@ -72,14 +72,16 @@ pub enum SearchStrategy {
 // ─── Request / Response types ─────────────────────────────────────────────────
 
 /// Request body for POST /search.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SearchRequest {
     pub query: String,
     #[serde(default)]
+    #[schema(value_type = Option<Vec<f32>>)]
     pub embedding: Option<Vec<f32>>,
     #[serde(default)]
     pub intent: Option<SearchIntent>,
     #[serde(default)]
+    #[schema(value_type = Option<String>)]
     pub session_id: Option<Uuid>,
     #[serde(default)]
     pub node_types: Option<Vec<String>>,
@@ -118,10 +120,12 @@ pub struct SearchRequest {
     /// Include only nodes whose `created_at` is strictly after this timestamp.
     /// When `None`, no lower-bound date filter is applied.
     #[serde(default)]
+    #[schema(value_type = Option<String>)]
     pub after: Option<DateTime<Utc>>,
     /// Include only nodes whose `created_at` is strictly before this timestamp.
     /// When `None`, no upper-bound date filter is applied.
     #[serde(default)]
+    #[schema(value_type = Option<String>)]
     pub before: Option<DateTime<Utc>>,
     /// Minimum score threshold (covalence#33). Results with a final score
     /// strictly below this value are filtered out before returning. When
@@ -135,7 +139,7 @@ fn default_limit() -> usize {
     10
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct WeightsInput {
     pub vector: Option<f32>,
     pub lexical: Option<f32>,
@@ -143,8 +147,9 @@ pub struct WeightsInput {
 }
 
 /// A single search result with scores breakdown.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SearchResult {
+    #[schema(value_type = String)]
     pub node_id: Uuid,
     pub score: f64,
     pub vector_score: Option<f64>,
@@ -165,12 +170,14 @@ pub struct SearchResult {
     /// For results returned by hierarchical expansion: the UUID of the parent
     /// article that caused this source to be included.  `None` for directly-
     /// matched results (articles or standard-mode results).
+    #[schema(value_type = Option<String>)]
     pub expanded_from: Option<Uuid>,
     /// Number of graph hops from the nearest anchor node.
     /// `None` if this result was not discovered via graph traversal.
     pub graph_hops: Option<u32>,
     /// When this node was created. Populated from the `created_at` column on
     /// the `nodes` table; used by the `after`/`before` temporal filters.
+    #[schema(value_type = Option<String>)]
     pub created_at: Option<DateTime<Utc>>,
 }
 

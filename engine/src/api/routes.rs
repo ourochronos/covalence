@@ -7,6 +7,8 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{delete, get, patch, post},
 };
+
+use super::openapi::{openapi_json, swagger_ui};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -21,6 +23,9 @@ use super::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        // OpenAPI / docs
+        .route("/openapi.json", get(openapi_json))
+        .route("/docs", get(swagger_ui))
         // Sources
         .route("/sources", post(source_ingest))
         .route("/sources", get(source_list))

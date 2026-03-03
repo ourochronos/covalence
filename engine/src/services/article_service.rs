@@ -9,28 +9,32 @@ use crate::errors::*;
 use crate::graph::{GraphRepository, SqlGraphRepository};
 use crate::models::*;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct CreateArticleRequest {
     pub content: String,
     pub title: Option<String>,
     pub domain_path: Option<Vec<String>>,
     pub epistemic_type: Option<String>,
+    #[schema(value_type = Option<Vec<String>>)]
     pub source_ids: Option<Vec<Uuid>>,
+    #[schema(value_type = Object)]
     pub metadata: Option<serde_json::Value>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct UpdateArticleRequest {
     pub content: Option<String>,
     pub title: Option<String>,
     pub domain_path: Option<Vec<String>>,
     #[allow(dead_code)]
+    #[schema(value_type = Object)]
     pub metadata: Option<serde_json::Value>,
     pub pinned: Option<bool>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct CompileRequest {
+    #[schema(value_type = Vec<String>)]
     pub source_ids: Vec<Uuid>,
     pub title_hint: Option<String>,
     /// Optional compilation focus hint injected into the LLM prompt.
@@ -38,14 +42,17 @@ pub struct CompileRequest {
     pub compilation_focus: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct MergeRequest {
+    #[schema(value_type = String)]
     pub article_id_a: Uuid,
+    #[schema(value_type = String)]
     pub article_id_b: Uuid,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ArticleResponse {
+    #[schema(value_type = String)]
     pub id: Uuid,
     pub node_type: String,
     pub title: Option<String>,
@@ -54,12 +61,15 @@ pub struct ArticleResponse {
     pub confidence: f32,
     pub epistemic_type: Option<String>,
     pub domain_path: Vec<String>,
+    #[schema(value_type = Object)]
     pub metadata: serde_json::Value,
     pub version: i32,
     pub pinned: bool,
     pub usage_score: f32,
     pub contention_count: i64,
+    #[schema(value_type = String)]
     pub created_at: chrono::DateTime<Utc>,
+    #[schema(value_type = String)]
     pub modified_at: chrono::DateTime<Utc>,
     /// `true` when newer unlinked sources exist in the same domain — the
     /// article may benefit from recompilation.  `None` when not computed
@@ -68,15 +78,17 @@ pub struct ArticleResponse {
     pub stale: Option<bool>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SplitResponse {
+    #[schema(value_type = String)]
     pub original_id: Uuid,
     pub part_a: ArticleResponse,
     pub part_b: ArticleResponse,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct CompileJobResponse {
+    #[schema(value_type = String)]
     pub job_id: Uuid,
     pub status: String,
 }

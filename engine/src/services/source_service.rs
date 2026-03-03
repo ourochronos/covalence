@@ -10,12 +10,14 @@ use crate::graph::{GraphRepository, SqlGraphRepository};
 use crate::models::*;
 
 /// Request to ingest a new source.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct IngestRequest {
     pub content: String,
     pub source_type: Option<String>,
     pub title: Option<String>,
+    #[schema(value_type = Object)]
     pub metadata: Option<serde_json::Value>,
+    #[schema(value_type = Option<String>)]
     pub session_id: Option<Uuid>,
     pub reliability: Option<f32>,
     /// Intentionality classifier: `"manual"` | `"auto"` | `"system"` | `None`.
@@ -39,8 +41,9 @@ pub struct ListParams {
 }
 
 /// Response envelope for a source.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SourceResponse {
+    #[schema(value_type = String)]
     pub id: Uuid,
     pub node_type: String,
     pub title: Option<String>,
@@ -50,9 +53,12 @@ pub struct SourceResponse {
     pub confidence: f32,
     pub reliability: f32,
     pub fingerprint: String,
+    #[schema(value_type = Object)]
     pub metadata: serde_json::Value,
     pub version: i32,
+    #[schema(value_type = String)]
     pub created_at: chrono::DateTime<Utc>,
+    #[schema(value_type = String)]
     pub modified_at: chrono::DateTime<Utc>,
     /// How this source was captured — read from `metadata["capture_method"]`.
     /// `None` when absent (e.g. sources ingested before this field existed).

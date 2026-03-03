@@ -367,7 +367,7 @@ pub struct ProvenanceLink {
 }
 
 /// Search intent for intent-aware retrieval routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchIntent {
     Factual,

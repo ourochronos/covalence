@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::errors::*;
 use crate::graph::{GraphRepository, SqlGraphRepository};
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct StatsResponse {
     pub nodes: NodeStats,
     pub edges: EdgeStats,
@@ -15,7 +15,7 @@ pub struct StatsResponse {
     pub embeddings: EmbeddingStats,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct NodeStats {
     pub total: i64,
     pub sources: i64,
@@ -26,14 +26,14 @@ pub struct NodeStats {
     pub pinned: i64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct EdgeStats {
     pub sql_count: i64,
     pub age_count: i64,
     pub in_sync: bool,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct QueueStats {
     pub pending: i64,
     pub processing: i64,
@@ -41,13 +41,13 @@ pub struct QueueStats {
     pub completed_24h: i64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct EmbeddingStats {
     pub total: i64,
     pub nodes_without: i64,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct MaintenanceRequest {
     pub recompute_scores: Option<bool>,
     pub process_queue: Option<bool>,
@@ -55,7 +55,7 @@ pub struct MaintenanceRequest {
     pub evict_count: Option<i64>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct MaintenanceResponse {
     pub actions_taken: Vec<String>,
 }
