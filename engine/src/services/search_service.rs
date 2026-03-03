@@ -25,6 +25,8 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::graph::algorithms::pagerank;
+use crate::graph::{TopologicalConfidence, compute_topological_confidence};
 use crate::models::SearchIntent;
 use crate::search::dimension::{DimensionAdaptor, DimensionQuery};
 use crate::search::graph::GraphAdaptor;
@@ -194,6 +196,10 @@ pub struct SearchResult {
     /// the `nodes` table; used by the `after`/`before` temporal filters.
     #[schema(value_type = Option<String>)]
     pub created_at: Option<DateTime<Utc>>,
+    /// Topological confidence score derived from graph structure (PageRank +
+    /// inbound-edge diversity).  `None` when the feature flag
+    /// `COVALENCE_TOPOLOGICAL_CONFIDENCE` is not enabled.
+    pub topological_score: Option<f64>,
 }
 
 /// Metadata about the search execution.
@@ -217,17 +223,33 @@ pub struct SearchService {
     lexical: LexicalAdaptor,
     graph: GraphAdaptor,
     structural: StructuralAdaptor,
+    /// Whether to blend topological confidence into scoring.
+    /// Enabled via `COVALENCE_TOPOLOGICAL_CONFIDENCE=true`.
+    topological_enabled: bool,
+    /// Shared in-memory graph used for topological confidence computation.
+    shared_graph: Option<crate::graph::SharedGraph>,
 }
 
 impl SearchService {
     pub fn new(pool: PgPool) -> Self {
+        let topological_enabled = std::env::var("COVALENCE_TOPOLOGICAL_CONFIDENCE")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
         Self {
             pool,
             vector: VectorAdaptor::new(),
             lexical: LexicalAdaptor::new(),
             graph: GraphAdaptor::new(),
             structural: StructuralAdaptor::new(),
+            topological_enabled,
+            shared_graph: None,
         }
+    }
+
+    /// Attach a shared in-memory graph for topological confidence scoring.
+    pub fn with_graph(mut self, graph: crate::graph::SharedGraph) -> Self {
+        self.shared_graph = Some(graph);
+        self
     }
 
     /// Check which backends are available. Call once at startup.
@@ -388,6 +410,29 @@ impl SearchService {
 
         let node_map = fetch_node_map(&self.pool, &node_ids).await?;
 
+        // Topological confidence (feature-flagged). Compute PageRank once,
+        // release the graph lock, then build per-node scores from in-memory data.
+        let topo_map: Option<HashMap<Uuid, TopologicalConfidence>> = if self.topological_enabled {
+            if let Some(shared) = &self.shared_graph {
+                let graph = shared.read().await;
+                let pr_scores = pagerank(&graph, 0.85, 20);
+                // Capture inbound counts and release lock.
+                let topo: HashMap<Uuid, TopologicalConfidence> = node_ids
+                    .iter()
+                    .map(|id| {
+                        let tc = compute_topological_confidence(id, &pr_scores, &graph);
+                        (*id, tc)
+                    })
+                    .collect();
+                drop(graph);
+                Some(topo)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut results = build_results(
             &node_scores,
             &node_map,
@@ -399,6 +444,7 @@ impl SearchService {
             recency_bias,
             &graph_hops_map,
             &req.query,
+            topo_map.as_ref(),
         );
         results.sort_by(|a, b| {
             b.score
@@ -576,6 +622,28 @@ impl SearchService {
         let article_ids: Vec<Uuid> = article_scores.keys().cloned().collect();
         let article_node_map = fetch_node_map(&self.pool, &article_ids).await?;
 
+        // Topological confidence for hierarchical mode (feature-flagged).
+        let article_topo_map: Option<HashMap<Uuid, TopologicalConfidence>> =
+            if self.topological_enabled {
+                if let Some(shared) = &self.shared_graph {
+                    let graph = shared.read().await;
+                    let pr_scores = pagerank(&graph, 0.85, 20);
+                    let topo: HashMap<Uuid, TopologicalConfidence> = article_ids
+                        .iter()
+                        .map(|id| {
+                            let tc = compute_topological_confidence(id, &pr_scores, &graph);
+                            (*id, tc)
+                        })
+                        .collect();
+                    drop(graph);
+                    Some(topo)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         // Build article results and score them.
         // Post-filter to articles only: the dimension adaptors do not apply
         // the node_types restriction in DimensionQuery, so non-article nodes
@@ -591,6 +659,7 @@ impl SearchService {
             recency_bias,
             &graph_hops_map,
             &req.query,
+            article_topo_map.as_ref(),
         );
         article_results.retain(|r| r.node_type == "article");
         article_results.sort_by(|a, b| {
@@ -697,6 +766,7 @@ impl SearchService {
                         expanded_from: Some(*parent_article_id),
                         graph_hops: None, // expanded via provenance, not graph traversal
                         created_at: Some(*created_at),
+                        topological_score: None,
                     })
                 })
                 .collect()
@@ -949,6 +1019,7 @@ fn build_results(
     recency_bias: f64,
     graph_hops_map: &HashMap<Uuid, u32>,
     query: &str,
+    topo_scores: Option<&HashMap<Uuid, TopologicalConfidence>>,
 ) -> Vec<SearchResult> {
     let mut results = Vec::new();
     for (node_id, (vs, ls, gs, ss)) in node_scores {
@@ -980,9 +1051,20 @@ fn build_results(
         let freshness_weight = 0.05 + bias * 0.35;
         // dim_weight absorbs the difference (trust and confidence stay at 0.05 each)
         let dim_weight = 1.0 - freshness_weight - 0.10; // 0.10 = trust + confidence
+
+        // Topological confidence blending (feature-flagged).
+        let (effective_confidence, topo_score_out) = if let Some(topo_map) = topo_scores {
+            let topo = topo_map.get(node_id);
+            let topo_sc = topo.map(|t| t.score).unwrap_or(0.0);
+            let blended = 0.6 * confidence + 0.4 * topo_sc;
+            (blended, Some(topo_sc))
+        } else {
+            (*confidence, None)
+        };
+
         let base_score = weighted_sum * dim_weight
             + trust * 0.05
-            + *confidence * 0.05
+            + effective_confidence * 0.05
             + freshness * freshness_weight;
 
         // Title match bonus (covalence#33): query words >3 chars that appear
@@ -1021,6 +1103,7 @@ fn build_results(
             expanded_from: expanded_from_override,
             graph_hops: graph_hops_map.get(node_id).copied(),
             created_at: Some(*created_at),
+            topological_score: topo_score_out,
         });
     }
     results

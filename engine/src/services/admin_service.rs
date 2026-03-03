@@ -5,7 +5,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::errors::*;
-use crate::graph::{GraphRepository, SqlGraphRepository};
+use crate::graph::{GraphRepository, SharedGraph, SqlGraphRepository, algorithms::pagerank};
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct StatsResponse {
@@ -87,12 +87,26 @@ pub struct StalenessResult {
 pub struct AdminService {
     pool: PgPool,
     graph: SqlGraphRepository,
+    /// Shared in-memory graph used for PageRank-based usage_score blending.
+    /// Set via [`AdminService::with_graph`].
+    shared_graph: Option<SharedGraph>,
 }
 
 impl AdminService {
     pub fn new(pool: PgPool) -> Self {
         let graph = SqlGraphRepository::new(pool.clone());
-        Self { pool, graph }
+        Self {
+            pool,
+            graph,
+            shared_graph: None,
+        }
+    }
+
+    /// Attach the shared in-memory graph (enables PageRank influence on
+    /// `usage_score` recompute when `COVALENCE_TOPOLOGICAL_CONFIDENCE=true`).
+    pub fn with_graph(mut self, graph: SharedGraph) -> Self {
+        self.shared_graph = Some(graph);
+        self
     }
 
     pub async fn stats(&self) -> AppResult<StatsResponse> {
@@ -169,7 +183,7 @@ impl AdminService {
         let mut actions = Vec::new();
 
         if req.recompute_scores.unwrap_or(false) {
-            // Recompute usage scores from retrieval events
+            // Pass 1: Recompute usage scores from retrieval events.
             sqlx::query(
                 "UPDATE covalence.nodes n SET usage_score = COALESCE(
                     (SELECT COUNT(*)::float * EXP(-0.01 * EXTRACT(EPOCH FROM (now() - MAX(ue.accessed_at))) / 86400.0)
@@ -177,6 +191,43 @@ impl AdminService {
                 ) WHERE n.status = 'active'"
             ).execute(&self.pool).await?;
             actions.push("recomputed usage scores".into());
+
+            // Pass 2 (feature-flagged): blend PageRank into usage_score.
+            // Enabled only when COVALENCE_TOPOLOGICAL_CONFIDENCE=true and a
+            // shared graph is available.
+            let topo_enabled = std::env::var("COVALENCE_TOPOLOGICAL_CONFIDENCE")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false);
+
+            if topo_enabled {
+                if let Some(shared) = &self.shared_graph {
+                    let graph = shared.read().await;
+                    let pr_scores = pagerank(&graph, 0.85, 20);
+                    drop(graph);
+
+                    let mut blended_count = 0usize;
+                    for (node_id, pr_score) in &pr_scores {
+                        let result = sqlx::query(
+                            "UPDATE covalence.nodes \
+                             SET usage_score = LEAST(1.0, usage_score * 0.8 + $1 * 0.2) \
+                             WHERE id = $2 AND status = 'active'",
+                        )
+                        .bind(pr_score)
+                        .bind(node_id)
+                        .execute(&self.pool)
+                        .await?;
+                        blended_count += result.rows_affected() as usize;
+                    }
+                    actions.push(format!(
+                        "blended pagerank into usage_score for {blended_count} nodes"
+                    ));
+                } else {
+                    tracing::debug!(
+                        "COVALENCE_TOPOLOGICAL_CONFIDENCE=true but no shared graph attached; \
+                         skipping pagerank blend"
+                    );
+                }
+            }
         }
 
         if req.process_queue.unwrap_or(false) {

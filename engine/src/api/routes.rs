@@ -409,7 +409,7 @@ async fn admin_maintenance(
     State(state): State<AppState>,
     Json(req): Json<MaintenanceRequest>,
 ) -> impl IntoResponse {
-    let svc = AdminService::new(state.pool);
+    let svc = AdminService::new(state.pool).with_graph(state.graph.clone());
     match svc.maintenance(req).await {
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
@@ -442,7 +442,7 @@ async fn search_handler(
             Err(e) => tracing::warn!("failed to embed search query: {e:#}"),
         }
     }
-    let service = SearchService::new(state.pool.clone());
+    let service = SearchService::new(state.pool.clone()).with_graph(state.graph.clone());
     service.init().await;
     let (results, meta) = service
         .search(req)
