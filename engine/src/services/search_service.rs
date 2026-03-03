@@ -840,6 +840,287 @@ impl SearchService {
         };
         Ok((combined, meta))
     }
+
+    // ── Debug search (POST /search/debug) ────────────────────────────────────
+
+    /// Run the full 4-D search pipeline and return raw per-dimension scores
+    /// alongside the final fused results.  Used by `POST /search/debug`.
+    ///
+    /// Mirrors `search_standard` but captures `DimensionResult` snapshots before
+    /// they are collapsed into the fused `SearchResult` list, so callers can
+    /// inspect the contribution of each dimension.
+    pub async fn search_debug(
+        &self,
+        req: SearchRequest,
+    ) -> anyhow::Result<SearchDebugResponse> {
+        let start = std::time::Instant::now();
+        let candidate_limit = req.limit * 5;
+
+        // Resolve effective max_hops (same logic as search_standard).
+        let effective_max_hops = req.max_hops.unwrap_or({
+            if matches!(req.strategy, Some(SearchStrategy::Graph)) {
+                2
+            } else {
+                1
+            }
+        });
+
+        // Destructure request fields we need after dim_query consumes some.
+        let query_str = req.query.clone();
+        let min_score = req.min_score;
+        let domain_path = req.domain_path.clone();
+        let after = req.after;
+        let before = req.before;
+        let limit = req.limit;
+        let recency_bias = req.recency_bias.unwrap_or(0.0).clamp(0.0, 1.0);
+
+        let (w_vec, w_lex, w_graph, w_struct) = resolve_weights(&req.weights, &req.strategy);
+        let effective_strategy = strategy_label(&req.weights, &req.strategy);
+
+        let dim_query = DimensionQuery {
+            text: req.query,
+            embedding: req.embedding,
+            intent: req.intent,
+            session_id: req.session_id,
+            node_types: req.node_types,
+            max_hops: Some(effective_max_hops),
+        };
+
+        // ── Availability checks ────────────────────────────────────────────────
+        let (vec_available, lex_available) = tokio::join!(
+            self.vector.check_availability(&self.pool),
+            self.lexical.check_availability(&self.pool),
+        );
+        let (graph_available, struct_available) = tokio::join!(
+            self.graph.check_availability(&self.pool),
+            self.structural.check_availability(&self.pool),
+        );
+
+        // ── Step 1 (parallel): Vector + Lexical ───────────────────────────────
+        let (mut vec_results, mut lex_results) = tokio::try_join!(
+            self.vector
+                .search(&self.pool, &dim_query, None, candidate_limit),
+            self.lexical
+                .search(&self.pool, &dim_query, None, candidate_limit),
+        )?;
+
+        self.vector.normalize_scores(&mut vec_results);
+        self.lexical.normalize_scores(&mut lex_results);
+
+        // ── Step 2: Build candidate set ───────────────────────────────────────
+        let mut candidate_set: Vec<Uuid> = vec_results.iter().map(|r| r.node_id).collect();
+        for r in &lex_results {
+            if !candidate_set.contains(&r.node_id) {
+                candidate_set.push(r.node_id);
+            }
+        }
+
+        // ── Step 3: Graph ─────────────────────────────────────────────────────
+        let mut graph_results = if !candidate_set.is_empty() {
+            self.graph
+                .search(
+                    &self.pool,
+                    &dim_query,
+                    Some(&candidate_set),
+                    candidate_limit,
+                )
+                .await?
+        } else {
+            vec![]
+        };
+        self.graph.normalize_scores(&mut graph_results);
+
+        // ── Step 4: Structural ────────────────────────────────────────────────
+        let mut structural_results = if !candidate_set.is_empty() {
+            self.structural
+                .search(
+                    &self.pool,
+                    &dim_query,
+                    Some(&candidate_set),
+                    candidate_limit,
+                )
+                .await?
+        } else {
+            vec![]
+        };
+        self.structural.normalize_scores(&mut structural_results);
+
+        // ── Capture raw-score snapshots (before building node_scores map) ─────
+        let vec_debug = DimensionDebugInfo {
+            available: vec_available,
+            results_count: vec_results.len(),
+            raw_scores: vec_results
+                .iter()
+                .map(|r| RawScoreEntry {
+                    node_id: r.node_id,
+                    raw_score: r.raw_score,
+                    normalized_score: r.normalized_score,
+                })
+                .collect(),
+        };
+        let lex_debug = DimensionDebugInfo {
+            available: lex_available,
+            results_count: lex_results.len(),
+            raw_scores: lex_results
+                .iter()
+                .map(|r| RawScoreEntry {
+                    node_id: r.node_id,
+                    raw_score: r.raw_score,
+                    normalized_score: r.normalized_score,
+                })
+                .collect(),
+        };
+        let graph_debug = DimensionDebugInfo {
+            available: graph_available,
+            results_count: graph_results.len(),
+            raw_scores: graph_results
+                .iter()
+                .map(|r| RawScoreEntry {
+                    node_id: r.node_id,
+                    raw_score: r.raw_score,
+                    normalized_score: r.normalized_score,
+                })
+                .collect(),
+        };
+        let struct_debug = DimensionDebugInfo {
+            available: struct_available,
+            results_count: structural_results.len(),
+            raw_scores: structural_results
+                .iter()
+                .map(|r| RawScoreEntry {
+                    node_id: r.node_id,
+                    raw_score: r.raw_score,
+                    normalized_score: r.normalized_score,
+                })
+                .collect(),
+        };
+
+        // ── Build hop-count and node-score maps ───────────────────────────────
+        let graph_hops_map: HashMap<Uuid, u32> = graph_results
+            .iter()
+            .filter_map(|r| r.hop.map(|h| (r.node_id, h)))
+            .collect();
+
+        let dims_used = collect_dims_used(
+            &vec_results,
+            &lex_results,
+            &graph_results,
+            &structural_results,
+        );
+
+        let mut node_scores: HashMap<Uuid, DimScores> = HashMap::new();
+        for r in &vec_results {
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .0 = Some(r.normalized_score);
+        }
+        for r in &lex_results {
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .1 = Some(r.normalized_score);
+        }
+        for r in &graph_results {
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .2 = Some(r.normalized_score);
+        }
+        for r in &structural_results {
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .3 = Some(r.normalized_score);
+        }
+
+        // ── Fuse and build final results ──────────────────────────────────────
+        let final_results = if node_scores.is_empty() {
+            vec![]
+        } else {
+            let node_ids: Vec<Uuid> = node_scores.keys().cloned().collect();
+            let node_map = fetch_node_map(&self.pool, &node_ids).await?;
+
+            let topo_map: Option<HashMap<Uuid, TopologicalConfidence>> =
+                if self.topological_enabled {
+                    if let Some(shared) = &self.shared_graph {
+                        let graph = shared.read().await;
+                        let pr_scores = pagerank(&graph, 0.85, 20);
+                        let topo: HashMap<Uuid, TopologicalConfidence> = node_ids
+                            .iter()
+                            .map(|id| {
+                                let tc = compute_topological_confidence(id, &pr_scores, &graph);
+                                (*id, tc)
+                            })
+                            .collect();
+                        drop(graph);
+                        Some(topo)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            let mut results = build_results(
+                &node_scores,
+                &node_map,
+                w_vec,
+                w_lex,
+                w_graph,
+                w_struct,
+                None,
+                recency_bias,
+                &graph_hops_map,
+                &query_str,
+                topo_map.as_ref(),
+            );
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if let Some(min) = min_score {
+                results.retain(|r| r.score >= min);
+            }
+            if let Some(ref filter_paths) = domain_path {
+                results.retain(|r| {
+                    r.domain_path
+                        .as_ref()
+                        .is_some_and(|dp| dp.iter().any(|d| filter_paths.contains(d)))
+                });
+            }
+            if let Some(after) = after {
+                results.retain(|r| r.created_at.is_none_or(|ca| ca > after));
+            }
+            if let Some(before) = before {
+                results.retain(|r| r.created_at.is_none_or(|ca| ca < before));
+            }
+            results.truncate(limit);
+            results
+        };
+
+        let _ = dims_used; // captured for potential future use in the response
+
+        Ok(SearchDebugResponse {
+            query: query_str,
+            strategy_selected: effective_strategy,
+            dimensions: DimensionsDebug {
+                vector: vec_debug,
+                lexical: lex_debug,
+                graph: graph_debug,
+                structural: struct_debug,
+            },
+            fusion_weights: FusionWeights {
+                vector: w_vec,
+                lexical: w_lex,
+                graph: w_graph,
+                structural: w_struct,
+            },
+            final_results,
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        })
+    }
 }
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
@@ -849,13 +1130,77 @@ type DimScores = (Option<f64>, Option<f64>, Option<f64>, Option<f64>);
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
+// ─── Debug endpoint types ─────────────────────────────────────────────────────
+
+/// Raw score entry for a single node in one search dimension.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct RawScoreEntry {
+    #[schema(value_type = String)]
+    pub node_id: Uuid,
+    /// Unnormalized score from the dimension (distance, ts_rank, edge weight, etc.)
+    pub raw_score: f64,
+    /// Normalized score in \[0.0, 1.0\] after intra-dimension normalization.
+    pub normalized_score: f64,
+}
+
+/// Per-dimension debug snapshot captured before score fusion.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DimensionDebugInfo {
+    /// Whether this dimension's backend is available in this deployment.
+    pub available: bool,
+    /// Number of candidate results this dimension returned before fusion.
+    pub results_count: usize,
+    /// Raw and normalized scores for each result.
+    pub raw_scores: Vec<RawScoreEntry>,
+}
+
+/// All four dimension snapshots.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DimensionsDebug {
+    pub vector: DimensionDebugInfo,
+    pub lexical: DimensionDebugInfo,
+    pub graph: DimensionDebugInfo,
+    pub structural: DimensionDebugInfo,
+}
+
+/// Effective dimension fusion weights used for this request.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FusionWeights {
+    pub vector: f32,
+    pub lexical: f32,
+    pub graph: f32,
+    pub structural: f32,
+}
+
+/// Full debug response from `POST /search/debug`.
+///
+/// Contains the same fused results as `/search` plus a per-dimension breakdown
+/// of raw scores before fusion — useful for eval, tuning, and debugging.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SearchDebugResponse {
+    /// The original query string.
+    pub query: String,
+    /// The effective fusion strategy label (`"balanced"`, `"precise"`, …).
+    pub strategy_selected: String,
+    /// Per-dimension availability and raw score breakdown.
+    pub dimensions: DimensionsDebug,
+    /// Effective dimension weights used for fusion.
+    pub fusion_weights: FusionWeights,
+    /// Final fused results (identical to what `/search` would return).
+    pub final_results: Vec<SearchResult>,
+    /// Wall-clock time for the full debug pipeline in milliseconds.
+    pub elapsed_ms: u64,
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 /// Parse and normalise weights from the request (or use defaults).
 ///
 /// Priority order (highest wins):
 /// 1. Explicit `weights` field (caller override).
 /// 2. `strategy` field (preset dimension ratios).
 /// 3. [`SearchStrategy::Balanced`] defaults.
-fn resolve_weights(
+pub fn resolve_weights(
     w: &Option<WeightsInput>,
     strategy: &Option<SearchStrategy>,
 ) -> (f32, f32, f32, f32) {

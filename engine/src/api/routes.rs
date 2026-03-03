@@ -50,6 +50,7 @@ pub fn router() -> Router<AppState> {
         .route("/nodes/{id}/edges", get(node_edges))
         .route("/nodes/{id}/neighborhood", get(node_neighborhood))
         .route("/search", post(search_handler))
+        .route("/search/debug", post(search_debug_handler))
         // Contentions
         .route("/contentions", get(contention_list))
         .route("/contentions/{id}", get(contention_get))
@@ -89,6 +90,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/graph/stats", get(admin_graph_stats))
         .route("/admin/graph/pagerank", get(admin_graph_pagerank))
         .route("/admin/graph/centrality", get(admin_graph_centrality))
+        .route("/admin/graph/intent-stats", get(admin_graph_intent_stats))
         .route("/admin/knowledge/audit", get(admin_knowledge_audit))
 }
 
@@ -399,6 +401,21 @@ async fn admin_graph_centrality(State(state): State<AppState>) -> impl IntoRespo
     Json(result)
 }
 
+/// `GET /admin/graph/intent-stats` — edge count breakdown by intent category.
+///
+/// Returns the number of edges that fall into each of the four MAGMA-inspired
+/// intent categories (factual, temporal, causal, entity) plus an `other_edges`
+/// count for edge types that don't map to any intent.  Useful for diagnosing
+/// graph coverage and understanding which retrieval intents are well-supported
+/// by the current knowledge graph (Phase 7, covalence#54).
+async fn admin_graph_intent_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let svc = AdminService::new(state.pool);
+    match svc.graph_intent_stats().await {
+        Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
 async fn admin_stats(State(state): State<AppState>) -> impl IntoResponse {
     let svc = AdminService::new(state.pool);
     match svc.stats().await {
@@ -454,6 +471,35 @@ async fn search_handler(
         "data": results,
         "meta": meta,
     })))
+}
+
+// ── Search debug handler ────────────────────────────────────────
+
+/// `POST /search/debug` — same request body as `/search`, but returns a
+/// verbose breakdown of per-dimension raw scores before fusion.  Useful for
+/// eval harnesses, weight tuning, and debugging relevance issues.
+async fn search_debug_handler(
+    State(state): State<AppState>,
+    Json(mut req): Json<SearchRequest>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    // Auto-embed query text if no embedding provided (same as /search).
+    if req.embedding.is_none() && !req.query.is_empty() {
+        match state.llm.embed(&req.query).await {
+            Ok(vec) => {
+                if vec.iter().any(|v| *v != 0.0) {
+                    req.embedding = Some(vec);
+                }
+            }
+            Err(e) => tracing::warn!("failed to embed search/debug query: {e:#}"),
+        }
+    }
+    let service = SearchService::new(state.pool.clone()).with_graph(state.graph.clone());
+    service.init().await;
+    let debug = service
+        .search_debug(req)
+        .await
+        .map_err(crate::errors::AppError::Internal)?;
+    Ok(Json(serde_json::json!({ "data": debug })))
 }
 
 // ── Contention handlers ─────────────────────────────────────────
