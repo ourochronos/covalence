@@ -36,6 +36,7 @@ dotenvy = "0.15"
 # Error handling
 thiserror = "2"
 anyhow = "1"
+petgraph = "0.7"
 async-trait = "0.1"
 serial_test = "3"
 
