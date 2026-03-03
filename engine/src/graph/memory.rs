@@ -51,6 +51,7 @@ impl CovalenceGraph {
     }
 
     /// Build a graph from a slice of Edge records (all edges from DB).
+    #[allow(dead_code)]
     pub fn load(edges: &[Edge]) -> Self {
         let mut g = Self::new();
         for edge in edges {
@@ -66,6 +67,7 @@ impl CovalenceGraph {
     }
 
     /// Return true if the graph contains a node with the given UUID.
+    #[allow(dead_code)]
     pub fn has_node(&self, id: &Uuid) -> bool {
         self.index.contains_key(id)
     }
@@ -80,8 +82,21 @@ impl CovalenceGraph {
         self.graph.edge_count()
     }
 
+    /// Return the UUIDs of all direct outgoing neighbors of `id` (all edge types).
+    pub fn neighbors(&self, id: &Uuid) -> Vec<Uuid> {
+        let Some(&idx) = self.index.get(id) else {
+            return vec![];
+        };
+        use petgraph::visit::EdgeRef;
+        self.graph
+            .edges(idx)
+            .filter_map(|e| self.graph.node_weight(e.target()).copied())
+            .collect()
+    }
+
     /// Return the UUIDs of all direct successors of `id` whose connecting
     /// edge carries the given `edge_type` label.
+    #[allow(dead_code)]
     pub fn neighbors_filtered(&self, id: &Uuid, edge_type: &str) -> Vec<Uuid> {
         let Some(&idx) = self.index.get(id) else {
             return vec![];

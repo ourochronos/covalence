@@ -263,8 +263,68 @@ pub async fn execute_task(
         "infer_edges" => merge_edges::handle_infer_edges(pool, llm, task).await,
         "resolve_contention" => contention::handle_resolve_contention(pool, llm, task).await,
         "decay_check" => decay::handle_decay_check(pool, task).await,
+        "recompute_graph_embeddings" => {
+            let method = task
+                .payload
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("both");
+            recompute_graph_embeddings(pool, method).await
+        }
         other => anyhow::bail!("unknown task_type: {other}"),
     }
+}
+
+// ─── Graph embedding recomputation ───────────────────────────────────────────
+
+/// Rebuild a `CovalenceGraph` from the SQL edges table.
+async fn load_graph_from_db(pool: &PgPool) -> anyhow::Result<crate::graph::CovalenceGraph> {
+    use sqlx::Row as _;
+    let rows = sqlx::query("SELECT source_node_id, target_node_id, edge_type FROM covalence.edges")
+        .fetch_all(pool)
+        .await
+        .context("recompute_graph_embeddings: failed to load edges")?;
+
+    let mut graph = crate::graph::CovalenceGraph::new();
+    for row in &rows {
+        let src: uuid::Uuid = row.try_get("source_node_id")?;
+        let tgt: uuid::Uuid = row.try_get("target_node_id")?;
+        let etype: String = row.try_get("edge_type")?;
+        graph.add_edge(src, tgt, etype);
+    }
+    Ok(graph)
+}
+
+/// Recompute Node2Vec and/or Spectral embeddings and persist them to DB.
+///
+/// Skipped unless the `COVALENCE_GRAPH_EMBEDDINGS` env var is set to `"true"`.
+async fn recompute_graph_embeddings(pool: &PgPool, method: &str) -> anyhow::Result<Value> {
+    let enabled = std::env::var("COVALENCE_GRAPH_EMBEDDINGS").unwrap_or_default();
+    if enabled != "true" {
+        return Ok(json!({
+            "skipped": true,
+            "reason": "COVALENCE_GRAPH_EMBEDDINGS not enabled"
+        }));
+    }
+
+    let graph = load_graph_from_db(pool).await?;
+    let mut results = json!({});
+
+    if method == "node2vec" || method == "both" {
+        let config = crate::embeddings::node2vec::Node2VecConfig::default();
+        let embs = crate::embeddings::node2vec::compute_node2vec(&graph, config)?;
+        let count = crate::embeddings::store::store_embeddings(pool, embs, "node2vec").await?;
+        results["node2vec"] = json!(count);
+    }
+
+    if method == "spectral" || method == "both" {
+        let config = crate::embeddings::spectral::SpectralConfig::default();
+        let embs = crate::embeddings::spectral::compute_spectral(&graph, config)?;
+        let count = crate::embeddings::store::store_embeddings(pool, embs, "spectral").await?;
+        results["spectral"] = json!(count);
+    }
+
+    Ok(json!({"stored": results}))
 }
 
 // ─── Task handlers ────────────────────────────────────────────────────────────
@@ -1036,6 +1096,7 @@ SOURCE DOCUMENTS:\n\
 }
 
 /// `split`: Split an oversized article node into two smaller nodes.
+#[allow(deprecated)]
 pub async fn handle_split(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,

@@ -53,6 +53,11 @@ pub struct MaintenanceRequest {
     pub process_queue: Option<bool>,
     pub evict_if_over_capacity: Option<bool>,
     pub evict_count: Option<i64>,
+    /// When `true`, enqueue a `recompute_graph_embeddings` task.
+    /// Pass `method` in the sub-field to select `"node2vec"`, `"spectral"`, or `"both"`.
+    pub recompute_graph_embeddings: Option<bool>,
+    /// Embedding method: `"node2vec"`, `"spectral"`, or `"both"` (default).
+    pub graph_embeddings_method: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -159,6 +164,7 @@ impl AdminService {
         })
     }
 
+    #[allow(deprecated)]
     pub async fn maintenance(&self, req: MaintenanceRequest) -> AppResult<MaintenanceResponse> {
         let mut actions = Vec::new();
 
@@ -231,6 +237,25 @@ impl AdminService {
             }
         }
 
+        if req.recompute_graph_embeddings.unwrap_or(false) {
+            let method = req
+                .graph_embeddings_method
+                .as_deref()
+                .unwrap_or("both")
+                .to_string();
+            sqlx::query(
+                "INSERT INTO covalence.slow_path_queue \
+                 (id, task_type, node_id, payload, status, priority) \
+                 VALUES (gen_random_uuid(), 'recompute_graph_embeddings', NULL, $1, 'pending', 2)",
+            )
+            .bind(serde_json::json!({ "method": method }))
+            .execute(&self.pool)
+            .await?;
+            actions.push(format!(
+                "queued recompute_graph_embeddings(method={method})"
+            ));
+        }
+
         if actions.is_empty() {
             actions.push("no operations requested".into());
         }
@@ -247,6 +272,7 @@ impl AdminService {
     /// 2. **Missing creation** — SQL edges with `age_id IS NULL` are written into AGE (if both
     ///    endpoint vertices already exist in AGE).
     /// 3. Counts everything else as already-synced.
+    #[allow(deprecated)]
     pub async fn sync_edges(&self) -> AppResult<SyncEdgesResponse> {
         use crate::graph::GraphRepository as _;
 

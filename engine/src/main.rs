@@ -1,4 +1,5 @@
 mod api;
+mod embeddings;
 mod errors;
 mod graph;
 mod models;

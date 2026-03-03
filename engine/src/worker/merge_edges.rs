@@ -60,6 +60,7 @@ async fn queue_task(pool: &PgPool, task_type: &str, node_id: Uuid) -> anyhow::Re
 /// Payload keys
 /// - `article_id_a` (UUID string) — first article
 /// - `article_id_b` (UUID string) — second article
+#[allow(deprecated)]
 pub async fn handle_merge(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,

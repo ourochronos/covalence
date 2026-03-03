@@ -3,6 +3,8 @@
 //! Ported from valence-v2 with adaptations for `CovalenceGraph`:
 //! - `GraphView` → `&CovalenceGraph`
 //! - `NodeId` → `Uuid`
+
+#![allow(dead_code)]
 //! - `graph.get_node_id(idx)` → `g.graph.node_weight(idx).copied()`
 //! - `graph.get_index(id)` → `g.index.get(&id).copied()`
 //! - `graph.node_count()` → `g.node_count()`

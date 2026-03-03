@@ -28,6 +28,7 @@ impl NodeType {
     }
 
     /// AGE vertex label name.
+    #[allow(dead_code)]
     pub fn age_label(&self) -> &'static str {
         match self {
             NodeType::Article => "Article",

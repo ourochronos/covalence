@@ -320,6 +320,7 @@ impl ArticleService {
     }
 
     /// Delete (archive) an article.
+    #[allow(deprecated)]
     pub async fn delete(&self, id: Uuid) -> AppResult<()> {
         let result = sqlx::query(
             "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \

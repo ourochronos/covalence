@@ -27,6 +27,7 @@ pub enum GraphError {
     Database(#[from] sqlx::Error),
 
     #[error("AGE error: {0}")]
+    #[allow(dead_code)]
     Age(String),
 }
 
