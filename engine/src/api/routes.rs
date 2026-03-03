@@ -452,6 +452,20 @@ async fn search_handler(
     State(state): State<AppState>,
     Json(mut req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    // ── Live synthesis gate (covalence#59) ──────────────────────────────────
+    // Synthesis mode is feature-flagged.  Reject early with 404 when the flag
+    // is off so callers get a clear diagnostic rather than a type-mismatch.
+    if matches!(req.mode, Some(SearchMode::Synthesis)) {
+        let enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        if !enabled {
+            return Err(crate::errors::AppError::NotFound(
+                "live synthesis is not enabled; set COVALENCE_LIVE_SYNTHESIS=true".into(),
+            ));
+        }
+    }
+
     // Auto-embed query text if no embedding provided
     if req.embedding.is_none() && !req.query.is_empty() {
         match state.llm.embed(&req.query).await {
@@ -464,8 +478,22 @@ async fn search_handler(
             Err(e) => tracing::warn!("failed to embed search query: {e:#}"),
         }
     }
-    let service = SearchService::new(state.pool.clone()).with_graph(state.graph.clone());
+
+    let service = SearchService::new(state.pool.clone())
+        .with_graph(state.graph.clone())
+        .with_llm(state.llm.clone());
     service.init().await;
+
+    // ── Synthesis dispatch ───────────────────────────────────────────────────
+    if matches!(req.mode, Some(SearchMode::Synthesis)) {
+        let resp = service
+            .search_synthesis(req)
+            .await
+            .map_err(crate::errors::AppError::Internal)?;
+        return Ok(Json(serde_json::json!({ "data": resp })));
+    }
+
+    // ── Standard / Hierarchical dispatch ────────────────────────────────────
     let (results, meta) = service
         .search(req)
         .await

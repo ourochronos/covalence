@@ -908,6 +908,162 @@ impl SearchService {
         Ok((combined, meta))
     }
 
+    // ── Live synthesis (POST /search with mode=synthesis) ────────────────────
+
+    /// Article-free live synthesis pipeline (covalence#59).
+    ///
+    /// 1. Runs the 4-D search restricted to `node_type = 'source'` (top 10).
+    /// 2. Fetches the full content of each returned source from the DB.
+    /// 3. Ranks sources by reliability (descending) then relevance (descending).
+    /// 4. Builds a structured LLM prompt that embeds each source with its
+    ///    reliability score and instructs the model to cite by number.
+    /// 5. Calls the LLM and returns the synthesis alongside provenance metadata.
+    ///
+    /// Returns [`anyhow::Error`] when:
+    /// - `COVALENCE_LIVE_SYNTHESIS` is not set to `"true"` or `"1"`.
+    /// - No LLM client is attached (call [`SearchService::with_llm`] first).
+    pub async fn search_synthesis(
+        &self,
+        req: SearchRequest,
+    ) -> anyhow::Result<SynthesisResponse> {
+        if !self.synthesis_enabled {
+            anyhow::bail!(
+                "live synthesis is disabled; set COVALENCE_LIVE_SYNTHESIS=true to enable"
+            );
+        }
+
+        let llm = self
+            .llm
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("LLM client not attached; call with_llm() on SearchService"))?;
+
+        let start = std::time::Instant::now();
+
+        // Clone the query string before req is partially consumed.
+        let query = req.query.clone();
+
+        // Build a source-only search request — reuse all caller preferences.
+        let source_req = SearchRequest {
+            query: req.query,
+            embedding: req.embedding,
+            intent: req.intent,
+            session_id: req.session_id,
+            // Override: sources only, capped at 10.
+            node_types: Some(vec!["source".into()]),
+            limit: 10,
+            weights: req.weights,
+            mode: None, // avoid recursive Synthesis dispatch
+            recency_bias: req.recency_bias,
+            domain_path: req.domain_path,
+            strategy: req.strategy,
+            max_hops: req.max_hops,
+            after: req.after,
+            before: req.before,
+            min_score: req.min_score,
+        };
+
+        // Step 1 — run standard 4-D search over sources.
+        let (results, _meta) = self.search_standard(source_req).await?;
+
+        // Keep only source nodes (the dimension adaptors may include non-source
+        // nodes despite the node_types hint, so we post-filter to be safe).
+        let source_results: Vec<&SearchResult> =
+            results.iter().filter(|r| r.node_type == "source").collect();
+
+        if source_results.is_empty() {
+            return Ok(SynthesisResponse {
+                mode: "synthesis".into(),
+                query,
+                synthesis: "No relevant sources were found to synthesize from.".into(),
+                sources_used: vec![],
+                elapsed_ms: start.elapsed().as_millis() as u64,
+                source_count: 0,
+            });
+        }
+
+        // Step 2 — fetch full source content.
+        let source_ids: Vec<Uuid> = source_results.iter().map(|r| r.node_id).collect();
+        let content_rows = sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Option<f64>)>(
+            "SELECT id, title, content, reliability::float8
+             FROM   covalence.nodes
+             WHERE  id = ANY($1)
+               AND  status = 'active'",
+        )
+        .bind(&source_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Build a map: node_id → (title, content, reliability).
+        let content_map: HashMap<Uuid, (Option<String>, Option<String>, f64)> = content_rows
+            .into_iter()
+            .map(|(id, title, content, reliability)| {
+                (id, (title, content, reliability.unwrap_or(0.5)))
+            })
+            .collect();
+
+        // Step 3 — rank by reliability descending, then relevance descending.
+        let mut ranked: Vec<(f64, f64, Uuid)> = source_results
+            .iter()
+            .map(|r| {
+                let reliability = content_map
+                    .get(&r.node_id)
+                    .map(|(_, _, rel)| *rel)
+                    .unwrap_or(0.5);
+                (reliability, r.score, r.node_id)
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        // Step 4 — build the LLM prompt.
+        let mut prompt = format!(
+            "Given the following sources (ranked by relevance and reliability), \
+             synthesize a comprehensive answer to the query: \"{query}\"\n\n\
+             Sources (in order of reliability):\n"
+        );
+
+        let mut sources_used: Vec<SynthesisSource> = Vec::new();
+        for (i, (reliability, relevance, node_id)) in ranked.iter().enumerate() {
+            if let Some((title, content, _)) = content_map.get(node_id) {
+                let title_str = title.as_deref().unwrap_or("(untitled)");
+                let content_str = content.as_deref().unwrap_or("(no content)");
+                // Truncate very long sources to keep the prompt manageable.
+                let truncated = if content_str.len() > 2000 {
+                    &content_str[..2000]
+                } else {
+                    content_str
+                };
+                prompt.push_str(&format!(
+                    "[Source {n} - reliability: {reliability:.2}] Title: {title_str}\n{truncated}\n\n",
+                    n = i + 1,
+                ));
+                sources_used.push(SynthesisSource {
+                    node_id: *node_id,
+                    title: title.clone(),
+                    reliability: *reliability,
+                    relevance_score: *relevance,
+                });
+            }
+        }
+        prompt.push_str("Synthesize a clear, accurate answer. Cite sources by number.\n");
+
+        // Step 5 — call the LLM.
+        let synthesis = llm.complete(&prompt, 1500).await?;
+
+        let source_count = sources_used.len();
+        Ok(SynthesisResponse {
+            mode: "synthesis".into(),
+            query,
+            synthesis,
+            sources_used,
+            elapsed_ms: start.elapsed().as_millis() as u64,
+            source_count,
+        })
+    }
+
     // ── Debug search (POST /search/debug) ────────────────────────────────────
 
     /// Run the full 4-D search pipeline and return raw per-dimension scores
@@ -1519,4 +1675,162 @@ fn build_results(
         });
     }
     results
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SearchMode parsing ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_synthesis_mode_deserializes_from_json() {
+        let json = r#"{"query": "what is Covalence?", "mode": "synthesis"}"#;
+        let req: SearchRequest = serde_json::from_str(json).expect("should deserialise");
+        assert_eq!(req.mode, Some(SearchMode::Synthesis));
+    }
+
+    #[test]
+    fn test_standard_mode_still_deserializes() {
+        let json = r#"{"query": "test", "mode": "standard"}"#;
+        let req: SearchRequest = serde_json::from_str(json).expect("should deserialise");
+        assert_eq!(req.mode, Some(SearchMode::Standard));
+    }
+
+    #[test]
+    fn test_hierarchical_mode_still_deserializes() {
+        let json = r#"{"query": "test", "mode": "hierarchical"}"#;
+        let req: SearchRequest = serde_json::from_str(json).expect("should deserialise");
+        assert_eq!(req.mode, Some(SearchMode::Hierarchical));
+    }
+
+    #[test]
+    fn test_missing_mode_defaults_to_standard() {
+        let json = r#"{"query": "test"}"#;
+        let req: SearchRequest = serde_json::from_str(json).expect("should deserialise");
+        // None here — default is applied by SearchService::search(), not during parse.
+        assert_eq!(req.mode, None);
+        assert_eq!(req.mode.unwrap_or_default(), SearchMode::Standard);
+    }
+
+    #[test]
+    fn test_synthesis_mode_serializes_to_lowercase() {
+        let mode = SearchMode::Synthesis;
+        let serialized = serde_json::to_string(&mode).expect("should serialise");
+        assert_eq!(serialized, r#""synthesis""#);
+    }
+
+    #[test]
+    fn test_all_modes_roundtrip() {
+        for (label, expected) in [
+            ("standard", SearchMode::Standard),
+            ("hierarchical", SearchMode::Hierarchical),
+            ("synthesis", SearchMode::Synthesis),
+        ] {
+            let serialized = serde_json::to_string(&expected).unwrap();
+            assert_eq!(serialized, format!(r#""{label}""#));
+            let deserialized: SearchMode = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(deserialized, expected);
+        }
+    }
+
+    // ── Feature-flag behaviour ────────────────────────────────────────────────
+
+    /// The live-synthesis feature flag must be **opt-in** — absent or any value
+    /// other than `"true"` / `"1"` keeps synthesis disabled.
+    #[test]
+    fn test_synthesis_feature_flag_disabled_by_default() {
+        // Save and unset the env var so this test is hermetic.
+        let saved = std::env::var("COVALENCE_LIVE_SYNTHESIS").ok();
+        // SAFETY: single-threaded test; safe to mutate env.
+        unsafe { std::env::remove_var("COVALENCE_LIVE_SYNTHESIS") };
+
+        let enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        assert!(!enabled, "synthesis should be disabled when env var is absent");
+
+        // Restore.
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("COVALENCE_LIVE_SYNTHESIS", val) };
+        }
+    }
+
+    #[test]
+    fn test_synthesis_feature_flag_enabled_by_true() {
+        let saved = std::env::var("COVALENCE_LIVE_SYNTHESIS").ok();
+        unsafe { std::env::set_var("COVALENCE_LIVE_SYNTHESIS", "true") };
+
+        let enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        assert!(enabled, "synthesis should be enabled when env var is 'true'");
+
+        // Restore.
+        unsafe { std::env::remove_var("COVALENCE_LIVE_SYNTHESIS") };
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("COVALENCE_LIVE_SYNTHESIS", val) };
+        }
+    }
+
+    #[test]
+    fn test_synthesis_feature_flag_enabled_by_one() {
+        let saved = std::env::var("COVALENCE_LIVE_SYNTHESIS").ok();
+        unsafe { std::env::set_var("COVALENCE_LIVE_SYNTHESIS", "1") };
+
+        let enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        assert!(enabled, "synthesis should be enabled when env var is '1'");
+
+        unsafe { std::env::remove_var("COVALENCE_LIVE_SYNTHESIS") };
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("COVALENCE_LIVE_SYNTHESIS", val) };
+        }
+    }
+
+    #[test]
+    fn test_synthesis_feature_flag_not_enabled_by_arbitrary_value() {
+        let saved = std::env::var("COVALENCE_LIVE_SYNTHESIS").ok();
+        unsafe { std::env::set_var("COVALENCE_LIVE_SYNTHESIS", "yes") };
+
+        let enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        assert!(
+            !enabled,
+            "synthesis should NOT be enabled by arbitrary truthy strings"
+        );
+
+        unsafe { std::env::remove_var("COVALENCE_LIVE_SYNTHESIS") };
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("COVALENCE_LIVE_SYNTHESIS", val) };
+        }
+    }
+
+    // ── SynthesisResponse shape ───────────────────────────────────────────────
+
+    #[test]
+    fn test_synthesis_response_serializes_correctly() {
+        let resp = SynthesisResponse {
+            mode: "synthesis".into(),
+            query: "what is Covalence?".into(),
+            synthesis: "Covalence is a knowledge engine. [1]".into(),
+            sources_used: vec![SynthesisSource {
+                node_id: uuid::Uuid::nil(),
+                title: Some("About Covalence".into()),
+                reliability: 0.8,
+                relevance_score: 0.92,
+            }],
+            elapsed_ms: 142,
+            source_count: 1,
+        };
+
+        let json = serde_json::to_value(&resp).expect("should serialise");
+        assert_eq!(json["mode"], "synthesis");
+        assert_eq!(json["source_count"], 1);
+        assert_eq!(json["sources_used"][0]["reliability"], 0.8);
+    }
 }
