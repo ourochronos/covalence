@@ -79,6 +79,20 @@ impl CovalenceGraph {
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
     }
+
+    /// Return the UUIDs of all direct successors of `id` whose connecting
+    /// edge carries the given `edge_type` label.
+    pub fn neighbors_filtered(&self, id: &Uuid, edge_type: &str) -> Vec<Uuid> {
+        let Some(&idx) = self.index.get(id) else {
+            return vec![];
+        };
+        use petgraph::visit::EdgeRef;
+        self.graph
+            .edges(idx)
+            .filter(|e| e.weight() == edge_type)
+            .filter_map(|e| self.graph.node_weight(e.target()).copied())
+            .collect()
+    }
 }
 
 impl Default for CovalenceGraph {

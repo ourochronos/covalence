@@ -86,6 +86,8 @@ pub fn router() -> Router<AppState> {
             post(admin_upsert_concerns).get(admin_list_concerns),
         )
         .route("/admin/graph/stats", get(admin_graph_stats))
+        .route("/admin/graph/pagerank", get(admin_graph_pagerank))
+        .route("/admin/graph/centrality", get(admin_graph_centrality))
 }
 
 // ── Graph reload helper ─────────────────────────────────────────
@@ -369,6 +371,30 @@ async fn admin_graph_stats(State(state): State<AppState>) -> impl IntoResponse {
             "edge_count": g.edge_count(),
         }
     }))
+}
+
+async fn admin_graph_pagerank(State(state): State<AppState>) -> impl IntoResponse {
+    let g = state.graph.read().await;
+    let scores = crate::graph::pagerank(&g, 0.85, 20);
+    let mut entries: Vec<_> = scores.into_iter().collect();
+    entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    entries.truncate(50);
+    let result: serde_json::Value = serde_json::json!({
+        "data": entries.into_iter().map(|(id, score)| serde_json::json!({ "node_id": id, "score": score })).collect::<Vec<_>>()
+    });
+    Json(result)
+}
+
+async fn admin_graph_centrality(State(state): State<AppState>) -> impl IntoResponse {
+    let g = state.graph.read().await;
+    let scores = crate::graph::betweenness_centrality(&g);
+    let mut entries: Vec<_> = scores.into_iter().collect();
+    entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    entries.truncate(50);
+    let result: serde_json::Value = serde_json::json!({
+        "data": entries.into_iter().map(|(id, score)| serde_json::json!({ "node_id": id, "score": score })).collect::<Vec<_>>()
+    });
+    Json(result)
 }
 
 async fn admin_stats(State(state): State<AppState>) -> impl IntoResponse {
