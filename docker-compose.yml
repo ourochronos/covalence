@@ -11,11 +11,11 @@ services:
       dockerfile: Dockerfile
     container_name: covalence-pg
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     environment:
       POSTGRES_DB: covalence
       POSTGRES_USER: covalence
-      POSTGRES_PASSWORD: covalence
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-covalence}
     volumes:
       - covalence-data:/var/lib/postgresql/data
     healthcheck:
@@ -41,12 +41,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://covalence:covalence@postgres:5432/covalence
+      DATABASE_URL: ${DATABASE_URL:-postgres://covalence:covalence@postgres:5432/covalence}
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_NAME: covalence
       DB_USER: covalence
-      DB_PASSWORD: covalence
+      DB_PASSWORD: ${DB_PASSWORD:-covalence}
       BIND_ADDR: "0.0.0.0:8430"
       RUST_LOG: "covalence_engine=info,tower_http=info"
       # Optional: set to require API key auth on all endpoints (except /health).

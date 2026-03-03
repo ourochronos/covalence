@@ -29,7 +29,7 @@ use covalence_engine::worker::{QueueTask, llm::LlmClient};
 /// Default test database URL.  Points at `covalence_test`, a disposable
 /// database that is created and schema-initialised automatically by
 /// [`setup_pool`].  Override with the `DATABASE_URL` environment variable.
-const DEFAULT_TEST_DB_URL: &str = "postgres://covalence:covalence@localhost:5434/covalence_test";
+const DEFAULT_TEST_DB_URL: &str = "postgres://covalence:7acd460e27e782f1992a7aac892d76d19a0a30ee71b4b0d48d4542472e272bd6@localhost:5434/covalence_test";
 
 /// Full DDL for the `covalence_test` schema, embedded at compile time.
 /// Idempotent: every statement uses `IF NOT EXISTS`.
