@@ -251,6 +251,11 @@ impl LlmClient for MockLlmClient {
                 "content": "This article merges both source articles into a unified knowledge unit.",
                 "reasoning": "Both articles covered related aspects of the same topic."
             })
+        } else if prompt.contains("knowledge indexing assistant") {
+            json!({
+                "keywords": ["federated", "knowledge", "systems", "distributed", "graph"],
+                "tags": ["knowledge-management", "distributed-systems"]
+            })
         } else if prompt.contains("knowledge-graph edge classifier") {
             json!({
                 "relationship": "RELATES_TO",

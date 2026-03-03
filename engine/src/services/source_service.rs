@@ -309,6 +309,16 @@ impl SourceService {
         .execute(&self.pool)
         .await?;
 
+        // Queue edge inference (runs after embed due to lower priority)
+        sqlx::query(
+            "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
+             VALUES ($1, 'infer_edges', $2, 2, 'pending')",
+        )
+        .bind(Uuid::new_v4())
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }

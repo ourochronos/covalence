@@ -421,6 +421,91 @@ pub async fn handle_infer_edges(
         .get::<Option<String>, _>("content")
         .unwrap_or_default();
 
+    // ── 2b. Keyword / tag extraction (idempotent, non-fatal) ─────────────────
+    {
+        let kw_exists: bool = sqlx::query_scalar(
+            "SELECT (metadata->'keywords') IS NOT NULL \
+             FROM covalence.nodes WHERE id = $1",
+        )
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+
+        if !kw_exists {
+            let snippet = {
+                let combined = format!("{node_title}\n\n{node_content}");
+                if combined.len() > 800 {
+                    combined[..800].to_string()
+                } else {
+                    combined
+                }
+            };
+            let kw_prompt = format!(
+                "You are a knowledge indexing assistant. Extract keywords and topic tags \
+                 from the text below.\n\n\
+                 Return ONLY valid JSON (no markdown, no extra text):\n\
+                 {{\"keywords\": [\"k1\",\"k2\",...], \"tags\": [\"t1\",\"t2\"]}}\n\n\
+                 Rules:\n\
+                 - keywords: 5–8 specific terms or phrases that best represent the content\n\
+                 - tags: 2–3 broad topic categories\n\n\
+                 TEXT:\n{snippet}"
+            );
+
+            match llm.complete(&kw_prompt, 256).await {
+                Ok(resp) => match parse_json_response(&resp) {
+                    Ok(kw_val) => {
+                        let has_keywords = kw_val.get("keywords").is_some();
+                        let has_tags = kw_val.get("tags").is_some();
+                        if has_keywords || has_tags {
+                            let patch = json!({
+                                "keywords": kw_val.get("keywords").cloned().unwrap_or(json!([])),
+                                "tags": kw_val.get("tags").cloned().unwrap_or(json!([])),
+                            });
+                            if let Err(e) = sqlx::query(
+                                "UPDATE covalence.nodes \
+                                 SET metadata = metadata || $1 \
+                                 WHERE id = $2",
+                            )
+                            .bind(&patch)
+                            .bind(node_id)
+                            .execute(pool)
+                            .await
+                            {
+                                tracing::warn!(
+                                    node_id = %node_id,
+                                    error   = %e,
+                                    "infer_edges: failed to store keywords in metadata"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    node_id = %node_id,
+                                    "infer_edges: stored keywords/tags in node metadata"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            node_id = %node_id,
+                            error   = %e,
+                            "infer_edges: keyword extraction JSON parse failed — continuing"
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        node_id = %node_id,
+                        error   = %e,
+                        "infer_edges: keyword extraction LLM call failed — continuing"
+                    );
+                }
+            }
+        }
+    }
+
     // ── 3. Check that an embedding exists ────────────────────────────────────
     let emb_exists =
         sqlx::query("SELECT 1 FROM covalence.node_embeddings WHERE node_id = $1 LIMIT 1")
