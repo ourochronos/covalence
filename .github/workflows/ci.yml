@@ -62,3 +62,53 @@ jobs:
       - name: Check formatting
         working-directory: engine
         run: cargo fmt -- --check
+
+  openapi-client:
+    name: OpenAPI Client (covalence#57)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Start the engine so we can export a fresh spec
+      - name: Start engine
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          docker compose up -d --build
+          # Wait for engine to be healthy
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8430/health && break
+            sleep 3
+          done
+
+      # 2. Export the spec and verify it's valid JSON
+      - name: Export OpenAPI spec
+        run: |
+          curl -fsSL http://localhost:8430/openapi.json \
+            | python3 -m json.tool --indent 2 \
+            > openapi.json
+          echo "Spec size: $(wc -c < openapi.json | tr -d ' ') bytes"
+
+      # 3. Regenerate the client (Docker, no Java needed)
+      - name: Regenerate Python client
+        run: ./scripts/generate-client.sh
+
+      # 4. Fail if the committed client differs from freshly generated one
+      #    (allows generator-comment churn; compares only tracked .py files)
+      - name: Check client is up to date
+        run: |
+          # Ignore .openapi-generator metadata dirs and non-Python files
+          diff_out=$(git diff --name-only -- 'clients/python/**/*.py' 2>&1 || true)
+          if [[ -n "$diff_out" ]]; then
+            echo "✗ Generated client differs from committed client!" >&2
+            echo "$diff_out" >&2
+            echo "" >&2
+            echo "Regenerate locally with:" >&2
+            echo "  make client-fetch" >&2
+            echo "  git add clients/python openapi.json && git commit" >&2
+            exit 1
+          fi
+          echo "✓ Client is up to date."
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v

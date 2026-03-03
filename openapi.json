@@ -1,0 +1,1284 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Covalence Knowledge Engine",
+    "description": "Epistemic knowledge management API \u2014 sources, articles, search, and memory",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/admin/maintenance": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /admin/maintenance",
+        "operationId": "admin_maintenance",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Maintenance completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/stats": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "GET /admin/stats",
+        "operationId": "admin_stats",
+        "responses": {
+          "200": {
+            "description": "System statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/articles/compile": {
+      "post": {
+        "tags": [
+          "articles"
+        ],
+        "summary": "POST /articles/compile",
+        "operationId": "compile_article",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Compilation job accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompileJobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          }
+        }
+      }
+    },
+    "/articles/merge": {
+      "post": {
+        "tags": [
+          "articles"
+        ],
+        "summary": "POST /articles/merge",
+        "operationId": "merge_articles",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Articles merged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArticleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "404": {
+            "description": "One or both articles not found"
+          }
+        }
+      }
+    },
+    "/articles/{id}": {
+      "get": {
+        "tags": [
+          "articles"
+        ],
+        "summary": "GET /articles/{id}",
+        "operationId": "get_article",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Article UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Article found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArticleResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Article not found"
+          }
+        }
+      }
+    },
+    "/memory": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "POST /memory",
+        "operationId": "store_memory",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoreMemoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Memory stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Memory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          }
+        }
+      }
+    },
+    "/memory/search": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "POST /memory/search",
+        "operationId": "recall_memory",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Memory recall results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Memory"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          }
+        }
+      }
+    },
+    "/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "POST /search",
+        "operationId": "search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SearchResult"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          }
+        }
+      }
+    },
+    "/sources": {
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "POST /sources",
+        "operationId": "ingest_source",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Source ingested successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/sources/{id}": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "GET /sources/{id}",
+        "operationId": "get_source",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Source UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Source not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "DELETE /sources/{id}",
+        "operationId": "delete_source",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Source UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Source deleted"
+          },
+          "404": {
+            "description": "Source not found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ArticleResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "node_type",
+          "status",
+          "confidence",
+          "domain_path",
+          "metadata",
+          "version",
+          "pinned",
+          "usage_score",
+          "contention_count",
+          "created_at",
+          "modified_at"
+        ],
+        "properties": {
+          "confidence": {
+            "type": "number",
+            "format": "float"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contention_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "domain_path": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "epistemic_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "modified_at": {
+            "type": "string"
+          },
+          "node_type": {
+            "type": "string"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "stale": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` when newer unlinked sources exist in the same domain \u2014 the\narticle may benefit from recompilation.  `None` when not computed\n(e.g. in list responses)."
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage_score": {
+            "type": "number",
+            "format": "float"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CompileJobResponse": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "status"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "CompileRequest": {
+        "type": "object",
+        "required": [
+          "source_ids"
+        ],
+        "properties": {
+          "compilation_focus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional compilation focus hint injected into the LLM prompt.\nExample: \"focus on architectural decisions and trade-offs\"."
+          },
+          "source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "title_hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "EdgeStats": {
+        "type": "object",
+        "required": [
+          "sql_count",
+          "age_count",
+          "in_sync"
+        ],
+        "properties": {
+          "age_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "in_sync": {
+            "type": "boolean"
+          },
+          "sql_count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "EmbeddingStats": {
+        "type": "object",
+        "required": [
+          "total",
+          "nodes_without"
+        ],
+        "properties": {
+          "nodes_without": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "IngestRequest": {
+        "type": "object",
+        "description": "Request to ingest a new source.",
+        "required": [
+          "content",
+          "metadata"
+        ],
+        "properties": {
+          "capture_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Intentionality classifier: `\"manual\"` | `\"auto\"` | `\"system\"` | `None`.\n\n- `\"manual\"` \u2014 caller explicitly requested ingestion (e.g. `memory_store`,\n  direct `source_ingest`).  Boosts reliability for low-signal types.\n- `\"auto\"` \u2014 ambient / heuristic capture.  Lowers reliability for noisy types.\n- `\"system\"` \u2014 generated by an internal system process.  Keeps defaults.\n- `None` \u2014 backward-compatible: use type-only defaults unchanged."
+          },
+          "content": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "reliability": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MaintenanceRequest": {
+        "type": "object",
+        "properties": {
+          "evict_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "evict_if_over_capacity": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "graph_embeddings_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Embedding method: `\"node2vec\"`, `\"spectral\"`, or `\"both\"` (default)."
+          },
+          "process_queue": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "recompute_graph_embeddings": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "When `true`, enqueue a `recompute_graph_embeddings` task.\nPass `method` in the sub-field to select `\"node2vec\"`, `\"spectral\"`, or `\"both\"`."
+          },
+          "recompute_scores": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "MaintenanceResponse": {
+        "type": "object",
+        "required": [
+          "actions_taken"
+        ],
+        "properties": {
+          "actions_taken": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Memory": {
+        "type": "object",
+        "required": [
+          "id",
+          "content",
+          "tags",
+          "importance",
+          "confidence",
+          "created_at",
+          "forgotten"
+        ],
+        "properties": {
+          "confidence": {
+            "type": "number",
+            "format": "double"
+          },
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "forgotten": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "importance": {
+            "type": "number",
+            "format": "double"
+          },
+          "tags": {
+            "type": "object"
+          }
+        }
+      },
+      "MergeRequest": {
+        "type": "object",
+        "required": [
+          "article_id_a",
+          "article_id_b"
+        ],
+        "properties": {
+          "article_id_a": {
+            "type": "string"
+          },
+          "article_id_b": {
+            "type": "string"
+          }
+        }
+      },
+      "NodeStats": {
+        "type": "object",
+        "required": [
+          "total",
+          "sources",
+          "articles",
+          "sessions",
+          "active",
+          "archived",
+          "pinned"
+        ],
+        "properties": {
+          "active": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "archived": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "articles": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pinned": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sessions": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sources": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "QueueStats": {
+        "type": "object",
+        "required": [
+          "pending",
+          "processing",
+          "failed",
+          "completed_24h"
+        ],
+        "properties": {
+          "completed_24h": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "processing": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RecallRequest": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "context_prefix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only return memories whose `context` metadata field starts with this prefix.\n\nMatched via `LIKE '<prefix>%'`, so `\"session:main\"` matches both\n`\"session:main\"` and `\"session:main:2026-03-02\"`."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "min_confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "query": {
+            "type": "string"
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only return memories created at or after this timestamp."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SearchIntent": {
+        "type": "string",
+        "description": "Search intent for intent-aware retrieval routing.",
+        "enum": [
+          "factual",
+          "temporal",
+          "causal",
+          "entity"
+        ]
+      },
+      "SearchMode": {
+        "type": "string",
+        "description": "Controls how the search engine retrieves and returns results.",
+        "enum": [
+          "standard",
+          "hierarchical"
+        ]
+      },
+      "SearchRequest": {
+        "type": "object",
+        "description": "Request body for POST /search.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Include only nodes whose `created_at` is strictly after this timestamp.\nWhen `None`, no lower-bound date filter is applied."
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Include only nodes whose `created_at` is strictly before this timestamp.\nWhen `None`, no upper-bound date filter is applied."
+          },
+          "domain_path": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional domain-path filter. When set, only nodes whose `domain_path`\narray shares at least one element with this list are returned.\nNodes with an empty or NULL `domain_path` are excluded when filtering."
+          },
+          "embedding": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "intent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SearchIntent"
+              }
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_hops": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum graph traversal hops (1-3, default 1). Higher values discover\nstructurally distant but related nodes via edge chains.\n\nWhen absent, the effective default is determined by `strategy`:\n- [`SearchStrategy::Graph`] \u2192 2 hops\n- All other strategies \u2192 1 hop\n\nExplicit `max_hops` always wins over the strategy-derived default.",
+            "minimum": 0
+          },
+          "min_score": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Minimum score threshold (covalence#33). Results with a final score\nstrictly below this value are filtered out before returning. When\n`None` (the default), all results are returned regardless of score.\nUseful for precision queries: set to 0.6 to avoid weak matches."
+          },
+          "mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SearchMode",
+                "description": "Search mode \u2014 defaults to [`SearchMode::Standard`]."
+              }
+            ]
+          },
+          "node_types": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "query": {
+            "type": "string"
+          },
+          "recency_bias": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Recency bias factor (0.0\u20131.0). Higher values favor newer content.\nAt 0.0 (default), freshness gets 5% weight (current behavior).\nAt 1.0, freshness gets 40% weight (strongly favor recent)."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "strategy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SearchStrategy",
+                "description": "Search strategy \u2014 adjusts dimension weights for different query types.\nOverrides `weights` when set to a non-`Balanced` value.\nWhen both `weights` and `strategy` are provided, `weights` wins."
+              }
+            ]
+          },
+          "weights": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WeightsInput"
+              }
+            ]
+          }
+        }
+      },
+      "SearchResult": {
+        "type": "object",
+        "description": "A single search result with scores breakdown.",
+        "required": [
+          "node_id",
+          "score",
+          "confidence",
+          "node_type",
+          "content_preview"
+        ],
+        "properties": {
+          "confidence": {
+            "type": "number",
+            "format": "double"
+          },
+          "content_preview": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When this node was created. Populated from the `created_at` column on\nthe `nodes` table; used by the `after`/`before` temporal filters."
+          },
+          "domain_path": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "expanded_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For results returned by hierarchical expansion: the UUID of the parent\narticle that caused this source to be included.  `None` for directly-\nmatched results (articles or standard-mode results)."
+          },
+          "graph_hops": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Number of graph hops from the nearest anchor node.\n`None` if this result was not discovered via graph traversal.",
+            "minimum": 0
+          },
+          "graph_score": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "lexical_score": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "node_type": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "format": "double"
+          },
+          "structural_score": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Structural similarity score from the graph-embedding dimension.\n`None` when the structural adaptor did not run or produced no result\nfor this node (e.g. feature flag off, or no embedding in DB)."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topological_score": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Topological confidence score derived from graph structure (PageRank +\ninbound-edge diversity).  `None` when the feature flag\n`COVALENCE_TOPOLOGICAL_CONFIDENCE` is not enabled."
+          },
+          "trust_score": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Trustworthiness score derived from source reliability.\n\nFor source nodes this is the node's own `reliability` field.\nFor article nodes this is the average `reliability` of all linked\nsource nodes (via ORIGINATES / COMPILED_FROM / CONFIRMS edges).\nDefaults to 0.5 when no linked sources carry a reliability value."
+          },
+          "vector_score": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "SearchStrategy": {
+        "type": "string",
+        "description": "Adaptive fusion strategy \u2014 controls the relative weighting of the four\nsearch dimensions for different query types.\n\nWhen [`SearchRequest::weights`] is explicitly provided it always takes\nprecedence; `strategy` only applies when no explicit weights are given.",
+        "enum": [
+          "balanced",
+          "precise",
+          "exploratory",
+          "graph",
+          "structural"
+        ]
+      },
+      "SourceResponse": {
+        "type": "object",
+        "description": "Response envelope for a source.",
+        "required": [
+          "id",
+          "node_type",
+          "content",
+          "status",
+          "confidence",
+          "reliability",
+          "fingerprint",
+          "metadata",
+          "version",
+          "created_at",
+          "modified_at"
+        ],
+        "properties": {
+          "capture_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How this source was captured \u2014 read from `metadata[\"capture_method\"]`.\n`None` when absent (e.g. sources ingested before this field existed)."
+          },
+          "confidence": {
+            "type": "number",
+            "format": "float"
+          },
+          "content": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "modified_at": {
+            "type": "string"
+          },
+          "node_type": {
+            "type": "string"
+          },
+          "reliability": {
+            "type": "number",
+            "format": "float"
+          },
+          "source_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "StatsResponse": {
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges",
+          "queue",
+          "embeddings"
+        ],
+        "properties": {
+          "edges": {
+            "$ref": "#/components/schemas/EdgeStats"
+          },
+          "embeddings": {
+            "$ref": "#/components/schemas/EmbeddingStats"
+          },
+          "nodes": {
+            "$ref": "#/components/schemas/NodeStats"
+          },
+          "queue": {
+            "$ref": "#/components/schemas/QueueStats"
+          }
+        }
+      },
+      "StoreMemoryRequest": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "importance": {
+            "type": "number",
+            "format": "double"
+          },
+          "supersedes_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "WeightsInput": {
+        "type": "object",
+        "properties": {
+          "graph": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "lexical": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "structural": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Weight for the structural similarity dimension (covalence#52).\nWhen omitted, defaults to `0.0` when explicit weights are provided,\nor the strategy preset when using a strategy."
+          },
+          "vector": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "sources",
+      "description": "Source management \u2014 ingest, retrieve, and delete raw sources"
+    },
+    {
+      "name": "articles",
+      "description": "Article management \u2014 compile, merge, split, and retrieve compiled knowledge"
+    },
+    {
+      "name": "search",
+      "description": "Three-dimensional knowledge search (vector + lexical + graph)"
+    },
+    {
+      "name": "memory",
+      "description": "Memory operations \u2014 store and recall agent observations"
+    },
+    {
+      "name": "admin",
+      "description": "Admin operations \u2014 system stats and maintenance"
+    }
+  ]
+}

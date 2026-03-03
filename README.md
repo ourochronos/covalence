@@ -179,6 +179,69 @@ All endpoints return `{ "data": … }` JSON envelopes.
 
 ---
 
+## Python Client (auto-generated)
+
+A typed Python client is auto-generated from the OpenAPI spec and committed to
+`clients/python/`. It covers all five API tag groups: **sources**, **articles**,
+**search**, **memory**, and **admin**.
+
+### Install
+
+```bash
+pip install -e clients/python
+```
+
+### Quick usage
+
+```python
+import covalence
+from covalence.api import SourcesApi, SearchApi, MemoryApi
+from covalence.models import IngestRequest, SearchRequest, StoreMemoryRequest
+
+cfg = covalence.Configuration(host="http://localhost:8430")
+
+with covalence.ApiClient(cfg) as client:
+    # Ingest a source
+    src = SourcesApi(client).ingest_source(
+        IngestRequest(
+            content="Covalence stores epistemic knowledge.",
+            metadata={},
+            source_type="observation",
+        )
+    )
+    print(src.id)
+
+    # Semantic search
+    results = SearchApi(client).search(
+        SearchRequest(query="epistemic knowledge", limit=5)
+    )
+    for r in results:
+        print(r.score, r.content_preview)
+```
+
+### Regenerate after spec changes
+
+The spec lives at `openapi.json` (repo root) and is exported from the live engine.
+Regeneration requires Docker (no Java needed on the host):
+
+```bash
+# Pull a fresh spec from the running engine and regenerate
+make client-fetch
+
+# …or regenerate from the committed spec without starting the engine
+make client
+
+# Validate that the committed spec parses as JSON (no engine needed)
+make spec
+```
+
+**CI gate**: `make client-check` (or the `openapi-client` GitHub Actions job) re-generates
+the client and fails the build if any `.py` file differs from what's committed.
+This ensures the client always reflects the current API. See [`scripts/generate-client.sh`](scripts/generate-client.sh)
+and [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for details.
+
+---
+
 ## OpenClaw Plugin
 
 Covalence ships a first-party [OpenClaw](https://openclaw.ai) plugin that exposes all engine tools to agents and handles automatic recall/capture lifecycle.
