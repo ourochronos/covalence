@@ -974,7 +974,7 @@ impl SearchService {
                     // Apply the same freshness tiebreaker as standard mode,
                     // honouring the caller's recency_bias setting.
                     let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
-                    let freshness = (-0.1 * days).exp();
+                    let freshness = if days < 0.001 { 1.0 } else { (days as f64).powf(-0.5).min(1.0) };
                     let bias = recency_bias;
                     let freshness_weight = 0.10 + bias * 0.30;
                     let dim_weight = 1.0 - freshness_weight - 0.10;
@@ -1859,8 +1859,10 @@ fn build_results(
         // ── Freshness as a post-RRF multiplicative bonus ───────────────────────
         // Preserves the existing recency semantics (covalence#63) while fitting
         // cleanly into the RRF score scale.
+        // Power-law decay (ACT-R BLL alignment, covalence#76): days^-0.5
+        // Guard against division-by-zero for brand-new nodes (days < 0.001).
         let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
-        let freshness = (-0.1 * days).exp();
+        let freshness = if days < 0.001 { 1.0 } else { (days as f64).powf(-0.5).min(1.0) };
         let bias = recency_bias.clamp(0.0, 1.0);
         // freshness_weight scales from 0.10 (bias=0) to 0.40 (bias=1)
         let freshness_weight = 0.10 + bias * 0.30;
@@ -2255,21 +2257,24 @@ mod tests {
 
     #[test]
     fn test_freshness_decay_rate() {
-        // Half-life should be approximately 7 days (ln(2)/0.1 ≈ 6.93 days)
-        let seven_days_ago = (-0.1f64 * 7.0).exp();
-        let today = (-0.1f64 * 0.0).exp();
-        // After 7 days, freshness should be ~50% of max
+        // Power-law decay: freshness = days^-0.5 (ACT-R BLL alignment)
+        // At 7 days: 7.0^-0.5 ≈ 0.378; at 1 day: 1.0^-0.5 = 1.0
+        let seven_days: f64 = 7.0f64.powf(-0.5);
+        let one_day: f64 = 1.0f64.powf(-0.5);
+        // Power-law is steeper initially and slower to decay at distance
         assert!(
-            seven_days_ago < 0.55,
-            "7-day-old content should have < 55% freshness"
+            seven_days < 0.45,
+            "7-day-old content should have < 45% freshness (got {})",
+            seven_days
         );
         assert!(
-            seven_days_ago > 0.45,
-            "7-day-old content should have > 45% freshness"
+            seven_days > 0.30,
+            "7-day-old content should have > 30% freshness (got {})",
+            seven_days
         );
         assert!(
-            (today - 1.0).abs() < 0.001,
-            "Today's content should have 100% freshness"
+            (one_day - 1.0).abs() < 0.001,
+            "1-day-old content should have 100% freshness (clamped)"
         );
     }
 
