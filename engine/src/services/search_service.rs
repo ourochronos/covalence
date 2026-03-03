@@ -1624,7 +1624,54 @@ async fn fetch_node_map(
     Ok(rows.into_iter().map(|n| (n.0, n)).collect())
 }
 
+// ─── RRF helpers ──────────────────────────────────────────────────────────────
+
+/// Reciprocal Rank Fusion constant (k=20, per Elastic Labs recommendation).
+const RRF_K: f64 = 20.0;
+
+/// Build a rank map for one search dimension.
+///
+/// Nodes that have no score in this dimension are absent from the returned map
+/// and contribute 0 to the final RRF score (i.e. they are treated as
+/// unranked in that dimension).
+///
+/// Ties receive the same rank (the ordinal position of the first member of
+/// the tie group), so two nodes with identical scores each receive
+/// `1/(k + rank)` — neither is penalised for the coincidence.
+fn dim_rank_map<F>(node_scores: &HashMap<Uuid, DimScores>, get_score: F) -> HashMap<Uuid, usize>
+where
+    F: Fn(&DimScores) -> Option<f64>,
+{
+    let mut scored: Vec<(Uuid, f64)> = node_scores
+        .iter()
+        .filter_map(|(id, scores)| get_score(scores).map(|s| (*id, s)))
+        .collect();
+    // Sort descending: rank 1 = highest score.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut rank_map = HashMap::with_capacity(scored.len());
+    let mut current_rank = 1usize;
+    let mut prev_score: Option<f64> = None;
+
+    for (i, (id, score)) in scored.iter().enumerate() {
+        // Only advance the rank counter when the score changes (tie → same rank).
+        if prev_score.map_or(true, |ps| (ps - score).abs() > f64::EPSILON) {
+            current_rank = i + 1;
+        }
+        rank_map.insert(*id, current_rank);
+        prev_score = Some(*score);
+    }
+
+    rank_map
+}
+
 /// Assemble [`SearchResult`] values from dimension score maps and node metadata.
+///
+/// ## Fusion: Reciprocal Rank Fusion (covalence#73)
+///
+/// Replaces the previous weighted-sum blend.  Each dimension contributes
+/// `w_dim / (RRF_K + rank_dim)` where `rank_dim` is the node's position in
+/// that dimension's sorted result list (absent nodes contribute 0).
 ///
 /// `query`: the original search query string — used to compute title match
 /// bonuses (covalence#33). Words longer than 3 chars that appear in the node
@@ -1649,6 +1696,12 @@ fn build_results(
     query: &str,
     topo_scores: Option<&HashMap<Uuid, TopologicalConfidence>>,
 ) -> Vec<SearchResult> {
+    // ── Pre-compute per-dimension rank maps for RRF (covalence#73) ────────────
+    let vec_rank_map = dim_rank_map(node_scores, |s| s.0);
+    let lex_rank_map = dim_rank_map(node_scores, |s| s.1);
+    let graph_rank_map = dim_rank_map(node_scores, |s| s.2);
+    let struct_rank_map = dim_rank_map(node_scores, |s| s.3);
+
     let mut results = Vec::new();
     for (node_id, (vs, ls, gs, ss)) in node_scores {
         let Some(node) = node_map.get(node_id) else {
@@ -1657,28 +1710,37 @@ fn build_results(
         let (_, node_type, title, preview, confidence, modified_at, trust, domain_path, created_at) =
             node;
 
-        let mut weighted_sum = 0.0f64;
-        if let Some(v) = vs {
-            weighted_sum += v * w_vec as f64;
-        }
-        if let Some(l) = ls {
-            weighted_sum += l * w_lex as f64;
-        }
-        if let Some(g) = gs {
-            weighted_sum += g * w_graph as f64;
-        }
-        if let Some(s) = ss {
-            weighted_sum += s * w_struct as f64;
-        }
+        // ── RRF score: weighted sum of 1/(k + rank) across dimensions ─────────
+        // Nodes absent from a dimension's rank map contribute 0 for that dimension.
+        let rrf_score = {
+            let v_term = vec_rank_map
+                .get(node_id)
+                .map(|&r| w_vec as f64 / (RRF_K + r as f64))
+                .unwrap_or(0.0);
+            let l_term = lex_rank_map
+                .get(node_id)
+                .map(|&r| w_lex as f64 / (RRF_K + r as f64))
+                .unwrap_or(0.0);
+            let g_term = graph_rank_map
+                .get(node_id)
+                .map(|&r| w_graph as f64 / (RRF_K + r as f64))
+                .unwrap_or(0.0);
+            let s_term = struct_rank_map
+                .get(node_id)
+                .map(|&r| w_struct as f64 / (RRF_K + r as f64))
+                .unwrap_or(0.0);
+            v_term + l_term + g_term + s_term
+        };
 
+        // ── Freshness as a post-RRF multiplicative bonus ───────────────────────
+        // Preserves the existing recency semantics (covalence#63) while fitting
+        // cleanly into the RRF score scale.
         let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
         let freshness = (-0.1 * days).exp();
-
         let bias = recency_bias.clamp(0.0, 1.0);
         // freshness_weight scales from 0.10 (bias=0) to 0.40 (bias=1)
         let freshness_weight = 0.10 + bias * 0.30;
-        // dim_weight absorbs the difference (trust and confidence stay at 0.05 each)
-        let dim_weight = 1.0 - freshness_weight - 0.10; // 0.10 = trust + confidence
+        let freshness_multiplier = 1.0 + freshness_weight * freshness;
 
         // Topological confidence blending (feature-flagged).
         let (effective_confidence, topo_score_out) = if let Some(topo_map) = topo_scores {
@@ -1690,10 +1752,9 @@ fn build_results(
             (*confidence, None)
         };
 
-        let base_score = weighted_sum * dim_weight
-            + trust * 0.05
-            + effective_confidence * 0.05
-            + freshness * freshness_weight;
+        // RRF × freshness multiplier, with small additive trust/confidence bonus.
+        let base_score =
+            rrf_score * freshness_multiplier + trust * 0.05 + effective_confidence * 0.05;
 
         // Title match bonus (covalence#33): query words >3 chars that appear
         // in the title boost relevance by up to 0.20 (proportional to the

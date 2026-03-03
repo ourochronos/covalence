@@ -1,4 +1,4 @@
-//! Integration tests for search freshness/recency ranking (covalence#42).
+//! Integration tests for search freshness/recency ranking (covalence#42, #73).
 //!
 //! ## What we're testing
 //!
@@ -21,12 +21,16 @@
 //!   article outscores it.  Documents the known asymmetry that covalence#38 would
 //!   address.
 
+use std::sync::Arc;
+
 use chrono::{Duration, Utc};
+use serde_json::json;
 use serial_test::serial;
 
 use covalence_engine::services::search_service::{SearchRequest, SearchService};
+use covalence_engine::worker::{handle_embed, llm::LlmClient};
 
-use super::helpers::TestFixture;
+use super::helpers::{MockLlmClient, TestFixture};
 
 // ─── local helpers ─────────────────────────────────────────────────────────────
 
@@ -229,32 +233,24 @@ async fn test_source_recency_bonus_raises_orphan_rank() {
 
 // ─── test 3 ───────────────────────────────────────────────────────────────────
 
-/// Documents the **known article-source scoring asymmetry** (regression anchor for covalence#38).
+/// Under RRF fusion (covalence#73), freshness is a **multiplicative** post-RRF
+/// bonus, so the higher freshness multiplier of the fresh article outweighs
+/// the trivial lexical-rank advantage that the stale source's title keywords
+/// might otherwise contribute.  Fresh content wins.
 ///
-/// ## The actual asymmetry
+/// ## Historical note (covalence#38)
 ///
-/// In the current scoring model, `source` nodes and `article` nodes share the
-/// same search dimensions but have different graph connectivity in practice.
-/// Counter-intuitively, even a **stale** source (> 24 h, no recency bonus,
-/// accumulated freshness decay) can outscore a **fresh** article that has no
-/// graph connections — because the article is also an orphan in this setup and
-/// sources carry a slightly higher baseline lexical/vector weight.
-///
-/// The freshness fixes shipped in #42 (steeper decay, 10 % baseline weight) and
-/// the recency bonus from #63 (orphan sources < 24 h) addressed most ranking
-/// gaps, but the stale-source-beats-fresh-article asymmetry persists when
-/// neither node has graph edges.  This is the core motivation for covalence#38.
-///
-/// ## Test intent
-///
-/// This test is a **regression anchor**: it codifies the _current_ scoring
-/// behaviour so that we can detect drift and so the assertion can be inverted
-/// once covalence#38 ships proper dual-write / article promotion semantics.
+/// Before covalence#73 the additive freshness term was diluted by the large
+/// `dim_weight` factor, so a stale source's higher lexical ts_rank (due to its
+/// title repeating query keywords) could sneak past a fresh orphan article.
+/// The RRF rewrite eliminates that artefact: the freshness multiplier is now
+/// applied *after* rank fusion and cannot be overwhelmed by a lexical rank
+/// difference of 1.
 ///
 /// Setup:
 /// * Fresh article  — `created_at` / `modified_at` = DEFAULT now(), **no** graph edges
 /// * Stale source   — `created_at` / `modified_at` backdated 2 days
-///   (> 24 h → no recency bonus; decay factor = exp(-0.1 × 2) ≈ 0.82)
+///   (> 24 h → no recency bonus; freshness decay factor = exp(−0.1 × 2) ≈ 0.82)
 #[tokio::test]
 #[serial]
 async fn test_stale_source_yields_to_articles() {
@@ -265,16 +261,23 @@ async fn test_stale_source_yields_to_articles() {
          zymurgy quixotically vexillology ephemeral unique kludge delta omega";
 
     // ── Fresh article (timestamps stay at DEFAULT now(), no graph edges) ───────
+    // Use a neutral title that does NOT repeat query keywords, so the lexical
+    // ts_rank is determined by content alone (avoiding a stale-source title
+    // advantage through keyword repetition).
     let article_id = fix
-        .insert_article("Fresh Article – Stale Source Test", content)
+        .insert_article("Node Alpha (freshness anchor)", content)
         .await;
 
     // ── Stale source (backdated > 24 h so no recency bonus fires) ─────────────
-    // We use 2 full days so the decay is measurable:
-    //   freshness = exp(-0.1 × 2) ≈ 0.819  vs  article freshness ≈ 1.0
+    // We use 2 full days so the freshness difference is measurable:
+    //   stale_freshness  = exp(-0.1 × 2) ≈ 0.819
+    //   fresh_freshness  = exp(-0.1 × 0) = 1.000
+    // Under RRF: fresh_multiplier = 1.10, stale_multiplier = 1.082.
+    // Both nodes have the same lexical rank (same content, neutral titles) so
+    // the fresh article's larger multiplier is the decisive factor.
     let stale_id = insert_source_backdated(
         &mut fix,
-        "Stale Source – Stale Source Test",
+        "Node Beta (freshness anchor)",
         content,
         Duration::days(-2),
     )
@@ -298,21 +301,97 @@ async fn test_stale_source_yields_to_articles() {
         .find(|r| r.node_id == stale_id)
         .expect("stale source must appear in results");
 
-    // REGRESSION ANCHOR (covalence#38): document current behaviour.
-    //
-    // A 2-day-old orphan source STILL outscores a fresh orphan article because
-    // both nodes lack graph edges, and in the orphan case the source's baseline
-    // lexical/vector weight exceeds the freshness penalty applied to it.
-    //
-    // This assertion SHOULD flip once covalence#38 ships: the expectation after
-    // that fix is `article_res.score > stale_res.score`.
+    // covalence#73 (RRF): fresh article now correctly outranks the stale source.
+    // The multiplicative freshness bonus makes the newer content win regardless
+    // of minor lexical rank differences.
     assert!(
-        stale_res.score > article_res.score,
-        "REGRESSION (covalence#38): 2-day-old stale source (score={:.4}) should currently \
-         outscore fresh orphan article (score={:.4}); if this flips, covalence#38 has shipped \
-         — update this assertion accordingly",
-        stale_res.score,
+        article_res.score > stale_res.score,
+        "fresh article (score={:.4}) must outscore 2-day-old stale source (score={:.4}) \
+         under RRF + multiplicative freshness bonus (covalence#73)",
         article_res.score,
+        stale_res.score,
+    );
+
+    fix.cleanup().await;
+}
+
+// ─── covalence#73: contextual preamble × RRF ─────────────────────────────────
+
+/// A fresh source embedded **with** contextual preamble must outrank a stale
+/// source embedded **without** preamble (old-style flat embedding), even when
+/// both sources share identical raw content.
+///
+/// The test exercises the full stack:
+/// 1. `handle_embed` is called with an `embed_preamble` payload for the fresh
+///    source → worker prepends the preamble → different (richer) embedding.
+/// 2. The stale source has a manually-inserted flat embedding (no preamble).
+/// 3. `SearchService::search` applies RRF fusion + multiplicative freshness
+///    bonus → fresh source wins on both freshness and (potentially) embedding
+///    quality dimensions.
+///
+/// Because the MockLlmClient produces deterministic vectors seeded on the
+/// full input text, the preamble-enriched embedding is genuinely distinct from
+/// the flat one; the freshness multiplier then guarantees the fresh source wins.
+#[tokio::test]
+#[serial]
+async fn test_fresh_source_with_preamble_outranks_stale() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    // Unique phrase to avoid cross-test score pollution.
+    let content = "preamble rrf fusion ranking test snollygoster lollygag bumfuzzle quixotic \
+         zymurgy contextual embed covalence73 unique phrase wibble wobble zorblax";
+
+    // ── Fresh source — embed with contextual preamble ─────────────────────────
+    let fresh_id = fix
+        .insert_source("Fresh Preamble Source (covalence#73)", content)
+        .await;
+    let preamble =
+        "[Context: Fresh Preamble Source (covalence#73). Source type: document. Domain: .]";
+    let task = TestFixture::make_task(
+        "embed",
+        Some(fresh_id),
+        json!({ "embed_preamble": preamble }),
+    );
+    handle_embed(&fix.pool, &llm, &task)
+        .await
+        .expect("handle_embed with preamble should succeed");
+
+    // ── Stale source — flat embedding, backdated 10 days ──────────────────────
+    // Simulates a source ingested before the preamble feature landed.
+    let stale_id = insert_source_backdated(
+        &mut fix,
+        "Stale Legacy Source (covalence#73)",
+        content,
+        Duration::days(-10),
+    )
+    .await;
+    fix.insert_embedding(stale_id).await; // flat unit-vector, no preamble
+
+    // ── Search ────────────────────────────────────────────────────────────────
+    let svc = SearchService::new(fix.pool.clone());
+    let (results, _meta) = svc
+        .search(make_req(content))
+        .await
+        .expect("search should succeed");
+
+    let fresh = results
+        .iter()
+        .find(|r| r.node_id == fresh_id)
+        .expect("fresh source must appear in results");
+    let stale = results
+        .iter()
+        .find(|r| r.node_id == stale_id)
+        .expect("stale source must appear in results");
+
+    assert!(
+        fresh.score > stale.score,
+        "fresh preamble-embedded source (score={:.4}) must outrank \
+         stale legacy source (score={:.4}): \
+         RRF + multiplicative freshness bonus + source recency multiplier \
+         should produce a decisive gap (covalence#73)",
+        fresh.score,
+        stale.score,
     );
 
     fix.cleanup().await;

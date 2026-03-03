@@ -416,18 +416,42 @@ pub async fn handle_embed(
 ) -> anyhow::Result<Value> {
     let node_id = task.node_id.context("embed task requires node_id")?;
 
-    // Fetch node content
-    let row = sqlx::query("SELECT content, title FROM covalence.nodes WHERE id = $1")
-        .bind(node_id)
-        .fetch_optional(pool)
-        .await?
-        .context("node not found for embed")?;
+    // Fetch node content and metadata needed for the contextual preamble.
+    let row = sqlx::query(
+        "SELECT content, title, source_type, node_type, domain_path \
+         FROM covalence.nodes WHERE id = $1",
+    )
+    .bind(node_id)
+    .fetch_optional(pool)
+    .await?
+    .context("node not found for embed")?;
 
     use sqlx::Row as _;
     let title: Option<String> = row.get("title");
     let content: Option<String> = row.get("content");
+    let source_type: Option<String> = row.get("source_type");
+    let node_type: String = row.get("node_type");
+    let domain_path: Option<Vec<String>> = row.get("domain_path");
     let title = title.unwrap_or_default();
     let content = content.unwrap_or_default();
+
+    // Contextual preamble (covalence#73): use payload value when present
+    // (written by the service layer at ingest/create time); fall back to
+    // deriving from DB metadata for tasks enqueued without a preamble
+    // (e.g. compile, legacy re-embeds).
+    let preamble: String = task
+        .payload
+        .get("embed_preamble")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let type_str = source_type.as_deref().unwrap_or(node_type.as_str());
+            let domain = domain_path.as_deref().unwrap_or(&[]).join("/");
+            format!(
+                "[Context: {}. Source type: {}. Domain: {}.]",
+                title, type_str, domain,
+            )
+        });
 
     // For large sources, delegate to tree_index pipeline (no truncation)
     if content.len() > tree_index::TRIVIAL_THRESHOLD_CHARS {
@@ -458,11 +482,18 @@ pub async fn handle_embed(
         return tree_index::embed_sections(pool, llm, node_id).await;
     }
 
-    // Small sources: direct embedding (no tree overhead)
-    let embed_input = if title.is_empty() {
-        content.clone()
+    // Small sources: direct embedding (no tree overhead).
+    // Prepend the contextual preamble (covalence#73) before the content so
+    // the embedding model has domain context.  The preamble already names the
+    // title, so we only re-include the raw content to keep the text concise.
+    let embed_input = if preamble.is_empty() {
+        if title.is_empty() {
+            content.clone()
+        } else {
+            format!("{title}\n\n{content}")
+        }
     } else {
-        format!("{title}\n\n{content}")
+        format!("{preamble}\n\n{content}")
     };
 
     let embedding = llm.embed(&embed_input).await?;

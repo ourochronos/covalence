@@ -399,3 +399,169 @@ async fn tree_embed_with_array_metadata_succeeds() {
 
     fix.cleanup().await;
 }
+
+// ─── covalence#73: contextual preamble ───────────────────────────────────────
+
+/// When an `embed` task payload contains `embed_preamble`, the worker must
+/// prepend it to the content before calling the embedding API.  This is
+/// verified by checking that the stored embedding is different from the one
+/// produced for identical content WITHOUT a preamble.
+///
+/// Because `MockLlmClient::embed` produces deterministic vectors seeded on the
+/// full input string, prepending a preamble changes the embedding — confirming
+/// that the worker is actually using the preamble and not ignoring it.
+#[tokio::test]
+#[serial]
+async fn test_embed_preamble_changes_embedding() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    let content = "shared content for preamble embedding divergence test covalence73";
+
+    // ── Node A: embed WITHOUT preamble ────────────────────────────────────────
+    let node_a = fix.insert_source("No-Preamble Source", content).await;
+    let task_a = TestFixture::make_task("embed", Some(node_a), json!({}));
+    handle_embed(&fix.pool, &llm, &task_a)
+        .await
+        .expect("handle_embed without preamble should succeed");
+
+    // ── Node B: embed WITH contextual preamble ────────────────────────────────
+    let node_b = fix.insert_source("Preamble Source", content).await;
+    let preamble = "[Context: Preamble Source. Source type: document. Domain: .]";
+    let task_b =
+        TestFixture::make_task("embed", Some(node_b), json!({ "embed_preamble": preamble }));
+    handle_embed(&fix.pool, &llm, &task_b)
+        .await
+        .expect("handle_embed with preamble should succeed");
+
+    // Both embeddings must be stored.
+    assert!(
+        fix.embedding_exists(node_a).await,
+        "node_a must have an embedding"
+    );
+    assert!(
+        fix.embedding_exists(node_b).await,
+        "node_b must have an embedding"
+    );
+
+    // Verify the embeddings differ (preamble was actually used).
+    // We do this by computing what the mock would produce for each input and
+    // comparing to the DB-stored vector (fetched as text so we can compare).
+    let emb_no_preamble = MockLlmClient::deterministic_embedding(content);
+    let emb_with_preamble =
+        MockLlmClient::deterministic_embedding(&format!("{preamble}\n\n{content}"));
+
+    assert_ne!(
+        emb_no_preamble, emb_with_preamble,
+        "precondition: mock embeddings must differ when input differs"
+    );
+
+    // Confirm the stored embedding for node_b matches the preamble-enriched
+    // input, not the bare content.
+    //
+    // We check the first element only: if the first dimension of node_b's
+    // stored embedding matches emb_with_preamble[0] (and differs from
+    // emb_no_preamble[0]), the preamble was applied.
+    // Fetch the embedding from the DB as a pgvector text literal and pull
+    // out the first component.
+    let dims = 1536usize;
+    let vec_text: String = sqlx::query_scalar(&format!(
+        "SELECT embedding::halfvec({dims})::text \
+         FROM covalence.node_embeddings WHERE node_id = $1"
+    ))
+    .bind(node_b)
+    .fetch_one(&fix.pool)
+    .await
+    .expect("node_b embedding not found");
+
+    // pgvector returns the vector as "[v0,v1,...]" — extract the first component.
+    let first_val: f32 = vec_text
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .expect("could not parse first embedding component");
+
+    assert!(
+        (first_val - emb_with_preamble[0]).abs() < 1e-3,
+        "node_b's stored embedding first component ({first_val:.6}) should match \
+         the preamble-enriched mock embedding ({:.6}), not the bare embedding ({:.6})",
+        emb_with_preamble[0],
+        emb_no_preamble[0],
+    );
+
+    fix.cleanup().await;
+}
+
+/// When an `embed` task has no `embed_preamble` in the payload, the worker
+/// falls back to deriving the preamble from the node's DB metadata (title,
+/// source_type, domain_path).  The resulting embedding should match the
+/// preamble computed from the DB fields.
+#[tokio::test]
+#[serial]
+async fn test_embed_preamble_falls_back_to_db_metadata() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    let content = "fallback preamble from db metadata test covalence73 unique phrase wibble";
+    let title = "Fallback Preamble Test";
+    let source_type = "document";
+
+    // Insert with an explicit source_type so the fallback preamble is deterministic.
+    let node_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, metadata, source_type) \
+         VALUES ($1, 'source', 'active', $2, $3, '{}'::jsonb, $4)",
+    )
+    .bind(node_id)
+    .bind(title)
+    .bind(content)
+    .bind(source_type)
+    .execute(&fix.pool)
+    .await
+    .expect("insert failed");
+    fix.track(node_id);
+    fix.track_task_type("embed");
+
+    // Task has NO embed_preamble → fallback path.
+    let task = TestFixture::make_task("embed", Some(node_id), json!({}));
+    handle_embed(&fix.pool, &llm, &task)
+        .await
+        .expect("handle_embed fallback should succeed");
+
+    assert!(
+        fix.embedding_exists(node_id).await,
+        "embedding must exist after fallback-preamble embed"
+    );
+
+    // Compute the expected embedding: preamble derived from DB fields + content.
+    let expected_preamble = format!("[Context: {title}. Source type: {source_type}. Domain: .]");
+    let expected_input = format!("{expected_preamble}\n\n{content}");
+    let expected_first = MockLlmClient::deterministic_embedding(&expected_input)[0];
+
+    let dims = 1536usize;
+    let vec_text: String = sqlx::query_scalar(&format!(
+        "SELECT embedding::halfvec({dims})::text \
+         FROM covalence.node_embeddings WHERE node_id = $1"
+    ))
+    .bind(node_id)
+    .fetch_one(&fix.pool)
+    .await
+    .expect("embedding not found");
+
+    let stored_first: f32 = vec_text
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .expect("could not parse first component");
+
+    assert!(
+        (stored_first - expected_first).abs() < 1e-3,
+        "stored embedding first component ({stored_first:.6}) should match \
+         the DB-derived preamble embedding ({expected_first:.6})"
+    );
+
+    fix.cleanup().await;
+}

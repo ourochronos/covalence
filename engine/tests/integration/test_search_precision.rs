@@ -174,10 +174,13 @@ async fn test_title_match_boost_elevates_exact_title_match() {
         res_b.score,
     );
 
-    // A's score must reach the achievable floor: lexical component + title bonus.
+    // A's score must reach a meaningful floor.
+    // Under RRF the base score is smaller than the old weighted-sum, but the
+    // title bonus (up to 0.20) is additive and must push A well above 0.20.
     assert!(
-        res_a.score >= 0.40,
-        "title-matched node A score ({:.4}) should be >= 0.40",
+        res_a.score >= 0.25,
+        "title-matched node A score ({:.4}) should be >= 0.25 \
+         (RRF base + trust/conf + title bonus)",
         res_a.score
     );
 

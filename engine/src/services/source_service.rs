@@ -171,7 +171,9 @@ impl SourceService {
         }
 
         // 6. Enqueue slow-path tasks
-        self.enqueue_slow_path(id, &source_type).await?;
+        // Sources have no domain_path in IngestRequest; pass empty slice.
+        self.enqueue_slow_path(id, &source_type, req.title.as_deref(), &[])
+            .await?;
 
         self.get(id).await
     }
@@ -288,14 +290,37 @@ impl SourceService {
     }
 
     /// Enqueue slow-path tasks for a new source.
-    async fn enqueue_slow_path(&self, source_id: Uuid, _source_type: &str) -> AppResult<()> {
-        // Queue embedding generation
+    ///
+    /// `title` and `domain_path` are used to construct a contextual preamble
+    /// (covalence#73) that is stored in the embed task's payload and prepended
+    /// to the content before calling the embedding API, improving retrieval
+    /// quality for domain-specific queries.
+    async fn enqueue_slow_path(
+        &self,
+        source_id: Uuid,
+        source_type: &str,
+        title: Option<&str>,
+        domain_path: &[String],
+    ) -> AppResult<()> {
+        // Build contextual preamble for embedding quality (covalence#73).
+        let domain = domain_path.join("/");
+        let preamble = format!(
+            "[Context: {}. Source type: {}. Domain: {}.]",
+            title.unwrap_or(""),
+            source_type,
+            domain,
+        );
+        let embed_payload = serde_json::json!({ "embed_preamble": preamble });
+
+        // Queue embedding generation with preamble payload.
         sqlx::query(
-            "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-             VALUES ($1, 'embed', $2, 3, 'pending')",
+            "INSERT INTO covalence.slow_path_queue \
+             (id, task_type, node_id, payload, priority, status) \
+             VALUES ($1, 'embed', $2, $3, 3, 'pending')",
         )
         .bind(Uuid::new_v4())
         .bind(source_id)
+        .bind(&embed_payload)
         .execute(&self.pool)
         .await?;
 

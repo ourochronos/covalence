@@ -179,13 +179,21 @@ impl ArticleService {
             }
         }
 
-        // Queue embedding
+        // Queue embedding with contextual preamble (covalence#73).
+        let preamble = format!(
+            "[Context: {}. Source type: article. Domain: {}.]",
+            req.title.as_deref().unwrap_or(""),
+            domain_path.join("/"),
+        );
+        let embed_payload = serde_json::json!({ "embed_preamble": preamble });
         sqlx::query(
-            "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-             VALUES ($1, 'embed', $2, 3, 'pending')",
+            "INSERT INTO covalence.slow_path_queue \
+             (id, task_type, node_id, payload, priority, status) \
+             VALUES ($1, 'embed', $2, $3, 3, 'pending')",
         )
         .bind(Uuid::new_v4())
         .bind(id)
+        .bind(&embed_payload)
         .execute(&self.pool)
         .await?;
 
@@ -250,8 +258,8 @@ impl ArticleService {
 
     /// Update an article — bumps version, updates modified_at.
     pub async fn update(&self, id: Uuid, req: UpdateArticleRequest) -> AppResult<ArticleResponse> {
-        // Verify it exists
-        let _existing = self.get(id).await?;
+        // Verify it exists; capture current state for preamble construction below.
+        let existing = self.get(id).await?;
 
         let mut sets = vec![
             "modified_at = now()".to_string(),
@@ -323,14 +331,32 @@ impl ArticleService {
             .await?;
         }
 
-        // Re-queue embedding if content changed
+        // Re-queue embedding if content changed (with contextual preamble, covalence#73).
+        // Use updated field values if available, falling back to the pre-update snapshot.
         if req.content.is_some() {
+            let effective_title = req
+                .title
+                .as_deref()
+                .or(existing.title.as_deref())
+                .unwrap_or("");
+            let effective_domain = req
+                .domain_path
+                .as_ref()
+                .unwrap_or(&existing.domain_path)
+                .join("/");
+            let preamble = format!(
+                "[Context: {}. Source type: article. Domain: {}.]",
+                effective_title, effective_domain,
+            );
+            let embed_payload = serde_json::json!({ "embed_preamble": preamble });
             sqlx::query(
-                "INSERT INTO covalence.slow_path_queue (id, task_type, node_id, priority, status) \
-                 VALUES ($1, 'embed', $2, 3, 'pending')",
+                "INSERT INTO covalence.slow_path_queue \
+                 (id, task_type, node_id, payload, priority, status) \
+                 VALUES ($1, 'embed', $2, $3, 3, 'pending')",
             )
             .bind(Uuid::new_v4())
             .bind(id)
+            .bind(&embed_payload)
             .execute(&self.pool)
             .await?;
         }
