@@ -221,7 +221,7 @@ impl AuditService {
             });
         }
 
-        let rows = sqlx::query_as::<_, (Uuid, Option<f32>, Option<String>)>(
+        let rows = sqlx::query_as::<_, (Uuid, Option<f64>, Option<String>)>(
             "SELECT DISTINCT s.id,
                     s.reliability,
                     s.source_type
@@ -241,7 +241,7 @@ impl AuditService {
         let mut source_types: HashMap<String, usize> = HashMap::new();
 
         for (_id, reliability, source_type) in &rows {
-            reliability_sum += reliability.unwrap_or(0.5) as f64;
+            reliability_sum += reliability.unwrap_or(0.5);
             let stype = source_type.clone().unwrap_or_else(|| "unknown".to_string());
             *source_types.entry(stype).or_insert(0) += 1;
         }

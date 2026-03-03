@@ -631,10 +631,11 @@ async fn test_relevant_document_scores_above_noise() {
     let query = format!("covalence search eval relevance test {tag}");
 
     // Insert a *relevant* node whose content closely matches the query.
+    // Note: content_tsv is a generated column — do not include it in INSERT.
     let relevant_id: Uuid = sqlx::query_scalar(
         "INSERT INTO covalence.nodes
             (node_type, title, content, status, confidence, reliability,
-             content_tsv, created_at, modified_at)
+             created_at, modified_at)
          VALUES
             ('source',
              $1,
@@ -642,7 +643,6 @@ async fn test_relevant_document_scores_above_noise() {
              'active',
              0.9,
              0.9,
-             to_tsvector('english', $2),
              now(), now())
          RETURNING id",
     )
@@ -656,7 +656,7 @@ async fn test_relevant_document_scores_above_noise() {
     let noise_id: Uuid = sqlx::query_scalar(
         "INSERT INTO covalence.nodes
             (node_type, title, content, status, confidence, reliability,
-             content_tsv, created_at, modified_at)
+             created_at, modified_at)
          VALUES
             ('source',
              $1,
@@ -664,7 +664,6 @@ async fn test_relevant_document_scores_above_noise() {
              'active',
              0.1,
              0.1,
-             to_tsvector('english', $2),
              now(), now())
          RETURNING id",
     )
