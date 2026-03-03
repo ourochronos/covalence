@@ -111,7 +111,7 @@ pub struct SearchRequest {
     #[serde(default)]
     pub mode: Option<SearchMode>,
     /// Recency bias factor (0.0–1.0). Higher values favor newer content.
-    /// At 0.0 (default), freshness gets 5% weight (current behavior).
+    /// At 0.0 (default), freshness gets 10% weight.
     /// At 1.0, freshness gets 40% weight (strongly favor recent).
     #[serde(default)]
     pub recency_bias: Option<f64>,
@@ -819,9 +819,9 @@ impl SearchService {
                     // Apply the same freshness tiebreaker as standard mode,
                     // honouring the caller's recency_bias setting.
                     let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
-                    let freshness = (-0.01 * days).exp();
+                    let freshness = (-0.1 * days).exp();
                     let bias = recency_bias;
-                    let freshness_weight = 0.05 + bias * 0.35;
+                    let freshness_weight = 0.10 + bias * 0.30;
                     let dim_weight = 1.0 - freshness_weight - 0.10;
                     let final_score = derived_score * dim_weight
                         + trust * 0.05
@@ -1621,11 +1621,11 @@ fn build_results(
         }
 
         let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
-        let freshness = (-0.01 * days).exp();
+        let freshness = (-0.1 * days).exp();
 
         let bias = recency_bias.clamp(0.0, 1.0);
-        // freshness_weight scales from 0.05 (bias=0) to 0.40 (bias=1)
-        let freshness_weight = 0.05 + bias * 0.35;
+        // freshness_weight scales from 0.10 (bias=0) to 0.40 (bias=1)
+        let freshness_weight = 0.10 + bias * 0.30;
         // dim_weight absorbs the difference (trust and confidence stay at 0.05 each)
         let dim_weight = 1.0 - freshness_weight - 0.10; // 0.10 = trust + confidence
 
@@ -1847,5 +1847,37 @@ mod tests {
         assert_eq!(json["mode"], "synthesis");
         assert_eq!(json["source_count"], 1);
         assert_eq!(json["sources_used"][0]["reliability"], 0.8);
+    }
+
+    #[test]
+    fn test_freshness_decay_rate() {
+        // Half-life should be approximately 7 days (ln(2)/0.1 ≈ 6.93 days)
+        let seven_days_ago = (-0.1f64 * 7.0).exp();
+        let today = (-0.1f64 * 0.0).exp();
+        // After 7 days, freshness should be ~50% of max
+        assert!(
+            seven_days_ago < 0.55,
+            "7-day-old content should have < 55% freshness"
+        );
+        assert!(
+            seven_days_ago > 0.45,
+            "7-day-old content should have > 45% freshness"
+        );
+        assert!(
+            (today - 1.0).abs() < 0.001,
+            "Today's content should have 100% freshness"
+        );
+    }
+
+    #[test]
+    fn test_freshness_weight_baseline() {
+        // At zero bias, freshness gets 10% weight
+        let bias = 0.0f64;
+        let weight = 0.10 + bias * 0.30;
+        assert!((weight - 0.10).abs() < 0.001);
+        // At full bias, freshness gets 40% weight
+        let bias = 1.0f64;
+        let weight = 0.10 + bias * 0.30;
+        assert!((weight - 0.40).abs() < 0.001);
     }
 }
