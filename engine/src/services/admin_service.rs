@@ -58,6 +58,11 @@ pub struct MaintenanceRequest {
     pub recompute_graph_embeddings: Option<bool>,
     /// Embedding method: `"node2vec"`, `"spectral"`, or `"both"` (default).
     pub graph_embeddings_method: Option<String>,
+    /// When `true`, scan for articles whose `next_consolidation_at` has arrived
+    /// and enqueue a `consolidate_article` task for each (covalence#67).
+    /// This mirrors the worker heartbeat but can be triggered on-demand via
+    /// the maintenance API.
+    pub scan_due_consolidations: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -304,6 +309,63 @@ impl AdminService {
             .await?;
             actions.push(format!(
                 "queued recompute_graph_embeddings(method={method})"
+            ));
+        }
+
+        if req.scan_due_consolidations.unwrap_or(false) {
+            // Query for active articles whose expanding-interval timer has fired.
+            // Skips articles with no linked sources (orphan guard applied by the
+            // handler itself, but we count them for the action log).
+            let due_rows = sqlx::query(
+                "SELECT n.id, COALESCE(n.consolidation_count, 0) AS consolidation_count
+                 FROM   covalence.nodes n
+                 WHERE  n.node_type             = 'article'
+                   AND  n.status                = 'active'
+                   AND  n.next_consolidation_at IS NOT NULL
+                   AND  n.next_consolidation_at <= now()
+                   AND  NOT EXISTS (
+                       SELECT 1
+                       FROM   covalence.slow_path_queue q
+                       WHERE  q.task_type               = 'consolidate_article'
+                         AND  q.payload->>'article_id'  = n.id::text
+                         AND  q.status IN ('pending', 'processing')
+                   )",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            let due_count = due_rows.len();
+            let mut queued_count = 0usize;
+
+            for row in &due_rows {
+                use sqlx::Row as _;
+                let article_id: Uuid = row.get("id");
+                let count: i32 = row.get("consolidation_count");
+                let next_pass = count + 1;
+
+                let result = sqlx::query(
+                    "INSERT INTO covalence.slow_path_queue \
+                     (id, task_type, node_id, payload, status, priority) \
+                     VALUES (gen_random_uuid(), 'consolidate_article', NULL, $1, 'pending', 3)",
+                )
+                .bind(serde_json::json!({
+                    "article_id": article_id.to_string(),
+                    "pass": next_pass,
+                }))
+                .execute(&self.pool)
+                .await;
+
+                match result {
+                    Ok(_) => queued_count += 1,
+                    Err(e) => tracing::warn!(
+                        article_id = %article_id,
+                        "scan_due_consolidations: failed to enqueue task: {e}"
+                    ),
+                }
+            }
+
+            actions.push(format!(
+                "scan_due_consolidations: {due_count} due, {queued_count} newly queued"
             ));
         }
 

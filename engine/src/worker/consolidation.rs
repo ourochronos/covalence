@@ -1,18 +1,22 @@
 //! `consolidate_article` slow-path task handler (covalence#67).
 //!
 //! Implements a spacing-effect (expanding-interval) recompilation schedule
-//! for articles, mirroring the neuroscience spacing effect:
+//! for articles, inspired by the neuroscience spacing effect (Smolen et al. 2017).
 //!
-//! | Pass | Delay from creation |
-//! |------|---------------------|
-//! | 1    | ~1 hour             |
-//! | 2    | ~18 hours           |
-//! | 3    | ~5 days             |
-//! | 4+   | weekly (admin_maintenance) |
+//! | consolidation_count (before pass) | next_consolidation_at delay |
+//! |-----------------------------------|-----------------------------|
+//! | 0 (initial compile)               | +1 hour  (→ pass 1)         |
+//! | 1 (after pass 1)                  | +12 hours (→ pass 2)        |
+//! | 2 (after pass 2)                  | +3 days  (→ pass 3)         |
+//! | 3 (after pass 3)                  | +1 week  (→ pass 4)         |
+//! | 4+ (after pass 4+)                | +1 month (→ pass N+1)       |
 //!
-//! After pass 3, `next_consolidation_at` is set to NULL, signalling that all
-//! scheduled passes are complete.  Weekly consolidation beyond pass 3 is the
-//! responsibility of the admin_maintenance endpoint.
+//! Orphan articles (those with no linked sources) are **skipped** — they have
+//! no source material to synthesise and advancing them serves no purpose.
+//!
+//! # Configurable schedule constants
+//! All interval values are defined as named constants (`SCHEDULE_*`) at the top
+//! of this module so they can be adjusted without touching handler logic.
 //!
 //! # Payload shape
 //! ```json
@@ -30,6 +34,26 @@ use uuid::Uuid;
 
 use super::QueueTask;
 use super::llm::LlmClient;
+
+// ─── schedule constants ───────────────────────────────────────────────────────
+//
+// These are the only places to change timing — handler logic derives all
+// intervals from these values.
+
+/// Delay before the first consolidation pass (set immediately after compile).
+pub const SCHEDULE_PASS_1_HOURS: i64 = 1;
+
+/// Delay after pass 1 completes before pass 2 is eligible.
+pub const SCHEDULE_PASS_2_HOURS: i64 = 12;
+
+/// Delay after pass 2 completes before pass 3 is eligible (3 days).
+pub const SCHEDULE_PASS_3_DAYS: i64 = 3;
+
+/// Delay after pass 3 completes before pass 4 is eligible (1 week).
+pub const SCHEDULE_PASS_4_WEEKS: i64 = 1;
+
+/// Delay after pass 4+ completes before the next pass is eligible (1 month ≈ 30 days).
+pub const SCHEDULE_PASS_N_DAYS: i64 = 30;
 
 // ─── internal helpers ─────────────────────────────────────────────────────────
 
@@ -64,13 +88,18 @@ fn concatenate_sources(sources: &[SourceDoc]) -> String {
     out
 }
 
-/// Compute the delay for the next pass after the given pass number.
-/// Returns `None` if there is no next scheduled pass (pass >= MAX_PASS).
-fn next_pass_delay(completed_pass: i32) -> Option<chrono::Duration> {
+/// Compute the delay until the *next* consolidation pass, given the pass number
+/// that just completed.
+///
+/// The schedule never terminates — after pass 4 every subsequent pass recurs
+/// on a monthly interval.  All timing is driven by the `SCHEDULE_*` constants
+/// so the values are visible at a glance and easy to adjust.
+pub fn next_pass_delay(completed_pass: i32) -> chrono::Duration {
     match completed_pass {
-        1 => Some(chrono::Duration::hours(18)),
-        2 => Some(chrono::Duration::days(5)),
-        _ => None,
+        1 => chrono::Duration::hours(SCHEDULE_PASS_2_HOURS),
+        2 => chrono::Duration::days(SCHEDULE_PASS_3_DAYS),
+        3 => chrono::Duration::weeks(SCHEDULE_PASS_4_WEEKS),
+        _ => chrono::Duration::days(SCHEDULE_PASS_N_DAYS),
     }
 }
 
@@ -81,16 +110,16 @@ fn next_pass_delay(completed_pass: i32) -> Option<chrono::Duration> {
 /// Steps:
 /// 1. Parse `article_id` and `pass` from the payload.
 /// 2. Fetch the article — skip if not found or archived.
-/// 3. Check for new sources ingested since `modified_at` that are not yet
+/// 3. **Orphan guard** — skip if the article has zero linked sources.  An
+///    article with no sources has nothing to synthesise; advancing it wastes
+///    LLM capacity and does not converge toward a better article.
+/// 4. Check for new sources ingested since `modified_at` that are not yet
 ///    linked to the article (mirrors the orphan-detection logic from
 ///    reconsolidation.rs).
-/// 4. If new sources exist: re-compile using the same LLM synthesis prompt
+/// 5. If new sources exist: re-compile using the same LLM synthesis prompt
 ///    as reconsolidation, then update article content + create provenance edges.
-/// 5. Increment `consolidation_count` regardless of whether recompilation ran.
-/// 6. Schedule the next pass:
-///    - Pass 1 done → enqueue pass 2 with `execute_after = now() + 18h`
-///    - Pass 2 done → enqueue pass 3 with `execute_after = now() + 5d`
-///    - Pass 3 done → set `next_consolidation_at = NULL` (all passes complete)
+/// 6. Increment `consolidation_count` and set `next_consolidation_at` using
+///    the expanding-interval schedule defined by [`next_pass_delay`].
 pub async fn handle_consolidate_article(
     pool: &PgPool,
     llm: &Arc<dyn LlmClient>,
@@ -143,11 +172,47 @@ pub async fn handle_consolidate_article(
         }
     };
 
-    let article_title: String =
-        article_row.get::<Option<String>, _>("title").unwrap_or_default();
+    let article_title: String = article_row
+        .get::<Option<String>, _>("title")
+        .unwrap_or_default();
     let article_modified_at: chrono::DateTime<Utc> = article_row.get("modified_at");
 
-    // ── 3. Check for new sources since article's modified_at ────────────────
+    // ── 3. Orphan guard ─────────────────────────────────────────────────────
+    // An article with zero linked sources has no material to synthesise.
+    // Advancing such an article wastes LLM capacity and produces no value.
+    // We return early *without* updating consolidation_count or schedule so
+    // the task remains logically due — if sources are linked later the next
+    // heartbeat will pick it up.
+    let linked_source_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM   covalence.edges e
+         JOIN   covalence.nodes n ON n.id = e.source_node_id
+         WHERE  e.target_node_id = $1
+           AND  e.edge_type IN ('ORIGINATES', 'COMPILED_FROM', 'CONFIRMS')
+           AND  n.node_type = 'source'
+           AND  n.status    = 'active'",
+    )
+    .bind(article_id)
+    .fetch_one(pool)
+    .await
+    .context("consolidate_article: failed to count linked sources")?;
+
+    if linked_source_count == 0 {
+        tracing::info!(
+            task_id    = %task.id,
+            article_id = %article_id,
+            pass,
+            "consolidate_article: orphan article (no linked sources), skipping"
+        );
+        return Ok(json!({
+            "skipped":        true,
+            "reason":         "orphan_article",
+            "article_id":     article_id,
+            "pass":           pass,
+        }));
+    }
+
+    // ── 4. Check for new sources since article's modified_at ────────────────
     // Find active source nodes that:
     //  - were created after the article's modified_at
     //  - are not already linked to this article via any edge
@@ -182,7 +247,7 @@ pub async fn handle_consolidate_article(
             "consolidate_article: new sources found, recompiling"
         );
 
-        // ── 4. Collect all linked sources + new sources ─────────────────────
+        // ── 5. Collect all linked sources + new sources ─────────────────────
         let existing_source_ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT e.source_node_id
              FROM   covalence.edges e
@@ -200,7 +265,7 @@ pub async fn handle_consolidate_article(
         let mut all_source_ids = existing_source_ids;
         all_source_ids.extend_from_slice(&new_source_ids);
 
-        // ── 5. Fetch all source content ──────────────────────────────────────
+        // ── 6. Fetch all source content ──────────────────────────────────────
         let source_rows =
             sqlx::query("SELECT id, title, content FROM covalence.nodes WHERE id = ANY($1)")
                 .bind(&all_source_ids)
@@ -217,7 +282,7 @@ pub async fn handle_consolidate_article(
             })
             .collect();
 
-        // ── 6. Build LLM synthesis prompt (identical to reconsolidation) ─────
+        // ── 7. Build LLM synthesis prompt (identical to reconsolidation) ─────
         let mut sources_block = String::new();
         for s in &sources {
             sources_block.push_str(&format!(
@@ -256,7 +321,7 @@ SOURCE DOCUMENTS:\n\
 {sources_block}"
         );
 
-        // ── 7. LLM completion ────────────────────────────────────────────────
+        // ── 8. LLM completion ────────────────────────────────────────────────
         let t0 = Instant::now();
         let llm_result = llm.complete(&prompt, 4096).await;
         let _llm_latency_ms = t0.elapsed().as_millis() as i32;
@@ -295,7 +360,7 @@ SOURCE DOCUMENTS:\n\
             }
         };
 
-        // ── 8. Update article in-place ───────────────────────────────────────
+        // ── 9. Update article in-place ───────────────────────────────────────
         sqlx::query(
             "UPDATE covalence.nodes
              SET    title       = $1,
@@ -310,7 +375,7 @@ SOURCE DOCUMENTS:\n\
         .await
         .context("consolidate_article: failed to update article content")?;
 
-        // ── 9. Create provenance edges for newly-linked sources ──────────────
+        // ── 10. Create provenance edges for newly-linked sources ─────────────
         new_source_count = new_source_ids.len();
         for src_id in &new_source_ids {
             sqlx::query(
@@ -326,7 +391,7 @@ SOURCE DOCUMENTS:\n\
             .context("consolidate_article: failed to insert provenance edge")?;
         }
 
-        // ── 10. Queue re-embed for the updated article ───────────────────────
+        // ── 11. Queue re-embed for the updated article ───────────────────────
         super::enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;
     } else {
         tracing::info!(
@@ -337,77 +402,60 @@ SOURCE DOCUMENTS:\n\
         );
     }
 
-    // ── 11. Increment consolidation_count and schedule next pass ────────────
-    // consolidation_count = the pass number just completed.
+    // ── 12. Increment consolidation_count and schedule next pass ────────────
+    // consolidation_count is set to the pass number just completed.
+    // The schedule never terminates: after pass 4 every subsequent pass uses
+    // the monthly interval defined by SCHEDULE_PASS_N_DAYS.
     let new_count = pass;
+    let delay = next_pass_delay(pass);
+    let execute_after = Utc::now() + delay;
+    let next_pass = pass + 1;
 
-    if let Some(delay) = next_pass_delay(pass) {
-        let execute_after = Utc::now() + delay;
-        let next_pass = pass + 1;
+    // Update node: bump count, record when the next pass is due.
+    sqlx::query(
+        "UPDATE covalence.nodes
+         SET consolidation_count   = $1,
+             next_consolidation_at = $2
+         WHERE id = $3",
+    )
+    .bind(new_count)
+    .bind(execute_after)
+    .bind(article_id)
+    .execute(pool)
+    .await
+    .context("consolidate_article: failed to update consolidation state")?;
 
-        // Update node: increment count, record when the next pass is due.
-        sqlx::query(
-            "UPDATE covalence.nodes
-             SET consolidation_count    = $1,
-                 next_consolidation_at  = $2
-             WHERE id = $3",
-        )
-        .bind(new_count)
-        .bind(execute_after)
-        .bind(article_id)
-        .execute(pool)
-        .await
-        .context("consolidate_article: failed to update consolidation state")?;
+    // Insert a delayed task for the next pass.
+    super::enqueue_task_at(
+        pool,
+        "consolidate_article",
+        None,
+        json!({
+            "article_id": article_id.to_string(),
+            "pass": next_pass,
+        }),
+        3,
+        Some(execute_after),
+    )
+    .await?;
 
-        // Insert a delayed task for the next pass.
-        super::enqueue_task_at(
-            pool,
-            "consolidate_article",
-            None,
-            json!({
-                "article_id": article_id.to_string(),
-                "pass": next_pass,
-            }),
-            3,
-            Some(execute_after),
-        )
-        .await?;
-
-        tracing::info!(
-            task_id      = %task.id,
-            article_id   = %article_id,
-            pass,
-            next_pass,
-            execute_after = %execute_after,
-            "consolidate_article: scheduled next pass"
-        );
-    } else {
-        // Pass 3+ complete — no more scheduled passes.
-        sqlx::query(
-            "UPDATE covalence.nodes
-             SET consolidation_count   = $1,
-                 next_consolidation_at = NULL
-             WHERE id = $2",
-        )
-        .bind(new_count)
-        .bind(article_id)
-        .execute(pool)
-        .await
-        .context("consolidate_article: failed to clear consolidation schedule")?;
-
-        tracing::info!(
-            task_id    = %task.id,
-            article_id = %article_id,
-            pass,
-            "consolidate_article: all scheduled passes complete, next_consolidation_at = NULL"
-        );
-    }
+    tracing::info!(
+        task_id       = %task.id,
+        article_id    = %article_id,
+        pass,
+        next_pass,
+        execute_after = %execute_after,
+        delay_secs    = delay.num_seconds(),
+        "consolidate_article: pass complete, next pass scheduled"
+    );
 
     Ok(json!({
-        "article_id":      article_id,
-        "pass":            pass,
-        "had_new_sources": has_new_sources,
+        "article_id":       article_id,
+        "pass":             pass,
+        "had_new_sources":  has_new_sources,
         "new_source_count": new_source_count,
-        "new_count":       new_count,
+        "new_count":        new_count,
+        "next_pass":        next_pass,
+        "execute_after":    execute_after.to_rfc3339(),
     }))
 }

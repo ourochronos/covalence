@@ -67,6 +67,13 @@ ALTER TABLE covalence.nodes
 ALTER TABLE covalence.nodes
     ADD COLUMN IF NOT EXISTS consolidation_count INT NOT NULL DEFAULT 0;
 
+-- Migration 021: index for heartbeat query (covalence#67 final).
+CREATE INDEX IF NOT EXISTS idx_nodes_next_consolidation_at
+    ON covalence.nodes (next_consolidation_at)
+    WHERE next_consolidation_at IS NOT NULL
+      AND status = 'active'
+      AND node_type = 'article';
+
 -- -----------------------------------------------------------------------------
 -- edges
 -- (No edge_type CHECK constraint — extensible string label, validated in Rust)

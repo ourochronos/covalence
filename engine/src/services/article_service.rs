@@ -125,6 +125,8 @@ impl ArticleService {
         let epistemic_type = req.epistemic_type.unwrap_or_else(|| "semantic".into());
         let metadata = req.metadata.unwrap_or(serde_json::json!({}));
 
+        let first_consolidation_at =
+            now + chrono::Duration::hours(crate::worker::consolidation::SCHEDULE_PASS_1_HOURS);
         sqlx::query(
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, epistemic_type, domain_path, \
@@ -132,7 +134,7 @@ impl ArticleService {
               created_at, modified_at, accessed_at, \
               next_consolidation_at, consolidation_count) \
              VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $10, $10, $10, \
-                     now() + INTERVAL '1 hour', 0)",
+                     $11, 0)",
         )
         .bind(id)
         .bind(&req.title)
@@ -144,6 +146,7 @@ impl ArticleService {
         .bind(&metadata)
         .bind(&self.namespace)
         .bind(now)
+        .bind(first_consolidation_at)
         .execute(&self.pool)
         .await?;
 

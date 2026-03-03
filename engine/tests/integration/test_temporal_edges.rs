@@ -7,6 +7,7 @@
 //! 4. `include_superseded = true` surfaces superseded edges.
 //! 5. `SharedGraph` rebuild loads only active edges.
 
+use serial_test::serial;
 use uuid::Uuid;
 
 use covalence_engine::graph::{CovalenceGraph, GraphRepository, SqlGraphRepository};
@@ -18,6 +19,7 @@ use super::helpers::TestFixture;
 // 1. Newly created edge is active (valid_to IS NULL)
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
+#[serial]
 async fn test_new_edge_is_active() {
     let mut fix = TestFixture::new().await;
     let pool = fix.pool.clone();
@@ -68,6 +70,7 @@ async fn test_new_edge_is_active() {
 // 2 & 3. Superseded edge is excluded from default queries
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
+#[serial]
 async fn test_supersede_edge_excludes_from_default_queries() {
     let mut fix = TestFixture::new().await;
     let pool = fix.pool.clone();
@@ -125,6 +128,7 @@ async fn test_supersede_edge_excludes_from_default_queries() {
 // 4. include_superseded = true surfaces the superseded edge
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
+#[serial]
 async fn test_include_superseded_returns_history() {
     let mut fix = TestFixture::new().await;
     let pool = fix.pool.clone();
@@ -175,6 +179,7 @@ async fn test_include_superseded_returns_history() {
 // 5. SharedGraph rebuild excludes superseded edges
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
+#[serial]
 async fn test_shared_graph_rebuild_excludes_superseded() {
     let mut fix = TestFixture::new().await;
     let pool = fix.pool.clone();
@@ -258,6 +263,7 @@ async fn test_shared_graph_rebuild_excludes_superseded() {
 // 6. Superseding an already-superseded edge returns EdgeNotFound
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
+#[serial]
 async fn test_supersede_already_superseded_returns_error() {
     let mut fix = TestFixture::new().await;
     let pool = fix.pool.clone();
@@ -300,6 +306,7 @@ async fn test_supersede_already_superseded_returns_error() {
 // 7. valid_from equals created_at for new edges
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
+#[serial]
 async fn test_valid_from_matches_created_at() {
     let mut fix = TestFixture::new().await;
     let pool = fix.pool.clone();

@@ -4,6 +4,7 @@
 //! to the namespace they were written into.  Bleeding across namespaces is a
 //! correctness failure.
 
+use serial_test::serial;
 use uuid::Uuid;
 
 use super::helpers::TestFixture;
@@ -54,6 +55,7 @@ async fn insert_ns_article(fix: &mut TestFixture, ns: &str, title: &str, content
 /// `SourceService::get` scoped to `"alpha"` returns the alpha source and
 /// cannot see the beta source.
 #[tokio::test]
+#[serial]
 async fn test_namespace_source_isolation() {
     let mut fix = TestFixture::new().await;
 
@@ -101,6 +103,7 @@ async fn test_namespace_source_isolation() {
 /// Ensure that `SourceService::list` only returns sources in the correct
 /// namespace.
 #[tokio::test]
+#[serial]
 async fn test_namespace_source_list_isolation() {
     let mut fix = TestFixture::new().await;
 
@@ -150,6 +153,7 @@ async fn test_namespace_source_list_isolation() {
 
 /// Verify that `ArticleService` respects namespace for create + get.
 #[tokio::test]
+#[serial]
 async fn test_namespace_article_isolation() {
     let mut fix = TestFixture::new().await;
 
@@ -197,6 +201,7 @@ async fn test_namespace_article_isolation() {
 /// same query scoped to `"beta-search"`.  The beta search should return no
 /// results for that unique phrase.
 #[tokio::test]
+#[serial]
 async fn test_namespace_search_isolation() {
     let mut fix = TestFixture::new().await;
 
@@ -287,6 +292,7 @@ async fn test_namespace_search_isolation() {
 /// Verify that the default namespace (`"default"`) does not show sources
 /// inserted into custom namespaces, and vice versa.
 #[tokio::test]
+#[serial]
 async fn test_default_namespace_does_not_bleed() {
     let mut fix = TestFixture::new().await;
 

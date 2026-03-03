@@ -1096,15 +1096,19 @@ SOURCE DOCUMENTS:\n\
     };
 
     // ── 6b. Schedule first consolidation pass ────────────────────────────────
-    // Set next_consolidation_at = now() + 1h so the heartbeat can trigger
-    // pass 1.  Reset consolidation_count to 0 whether this is a new article or
-    // a dedup-update.
+    // Set next_consolidation_at = now() + SCHEDULE_PASS_1_HOURS so the heartbeat
+    // can trigger pass 1.  Reset consolidation_count to 0 whether this is a
+    // new article or a dedup-update.
+    let first_pass_delay =
+        chrono::Duration::hours(crate::worker::consolidation::SCHEDULE_PASS_1_HOURS);
+    let first_consolidation_at = chrono::Utc::now() + first_pass_delay;
     sqlx::query(
         "UPDATE covalence.nodes \
-         SET next_consolidation_at = now() + INTERVAL '1 hour', \
+         SET next_consolidation_at = $1, \
              consolidation_count   = 0 \
-         WHERE id = $1",
+         WHERE id = $2",
     )
+    .bind(first_consolidation_at)
     .bind(article_id)
     .execute(pool)
     .await
