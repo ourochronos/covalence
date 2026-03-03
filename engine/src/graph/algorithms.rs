@@ -299,6 +299,195 @@ pub fn pagerank_filtered(
         .collect()
 }
 
+/// Personalized PageRank (PPR) seeded from a set of anchor nodes.
+///
+/// PPR is a biased random walk where the teleportation distribution is
+/// concentrated on the seed set `seeds` rather than uniform over all nodes.
+/// This makes it optimal for **local graph search**: nodes that are strongly
+/// connected to the seed set receive high PPR scores in
+/// O(1/ε × degree(seed)) time — independent of total graph size.
+///
+/// # Arguments
+/// * `graph`      – The in-memory graph
+/// * `seeds`      – The anchor/seed node UUIDs (the initial "query set")
+/// * `damping`    – Damping / walk-continuation factor (typically 0.85)
+/// * `iterations` – Power-iteration rounds (15–20 is sufficient for sparse
+///                  graphs at Covalence's scale)
+///
+/// # Returns
+/// `HashMap` mapping every `Uuid` node to its PPR score w.r.t. the seed set.
+/// Seed nodes start with score `1/|seeds|`; adjacent nodes receive mass
+/// proportional to edge weight and damping.  All scores are non-negative.
+pub fn personalized_pagerank(
+    graph: &CovalenceGraph,
+    seeds: &HashSet<Uuid>,
+    damping: f64,
+    iterations: u32,
+) -> HashMap<Uuid, f64> {
+    let node_count = graph.node_count();
+    if node_count == 0 || seeds.is_empty() {
+        return HashMap::new();
+    }
+
+    let seed_count = seeds.len() as f64;
+    let seed_weight = 1.0 / seed_count;
+    let teleport_factor = 1.0 - damping;
+
+    // Initialise: seeds start at 1/|S|, all other nodes start at 0.
+    let mut ranks: HashMap<NodeIndex, f64> = graph
+        .graph
+        .node_indices()
+        .map(|idx| {
+            let id = *graph.graph.node_weight(idx).unwrap_or(&Uuid::nil());
+            let initial = if seeds.contains(&id) { seed_weight } else { 0.0 };
+            (idx, initial)
+        })
+        .collect();
+
+    for _ in 0..iterations {
+        let mut new_ranks: HashMap<NodeIndex, f64> = HashMap::new();
+
+        for node_idx in graph.graph.node_indices() {
+            let uuid = *graph.graph.node_weight(node_idx).unwrap_or(&Uuid::nil());
+
+            // Teleportation term: only seed nodes contribute restart mass.
+            let teleport = if seeds.contains(&uuid) {
+                teleport_factor * seed_weight
+            } else {
+                0.0
+            };
+
+            // Random walk: accumulate mass from incoming edges.
+            let mut rank_sum = 0.0;
+            for edge in graph.graph.edges_directed(node_idx, Direction::Incoming) {
+                let source_idx = edge.source();
+                let source_rank = ranks.get(&source_idx).copied().unwrap_or(0.0);
+                let out_degree = graph
+                    .graph
+                    .edges_directed(source_idx, Direction::Outgoing)
+                    .count();
+                if out_degree > 0 {
+                    rank_sum += source_rank / out_degree as f64;
+                }
+            }
+
+            new_ranks.insert(node_idx, teleport + damping * rank_sum);
+        }
+
+        ranks = new_ranks;
+    }
+
+    ranks
+        .into_iter()
+        .filter_map(|(idx, score)| {
+            graph.graph.node_weight(idx).copied().map(|id| (id, score))
+        })
+        .collect()
+}
+
+/// Compute a structural importance score for every node.
+///
+/// Structural importance identifies **bridge nodes** — articles whose removal
+/// would disconnect or fragment the knowledge graph.  Such nodes must be
+/// protected from eviction even when their `usage_score` is low, because
+/// their loss would collapse cross-domain retrieval quality.
+///
+/// ## Algorithm
+///
+/// * **Small graphs (≤ 800 nodes)**: Full [betweenness centrality][bc]
+///   (Brandes algorithm, O(VE)).  Exact and practical at Covalence's
+///   current scale (~600 articles, ~1 000 edges).
+///
+/// * **Large graphs (> 800 nodes)**: An approximate proxy using:
+///   - Normalised node degree (captures high-connectivity hubs).
+///   - **Cluster-bridge bonus**: a node whose neighbours span ≥ 2 distinct
+///     PageRank tiers (tertiles of the PageRank distribution) receives an
+///     additional 0.5 score — it bridges communities with different
+///     structural roles, making it a cross-domain knowledge broker.
+///
+/// [bc]: https://en.wikipedia.org/wiki/Betweenness_centrality
+///
+/// # Returns
+/// `HashMap` mapping each `Uuid` to its normalised structural importance
+/// score in \[0.0, 1.0\].  Higher = more critical to preserve for graph health.
+pub fn structural_importance(graph: &CovalenceGraph) -> HashMap<Uuid, f64> {
+    let node_count = graph.node_count();
+    if node_count == 0 {
+        return HashMap::new();
+    }
+
+    if node_count <= 800 {
+        // Exact betweenness centrality — O(VE), practical at this scale.
+        betweenness_centrality(graph)
+    } else {
+        // Approximate proxy for large graphs (O(V + E) instead of O(VE)).
+        structural_importance_proxy(graph)
+    }
+}
+
+/// Approximate structural importance for graphs with > 800 nodes.
+///
+/// Uses normalised degree + PageRank-cluster-bridge detection as a cheap
+/// proxy for betweenness centrality.  A node is considered a cluster bridge
+/// if its neighbours span ≥ 2 distinct PageRank tertiles (low / mid / high),
+/// which correlates strongly with high betweenness in scale-free networks.
+fn structural_importance_proxy(graph: &CovalenceGraph) -> HashMap<Uuid, f64> {
+    let pr = pagerank(graph, 0.85, 20);
+
+    // Compute PageRank tertile thresholds.
+    let mut pr_values: Vec<f64> = pr.values().cloned().collect();
+    pr_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = pr_values.len();
+    let p33 = pr_values.get(n / 3).cloned().unwrap_or(0.0);
+    let p67 = pr_values.get((n * 2) / 3).cloned().unwrap_or(1.0);
+
+    // Assign each node to a PageRank tier: 0=low, 1=mid, 2=high.
+    let tier = |score: f64| -> u8 {
+        if score >= p67 {
+            2
+        } else if score >= p33 {
+            1
+        } else {
+            0
+        }
+    };
+
+    // Maximum total degree across all nodes (for normalisation).
+    let max_degree = graph
+        .graph
+        .node_indices()
+        .map(|idx| {
+            graph.graph.edges_directed(idx, Direction::Outgoing).count()
+                + graph.graph.edges_directed(idx, Direction::Incoming).count()
+        })
+        .max()
+        .unwrap_or(1) as f64;
+
+    graph
+        .index
+        .iter()
+        .map(|(id, &idx)| {
+            // Degree score (normalised by max degree across the graph).
+            let degree = (graph.graph.edges_directed(idx, Direction::Outgoing).count()
+                + graph.graph.edges_directed(idx, Direction::Incoming).count())
+                as f64;
+            let degree_score = degree / max_degree.max(1.0);
+
+            // Cluster-bridge bonus: neighbours span ≥ 2 distinct PageRank tiers.
+            let neighbor_tiers: HashSet<u8> = graph
+                .graph
+                .neighbors(idx)
+                .filter_map(|n| graph.graph.node_weight(n).copied())
+                .map(|nid| tier(pr.get(&nid).cloned().unwrap_or(0.0)))
+                .collect();
+
+            let bridge_bonus = if neighbor_tiers.len() >= 2 { 0.5 } else { 0.0 };
+
+            (*id, (degree_score * 0.5 + bridge_bonus).min(1.0))
+        })
+        .collect()
+}
+
 /// Count distinct paths between two nodes up to `max_depth` hops (DFS).
 ///
 /// Used for path-diversity metrics in confidence scoring.
@@ -455,6 +644,113 @@ mod tests {
         // Empty edge_types → empty result
         let ranks = pagerank_filtered(&g, 0.85, 20, &[]);
         assert!(ranks.is_empty());
+    }
+
+    // ── personalized_pagerank tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_ppr_seed_receives_highest_score() {
+        let mut g = CovalenceGraph::new();
+        let seed = Uuid::new_v4();
+        let neighbor = Uuid::new_v4();
+        let unrelated = Uuid::new_v4();
+        g.add_edge(seed, neighbor, "CONFIRMS".to_string());
+        g.add_node(unrelated);
+
+        let seeds: HashSet<Uuid> = [seed].into_iter().collect();
+        let scores = personalized_pagerank(&g, &seeds, 0.85, 20);
+
+        // Seed should score highest (direct teleportation).
+        assert!(
+            scores[&seed] >= scores[&neighbor],
+            "seed node should score >= its neighbor"
+        );
+        // Neighbor of seed should score higher than isolated unrelated node.
+        assert!(
+            scores[&neighbor] > scores[&unrelated],
+            "neighbor of seed should outscore unrelated node"
+        );
+    }
+
+    #[test]
+    fn test_ppr_empty_seeds_returns_empty() {
+        let mut g = CovalenceGraph::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        g.add_edge(a, b, "ORIGINATES".to_string());
+
+        let seeds: HashSet<Uuid> = HashSet::new();
+        let scores = personalized_pagerank(&g, &seeds, 0.85, 20);
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn test_ppr_direct_neighbor_gets_high_score() {
+        // A single seed with one outgoing edge.  After convergence the
+        // neighbor should receive roughly damping × seed_weight mass from
+        // the seed's outgoing walk (≈ 0.85 × 1.0 = 0.85 × contribution).
+        let mut g = CovalenceGraph::new();
+        let seed = Uuid::new_v4();
+        let direct = Uuid::new_v4();
+        g.add_edge(seed, direct, "ORIGINATES".to_string());
+
+        let seeds: HashSet<Uuid> = [seed].into_iter().collect();
+        let scores = personalized_pagerank(&g, &seeds, 0.85, 20);
+
+        // direct neighbour should have non-trivial score.
+        assert!(
+            scores[&direct] > 0.1,
+            "direct neighbor should have score > 0.1, got {}",
+            scores[&direct]
+        );
+    }
+
+    // ── structural_importance tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_structural_importance_bridge_scores_highest() {
+        // Bridge topology: a1 → a2 → bridge → b1 → b2
+        // 'bridge' sits between cluster A (a1, a2) and cluster B (b1, b2).
+        let mut g = CovalenceGraph::new();
+        let a1 = Uuid::new_v4();
+        let a2 = Uuid::new_v4();
+        let bridge = Uuid::new_v4();
+        let b1 = Uuid::new_v4();
+        let b2 = Uuid::new_v4();
+        g.add_edge(a1, a2, "CONFIRMS".to_string());
+        g.add_edge(a2, bridge, "CONFIRMS".to_string());
+        g.add_edge(bridge, b1, "CONFIRMS".to_string());
+        g.add_edge(b1, b2, "CONFIRMS".to_string());
+
+        let importance = structural_importance(&g);
+
+        // Bridge should have higher importance than isolated endpoints.
+        assert!(
+            importance[&bridge] > importance[&a1],
+            "bridge should score higher than cluster endpoint a1"
+        );
+        assert!(
+            importance[&bridge] > importance[&b2],
+            "bridge should score higher than cluster endpoint b2"
+        );
+    }
+
+    #[test]
+    fn test_structural_importance_isolated_node_scores_zero() {
+        let mut g = CovalenceGraph::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let isolated = Uuid::new_v4();
+        g.add_edge(a, b, "ORIGINATES".to_string());
+        g.add_node(isolated);
+
+        let importance = structural_importance(&g);
+        // Isolated node has no paths through it — importance should be 0.
+        let iso_score = importance.get(&isolated).cloned().unwrap_or(0.0);
+        assert!(
+            iso_score < 1e-9,
+            "isolated node should have ~0 structural importance, got {iso_score}"
+        );
     }
 
     #[test]

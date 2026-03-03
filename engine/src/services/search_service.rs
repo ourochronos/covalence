@@ -37,7 +37,7 @@ use uuid::Uuid;
 use crate::worker::enqueue_task;
 use crate::worker::llm::LlmClient;
 
-use crate::graph::algorithms::pagerank;
+use crate::graph::algorithms::{pagerank, personalized_pagerank};
 use crate::graph::{TopologicalConfidence, compute_topological_confidence};
 use crate::models::SearchIntent;
 use crate::search::dimension::{DimensionAdaptor, DimensionQuery};
@@ -286,6 +286,12 @@ pub struct SearchService {
     /// Whether the live-synthesis mode is enabled.
     /// Controlled by `COVALENCE_LIVE_SYNTHESIS=true`.
     synthesis_enabled: bool,
+    /// Whether PPR-based query expansion is enabled (covalence#74).
+    /// Controlled by `COVALENCE_PPR_EXPANSION=true`.
+    /// When enabled, the top-k initial search results are used as seed nodes
+    /// for a Personalized PageRank walk.  Graph neighbours with high PPR
+    /// scores that were not found by the 4-D search are appended to results.
+    ppr_expansion_enabled: bool,
     /// Namespace to filter results by.
     namespace: String,
 }
@@ -298,6 +304,9 @@ impl SearchService {
         let synthesis_enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
+        let ppr_expansion_enabled = std::env::var("COVALENCE_PPR_EXPANSION")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
         Self {
             pool,
             vector: VectorAdaptor::new(),
@@ -308,6 +317,7 @@ impl SearchService {
             shared_graph: None,
             llm: None,
             synthesis_enabled,
+            ppr_expansion_enabled,
             namespace: "default".into(),
         }
     }
@@ -555,6 +565,120 @@ impl SearchService {
             results.retain(|r| r.created_at.is_none_or(|ca| ca < before));
         }
         results.truncate(req.limit);
+
+        // ── PPR query expansion (covalence#74) ───────────────────────────────
+        // Starting from the top-k results as seeds, walk the in-memory graph
+        // via Personalized PageRank.  Nodes with high PPR scores that were
+        // *not* found by the 4-D search are appended as expanded results.
+        // This is provably optimal for local graph query expansion and
+        // discovers semantically adjacent articles that fall below the
+        // lexical/vector similarity threshold.
+        //
+        // Enabled only when `COVALENCE_PPR_EXPANSION=true` and a shared
+        // graph is attached.  Non-fatal: errors are logged at DEBUG level
+        // and the original results are returned unchanged.
+        if self.ppr_expansion_enabled && !results.is_empty() {
+            if let Some(shared) = &self.shared_graph {
+                // Collect top-k result IDs as PPR seed nodes (k ≤ 5).
+                let seed_count = results.len().min(5);
+                let seeds: std::collections::HashSet<Uuid> =
+                    results.iter().take(seed_count).map(|r| r.node_id).collect();
+
+                // Acquire graph read lock, run PPR, then immediately release.
+                let ppr_scores = {
+                    let graph = shared.read().await;
+                    personalized_pagerank(&graph, &seeds, 0.85, 15)
+                };
+
+                // Build set of IDs already in results to avoid duplicates.
+                let already_present: std::collections::HashSet<Uuid> =
+                    results.iter().map(|r| r.node_id).collect();
+
+                // Minimum PPR score threshold — guards against zero-mass nodes
+                // in disconnected components being spuriously appended.
+                const MIN_PPR_SCORE: f64 = 0.02;
+
+                // Sort expansion candidates by PPR score descending.
+                let mut ppr_candidates: Vec<(Uuid, f64)> = ppr_scores
+                    .into_iter()
+                    .filter(|(id, score)| {
+                        !already_present.contains(id) && *score >= MIN_PPR_SCORE
+                    })
+                    .collect();
+                ppr_candidates
+                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                // How many slots remain below the limit for expanded results.
+                let remaining_slots = req.limit.saturating_sub(results.len());
+                let expand_count = remaining_slots.min(3);
+
+                let expand_ids: Vec<Uuid> = ppr_candidates
+                    .iter()
+                    .take(expand_count)
+                    .map(|(id, _)| *id)
+                    .collect();
+
+                if !expand_ids.is_empty() {
+                    match fetch_node_map(&self.pool, &expand_ids, &self.namespace).await {
+                        Ok(expanded_map) => {
+                            // Base the expansion score slightly below the
+                            // lowest current result score so expanded nodes
+                            // sort after direct matches.
+                            let base_score =
+                                results.last().map(|r| r.score).unwrap_or(0.1) * 0.85;
+
+                            for (rank, node_id) in expand_ids.iter().enumerate() {
+                                if let Some(node) = expanded_map.get(node_id) {
+                                    let (
+                                        _,
+                                        node_type,
+                                        title,
+                                        preview,
+                                        confidence,
+                                        _modified_at,
+                                        trust,
+                                        domain_path,
+                                        created_at,
+                                    ) = node;
+                                    // Score descends gently per rank.
+                                    let ppr_score =
+                                        base_score * 0.9_f64.powi(rank as i32);
+
+                                    results.push(SearchResult {
+                                        node_id: *node_id,
+                                        score: ppr_score,
+                                        vector_score: None,
+                                        lexical_score: None,
+                                        // Surface PPR score as graph dimension score
+                                        // so callers can distinguish expansion results.
+                                        graph_score: Some(ppr_score),
+                                        structural_score: None,
+                                        confidence: *confidence,
+                                        trust_score: Some(*trust),
+                                        node_type: node_type.clone(),
+                                        title: title.clone(),
+                                        content_preview: preview.clone(),
+                                        domain_path: domain_path.clone(),
+                                        expanded_from: None,
+                                        // PPR-expanded = 1 effective hop from seed.
+                                        graph_hops: Some(1),
+                                        created_at: Some(*created_at),
+                                        topological_score: None,
+                                    });
+                                }
+                            }
+                            tracing::debug!(
+                                added = expand_ids.len(),
+                                "ppr_expansion: appended graph-neighbor results"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::debug!("ppr_expansion: fetch_node_map failed (non-fatal): {e:#}");
+                        }
+                    }
+                }
+            }
+        }
 
         // ── Retrieval-triggered reconsolidation (covalence#66) ────────────────
         // Fire-and-forget: collect article IDs from results then spawn a

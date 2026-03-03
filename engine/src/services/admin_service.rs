@@ -5,7 +5,10 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::errors::*;
-use crate::graph::{GraphRepository, SharedGraph, SqlGraphRepository, algorithms::pagerank};
+use crate::graph::{
+    GraphRepository, SharedGraph, SqlGraphRepository,
+    algorithms::{pagerank, structural_importance},
+};
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct StatsResponse {
@@ -251,7 +254,12 @@ impl AdminService {
         }
 
         if req.evict_if_over_capacity.unwrap_or(false) {
-            let max_active = 1000i64; // configurable later
+            // `COVALENCE_MAX_ARTICLES` overrides the default capacity ceiling.
+            // Useful for testing eviction behaviour without creating 1 000 articles.
+            let max_active: i64 = std::env::var("COVALENCE_MAX_ARTICLES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000);
             let evict_count = req.evict_count.unwrap_or(10);
 
             let active_count: i64 = sqlx::query_scalar(
@@ -259,20 +267,73 @@ impl AdminService {
             ).fetch_one(&self.pool).await?;
 
             if active_count > max_active {
+                // ── Bridge / hub protection (covalence#74) ────────────────────
+                // Compute structural importance from the in-memory graph and
+                // protect the top 5% most important nodes from eviction, even
+                // if their usage_score is the lowest in the corpus.  These are
+                // bridge nodes that connect distinct knowledge clusters — their
+                // removal would fragment cross-domain retrieval.
+                let protected_ids: Vec<Uuid> = if let Some(shared) = &self.shared_graph {
+                    let graph = shared.read().await;
+                    let importance = structural_importance(&graph);
+                    let node_count = importance.len();
+                    // Protect at least 1 node, up to 5% of the graph.
+                    let protect_count =
+                        (node_count as f64 * 0.05).ceil() as usize;
+                    let protect_count = protect_count.max(1);
+                    let mut sorted: Vec<(Uuid, f64)> = importance.into_iter().collect();
+                    sorted.sort_by(|a, b| {
+                        b.1.partial_cmp(&a.1)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    drop(graph);
+                    tracing::debug!(
+                        protect_count,
+                        node_count,
+                        "eviction: protecting top structurally-important nodes"
+                    );
+                    sorted
+                        .into_iter()
+                        .take(protect_count)
+                        .map(|(id, _)| id)
+                        .collect()
+                } else {
+                    vec![]
+                };
+
                 // RETURNING id lets us remove each evicted node from the live
                 // AGE graph while preserving the SQL edges for history.
-                let evicted_rows = sqlx::query(
-                    "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \
-                     WHERE id IN ( \
-                       SELECT id FROM covalence.nodes \
-                       WHERE node_type = 'article' AND status = 'active' AND pinned = false \
-                       ORDER BY usage_score ASC LIMIT $1 \
-                     ) \
-                     RETURNING id",
-                )
-                .bind(evict_count)
-                .fetch_all(&self.pool)
-                .await?;
+                let evicted_rows = if protected_ids.is_empty() {
+                    // No structural data available — use original usage_score order.
+                    sqlx::query(
+                        "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \
+                         WHERE id IN ( \
+                           SELECT id FROM covalence.nodes \
+                           WHERE node_type = 'article' AND status = 'active' AND pinned = false \
+                           ORDER BY usage_score ASC LIMIT $1 \
+                         ) \
+                         RETURNING id",
+                    )
+                    .bind(evict_count)
+                    .fetch_all(&self.pool)
+                    .await?
+                } else {
+                    // Bridge-aware eviction: exclude structurally-important nodes.
+                    sqlx::query(
+                        "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \
+                         WHERE id IN ( \
+                           SELECT id FROM covalence.nodes \
+                           WHERE node_type = 'article' AND status = 'active' AND pinned = false \
+                             AND id != ALL($2::uuid[]) \
+                           ORDER BY usage_score ASC LIMIT $1 \
+                         ) \
+                         RETURNING id",
+                    )
+                    .bind(evict_count)
+                    .bind(&protected_ids)
+                    .fetch_all(&self.pool)
+                    .await?
+                };
 
                 let evicted_count = evicted_rows.len();
                 for row in &evicted_rows {
@@ -285,7 +346,11 @@ impl AdminService {
                     }
                 }
 
-                actions.push(format!("evicted {evicted_count} low-usage articles"));
+                actions.push(format!(
+                    "evicted {evicted_count} low-usage articles \
+                     ({} bridge nodes protected)",
+                    protected_ids.len()
+                ));
             } else {
                 actions.push(format!(
                     "no eviction needed ({active_count}/{max_active} active)"
