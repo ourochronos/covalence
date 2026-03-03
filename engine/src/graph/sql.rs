@@ -433,7 +433,7 @@ impl SqlGraphRepository {
         let row = sqlx::query(
             "SELECT id, age_id, node_type, title, content, status, \
              confidence, \
-             confidence_applicability, epistemic_type, domain_path, metadata, \
+             epistemic_type, domain_path, metadata, \
              source_type, reliability, content_hash, fingerprint, size_tokens, \
              pinned, version, usage_score, created_at, modified_at, accessed_at, archived_at \
              FROM covalence.nodes WHERE id = $1",
@@ -495,9 +495,7 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
             consistency: 1.0,
             freshness: 1.0,
             corroboration: 0.0,
-            applicability: row
-                .try_get::<Option<f64>, _>("confidence_applicability")?
-                .unwrap_or(1.0) as f32,
+            applicability: 1.0f32,
         },
         epistemic_type,
         domain_path: row
