@@ -1,6 +1,7 @@
 pub mod dimension;
 pub mod graph;
 pub mod lexical;
+pub mod structural;
 pub mod vector;
 
 // Re-exported as public API surface; not all are consumed within this crate.
@@ -10,6 +11,8 @@ pub use dimension::DimensionAdaptor;
 pub use graph::GraphAdaptor;
 #[allow(unused_imports)]
 pub use lexical::LexicalAdaptor;
+#[allow(unused_imports)]
+pub use structural::StructuralAdaptor;
 #[allow(unused_imports)]
 pub use vector::VectorAdaptor;
 

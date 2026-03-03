@@ -1,8 +1,9 @@
-//! Search service — orchestrates the three-dimensional cascade (SPEC §7.2).
+//! Search service — orchestrates the four-dimensional cascade (SPEC §7.2).
 //!
 //! Step 1 (parallel): Lexical + Vector via tokio::try_join!
 //! Step 2 (sequential): Graph from candidate anchors
-//! Step 3: Score fusion (weighted dimensional + confidence + freshness)
+//! Step 3 (sequential): Structural from same anchor set (covalence#52)
+//! Step 4: Score fusion (weighted dimensional + confidence + freshness)
 //!
 //! ## Search Modes
 //!
@@ -28,6 +29,7 @@ use crate::models::SearchIntent;
 use crate::search::dimension::{DimensionAdaptor, DimensionQuery};
 use crate::search::graph::GraphAdaptor;
 use crate::search::lexical::LexicalAdaptor;
+use crate::search::structural::StructuralAdaptor;
 use crate::search::vector::VectorAdaptor;
 
 // ─── Search Mode ──────────────────────────────────────────────────────────────
@@ -47,26 +49,31 @@ pub enum SearchMode {
 
 // ─── Search Strategy ──────────────────────────────────────────────────────────
 
-/// Adaptive fusion strategy — controls the relative weighting of the three
+/// Adaptive fusion strategy — controls the relative weighting of the four
 /// search dimensions for different query types.
 ///
 /// When [`SearchRequest::weights`] is explicitly provided it always takes
 /// precedence; `strategy` only applies when no explicit weights are given.
-#[derive(Debug, Clone, Deserialize, Default, utoipa::ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchStrategy {
-    /// Current behaviour: vector=0.65, lexical=0.25, graph=0.10.
+    /// Balanced across all dimensions: vector=0.55, lexical=0.20, graph=0.10,
+    /// structural=0.15.
     #[default]
     Balanced,
-    /// Lexical-heavy for factual/specific lookups: vector=0.35, lexical=0.50,
-    /// graph=0.15.  Prioritises exact-term matches over semantic similarity.
+    /// Lexical-heavy for factual/specific lookups: vector=0.30, lexical=0.45,
+    /// graph=0.10, structural=0.15.  Prioritises exact-term matches.
     Precise,
-    /// Vector-heavy for conceptual/broad queries: vector=0.80, lexical=0.10,
-    /// graph=0.10.  Prioritises semantic similarity over exact-term matches.
+    /// Vector-heavy for conceptual/broad queries: vector=0.65, lexical=0.10,
+    /// graph=0.10, structural=0.15.  Prioritises semantic similarity.
     Exploratory,
-    /// Graph-heavy for relationship queries: vector=0.30, lexical=0.15,
-    /// graph=0.55.  Prioritises graph-neighbourhood signals.
+    /// Graph-heavy for relationship queries: vector=0.25, lexical=0.10,
+    /// graph=0.45, structural=0.20.  Prioritises graph-neighbourhood signals.
     Graph,
+    /// Structural-heavy for topology queries: vector=0.25, lexical=0.10,
+    /// graph=0.10, structural=0.55.  Discovers nodes with similar graph
+    /// structure even without semantic or lexical overlap.
+    Structural,
 }
 
 // ─── Request / Response types ─────────────────────────────────────────────────
@@ -144,6 +151,10 @@ pub struct WeightsInput {
     pub vector: Option<f32>,
     pub lexical: Option<f32>,
     pub graph: Option<f32>,
+    /// Weight for the structural similarity dimension (covalence#52).
+    /// When omitted, defaults to `0.0` when explicit weights are provided,
+    /// or the strategy preset when using a strategy.
+    pub structural: Option<f32>,
 }
 
 /// A single search result with scores breakdown.
@@ -155,6 +166,10 @@ pub struct SearchResult {
     pub vector_score: Option<f64>,
     pub lexical_score: Option<f64>,
     pub graph_score: Option<f64>,
+    /// Structural similarity score from the graph-embedding dimension.
+    /// `None` when the structural adaptor did not run or produced no result
+    /// for this node (e.g. feature flag off, or no embedding in DB).
+    pub structural_score: Option<f64>,
     pub confidence: f64,
     /// Trustworthiness score derived from source reliability.
     ///
@@ -189,8 +204,8 @@ pub struct SearchMeta {
     pub dimensions_used: Vec<String>,
     pub elapsed_ms: u64,
     /// The effective fusion strategy used for this request (for transparency).
-    /// One of `"balanced"`, `"precise"`, `"exploratory"`, `"graph"`, or
-    /// `"custom"` (when caller-supplied weights override the strategy).
+    /// One of `"balanced"`, `"precise"`, `"exploratory"`, `"graph"`,
+    /// `"structural"`, or `"custom"` (when caller-supplied weights override).
     pub strategy: String,
 }
 
@@ -201,6 +216,7 @@ pub struct SearchService {
     vector: VectorAdaptor,
     lexical: LexicalAdaptor,
     graph: GraphAdaptor,
+    structural: StructuralAdaptor,
 }
 
 impl SearchService {
@@ -210,6 +226,7 @@ impl SearchService {
             vector: VectorAdaptor::new(),
             lexical: LexicalAdaptor::new(),
             graph: GraphAdaptor::new(),
+            structural: StructuralAdaptor::new(),
         }
     }
 
@@ -218,10 +235,12 @@ impl SearchService {
         let v = self.vector.check_availability(&self.pool).await;
         let l = self.lexical.check_availability(&self.pool).await;
         let g = self.graph.check_availability(&self.pool).await;
+        let s = self.structural.check_availability(&self.pool).await;
         tracing::info!(
             vector = v,
             lexical = l,
             graph = g,
+            structural = s,
             "search dimensions initialized"
         );
     }
@@ -264,7 +283,7 @@ impl SearchService {
             max_hops: Some(effective_max_hops),
         };
 
-        let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights, &req.strategy);
+        let (w_vec, w_lex, w_graph, w_struct) = resolve_weights(&req.weights, &req.strategy);
         let effective_strategy = strategy_label(&req.weights, &req.strategy);
         let recency_bias = req.recency_bias.unwrap_or(0.0).clamp(0.0, 1.0);
 
@@ -299,24 +318,59 @@ impl SearchService {
         };
         self.graph.normalize_scores(&mut graph_results);
 
+        // Step 3: Structural dimension — same anchor set as graph.
+        let mut structural_results = if !candidate_set.is_empty() {
+            self.structural
+                .search(
+                    &self.pool,
+                    &dim_query,
+                    Some(&candidate_set),
+                    candidate_limit,
+                )
+                .await?
+        } else {
+            vec![]
+        };
+        self.structural.normalize_scores(&mut structural_results);
+
         // Build a hop-count map from graph results for SearchResult transparency.
         let graph_hops_map: HashMap<Uuid, u32> = graph_results
             .iter()
             .filter_map(|r| r.hop.map(|h| (r.node_id, h)))
             .collect();
 
-        let dims_used = collect_dims_used(&vec_results, &lex_results, &graph_results);
+        let dims_used = collect_dims_used(
+            &vec_results,
+            &lex_results,
+            &graph_results,
+            &structural_results,
+        );
 
         #[allow(clippy::type_complexity)]
         let mut node_scores: HashMap<Uuid, DimScores> = HashMap::new();
         for r in &vec_results {
-            node_scores.entry(r.node_id).or_insert((None, None, None)).0 = Some(r.normalized_score);
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .0 = Some(r.normalized_score);
         }
         for r in &lex_results {
-            node_scores.entry(r.node_id).or_insert((None, None, None)).1 = Some(r.normalized_score);
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .1 = Some(r.normalized_score);
         }
         for r in &graph_results {
-            node_scores.entry(r.node_id).or_insert((None, None, None)).2 = Some(r.normalized_score);
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .2 = Some(r.normalized_score);
+        }
+        for r in &structural_results {
+            node_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .3 = Some(r.normalized_score);
         }
 
         let node_ids: Vec<Uuid> = node_scores.keys().cloned().collect();
@@ -340,6 +394,7 @@ impl SearchService {
             w_vec,
             w_lex,
             w_graph,
+            w_struct,
             None,
             recency_bias,
             &graph_hops_map,
@@ -416,7 +471,7 @@ impl SearchService {
             max_hops: Some(effective_max_hops),
         };
 
-        let (w_vec, w_lex, w_graph) = resolve_weights(&req.weights, &req.strategy);
+        let (w_vec, w_lex, w_graph, w_struct) = resolve_weights(&req.weights, &req.strategy);
         let effective_strategy = strategy_label(&req.weights, &req.strategy);
         let recency_bias = req.recency_bias.unwrap_or(0.0).clamp(0.0, 1.0);
 
@@ -451,33 +506,59 @@ impl SearchService {
         };
         self.graph.normalize_scores(&mut graph_results);
 
+        // Structural dimension — same anchor set as graph.
+        let mut structural_results = if !candidate_set.is_empty() {
+            self.structural
+                .search(
+                    &self.pool,
+                    &article_dim_query,
+                    Some(&candidate_set),
+                    candidate_limit,
+                )
+                .await?
+        } else {
+            vec![]
+        };
+        self.structural.normalize_scores(&mut structural_results);
+
         // Build a hop-count map from graph results for SearchResult transparency.
         let graph_hops_map: HashMap<Uuid, u32> = graph_results
             .iter()
             .filter_map(|r| r.hop.map(|h| (r.node_id, h)))
             .collect();
 
-        let dims_used = collect_dims_used(&vec_results, &lex_results, &graph_results);
+        let dims_used = collect_dims_used(
+            &vec_results,
+            &lex_results,
+            &graph_results,
+            &structural_results,
+        );
 
         // Build article score map.
         let mut article_scores: HashMap<Uuid, DimScores> = HashMap::new();
         for r in &vec_results {
             article_scores
                 .entry(r.node_id)
-                .or_insert((None, None, None))
+                .or_insert((None, None, None, None))
                 .0 = Some(r.normalized_score);
         }
         for r in &lex_results {
             article_scores
                 .entry(r.node_id)
-                .or_insert((None, None, None))
+                .or_insert((None, None, None, None))
                 .1 = Some(r.normalized_score);
         }
         for r in &graph_results {
             article_scores
                 .entry(r.node_id)
-                .or_insert((None, None, None))
+                .or_insert((None, None, None, None))
                 .2 = Some(r.normalized_score);
+        }
+        for r in &structural_results {
+            article_scores
+                .entry(r.node_id)
+                .or_insert((None, None, None, None))
+                .3 = Some(r.normalized_score);
         }
 
         if article_scores.is_empty() {
@@ -505,6 +586,7 @@ impl SearchService {
             w_vec,
             w_lex,
             w_graph,
+            w_struct,
             None,
             recency_bias,
             &graph_hops_map,
@@ -605,6 +687,7 @@ impl SearchService {
                         vector_score: None,
                         lexical_score: None,
                         graph_score: None,
+                        structural_score: None,
                         confidence: *confidence,
                         trust_score: Some(*trust),
                         node_type: node_type.clone(),
@@ -691,8 +774,8 @@ impl SearchService {
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
-/// Per-node dimensional scores `(vector, lexical, graph)`.
-type DimScores = (Option<f64>, Option<f64>, Option<f64>);
+/// Per-node dimensional scores `(vector, lexical, graph, structural)`.
+type DimScores = (Option<f64>, Option<f64>, Option<f64>, Option<f64>);
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -701,28 +784,35 @@ type DimScores = (Option<f64>, Option<f64>, Option<f64>);
 /// Priority order (highest wins):
 /// 1. Explicit `weights` field (caller override).
 /// 2. `strategy` field (preset dimension ratios).
-/// 3. [`SearchStrategy::Balanced`] defaults (current behaviour).
-fn resolve_weights(w: &Option<WeightsInput>, strategy: &Option<SearchStrategy>) -> (f32, f32, f32) {
-    let (v, l, g) = match w {
+/// 3. [`SearchStrategy::Balanced`] defaults.
+fn resolve_weights(
+    w: &Option<WeightsInput>,
+    strategy: &Option<SearchStrategy>,
+) -> (f32, f32, f32, f32) {
+    let (v, l, g, s) = match w {
         // Explicit caller weights always take precedence.
+        // structural defaults to 0.0 so callers who don't specify it get no
+        // structural contribution (backward-compatible with 3-dim requests).
         Some(wi) => (
-            wi.vector.unwrap_or(0.65),
-            wi.lexical.unwrap_or(0.25),
+            wi.vector.unwrap_or(0.55),
+            wi.lexical.unwrap_or(0.20),
             wi.graph.unwrap_or(0.10),
+            wi.structural.unwrap_or(0.0),
         ),
         None => match strategy {
-            Some(SearchStrategy::Precise) => (0.35, 0.50, 0.15),
-            Some(SearchStrategy::Exploratory) => (0.80, 0.10, 0.10),
-            Some(SearchStrategy::Graph) => (0.30, 0.15, 0.55),
-            // Balanced (or absent) → existing defaults, unchanged.
-            Some(SearchStrategy::Balanced) | None => (0.65, 0.25, 0.10),
+            Some(SearchStrategy::Precise) => (0.30, 0.45, 0.10, 0.15),
+            Some(SearchStrategy::Exploratory) => (0.65, 0.10, 0.10, 0.15),
+            Some(SearchStrategy::Graph) => (0.25, 0.10, 0.45, 0.20),
+            Some(SearchStrategy::Structural) => (0.25, 0.10, 0.10, 0.55),
+            // Balanced (or absent) → defaults.
+            Some(SearchStrategy::Balanced) | None => (0.55, 0.20, 0.10, 0.15),
         },
     };
-    let sum = v + l + g;
+    let sum = v + l + g + s;
     if sum > 0.0 {
-        (v / sum, l / sum, g / sum)
+        (v / sum, l / sum, g / sum, s / sum)
     } else {
-        (0.50, 0.30, 0.20)
+        (0.50, 0.30, 0.15, 0.05)
     }
 }
 
@@ -735,6 +825,7 @@ fn strategy_label(w: &Option<WeightsInput>, strategy: &Option<SearchStrategy>) -
         Some(SearchStrategy::Precise) => "precise".to_string(),
         Some(SearchStrategy::Exploratory) => "exploratory".to_string(),
         Some(SearchStrategy::Graph) => "graph".to_string(),
+        Some(SearchStrategy::Structural) => "structural".to_string(),
         Some(SearchStrategy::Balanced) | None => "balanced".to_string(),
     }
 }
@@ -744,6 +835,7 @@ fn collect_dims_used(
     vec_results: &[impl Sized],
     lex_results: &[impl Sized],
     graph_results: &[impl Sized],
+    structural_results: &[impl Sized],
 ) -> Vec<String> {
     let mut dims = vec![];
     if !vec_results.is_empty() {
@@ -754,6 +846,9 @@ fn collect_dims_used(
     }
     if !graph_results.is_empty() {
         dims.push("graph".to_string());
+    }
+    if !structural_results.is_empty() {
+        dims.push("structural".to_string());
     }
     dims
 }
@@ -849,13 +944,14 @@ fn build_results(
     w_vec: f32,
     w_lex: f32,
     w_graph: f32,
+    w_struct: f32,
     expanded_from_override: Option<Uuid>,
     recency_bias: f64,
     graph_hops_map: &HashMap<Uuid, u32>,
     query: &str,
 ) -> Vec<SearchResult> {
     let mut results = Vec::new();
-    for (node_id, (vs, ls, gs)) in node_scores {
+    for (node_id, (vs, ls, gs, ss)) in node_scores {
         let Some(node) = node_map.get(node_id) else {
             continue;
         };
@@ -871,6 +967,9 @@ fn build_results(
         }
         if let Some(g) = gs {
             weighted_sum += g * w_graph as f64;
+        }
+        if let Some(s) = ss {
+            weighted_sum += s * w_struct as f64;
         }
 
         let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
@@ -912,6 +1011,7 @@ fn build_results(
             vector_score: *vs,
             lexical_score: *ls,
             graph_score: *gs,
+            structural_score: *ss,
             confidence: *confidence,
             trust_score: Some(*trust),
             node_type: node_type.clone(),
