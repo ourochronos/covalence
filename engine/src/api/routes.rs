@@ -92,6 +92,9 @@ pub fn router() -> Router<AppState> {
         .route("/admin/graph/centrality", get(admin_graph_centrality))
         .route("/admin/graph/intent-stats", get(admin_graph_intent_stats))
         .route("/admin/knowledge/audit", get(admin_knowledge_audit))
+        // Divergence detection (covalence#58)
+        .route("/admin/divergence/scan", get(admin_divergence_scan))
+        .route("/admin/divergence/report", get(admin_divergence_report))
 }
 
 // ── Graph reload helper ─────────────────────────────────────────
@@ -858,6 +861,67 @@ async fn admin_list_concerns(
     Ok(Json(serde_json::json!({
         "data": results,
         "meta": { "count": results.len() }
+    })))
+}
+
+// ── Divergence detection handlers (covalence#58) ───────────────
+
+/// `GET /admin/divergence/scan`
+///
+/// Triggers a live cross-dimensional divergence scan over all active nodes
+/// that have both content embeddings (`node_embeddings`) and graph embeddings
+/// (`graph_embeddings`).  Results are persisted to node metadata and returned
+/// immediately.
+///
+/// Optional query parameter: `threshold` (float, default 0.5).
+#[derive(serde::Deserialize)]
+struct DivergenceScanQuery {
+    threshold: Option<f64>,
+}
+
+async fn admin_divergence_scan(
+    State(state): State<AppState>,
+    Query(params): Query<DivergenceScanQuery>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let threshold = params
+        .threshold
+        .unwrap_or(crate::worker::divergence::DEFAULT_DIVERGENCE_THRESHOLD)
+        .clamp(0.0, 1.0);
+
+    let result = crate::worker::divergence::run_divergence_scan(&state.pool, threshold)
+        .await
+        .map_err(crate::errors::AppError::Internal)?;
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "scanned":   result.scanned,
+            "flagged":   result.flagged,
+            "anomalies": result.anomalies,
+        },
+        "meta": {
+            "threshold": threshold,
+        }
+    })))
+}
+
+/// `GET /admin/divergence/report`
+///
+/// Returns the most recent divergence scan results stored in node metadata,
+/// without triggering a new scan.  Only nodes flagged in a previous scan are
+/// returned.
+async fn admin_divergence_report(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let result = crate::worker::divergence::read_divergence_report(&state.pool)
+        .await
+        .map_err(crate::errors::AppError::Internal)?;
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "scanned":   result.scanned,
+            "flagged":   result.flagged,
+            "anomalies": result.anomalies,
+        }
     })))
 }
 

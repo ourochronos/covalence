@@ -15,6 +15,7 @@
 
 pub mod contention;
 pub mod decay;
+pub mod divergence;
 pub mod llm;
 pub mod merge_edges;
 pub mod openai;
@@ -263,6 +264,7 @@ pub async fn execute_task(
         "infer_edges" => merge_edges::handle_infer_edges(pool, llm, task).await,
         "resolve_contention" => contention::handle_resolve_contention(pool, llm, task).await,
         "decay_check" => decay::handle_decay_check(pool, task).await,
+        "divergence_scan" => divergence::handle_divergence_scan(pool, task).await,
         "recompute_graph_embeddings" => {
             let method = task
                 .payload

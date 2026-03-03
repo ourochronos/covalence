@@ -23,7 +23,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
+
+use crate::worker::llm::LlmClient;
 
 use crate::graph::algorithms::pagerank;
 use crate::graph::{TopologicalConfidence, compute_topological_confidence};
@@ -47,6 +50,12 @@ pub enum SearchMode {
     /// Two-phase hierarchical retrieval: articles first, then their linked
     /// sources expanded via provenance edges.
     Hierarchical,
+    /// Article-free live synthesis (covalence#59): runs the 4-D search over
+    /// raw sources, feeds the top-N results to the LLM, and returns a
+    /// synthesised answer with inline provenance citations.
+    ///
+    /// Requires `COVALENCE_LIVE_SYNTHESIS=true`.
+    Synthesis,
 }
 
 // ─── Search Strategy ──────────────────────────────────────────────────────────
@@ -215,6 +224,41 @@ pub struct SearchMeta {
     pub strategy: String,
 }
 
+// ─── Synthesis response types ─────────────────────────────────────────────────
+
+/// A single source that was consumed by the live-synthesis pipeline.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SynthesisSource {
+    /// UUID of the source node.
+    #[schema(value_type = String)]
+    pub node_id: Uuid,
+    /// Source title, if available.
+    pub title: Option<String>,
+    /// Source reliability score in [0.0, 1.0].
+    pub reliability: f64,
+    /// 4-D relevance score that caused this source to be selected.
+    pub relevance_score: f64,
+}
+
+/// Response body returned by [`SearchService::search_synthesis`].
+///
+/// Delivered as `POST /search` with `"mode": "synthesis"`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SynthesisResponse {
+    /// Always `"synthesis"`.
+    pub mode: String,
+    /// The original query string.
+    pub query: String,
+    /// LLM-produced synthesis with inline source citations.
+    pub synthesis: String,
+    /// Sources ranked by reliability that were fed to the LLM.
+    pub sources_used: Vec<SynthesisSource>,
+    /// Wall-clock time for the full synthesis pipeline in milliseconds.
+    pub elapsed_ms: u64,
+    /// Number of sources consumed by the LLM.
+    pub source_count: usize,
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 pub struct SearchService {
@@ -228,11 +272,19 @@ pub struct SearchService {
     topological_enabled: bool,
     /// Shared in-memory graph used for topological confidence computation.
     shared_graph: Option<crate::graph::SharedGraph>,
+    /// LLM client used by the live-synthesis pipeline.
+    llm: Option<Arc<dyn LlmClient>>,
+    /// Whether the live-synthesis mode is enabled.
+    /// Controlled by `COVALENCE_LIVE_SYNTHESIS=true`.
+    synthesis_enabled: bool,
 }
 
 impl SearchService {
     pub fn new(pool: PgPool) -> Self {
         let topological_enabled = std::env::var("COVALENCE_TOPOLOGICAL_CONFIDENCE")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        let synthesis_enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
         Self {
@@ -243,12 +295,20 @@ impl SearchService {
             structural: StructuralAdaptor::new(),
             topological_enabled,
             shared_graph: None,
+            llm: None,
+            synthesis_enabled,
         }
     }
 
     /// Attach a shared in-memory graph for topological confidence scoring.
     pub fn with_graph(mut self, graph: crate::graph::SharedGraph) -> Self {
         self.shared_graph = Some(graph);
+        self
+    }
+
+    /// Attach an LLM client for the live-synthesis pipeline.
+    pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
+        self.llm = Some(llm);
         self
     }
 
@@ -274,6 +334,13 @@ impl SearchService {
         match req.mode.clone().unwrap_or_default() {
             SearchMode::Standard => self.search_standard(req).await,
             SearchMode::Hierarchical => self.search_hierarchical(req).await,
+            // Synthesis returns a different response shape.  The route handler
+            // intercepts synthesis requests before calling this method; this
+            // branch is a defensive safety net only.
+            SearchMode::Synthesis => anyhow::bail!(
+                "synthesis mode uses a different response shape; \
+                 call search_synthesis() instead of search()"
+            ),
         }
     }
 
