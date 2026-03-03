@@ -69,12 +69,17 @@ async fn main() -> anyhow::Result<()> {
             std::sync::Arc::new(worker::llm::StubLlmClient)
         }
     };
-    // Load in-memory graph from all current edges
-    let all_edge_rows =
-        sqlx::query("SELECT source_node_id, target_node_id, edge_type FROM covalence.edges")
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default();
+    // Load in-memory graph from active (non-superseded) edges only.
+    // Superseded edges (valid_to IS NOT NULL) are excluded so the in-memory
+    // graph reflects the current state of the knowledge graph.
+    let all_edge_rows = sqlx::query(
+        "SELECT source_node_id, target_node_id, edge_type \
+         FROM covalence.edges \
+         WHERE valid_to IS NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
 
     let mut startup_graph = crate::graph::CovalenceGraph::new();
     for row in &all_edge_rows {

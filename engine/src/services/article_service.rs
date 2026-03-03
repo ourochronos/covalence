@@ -426,6 +426,7 @@ impl ArticleService {
                 TraversalDirection::Inbound,
                 Some(&[EdgeType::Originates, EdgeType::CompiledFrom]),
                 100,
+                false, // active edges only
             )
             .await
         {
@@ -535,6 +536,7 @@ impl ArticleService {
                     TraversalDirection::Inbound,
                     Some(&[EdgeType::Originates, EdgeType::CompiledFrom]),
                     100,
+                    false, // active edges only
                 )
                 .await
             {

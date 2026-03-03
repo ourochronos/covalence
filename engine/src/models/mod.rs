@@ -348,6 +348,10 @@ pub struct Edge {
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub created_by: Option<String>,
+    /// Timestamp from which this edge is valid (matches `created_at` for most edges).
+    pub valid_from: DateTime<Utc>,
+    /// When set, this edge has been superseded/expired.  NULL means currently active.
+    pub valid_to: Option<DateTime<Utc>>,
 }
 
 /// Result from a graph traversal — a node with its relationship context.

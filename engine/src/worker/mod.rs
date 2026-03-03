@@ -19,6 +19,7 @@ pub mod divergence;
 pub mod llm;
 pub mod merge_edges;
 pub mod openai;
+pub mod reconsolidation;
 pub mod tree_index;
 
 use std::sync::Arc;
@@ -265,6 +266,7 @@ pub async fn execute_task(
         "resolve_contention" => contention::handle_resolve_contention(pool, llm, task).await,
         "decay_check" => decay::handle_decay_check(pool, task).await,
         "divergence_scan" => divergence::handle_divergence_scan(pool, task).await,
+        "reconsolidate" => reconsolidation::handle_reconsolidate(pool, llm, task).await,
         "recompute_graph_embeddings" => {
             let method = task
                 .payload
@@ -576,7 +578,7 @@ fn strip_fences(text: &str) -> String {
 }
 
 /// Enqueue a slow-path task with an optional node_id and JSON payload.
-pub(super) async fn enqueue_task(
+pub async fn enqueue_task(
     pool: &PgPool,
     task_type: &str,
     node_id: Option<Uuid>,

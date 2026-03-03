@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::worker::enqueue_task;
 use crate::worker::llm::LlmClient;
 
 use crate::graph::algorithms::pagerank;
@@ -555,6 +556,28 @@ impl SearchService {
         }
         results.truncate(req.limit);
 
+        // ── Retrieval-triggered reconsolidation (covalence#66) ────────────────
+        // Fire-and-forget: collect article IDs from results then spawn a
+        // background check that runs AFTER results are returned to the caller.
+        let article_ids_for_recon: Vec<Uuid> = results
+            .iter()
+            .filter(|r| r.node_type == "article")
+            .map(|r| r.node_id)
+            .collect();
+        if !article_ids_for_recon.is_empty() {
+            let pool_clone = self.pool.clone();
+            tokio::spawn(async move {
+                for article_id in article_ids_for_recon {
+                    if let Err(e) = check_and_queue_reconsolidation(&pool_clone, article_id).await {
+                        tracing::debug!(
+                            article_id = %article_id,
+                            "reconsolidation check error (non-fatal): {e:#}"
+                        );
+                    }
+                }
+            });
+        }
+
         let meta = SearchMeta {
             total_results: results.len(),
             lexical_backend: lexical_backend_name(self.lexical.bm25_available()),
@@ -916,6 +939,26 @@ impl SearchService {
 
         let mut combined = article_results;
         combined.extend(expanded_results);
+
+        // ── Retrieval-triggered reconsolidation (covalence#66) ────────────────
+        let article_ids_for_recon: Vec<Uuid> = combined
+            .iter()
+            .filter(|r| r.node_type == "article")
+            .map(|r| r.node_id)
+            .collect();
+        if !article_ids_for_recon.is_empty() {
+            let pool_clone = self.pool.clone();
+            tokio::spawn(async move {
+                for article_id in article_ids_for_recon {
+                    if let Err(e) = check_and_queue_reconsolidation(&pool_clone, article_id).await {
+                        tracing::debug!(
+                            article_id = %article_id,
+                            "reconsolidation check error (non-fatal): {e:#}"
+                        );
+                    }
+                }
+            });
+        }
 
         let meta = SearchMeta {
             total_results: combined.len(),
@@ -1707,6 +1750,159 @@ fn build_results(
         });
     }
     results
+}
+
+// ─── Retrieval-triggered reconsolidation (covalence#66) ──────────────────────
+
+/// Reconsolidation cooldown window: 6 hours expressed in seconds.
+const RECONSOLIDATION_COOLDOWN_SECS: i64 = 6 * 3600;
+
+/// Top-N orphan sources to consider per embedding-similarity pass.
+const RECON_NEIGHBOR_LIMIT: i64 = 5;
+
+/// Check whether the given article should be reconsolidated and, if so,
+/// queue a `reconsolidate` task in the slow-path queue.
+///
+/// This function is designed to be called from a `tokio::spawn` background
+/// task so it never adds visible latency to the search response.
+///
+/// # Cooldown
+///
+/// An article is skipped if its `last_reconsolidated_at` (or `modified_at` as
+/// a fallback when `last_reconsolidated_at` is NULL) is within
+/// [`RECONSOLIDATION_COOLDOWN_SECS`] of `now()`.  This prevents thrashing for
+/// frequently-retrieved articles.
+///
+/// # Orphan source discovery
+///
+/// Two complementary strategies are used:
+/// 1. **Shared-edge neighbours** — source nodes that share at least one
+///    outbound edge target with the article (i.e. they both point at a common
+///    node) but are not already linked to the article.
+/// 2. **Embedding similarity** — the top-5 source nodes by cosine similarity
+///    to the article's embedding, again filtered to those not already linked.
+async fn check_and_queue_reconsolidation(pool: &PgPool, article_id: Uuid) -> anyhow::Result<()> {
+    // ── 1. Cooldown guard ───────────────────────────────────────────────────
+    let cooldown_row: Option<(
+        Option<chrono::DateTime<chrono::Utc>>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        "SELECT last_reconsolidated_at, modified_at
+         FROM   covalence.nodes
+         WHERE  id = $1 AND status = 'active' AND node_type = 'article'",
+    )
+    .bind(article_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let (last_recon, modified_at) = match cooldown_row {
+        Some(r) => r,
+        None => return Ok(()), // article gone or not active
+    };
+
+    // Use last_reconsolidated_at if available, else fall back to modified_at.
+    let reference_time = last_recon.unwrap_or(modified_at);
+    let secs_since = (chrono::Utc::now() - reference_time).num_seconds();
+    if secs_since < RECONSOLIDATION_COOLDOWN_SECS {
+        tracing::debug!(
+            article_id  = %article_id,
+            secs_since,
+            "reconsolidation: within 6-hour cooldown, skipping"
+        );
+        return Ok(());
+    }
+
+    // ── 2. Already-linked source IDs ────────────────────────────────────────
+    let linked_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT source_node_id
+         FROM   covalence.edges
+         WHERE  target_node_id = $1
+           AND  edge_type IN ('ORIGINATES', 'COMPILED_FROM', 'CONFIRMS')",
+    )
+    .bind(article_id)
+    .fetch_all(pool)
+    .await?;
+
+    // ── 3a. Shared-edge neighbours ──────────────────────────────────────────
+    // Find source nodes that share at least one edge-target with this article
+    // but are not already linked to it.
+    let mut orphan_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT s.id
+         FROM   covalence.nodes   s
+         JOIN   covalence.edges   e1 ON e1.source_node_id = s.id
+         JOIN   covalence.edges   e2 ON e2.target_node_id = e1.target_node_id
+                                     AND e2.source_node_id != s.id
+         WHERE  e2.source_node_id = $1
+           AND  s.node_type       = 'source'
+           AND  s.status          = 'active'
+           AND  s.id              != ALL($2::uuid[])
+         LIMIT  10",
+    )
+    .bind(article_id)
+    .bind(&linked_ids)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // ── 3b. Embedding similarity neighbours ─────────────────────────────────
+    // Only runs when the article has an embedding stored.
+    let embed_orphans: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT ne_src.node_id
+         FROM   covalence.node_embeddings ne_art
+         JOIN   covalence.node_embeddings ne_src
+                ON  ne_src.node_id != ne_art.node_id
+         JOIN   covalence.nodes src
+                ON  src.id        = ne_src.node_id
+                AND src.node_type = 'source'
+                AND src.status    = 'active'
+         WHERE  ne_art.node_id = $1
+           AND  ne_src.node_id != ALL($2::uuid[])
+         ORDER  BY (ne_art.embedding::vector <=> ne_src.embedding::vector) ASC
+         LIMIT  $3",
+    )
+    .bind(article_id)
+    .bind(&linked_ids)
+    .bind(RECON_NEIGHBOR_LIMIT)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // Merge, dedup.
+    let mut seen: std::collections::HashSet<Uuid> = orphan_ids.iter().cloned().collect();
+    for id in embed_orphans {
+        if seen.insert(id) {
+            orphan_ids.push(id);
+        }
+    }
+
+    if orphan_ids.is_empty() {
+        tracing::debug!(
+            article_id = %article_id,
+            "reconsolidation: no orphan sources found"
+        );
+        return Ok(());
+    }
+
+    tracing::info!(
+        article_id   = %article_id,
+        orphan_count = orphan_ids.len(),
+        "reconsolidation: queuing reconsolidate task"
+    );
+
+    // ── 4. Queue the reconsolidate task ─────────────────────────────────────
+    enqueue_task(
+        pool,
+        "reconsolidate",
+        None,
+        serde_json::json!({
+            "article_id": article_id,
+            "source_ids": orphan_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+        }),
+        3, // lower priority than compile/embed
+    )
+    .await?;
+
+    Ok(())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

@@ -70,13 +70,24 @@ pub trait GraphRepository: Send + Sync {
     /// Delete an edge from both AGE and the SQL mirror.
     async fn delete_edge(&self, edge_id: Uuid) -> GraphResult<()>;
 
+    /// Supersede an edge by setting `valid_to = now()` instead of deleting it.
+    ///
+    /// The edge record is preserved for historical queries.  Only the currently
+    /// active instance of the edge (`valid_to IS NULL`) is closed off.
+    /// Returns [`GraphError::EdgeNotFound`] if no active edge with `edge_id` exists.
+    async fn supersede_edge(&self, edge_id: Uuid) -> GraphResult<()>;
+
     /// List edges from/to a node, optionally filtered by edge type.
+    ///
+    /// * `include_superseded = false` (default) — only active edges (`valid_to IS NULL`).
+    /// * `include_superseded = true` — all edges, including superseded ones.
     async fn list_edges(
         &self,
         node_id: Uuid,
         direction: TraversalDirection,
         edge_types: Option<&[EdgeType]>,
         limit: usize,
+        include_superseded: bool,
     ) -> GraphResult<Vec<Edge>>;
 
     // ── Traversal operations ────────────────────────────────────

@@ -47,13 +47,18 @@ CREATE TABLE IF NOT EXISTS covalence.nodes (
     modified_at     TIMESTAMPTZ      DEFAULT now(),
     accessed_at     TIMESTAMPTZ      DEFAULT now(),
     archived_at     TIMESTAMPTZ,
-    usage_score     DOUBLE PRECISION DEFAULT 0.5,
-    namespace       TEXT             NOT NULL DEFAULT 'default',
-    content_tsv     TSVECTOR         GENERATED ALWAYS AS (
-                        to_tsvector('english',
-                            COALESCE(title, '') || ' ' || COALESCE(content, ''))
-                    ) STORED
+    usage_score             DOUBLE PRECISION DEFAULT 0.5,
+    last_reconsolidated_at  TIMESTAMPTZ,
+    namespace               TEXT             NOT NULL DEFAULT 'default',
+    content_tsv             TSVECTOR         GENERATED ALWAYS AS (
+                                to_tsvector('english',
+                                    COALESCE(title, '') || ' ' || COALESCE(content, ''))
+                            ) STORED
 );
+
+-- Migration 018: add last_reconsolidated_at to pre-existing test databases.
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS last_reconsolidated_at TIMESTAMPTZ;
 
 -- -----------------------------------------------------------------------------
 -- edges
@@ -70,11 +75,23 @@ CREATE TABLE IF NOT EXISTS covalence.edges (
     metadata        JSONB            DEFAULT '{}',
     created_at      TIMESTAMPTZ      DEFAULT now(),
     created_by      TEXT,
-    namespace       TEXT             NOT NULL DEFAULT 'default'
+    namespace       TEXT             NOT NULL DEFAULT 'default',
+    -- Migration 019: temporal edges (covalence#60)
+    valid_from      TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    valid_to        TIMESTAMPTZ      NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS edges_dedup_idx
     ON covalence.edges (source_node_id, target_node_id, edge_type);
+
+-- Migration 019: add temporal columns to pre-existing test databases.
+ALTER TABLE covalence.edges ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE covalence.edges ADD COLUMN IF NOT EXISTS valid_to   TIMESTAMPTZ NULL;
+
+-- Partial index for superseded-edge lookups.
+CREATE INDEX IF NOT EXISTS idx_edges_valid_to
+    ON covalence.edges (valid_to)
+    WHERE valid_to IS NOT NULL;
 
 -- -----------------------------------------------------------------------------
 -- node_embeddings
@@ -147,7 +164,7 @@ CREATE TABLE IF NOT EXISTS covalence.slow_path_queue (
 );
 
 -- Idempotently refresh the task_type CHECK constraint so that new task types
--- (e.g. 'recompile') are accepted even on databases created before this update.
+-- (e.g. 'reconsolidate') are accepted even on databases created before this update.
 ALTER TABLE covalence.slow_path_queue
     DROP CONSTRAINT IF EXISTS slow_path_queue_task_type_check;
 ALTER TABLE covalence.slow_path_queue
@@ -155,7 +172,9 @@ ALTER TABLE covalence.slow_path_queue
     CHECK (task_type IN (
         'compile', 'infer_edges', 'resolve_contention',
         'split', 'merge', 'embed', 'contention_check',
-        'tree_index', 'tree_embed', 'recompile'
+        'tree_index', 'tree_embed', 'recompile',
+        'decay_check', 'divergence_scan', 'recompute_graph_embeddings',
+        'reconsolidate'
     ));
 
 -- -----------------------------------------------------------------------------

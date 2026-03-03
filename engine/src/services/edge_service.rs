@@ -70,12 +70,16 @@ impl EdgeService {
     }
 
     /// List edges for a node.
+    ///
+    /// `include_superseded = true` returns both active and superseded edges.
+    /// The default (`false`) returns only currently active edges.
     pub async fn list_for_node(
         &self,
         node_id: Uuid,
         direction: Option<&str>,
         labels: Option<&str>,
         limit: usize,
+        include_superseded: bool,
     ) -> AppResult<Vec<Edge>> {
         let dir = match direction {
             Some("outbound") => TraversalDirection::Outbound,
@@ -90,7 +94,24 @@ impl EdgeService {
         });
 
         self.graph
-            .list_edges(node_id, dir, edge_types.as_deref(), limit)
+            .list_edges(
+                node_id,
+                dir,
+                edge_types.as_deref(),
+                limit,
+                include_superseded,
+            )
+            .await
+            .map_err(AppError::Graph)
+    }
+
+    /// Supersede an active edge — sets `valid_to = now()` without deleting the row.
+    ///
+    /// The edge is preserved for historical queries but excluded from all default
+    /// traversals.  Returns an error if the edge does not exist or is already superseded.
+    pub async fn supersede(&self, edge_id: Uuid) -> AppResult<()> {
+        self.graph
+            .supersede_edge(edge_id)
             .await
             .map_err(AppError::Graph)
     }

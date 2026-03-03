@@ -87,6 +87,7 @@ impl GraphAdaptor {
                     FROM covalence.edges e
                     WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
                       AND e.namespace = $2
+                      AND e.valid_to IS NULL
                 ) sub
                 JOIN covalence.nodes n ON n.id = sub.neighbor_id
                 WHERE n.status = 'active' AND n.namespace = $2
@@ -108,6 +109,7 @@ impl GraphAdaptor {
                     FROM covalence.edges e
                     WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
                       AND e.namespace = $2
+                      AND e.valid_to IS NULL
                 ) sub
                 JOIN covalence.nodes n ON n.id = sub.neighbor_id
                 WHERE n.status = 'active' AND n.namespace = $2

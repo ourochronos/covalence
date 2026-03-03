@@ -375,6 +375,7 @@ async fn node_edges(
             params.direction.as_deref(),
             params.labels.as_deref(),
             params.limit.unwrap_or(50),
+            false, // active edges only by default
         )
         .await
     {

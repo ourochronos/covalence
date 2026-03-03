@@ -58,6 +58,8 @@ impl GraphRepository for SqlGraphRepository {
     // ── Edge operations ───────────────────────────────────────────────────────
 
     /// Create a typed edge — SQL INSERT only.  `age_id` is left NULL.
+    /// `valid_from` defaults to the DB `now()` (same as `created_at`); `valid_to` is NULL
+    /// (edge is immediately active).
     async fn create_edge(
         &self,
         from_id: Uuid,
@@ -73,8 +75,8 @@ impl GraphRepository for SqlGraphRepository {
         sqlx::query(
             "INSERT INTO covalence.edges \
              (id, source_node_id, target_node_id, edge_type, \
-              weight, confidence, metadata, created_at, created_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+              weight, confidence, metadata, created_at, created_by, valid_from) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $8)",
         )
         .bind(edge_id)
         .bind(from_id)
@@ -99,6 +101,8 @@ impl GraphRepository for SqlGraphRepository {
             metadata: properties,
             created_at: now,
             created_by: Some(created_by.to_string()),
+            valid_from: now,
+            valid_to: None,
         })
     }
 
@@ -115,17 +119,40 @@ impl GraphRepository for SqlGraphRepository {
         Ok(())
     }
 
+    /// Supersede an active edge by setting `valid_to = now()`.
+    ///
+    /// The row is preserved for historical queries.  Returns
+    /// [`GraphError::EdgeNotFound`] if no active edge with `edge_id` exists
+    /// (either the ID is unknown or the edge was already superseded).
+    async fn supersede_edge(&self, edge_id: Uuid) -> GraphResult<()> {
+        let result = sqlx::query(
+            "UPDATE covalence.edges SET valid_to = now() WHERE id = $1 AND valid_to IS NULL",
+        )
+        .bind(edge_id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(GraphError::EdgeNotFound(edge_id));
+        }
+        Ok(())
+    }
+
     /// List edges from/to a node, optionally filtered by edge type.
+    ///
+    /// By default only active edges (`valid_to IS NULL`) are returned.
+    /// Pass `include_superseded = true` to include superseded/expired edges.
     async fn list_edges(
         &self,
         node_id: Uuid,
         direction: TraversalDirection,
         edge_types: Option<&[EdgeType]>,
         limit: usize,
+        include_superseded: bool,
     ) -> GraphResult<Vec<Edge>> {
         let mut sql = String::from(
             "SELECT id, age_id, source_node_id, target_node_id, edge_type, \
-             weight, confidence, metadata, created_at, created_by \
+             weight, confidence, metadata, created_at, created_by, valid_from, valid_to \
              FROM covalence.edges WHERE ",
         );
 
@@ -143,6 +170,10 @@ impl GraphRepository for SqlGraphRepository {
                 .map(|t| format!("'{}'", t.as_label()))
                 .collect();
             sql.push_str(&format!(" AND edge_type IN ({})", labels.join(",")));
+        }
+
+        if !include_superseded {
+            sql.push_str(" AND valid_to IS NULL");
         }
 
         sql.push_str(&format!(" ORDER BY created_at DESC LIMIT {limit}"));
@@ -208,17 +239,20 @@ impl GraphRepository for SqlGraphRepository {
                 JOIN covalence.edges e ON {direction_clause} {type_filter}
                 WHERE t.depth < {depth}
                   AND NOT ({next_node} = ANY(t.path))
+                  AND e.valid_to IS NULL
             )
             SELECT DISTINCT ON (t.node_id) t.node_id, t.depth,
                    e.id AS edge_id, e.age_id AS edge_age_id,
                    e.source_node_id, e.target_node_id, e.edge_type,
                    e.weight, e.confidence AS edge_confidence,
                    e.metadata AS edge_metadata, e.created_at AS edge_created_at,
-                   e.created_by
+                   e.created_by,
+                   e.valid_from AS edge_valid_from, e.valid_to AS edge_valid_to
             FROM traversal t
             JOIN covalence.edges e ON (
                 (e.source_node_id = t.node_id OR e.target_node_id = t.node_id)
                 {type_filter}
+                AND e.valid_to IS NULL
             )
             WHERE t.depth > 0
             ORDER BY t.node_id, t.depth
@@ -265,12 +299,14 @@ impl GraphRepository for SqlGraphRepository {
                 FROM covalence.edges e
                 WHERE e.target_node_id = $1
                   AND e.edge_type IN ({provenance_labels})
+                  AND e.valid_to IS NULL
                 UNION ALL
                 SELECT e.source_node_id, e.edge_type, e.confidence, p.depth + 1,
                        p.path || e.source_node_id
                 FROM prov p
                 JOIN covalence.edges e ON e.target_node_id = p.node_id
                 WHERE e.edge_type IN ({provenance_labels})
+                  AND e.valid_to IS NULL
                   AND p.depth < {max_depth}
                   AND NOT (e.source_node_id = ANY(p.path))
             )
@@ -315,6 +351,7 @@ impl GraphRepository for SqlGraphRepository {
             TraversalDirection::Both,
             Some(&[EdgeType::Contradicts, EdgeType::Contends]),
             100,
+            false, // active edges only
         )
         .await
     }
@@ -490,6 +527,22 @@ fn edge_from_row(row: &PgRow) -> GraphResult<Edge> {
         .parse()
         .map_err(|e: String| GraphError::QueryFailed(e))?;
 
+    let created_at: chrono::DateTime<chrono::Utc> = row
+        .try_get("created_at")
+        .or_else(|_| row.try_get("edge_created_at"))?;
+
+    // valid_from falls back to created_at if the column isn't present in the
+    // result set (e.g. older queries that don't select it explicitly).
+    let valid_from: chrono::DateTime<chrono::Utc> = row
+        .try_get("valid_from")
+        .or_else(|_| row.try_get("edge_valid_from"))
+        .unwrap_or(created_at);
+
+    let valid_to: Option<chrono::DateTime<chrono::Utc>> = row
+        .try_get("valid_to")
+        .or_else(|_| row.try_get("edge_valid_to"))
+        .unwrap_or(None);
+
     Ok(Edge {
         id: row.try_get("id").or_else(|_| row.try_get("edge_id"))?,
         age_id: row
@@ -508,9 +561,9 @@ fn edge_from_row(row: &PgRow) -> GraphResult<Edge> {
             .try_get::<serde_json::Value, _>("metadata")
             .or_else(|_| row.try_get::<serde_json::Value, _>("edge_metadata"))
             .unwrap_or(serde_json::json!({})),
-        created_at: row
-            .try_get("created_at")
-            .or_else(|_| row.try_get("edge_created_at"))?,
+        created_at,
         created_by: row.try_get("created_by").ok(),
+        valid_from,
+        valid_to,
     })
 }
