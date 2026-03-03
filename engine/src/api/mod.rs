@@ -1,6 +1,7 @@
 pub mod openapi;
 pub mod routes;
 
+use crate::graph::SharedGraph;
 use crate::worker::llm::LlmClient;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -9,4 +10,5 @@ use std::sync::Arc;
 pub struct AppState {
     pub pool: PgPool,
     pub llm: Arc<dyn LlmClient>,
+    pub graph: SharedGraph,
 }

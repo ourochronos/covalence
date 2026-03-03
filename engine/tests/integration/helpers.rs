@@ -661,3 +661,17 @@ impl TestFixture {
         }
     }
 }
+
+// ─── Test AppState factory ─────────────────────────────────────────────────────
+
+/// Build a test [`covalence_engine::api::AppState`] with an empty in-memory
+/// graph (graph is re-loaded from DB on each edge mutation in production, but
+/// for tests that don't exercise edge routes a fresh empty graph is fine).
+pub async fn make_test_state(pool: sqlx::PgPool) -> covalence_engine::api::AppState {
+    use std::sync::Arc;
+    let llm: Arc<dyn covalence_engine::worker::llm::LlmClient> = Arc::new(MockLlmClient::new());
+    let graph = Arc::new(tokio::sync::RwLock::new(
+        covalence_engine::graph::CovalenceGraph::new(),
+    ));
+    covalence_engine::api::AppState { pool, llm, graph }
+}

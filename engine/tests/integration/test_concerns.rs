@@ -2,23 +2,20 @@
 //!
 //! Exercises POST /admin/concerns and GET /admin/concerns.
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serial_test::serial;
 use tower::ServiceExt as _;
 
-use covalence_engine::api::{AppState, routes};
+use covalence_engine::api::routes;
 
-use super::helpers::{MockLlmClient, setup_pool};
+use super::helpers::setup_pool;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 async fn make_app() -> axum::Router {
     let pool = setup_pool().await;
-    let llm: Arc<dyn covalence_engine::worker::llm::LlmClient> = Arc::new(MockLlmClient::new());
-    let state = AppState { pool, llm };
+    let state = super::helpers::make_test_state(pool).await;
     routes::router().with_state(state)
 }
 

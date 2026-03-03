@@ -85,6 +85,30 @@ pub fn router() -> Router<AppState> {
             "/admin/concerns",
             post(admin_upsert_concerns).get(admin_list_concerns),
         )
+        .route("/admin/graph/stats", get(admin_graph_stats))
+}
+
+// ── Graph reload helper ─────────────────────────────────────────
+
+/// Rebuild the shared in-memory graph from the current DB state.
+/// Called after any mutation to edges (create / delete).
+async fn reload_shared_graph(state: &AppState) {
+    use sqlx::Row as _;
+    let rows = sqlx::query("SELECT source_node_id, target_node_id, edge_type FROM covalence.edges")
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+
+    let mut new_graph = crate::graph::CovalenceGraph::new();
+    for row in rows {
+        let source: Uuid = row.try_get("source_node_id").unwrap_or_default();
+        let target: Uuid = row.try_get("target_node_id").unwrap_or_default();
+        let edge_type: String = row.try_get("edge_type").unwrap_or_default();
+        new_graph.add_edge(source, target, edge_type);
+    }
+
+    let mut g = state.graph.write().await;
+    *g = new_graph;
 }
 
 // ── Source handlers ─────────────────────────────────────────────
@@ -271,17 +295,23 @@ async fn edge_create(
     State(state): State<AppState>,
     Json(req): Json<CreateEdgeRequest>,
 ) -> impl IntoResponse {
-    let svc = EdgeService::new(state.pool);
+    let svc = EdgeService::new(state.pool.clone());
     match svc.create(req).await {
-        Ok(resp) => (StatusCode::CREATED, Json(serde_json::json!({"data": resp}))).into_response(),
+        Ok(resp) => {
+            reload_shared_graph(&state).await;
+            (StatusCode::CREATED, Json(serde_json::json!({"data": resp}))).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
 
 async fn edge_delete(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let svc = EdgeService::new(state.pool);
+    let svc = EdgeService::new(state.pool.clone());
     match svc.delete(id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            reload_shared_graph(&state).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
@@ -330,6 +360,16 @@ async fn node_neighborhood(
 }
 
 // ── Admin handlers ──────────────────────────────────────────────
+
+async fn admin_graph_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let g = state.graph.read().await;
+    Json(serde_json::json!({
+        "data": {
+            "node_count": g.node_count(),
+            "edge_count": g.edge_count(),
+        }
+    }))
+}
 
 async fn admin_stats(State(state): State<AppState>) -> impl IntoResponse {
     let svc = AdminService::new(state.pool);

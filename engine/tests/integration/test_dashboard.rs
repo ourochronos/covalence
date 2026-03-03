@@ -5,24 +5,21 @@
 //! * The `Content-Type` header includes `text/html`.
 //! * The response body contains the expected landmark text "Covalence Dashboard".
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serial_test::serial;
 use tower::ServiceExt as _; // for `oneshot`
 
-use covalence_engine::api::{AppState, routes};
+use covalence_engine::api::routes;
 
-use super::helpers::{MockLlmClient, setup_pool};
+use super::helpers::setup_pool;
 
 #[tokio::test]
 #[serial]
 async fn test_dashboard_returns_html_page() {
     // ── Setup ──────────────────────────────────────────────────────────────
     let pool = setup_pool().await;
-    let llm: Arc<dyn covalence_engine::worker::llm::LlmClient> = Arc::new(MockLlmClient::new());
-    let state = AppState { pool, llm };
+    let state = super::helpers::make_test_state(pool).await;
 
     let app = routes::router().with_state(state);
 

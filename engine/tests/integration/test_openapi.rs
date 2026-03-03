@@ -5,23 +5,20 @@
 //! * GET /openapi.json body contains "Covalence Knowledge Engine"
 //! * GET /docs returns HTTP 200 with Content-Type text/html
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serial_test::serial;
 use tower::ServiceExt as _;
 
-use covalence_engine::api::{AppState, routes};
+use covalence_engine::api::routes;
 
-use super::helpers::{MockLlmClient, setup_pool};
+use super::helpers::setup_pool;
 
 #[tokio::test]
 #[serial]
 async fn test_openapi_json_returns_200_with_application_json() {
     let pool = setup_pool().await;
-    let llm: Arc<dyn covalence_engine::worker::llm::LlmClient> = Arc::new(MockLlmClient::new());
-    let state = AppState { pool, llm };
+    let state = super::helpers::make_test_state(pool).await;
     let app = routes::router().with_state(state);
 
     let request = Request::builder()
@@ -54,8 +51,7 @@ async fn test_openapi_json_returns_200_with_application_json() {
 #[serial]
 async fn test_openapi_json_body_contains_title() {
     let pool = setup_pool().await;
-    let llm: Arc<dyn covalence_engine::worker::llm::LlmClient> = Arc::new(MockLlmClient::new());
-    let state = AppState { pool, llm };
+    let state = super::helpers::make_test_state(pool).await;
     let app = routes::router().with_state(state);
 
     let request = Request::builder()
@@ -84,8 +80,7 @@ async fn test_openapi_json_body_contains_title() {
 #[serial]
 async fn test_docs_returns_html() {
     let pool = setup_pool().await;
-    let llm: Arc<dyn covalence_engine::worker::llm::LlmClient> = Arc::new(MockLlmClient::new());
-    let state = AppState { pool, llm };
+    let state = super::helpers::make_test_state(pool).await;
     let app = routes::router().with_state(state);
 
     let request = Request::builder()

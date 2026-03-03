@@ -59,7 +59,34 @@ async fn main() -> anyhow::Result<()> {
             std::sync::Arc::new(worker::llm::StubLlmClient)
         }
     };
-    let state = AppState { pool, llm };
+    // Load in-memory graph from all current edges
+    let all_edge_rows =
+        sqlx::query("SELECT source_node_id, target_node_id, edge_type FROM covalence.edges")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+    let mut startup_graph = crate::graph::CovalenceGraph::new();
+    for row in &all_edge_rows {
+        use sqlx::Row as _;
+        let source: uuid::Uuid = row.try_get("source_node_id").unwrap_or_default();
+        let target: uuid::Uuid = row.try_get("target_node_id").unwrap_or_default();
+        let edge_type: String = row.try_get("edge_type").unwrap_or_default();
+        startup_graph.add_edge(source, target, edge_type);
+    }
+    tracing::info!(
+        node_count = startup_graph.node_count(),
+        edge_count = startup_graph.edge_count(),
+        "in-memory graph loaded"
+    );
+    let shared_graph: crate::graph::SharedGraph =
+        std::sync::Arc::new(tokio::sync::RwLock::new(startup_graph));
+
+    let state = AppState {
+        pool,
+        llm,
+        graph: shared_graph,
+    };
     let app = api::routes::router()
         .with_state(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())

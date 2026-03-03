@@ -39,6 +39,7 @@ mod test_contention;
 mod test_dashboard;
 mod test_decay;
 mod test_embed;
+mod test_graph_stats;
 mod test_memory_recall;
 mod test_merge;
 mod test_openapi;

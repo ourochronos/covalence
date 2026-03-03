@@ -1,11 +1,16 @@
 //! In-memory graph layer backed by petgraph.
 //!
 //! Phase 2a: CovalenceGraph struct definition only.
-//! Phase 2b will wire this into AppState and add load/reload logic.
+//! Phase 2b: load/reload logic, SharedGraph type alias, wired into AppState.
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use uuid::Uuid;
+
+use crate::models::Edge;
+
+/// A cheaply-cloneable, async-safe shared reference to the in-memory graph.
+pub type SharedGraph = std::sync::Arc<tokio::sync::RwLock<CovalenceGraph>>;
 
 /// An in-memory directed graph of Covalence nodes and edges.
 ///
@@ -43,6 +48,26 @@ impl CovalenceGraph {
         let s = self.add_node(source);
         let t = self.add_node(target);
         self.graph.add_edge(s, t, edge_type);
+    }
+
+    /// Build a graph from a slice of Edge records (all edges from DB).
+    pub fn load(edges: &[Edge]) -> Self {
+        let mut g = Self::new();
+        for edge in edges {
+            g.add_node(edge.source_node_id);
+            g.add_node(edge.target_node_id);
+            g.add_edge(
+                edge.source_node_id,
+                edge.target_node_id,
+                edge.edge_type.as_label().to_string(),
+            );
+        }
+        g
+    }
+
+    /// Return true if the graph contains a node with the given UUID.
+    pub fn has_node(&self, id: &Uuid) -> bool {
+        self.index.contains_key(id)
     }
 
     /// Number of nodes in the graph.
