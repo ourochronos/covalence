@@ -58,6 +58,7 @@ async fn test_structural_search_feature_flag_off() {
         session_id: None,
         node_types: None,
         max_hops: None,
+        namespace: "default".to_string(),
     };
     // Use a fake anchor so the candidate list is non-empty.
     let fake_anchor = vec![Uuid::new_v4()];
