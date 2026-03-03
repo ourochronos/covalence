@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use serial_test::serial;
+use uuid::Uuid;
 
 use covalence_engine::worker::{
     handle_embed, handle_tree_embed, handle_tree_index, llm::LlmClient,
@@ -256,6 +257,144 @@ async fn tree_embed_idempotent() {
     assert_eq!(
         count, 1,
         "ON CONFLICT should keep exactly one embedding row"
+    );
+
+    fix.cleanup().await;
+}
+
+// ─── covalence#71 regression: array metadata ─────────────────────────────────
+
+/// covalence#71 — `embed` must not fail when a source/web node has `metadata`
+/// stored as a JSON **array** instead of a JSON object.
+///
+/// Root cause: `metadata || $1::jsonb` in PostgreSQL when `metadata` is an
+/// array **appends** the object as a new array element rather than merging
+/// keys.  The re-fetched metadata is still an array, so
+/// `metadata.get("tree_index")` returns `None` and the handler fails with
+/// "tree_index still missing after build — this is a bug".
+///
+/// Fix in `build_tree_index`: use
+///   `CASE WHEN jsonb_typeof(metadata) = 'object' THEN metadata
+///         ELSE '{}'::jsonb END || $1::jsonb`
+#[tokio::test]
+#[serial]
+async fn embed_with_array_metadata_succeeds() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    // Content > TRIVIAL_THRESHOLD_CHARS (700) so build_tree_single fires.
+    let content =
+        "Distributed consensus and replication strategies for federated systems. ".repeat(20);
+    assert!(content.len() > 700);
+
+    let node_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, metadata, source_type) \
+         VALUES ($1, 'source', 'active', $2, $3, $4::jsonb, 'web')",
+    )
+    .bind(node_id)
+    .bind("Array Metadata Web Source (covalence#71)")
+    .bind(&content)
+    .bind(r#"[{"source": "test", "url": "https://example.com/test"}]"#)
+    .execute(&fix.pool)
+    .await
+    .expect("insert with array metadata failed");
+
+    fix.track(node_id);
+    fix.track_task_type("embed");
+    fix.track_task_type("tree_embed");
+
+    // Precondition: metadata is an array → tree_index inaccessible via .get()
+    let meta_before: serde_json::Value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT metadata FROM covalence.nodes WHERE id = $1",
+    )
+    .bind(node_id)
+    .fetch_one(&fix.pool)
+    .await
+    .expect("pre-fetch failed");
+    assert!(
+        meta_before.as_array().is_some(),
+        "precondition: metadata must be a JSON array"
+    );
+    assert!(
+        meta_before.get("tree_index").is_none(),
+        "precondition: tree_index must not be accessible on array metadata"
+    );
+
+    // Must not fail with "tree_index still missing after build"
+    let task = TestFixture::make_task("embed", Some(node_id), json!({}));
+    handle_embed(&fix.pool, &llm, &task)
+        .await
+        .expect("handle_embed must succeed with array metadata (covalence#71)");
+
+    // metadata must now be an object with tree_index as a top-level key
+    let meta_after: serde_json::Value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT metadata FROM covalence.nodes WHERE id = $1",
+    )
+    .bind(node_id)
+    .fetch_one(&fix.pool)
+    .await
+    .expect("post-fetch failed");
+    assert!(
+        meta_after.get("tree_index").is_some(),
+        "metadata.tree_index must be a top-level key after fix (covalence#71)"
+    );
+
+    assert!(
+        fix.embedding_exists(node_id).await,
+        "node embedding must exist after embed with array metadata"
+    );
+
+    fix.cleanup().await;
+}
+
+/// covalence#71 — same regression via `handle_tree_embed`.
+#[tokio::test]
+#[serial]
+async fn tree_embed_with_array_metadata_succeeds() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    let content = "Knowledge graph federation and distributed consistency semantics. ".repeat(20);
+    assert!(content.len() > 700);
+
+    let node_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, metadata, source_type) \
+         VALUES ($1, 'source', 'active', $2, $3, $4::jsonb, 'web')",
+    )
+    .bind(node_id)
+    .bind("Array Metadata Web Source — tree_embed (covalence#71)")
+    .bind(&content)
+    .bind(r#"[{"source": "test", "url": "https://example.com/tree-embed-test"}]"#)
+    .execute(&fix.pool)
+    .await
+    .expect("insert failed");
+
+    fix.track(node_id);
+    fix.track_task_type("tree_embed");
+
+    let task = TestFixture::make_task("tree_embed", Some(node_id), json!({}));
+    handle_tree_embed(&fix.pool, &llm, &task)
+        .await
+        .expect("handle_tree_embed must succeed with array metadata (covalence#71)");
+
+    let meta_after: serde_json::Value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT metadata FROM covalence.nodes WHERE id = $1",
+    )
+    .bind(node_id)
+    .fetch_one(&fix.pool)
+    .await
+    .expect("post-fetch failed");
+    assert!(
+        meta_after.get("tree_index").is_some(),
+        "metadata.tree_index must be accessible after tree_embed with array metadata"
+    );
+    assert!(
+        fix.embedding_exists(node_id).await,
+        "node embedding must exist after tree_embed with array metadata"
     );
 
     fix.cleanup().await;

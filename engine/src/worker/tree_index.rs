@@ -411,18 +411,32 @@ pub async fn build_tree_index(
     let tree_json = serde_json::to_value(&tree)?;
     let now = chrono::Utc::now().to_rfc3339();
 
-    sqlx::query("UPDATE covalence.nodes SET metadata = metadata || $1::jsonb WHERE id = $2")
-        .bind(json!({
-            "tree_index": tree_json,
-            "tree_indexed_at": now,
-            "tree_method": method,
-            "tree_node_count": node_count,
-            "tree_overlap": overlap_fraction,
-        }))
-        .bind(node_id)
-        .execute(pool)
-        .await
-        .context("failed to store tree index in metadata")?;
+    // Use CASE to guard against metadata stored as a non-object (e.g. a JSON
+    // array written by the source_ingest API).  In PostgreSQL, `array ||
+    // object` appends the object as a new array element instead of merging
+    // keys, so a subsequent `.get("tree_index")` on the array returns None and
+    // triggers the "tree_index still missing after build" error (covalence#71).
+    // Normalising to '{}' when the existing value is not an object is safe:
+    // the corrupted array is discarded and tree_index is stored accessibly.
+    sqlx::query(
+        "UPDATE covalence.nodes \
+         SET metadata = CASE WHEN jsonb_typeof(metadata) = 'object' \
+                             THEN metadata \
+                             ELSE '{}'::jsonb END \
+                        || $1::jsonb \
+         WHERE id = $2",
+    )
+    .bind(json!({
+        "tree_index": tree_json,
+        "tree_indexed_at": now,
+        "tree_method": method,
+        "tree_node_count": node_count,
+        "tree_overlap": overlap_fraction,
+    }))
+    .bind(node_id)
+    .execute(pool)
+    .await
+    .context("failed to store tree index in metadata")?;
 
     tracing::info!(
         node_id = %node_id,
