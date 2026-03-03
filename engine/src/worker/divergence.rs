@@ -276,11 +276,7 @@ pub async fn run_divergence_scan(
 }
 
 /// Persist `divergence_flags` to a node's metadata JSONB column.
-async fn write_divergence_flag(
-    pool: &PgPool,
-    node_id: Uuid,
-    flag: &Value,
-) -> anyhow::Result<()> {
+async fn write_divergence_flag(pool: &PgPool, node_id: Uuid, flag: &Value) -> anyhow::Result<()> {
     sqlx::query(
         r#"UPDATE covalence.nodes
            SET metadata = jsonb_set(
@@ -392,10 +388,7 @@ pub async fn read_divergence_report(pool: &PgPool) -> anyhow::Result<DivergenceS
 /// Handler for the `divergence_scan` queue task type.
 ///
 /// Payload: `{ "threshold": 0.5 }` (all fields optional).
-pub async fn handle_divergence_scan(
-    pool: &PgPool,
-    task: &QueueTask,
-) -> anyhow::Result<Value> {
+pub async fn handle_divergence_scan(pool: &PgPool, task: &QueueTask) -> anyhow::Result<Value> {
     let threshold = task
         .payload
         .get("threshold")

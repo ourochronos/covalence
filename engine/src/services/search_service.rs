@@ -922,20 +922,16 @@ impl SearchService {
     /// Returns [`anyhow::Error`] when:
     /// - `COVALENCE_LIVE_SYNTHESIS` is not set to `"true"` or `"1"`.
     /// - No LLM client is attached (call [`SearchService::with_llm`] first).
-    pub async fn search_synthesis(
-        &self,
-        req: SearchRequest,
-    ) -> anyhow::Result<SynthesisResponse> {
+    pub async fn search_synthesis(&self, req: SearchRequest) -> anyhow::Result<SynthesisResponse> {
         if !self.synthesis_enabled {
             anyhow::bail!(
                 "live synthesis is disabled; set COVALENCE_LIVE_SYNTHESIS=true to enable"
             );
         }
 
-        let llm = self
-            .llm
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("LLM client not attached; call with_llm() on SearchService"))?;
+        let llm = self.llm.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("LLM client not attached; call with_llm() on SearchService")
+        })?;
 
         let start = std::time::Instant::now();
 
@@ -983,15 +979,16 @@ impl SearchService {
 
         // Step 2 — fetch full source content.
         let source_ids: Vec<Uuid> = source_results.iter().map(|r| r.node_id).collect();
-        let content_rows = sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Option<f64>)>(
-            "SELECT id, title, content, reliability::float8
+        let content_rows =
+            sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Option<f64>)>(
+                "SELECT id, title, content, reliability::float8
              FROM   covalence.nodes
              WHERE  id = ANY($1)
                AND  status = 'active'",
-        )
-        .bind(&source_ids)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(&source_ids)
+            .fetch_all(&self.pool)
+            .await?;
 
         // Build a map: node_id → (title, content, reliability).
         let content_map: HashMap<Uuid, (Option<String>, Option<String>, f64)> = content_rows
@@ -1072,10 +1069,7 @@ impl SearchService {
     /// Mirrors `search_standard` but captures `DimensionResult` snapshots before
     /// they are collapsed into the fused `SearchResult` list, so callers can
     /// inspect the contribution of each dimension.
-    pub async fn search_debug(
-        &self,
-        req: SearchRequest,
-    ) -> anyhow::Result<SearchDebugResponse> {
+    pub async fn search_debug(&self, req: SearchRequest) -> anyhow::Result<SearchDebugResponse> {
         let start = std::time::Instant::now();
         let candidate_limit = req.limit * 5;
 
@@ -1264,26 +1258,26 @@ impl SearchService {
             let node_ids: Vec<Uuid> = node_scores.keys().cloned().collect();
             let node_map = fetch_node_map(&self.pool, &node_ids).await?;
 
-            let topo_map: Option<HashMap<Uuid, TopologicalConfidence>> =
-                if self.topological_enabled {
-                    if let Some(shared) = &self.shared_graph {
-                        let graph = shared.read().await;
-                        let pr_scores = pagerank(&graph, 0.85, 20);
-                        let topo: HashMap<Uuid, TopologicalConfidence> = node_ids
-                            .iter()
-                            .map(|id| {
-                                let tc = compute_topological_confidence(id, &pr_scores, &graph);
-                                (*id, tc)
-                            })
-                            .collect();
-                        drop(graph);
-                        Some(topo)
-                    } else {
-                        None
-                    }
+            let topo_map: Option<HashMap<Uuid, TopologicalConfidence>> = if self.topological_enabled
+            {
+                if let Some(shared) = &self.shared_graph {
+                    let graph = shared.read().await;
+                    let pr_scores = pagerank(&graph, 0.85, 20);
+                    let topo: HashMap<Uuid, TopologicalConfidence> = node_ids
+                        .iter()
+                        .map(|id| {
+                            let tc = compute_topological_confidence(id, &pr_scores, &graph);
+                            (*id, tc)
+                        })
+                        .collect();
+                    drop(graph);
+                    Some(topo)
                 } else {
                     None
-                };
+                }
+            } else {
+                None
+            };
 
             let mut results = build_results(
                 &node_scores,
@@ -1750,7 +1744,10 @@ mod tests {
         let enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
-        assert!(!enabled, "synthesis should be disabled when env var is absent");
+        assert!(
+            !enabled,
+            "synthesis should be disabled when env var is absent"
+        );
 
         // Restore.
         if let Some(val) = saved {
@@ -1766,7 +1763,10 @@ mod tests {
         let enabled = std::env::var("COVALENCE_LIVE_SYNTHESIS")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
-        assert!(enabled, "synthesis should be enabled when env var is 'true'");
+        assert!(
+            enabled,
+            "synthesis should be enabled when env var is 'true'"
+        );
 
         // Restore.
         unsafe { std::env::remove_var("COVALENCE_LIVE_SYNTHESIS") };

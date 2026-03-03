@@ -436,8 +436,14 @@ mod tests {
         let ranks = pagerank_filtered(&g, 0.85, 20, &types);
 
         // b should score higher than a and c in the factual subgraph.
-        assert!(ranks[&b] > ranks[&a], "b should outrank a in factual subgraph");
-        assert!(ranks[&b] > ranks[&c], "b should outrank c in factual subgraph");
+        assert!(
+            ranks[&b] > ranks[&a],
+            "b should outrank a in factual subgraph"
+        );
+        assert!(
+            ranks[&b] > ranks[&c],
+            "b should outrank c in factual subgraph"
+        );
     }
 
     #[test]

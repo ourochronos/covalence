@@ -16,7 +16,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::errors::AppResult;
-use crate::graph::{SharedGraph, algorithms::{betweenness_centrality, connected_components, pagerank}};
+use crate::graph::{
+    SharedGraph,
+    algorithms::{betweenness_centrality, connected_components, pagerank},
+};
 use crate::services::contention_service::ContentionService;
 use crate::services::search_service::{SearchRequest, SearchResult, SearchService};
 
@@ -115,7 +118,7 @@ impl AuditService {
             node_types: None, // articles + sources
             limit: 20,
             weights: None,
-            mode: None,         // standard flat search
+            mode: None, // standard flat search
             recency_bias: None,
             domain_path: None,
             strategy: None,
@@ -278,10 +281,7 @@ impl AuditService {
         // Betweenness centrality — top 3 nodes
         let centrality = betweenness_centrality(&graph);
         let mut centrality_vec: Vec<(Uuid, f64)> = centrality.into_iter().collect();
-        centrality_vec.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        centrality_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let central_nodes: Vec<CentralNode> = centrality_vec
             .into_iter()
             .take(3)

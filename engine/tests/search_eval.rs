@@ -17,8 +17,8 @@
 //! `DATABASE_URL` is not set or the connection fails.
 
 use covalence_engine::services::search_service::{
-    resolve_weights, SearchDebugResponse, SearchRequest, SearchService, SearchStrategy,
-    WeightsInput,
+    SearchDebugResponse, SearchRequest, SearchService, SearchStrategy, WeightsInput,
+    resolve_weights,
 };
 use uuid::Uuid;
 
@@ -89,8 +89,7 @@ fn test_all_strategies_produce_distinct_weights() {
 
 #[test]
 fn test_precise_strategy_is_lexical_heavy() {
-    let (w_vec, w_lex, w_graph, w_struct) =
-        resolve_weights(&None, &Some(SearchStrategy::Precise));
+    let (w_vec, w_lex, w_graph, w_struct) = resolve_weights(&None, &Some(SearchStrategy::Precise));
     assert!(
         w_lex > w_vec,
         "Precise: lexical ({w_lex:.3}) should exceed vector ({w_vec:.3})"
@@ -160,8 +159,7 @@ fn test_structural_strategy_is_structural_heavy() {
 
 #[test]
 fn test_balanced_strategy_weights_sum_to_one() {
-    let (w_vec, w_lex, w_graph, w_struct) =
-        resolve_weights(&None, &Some(SearchStrategy::Balanced));
+    let (w_vec, w_lex, w_graph, w_struct) = resolve_weights(&None, &Some(SearchStrategy::Balanced));
     let sum = w_vec + w_lex + w_graph + w_struct;
     assert!(
         (sum - 1.0_f32).abs() < 1e-5,
@@ -244,7 +242,9 @@ async fn test_debug_response_has_all_required_fields() {
     let pool = match try_pool().await {
         Some(p) => p,
         None => {
-            eprintln!("DATABASE_URL not set — skipping test_debug_response_has_all_required_fields");
+            eprintln!(
+                "DATABASE_URL not set — skipping test_debug_response_has_all_required_fields"
+            );
             return;
         }
     };
@@ -286,10 +286,18 @@ async fn test_debug_response_has_all_required_fields() {
 
     // Each raw_scores entry must have a non-zero-by-construction node_id.
     for entry in &dims.vector.raw_scores {
-        assert_ne!(entry.node_id, Uuid::nil(), "vector raw_score node_id must not be nil");
+        assert_ne!(
+            entry.node_id,
+            Uuid::nil(),
+            "vector raw_score node_id must not be nil"
+        );
     }
     for entry in &dims.lexical.raw_scores {
-        assert_ne!(entry.node_id, Uuid::nil(), "lexical raw_score node_id must not be nil");
+        assert_ne!(
+            entry.node_id,
+            Uuid::nil(),
+            "lexical raw_score node_id must not be nil"
+        );
     }
 }
 
@@ -299,9 +307,7 @@ async fn test_debug_default_strategy_is_balanced() {
     let pool = match try_pool().await {
         Some(p) => p,
         None => {
-            eprintln!(
-                "DATABASE_URL not set — skipping test_debug_default_strategy_is_balanced"
-            );
+            eprintln!("DATABASE_URL not set — skipping test_debug_default_strategy_is_balanced");
             return;
         }
     };
@@ -337,11 +343,10 @@ async fn test_vector_dimension_fires_for_semantic_queries() {
     };
 
     // Check whether any node embeddings exist.
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM covalence.node_embeddings")
-            .fetch_one(&pool)
-            .await
-            .unwrap_or(0);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM covalence.node_embeddings")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
 
     if count == 0 {
         eprintln!("no node_embeddings in DB — skipping vector dimension test");
@@ -349,12 +354,11 @@ async fn test_vector_dimension_fires_for_semantic_queries() {
     }
 
     // Fetch one real embedding to use as the query vector.
-    let (emb_str,): (String,) = sqlx::query_as(
-        "SELECT embedding::text FROM covalence.node_embeddings LIMIT 1",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("fetch embedding");
+    let (emb_str,): (String,) =
+        sqlx::query_as("SELECT embedding::text FROM covalence.node_embeddings LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .expect("fetch embedding");
 
     // Parse the pgvector text format "[a,b,c,...]" into Vec<f32>.
     let trimmed = emb_str.trim_start_matches('[').trim_end_matches(']');
@@ -534,7 +538,9 @@ async fn test_graph_dimension_fires_when_anchors_have_edges() {
             debug.dimensions.vector.results_count,
         );
     } else {
-        eprintln!("no lexical/vector anchors found for keyword {keyword:?} — graph test inconclusive");
+        eprintln!(
+            "no lexical/vector anchors found for keyword {keyword:?} — graph test inconclusive"
+        );
     }
 }
 
@@ -547,19 +553,16 @@ async fn test_structural_dimension_fires_when_graph_embeddings_exist() {
     let pool = match try_pool().await {
         Some(p) => p,
         None => {
-            eprintln!(
-                "DATABASE_URL not set — skipping test_structural_dimension_fires"
-            );
+            eprintln!("DATABASE_URL not set — skipping test_structural_dimension_fires");
             return;
         }
     };
 
     // Count graph_embeddings rows.
-    let emb_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM covalence.graph_embeddings")
-            .fetch_one(&pool)
-            .await
-            .unwrap_or(0);
+    let emb_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM covalence.graph_embeddings")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
 
     if emb_count == 0 {
         eprintln!("no graph_embeddings in DB — skipping structural dimension test");
@@ -588,8 +591,8 @@ async fn test_structural_dimension_fires_when_graph_embeddings_exist() {
     );
 
     // Only assert firing if prior dimensions produced anchors.
-    let has_anchors = debug.dimensions.vector.results_count > 0
-        || debug.dimensions.lexical.results_count > 0;
+    let has_anchors =
+        debug.dimensions.vector.results_count > 0 || debug.dimensions.lexical.results_count > 0;
 
     if has_anchors {
         assert!(
@@ -620,9 +623,7 @@ async fn test_relevant_document_scores_above_noise() {
     let pool = match try_pool().await {
         Some(p) => p,
         None => {
-            eprintln!(
-                "DATABASE_URL not set — skipping test_relevant_document_scores_above_noise"
-            );
+            eprintln!("DATABASE_URL not set — skipping test_relevant_document_scores_above_noise");
             return;
         }
     };

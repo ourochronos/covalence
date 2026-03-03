@@ -300,10 +300,17 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
 
-        assert_eq!(neighbors.len(), 2, "factual intent must return CONFIRMS + ORIGINATES only");
+        assert_eq!(
+            neighbors.len(),
+            2,
+            "factual intent must return CONFIRMS + ORIGINATES only"
+        );
         assert!(neighbors.contains(&b));
         assert!(neighbors.contains(&c));
-        assert!(!neighbors.contains(&d), "temporal edges must not appear under factual intent");
+        assert!(
+            !neighbors.contains(&d),
+            "temporal edges must not appear under factual intent"
+        );
     }
 
     #[test]
@@ -324,10 +331,17 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
 
-        assert_eq!(neighbors.len(), 2, "temporal intent must return PRECEDES + FOLLOWS only");
+        assert_eq!(
+            neighbors.len(),
+            2,
+            "temporal intent must return PRECEDES + FOLLOWS only"
+        );
         assert!(neighbors.contains(&b));
         assert!(neighbors.contains(&c));
-        assert!(!neighbors.contains(&d), "factual edges must not appear under temporal intent");
+        assert!(
+            !neighbors.contains(&d),
+            "factual edges must not appear under temporal intent"
+        );
     }
 
     #[test]
