@@ -435,6 +435,68 @@ impl AdminService {
     }
 }
 
+// ── Intent-aware graph statistics (Phase 7, covalence#54) ──────────────────
+
+/// Edge count breakdown by search-intent category.
+///
+/// Returned by `GET /admin/graph/intent-stats`.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct IntentStatsResponse {
+    /// Edges matching the Factual intent: CONFIRMS + ORIGINATES + COMPILED_FROM.
+    pub factual_edges: i64,
+    /// Edges matching the Temporal intent: PRECEDES + FOLLOWS.
+    pub temporal_edges: i64,
+    /// Edges matching the Causal intent: CAUSES + MOTIVATED_BY + IMPLEMENTS.
+    pub causal_edges: i64,
+    /// Edges matching the Entity intent: INVOLVES.
+    pub entity_edges: i64,
+    /// Edges that don't fall into any of the four intent categories.
+    pub other_edges: i64,
+    /// Grand total of all edges.
+    pub total_edges: i64,
+}
+
+impl AdminService {
+    /// Return the edge-count breakdown by intent category.
+    ///
+    /// Queries the SQL `covalence.edges` table, which mirrors the AGE graph.
+    /// COMPILED_FROM is included with factual edges as the legacy alias for ORIGINATES.
+    pub async fn graph_intent_stats(&self) -> AppResult<IntentStatsResponse> {
+        let row = sqlx::query(
+            "SELECT
+               COUNT(*) FILTER (WHERE edge_type IN ('CONFIRMS', 'ORIGINATES', 'COMPILED_FROM'))
+                   AS factual,
+               COUNT(*) FILTER (WHERE edge_type IN ('PRECEDES', 'FOLLOWS'))
+                   AS temporal,
+               COUNT(*) FILTER (WHERE edge_type IN ('CAUSES', 'MOTIVATED_BY', 'IMPLEMENTS'))
+                   AS causal,
+               COUNT(*) FILTER (WHERE edge_type = 'INVOLVES')
+                   AS entity,
+               COUNT(*) AS total
+             FROM covalence.edges",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        use sqlx::Row;
+        let factual: i64 = row.get("factual");
+        let temporal: i64 = row.get("temporal");
+        let causal: i64 = row.get("causal");
+        let entity: i64 = row.get("entity");
+        let total: i64 = row.get("total");
+        let other = total - factual - temporal - causal - entity;
+
+        Ok(IntentStatsResponse {
+            factual_edges: factual,
+            temporal_edges: temporal,
+            causal_edges: causal,
+            entity_edges: entity,
+            other_edges: other,
+            total_edges: total,
+        })
+    }
+}
+
 // ── Queue listing ───────────────────────────────────────────────
 
 #[derive(Debug, serde::Serialize)]

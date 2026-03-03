@@ -10,6 +10,12 @@
 //! carry 70% of the edge score and hop-3 results carry 49%.  Cycle detection
 //! via a visited `HashSet` prevents revisiting the same node across hops.
 //! When a node is reachable via multiple paths, the highest score is kept.
+//!
+//! ## Phase 7 — Intent-aware filtering (covalence#54)
+//!
+//! `priority_edges()` now delegates to the shared `intent_edge_types()` mapping
+//! in `graph::memory`, eliminating duplication between the DB adaptor and the
+//! in-memory graph layer.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,7 +24,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::dimension::{DimensionAdaptor, DimensionQuery, DimensionResult};
-use crate::models::{EdgeType, SearchIntent};
+use crate::graph::intent_edge_types;
+use crate::models::SearchIntent;
 
 /// Per-hop score-decay base.
 const HOP_DECAY: f64 = 0.7;
@@ -40,22 +47,16 @@ impl GraphAdaptor {
     }
 
     /// Intent → priority edge types (SPEC §7.1 table).
+    ///
+    /// Delegates to the shared [`intent_edge_types`] mapping in
+    /// `graph::memory` so the DB adaptor and in-memory graph layer stay
+    /// in sync (Phase 7, covalence#54).
+    ///
+    /// Returns an empty `Vec` when `intent` is `None`, which causes
+    /// [`fetch_frontier_neighbors`] to traverse all edge types.
     fn priority_edges(intent: Option<&SearchIntent>) -> Vec<String> {
         match intent {
-            Some(SearchIntent::Factual) => vec![
-                EdgeType::Confirms.as_label().to_string(),
-                EdgeType::Originates.as_label().to_string(),
-            ],
-            Some(SearchIntent::Temporal) => vec![
-                EdgeType::Precedes.as_label().to_string(),
-                EdgeType::Follows.as_label().to_string(),
-            ],
-            Some(SearchIntent::Causal) => vec![
-                EdgeType::Causes.as_label().to_string(),
-                EdgeType::MotivatedBy.as_label().to_string(),
-                EdgeType::Implements.as_label().to_string(),
-            ],
-            Some(SearchIntent::Entity) => vec![EdgeType::Involves.as_label().to_string()],
+            Some(i) => intent_edge_types(i),
             None => vec![], // all edges, no filter
         }
     }

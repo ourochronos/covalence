@@ -225,6 +225,80 @@ pub fn betweenness_centrality(graph: &CovalenceGraph) -> HashMap<Uuid, f64> {
         .collect()
 }
 
+/// Compute PageRank scores restricted to a filtered subgraph.
+///
+/// Only edges whose type label appears in `edge_types` participate in the
+/// PageRank walk.  Nodes that become isolated within the filtered subgraph
+/// still receive the baseline damping score `(1 - d) / N`.
+///
+/// # Arguments
+/// * `graph`      – The full in-memory graph
+/// * `damping`    – Damping factor (typically 0.85)
+/// * `iterations` – Number of power-iteration rounds
+/// * `edge_types` – Allowlist of edge-type labels (e.g. `["CONFIRMS", "ORIGINATES"]`)
+///
+/// # Returns
+/// `HashMap` mapping each `Uuid` node to its filtered PageRank score,
+/// or an empty map when `edge_types` is empty or the graph has no nodes.
+pub fn pagerank_filtered(
+    graph: &CovalenceGraph,
+    damping: f64,
+    iterations: u32,
+    edge_types: &[String],
+) -> HashMap<Uuid, f64> {
+    let node_count = graph.node_count();
+    if node_count == 0 || edge_types.is_empty() {
+        return HashMap::new();
+    }
+
+    let initial_rank = 1.0 / node_count as f64;
+    let damping_term = (1.0 - damping) / node_count as f64;
+
+    let mut ranks: HashMap<NodeIndex, f64> = graph
+        .graph
+        .node_indices()
+        .map(|idx| (idx, initial_rank))
+        .collect();
+
+    for _ in 0..iterations {
+        let mut new_ranks: HashMap<NodeIndex, f64> = HashMap::new();
+
+        for node_idx in graph.graph.node_indices() {
+            let mut rank_sum = 0.0;
+
+            for edge in graph.graph.edges_directed(node_idx, Direction::Incoming) {
+                // Only traverse edges whose type is in the allowlist.
+                if !edge_types.contains(edge.weight()) {
+                    continue;
+                }
+
+                let source_idx = edge.source();
+                let source_rank = ranks.get(&source_idx).copied().unwrap_or(0.0);
+
+                // Out-degree counts only filtered edges from the source.
+                let out_degree = graph
+                    .graph
+                    .edges_directed(source_idx, Direction::Outgoing)
+                    .filter(|e| edge_types.contains(e.weight()))
+                    .count();
+
+                if out_degree > 0 {
+                    rank_sum += source_rank / out_degree as f64;
+                }
+            }
+
+            new_ranks.insert(node_idx, damping_term + damping * rank_sum);
+        }
+
+        ranks = new_ranks;
+    }
+
+    ranks
+        .into_iter()
+        .filter_map(|(idx, rank)| graph.graph.node_weight(idx).copied().map(|id| (id, rank)))
+        .collect()
+}
+
 /// Count distinct paths between two nodes up to `max_depth` hops (DFS).
 ///
 /// Used for path-diversity metrics in confidence scoring.
@@ -332,8 +406,66 @@ mod tests {
         let c = Uuid::new_v4();
         g.add_edge(a, b, "ORIGINATES".to_string());
         g.add_edge(a, c, "CONFIRMS".to_string());
-        let neighbors = g.neighbors_filtered(&a, "ORIGINATES");
+
+        // Single-type filter — only ORIGINATES should surface b
+        let filter = vec!["ORIGINATES".to_string()];
+        let neighbors: Vec<Uuid> = g
+            .neighbors_filtered(&a, Some(&filter))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0], b);
+    }
+
+    // ── pagerank_filtered tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_pagerank_filtered_basic() {
+        let mut g = CovalenceGraph::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        // b receives two CONFIRMS inbound links; c receives one PRECEDES link.
+        g.add_edge(a, b, "CONFIRMS".to_string());
+        g.add_edge(c, b, "CONFIRMS".to_string());
+        g.add_edge(a, c, "PRECEDES".to_string());
+
+        // Filter to factual (CONFIRMS, ORIGINATES): the PRECEDES edge is ignored.
+        let types = vec!["CONFIRMS".to_string(), "ORIGINATES".to_string()];
+        let ranks = pagerank_filtered(&g, 0.85, 20, &types);
+
+        // b should score higher than a and c in the factual subgraph.
+        assert!(ranks[&b] > ranks[&a], "b should outrank a in factual subgraph");
+        assert!(ranks[&b] > ranks[&c], "b should outrank c in factual subgraph");
+    }
+
+    #[test]
+    fn test_pagerank_filtered_empty_types() {
+        let mut g = CovalenceGraph::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        g.add_edge(a, b, "ORIGINATES".to_string());
+        // Empty edge_types → empty result
+        let ranks = pagerank_filtered(&g, 0.85, 20, &[]);
+        assert!(ranks.is_empty());
+    }
+
+    #[test]
+    fn test_pagerank_filtered_no_matching_edges() {
+        let mut g = CovalenceGraph::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        g.add_edge(a, b, "PRECEDES".to_string());
+
+        // Filter to CONFIRMS — no edges match, so all nodes get the flat
+        // baseline damping score (uniform distribution).
+        let types = vec!["CONFIRMS".to_string()];
+        let ranks = pagerank_filtered(&g, 0.85, 20, &types);
+        // Both nodes should have equal rank (no structural advantage).
+        let ra = ranks[&a];
+        let rb = ranks[&b];
+        let diff = (ra - rb).abs();
+        assert!(diff < 1e-9, "all ranks should be equal when no edges match");
     }
 }
