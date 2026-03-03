@@ -12,6 +12,7 @@ use super::openapi::{openapi_json, swagger_ui};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::services::audit_service::AuditService;
 use crate::services::concerns_service::{ConcernsService, UpsertConcernRequest};
 use crate::services::provenance_trace_service::{ProvenanceTraceService, TraceRequest};
 use crate::services::{
@@ -88,6 +89,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/graph/stats", get(admin_graph_stats))
         .route("/admin/graph/pagerank", get(admin_graph_pagerank))
         .route("/admin/graph/centrality", get(admin_graph_centrality))
+        .route("/admin/knowledge/audit", get(admin_knowledge_audit))
 }
 
 // ── Graph reload helper ─────────────────────────────────────────
@@ -811,6 +813,33 @@ async fn admin_list_concerns(
         "data": results,
         "meta": { "count": results.len() }
     })))
+}
+
+// ── Knowledge audit handler ─────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AuditQuery {
+    q: String,
+}
+
+/// `GET /admin/knowledge/audit?q=<topic>`
+///
+/// Returns a structured epistemic assessment for the given topic, including:
+/// consensus articles ranked by confidence, active contentions with both sides,
+/// a provenance source summary, confidence distribution statistics, and graph
+/// topology metrics.
+async fn admin_knowledge_audit(
+    State(state): State<AppState>,
+    Query(params): Query<AuditQuery>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    if params.q.trim().is_empty() {
+        return Err(crate::errors::AppError::BadRequest(
+            "query parameter `q` must not be empty".into(),
+        ));
+    }
+    let svc = AuditService::new(state.pool.clone(), state.graph.clone());
+    let report = svc.audit(&params.q).await?;
+    Ok(Json(serde_json::json!({ "data": report })))
 }
 
 // ── Dashboard handler ───────────────────────────────────────────

@@ -1,5 +1,6 @@
 pub mod admin_service;
 pub mod article_service;
+pub mod audit_service;
 pub mod concerns_service;
 pub mod contention_service;
 pub mod edge_service;
