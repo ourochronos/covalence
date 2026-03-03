@@ -82,11 +82,13 @@ impl DimensionAdaptor for LexicalAdaptor {
                  FROM covalence.nodes
                  WHERE content_tsv @@ websearch_to_tsquery('english', $1)
                    AND status = 'active'
-                   AND id = ANY($2)
+                   AND namespace = $2
+                   AND id = ANY($3)
                  ORDER BY score DESC
-                 LIMIT $3",
+                 LIMIT $4",
             )
             .bind(&query.text)
+            .bind(&query.namespace)
             .bind(candidates)
             .bind(limit as i64)
             .fetch_all(pool)
@@ -97,10 +99,12 @@ impl DimensionAdaptor for LexicalAdaptor {
                  FROM covalence.nodes
                  WHERE content_tsv @@ websearch_to_tsquery('english', $1)
                    AND status = 'active'
+                   AND namespace = $2
                  ORDER BY score DESC
-                 LIMIT $2",
+                 LIMIT $3",
             )
             .bind(&query.text)
+            .bind(&query.namespace)
             .bind(limit as i64)
             .fetch_all(pool)
             .await?
@@ -129,11 +133,13 @@ impl DimensionAdaptor for LexicalAdaptor {
                  FROM covalence.nodes
                  WHERE content_tsv @@ plainto_tsquery('english', $1)
                    AND status = 'active'
-                   AND id = ANY($2)
+                   AND namespace = $2
+                   AND id = ANY($3)
                  ORDER BY score DESC
-                 LIMIT $3",
+                 LIMIT $4",
             )
             .bind(&query.text)
+            .bind(&query.namespace)
             .bind(candidates)
             .bind(limit as i64)
             .fetch_all(pool)
@@ -144,10 +150,12 @@ impl DimensionAdaptor for LexicalAdaptor {
                  FROM covalence.nodes
                  WHERE content_tsv @@ plainto_tsquery('english', $1)
                    AND status = 'active'
+                   AND namespace = $2
                  ORDER BY score DESC
-                 LIMIT $2",
+                 LIMIT $3",
             )
             .bind(&query.text)
+            .bind(&query.namespace)
             .bind(limit as i64)
             .fetch_all(pool)
             .await?
@@ -199,18 +207,20 @@ impl DimensionAdaptor for LexicalAdaptor {
             .collect();
 
         let where_clause = ilike_clauses.join(" OR ");
-        // Build the final SQL — parameters are $1 = limit (no candidates) or
-        // $1 = candidates array, $2 = limit (with candidates).
+        // Build the final SQL — parameters are $1 = namespace, $2 = limit (no
+        // candidates) or $1 = namespace, $2 = candidates array, $3 = limit.
         let (sql, rows_c) = if let Some(candidates) = candidates {
             let sql = format!(
                 "SELECT id, 0.5::float8 AS score
                  FROM covalence.nodes
                  WHERE status = 'active'
+                   AND namespace = $1
                    AND ({where_clause})
-                   AND id = ANY($1)
-                 LIMIT $2"
+                   AND id = ANY($2)
+                 LIMIT $3"
             );
             let rows = sqlx::query_as::<_, (Uuid, f64)>(&sql)
+                .bind(&query.namespace)
                 .bind(candidates)
                 .bind(limit as i64)
                 .fetch_all(pool)
@@ -221,10 +231,12 @@ impl DimensionAdaptor for LexicalAdaptor {
                 "SELECT id, 0.5::float8 AS score
                  FROM covalence.nodes
                  WHERE status = 'active'
+                   AND namespace = $1
                    AND ({where_clause})
-                 LIMIT $1"
+                 LIMIT $2"
             );
             let rows = sqlx::query_as::<_, (Uuid, f64)>(&sql)
+                .bind(&query.namespace)
                 .bind(limit as i64)
                 .fetch_all(pool)
                 .await?;

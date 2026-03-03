@@ -277,6 +277,8 @@ pub struct SearchService {
     /// Whether the live-synthesis mode is enabled.
     /// Controlled by `COVALENCE_LIVE_SYNTHESIS=true`.
     synthesis_enabled: bool,
+    /// Namespace to filter results by.
+    namespace: String,
 }
 
 impl SearchService {
@@ -297,7 +299,14 @@ impl SearchService {
             shared_graph: None,
             llm: None,
             synthesis_enabled,
+            namespace: "default".into(),
         }
+    }
+
+    /// Set the namespace for this service instance.
+    pub fn with_namespace(mut self, ns: String) -> Self {
+        self.namespace = ns;
+        self
     }
 
     /// Attach a shared in-memory graph for topological confidence scoring.
@@ -370,6 +379,7 @@ impl SearchService {
             session_id: req.session_id,
             node_types: req.node_types,
             max_hops: Some(effective_max_hops),
+            namespace: self.namespace.clone(),
         };
 
         let (w_vec, w_lex, w_graph, w_struct) = resolve_weights(&req.weights, &req.strategy);
@@ -475,7 +485,7 @@ impl SearchService {
             ));
         }
 
-        let node_map = fetch_node_map(&self.pool, &node_ids).await?;
+        let node_map = fetch_node_map(&self.pool, &node_ids, &self.namespace).await?;
 
         // Topological confidence (feature-flagged). Compute PageRank once,
         // release the graph lock, then build per-node scores from in-memory data.
@@ -582,6 +592,7 @@ impl SearchService {
             session_id: req.session_id,
             node_types: Some(vec!["article".into()]),
             max_hops: Some(effective_max_hops),
+            namespace: self.namespace.clone(),
         };
 
         let (w_vec, w_lex, w_graph, w_struct) = resolve_weights(&req.weights, &req.strategy);
@@ -687,7 +698,7 @@ impl SearchService {
         }
 
         let article_ids: Vec<Uuid> = article_scores.keys().cloned().collect();
-        let article_node_map = fetch_node_map(&self.pool, &article_ids).await?;
+        let article_node_map = fetch_node_map(&self.pool, &article_ids, &self.namespace).await?;
 
         // Topological confidence for hierarchical mode (feature-flagged).
         let article_topo_map: Option<HashMap<Uuid, TopologicalConfidence>> =
@@ -784,7 +795,7 @@ impl SearchService {
         // Phase 3: fetch source node metadata and build expanded results.
         let source_ids: Vec<Uuid> = source_to_parent.keys().cloned().collect();
         let mut expanded_results: Vec<SearchResult> = if !source_ids.is_empty() {
-            let source_node_map = fetch_node_map(&self.pool, &source_ids).await?;
+            let source_node_map = fetch_node_map(&self.pool, &source_ids, &self.namespace).await?;
 
             source_to_parent
                 .iter()
@@ -1101,6 +1112,7 @@ impl SearchService {
             session_id: req.session_id,
             node_types: req.node_types,
             max_hops: Some(effective_max_hops),
+            namespace: self.namespace.clone(),
         };
 
         // ── Availability checks ────────────────────────────────────────────────
@@ -1256,7 +1268,7 @@ impl SearchService {
             vec![]
         } else {
             let node_ids: Vec<Uuid> = node_scores.keys().cloned().collect();
-            let node_map = fetch_node_map(&self.pool, &node_ids).await?;
+            let node_map = fetch_node_map(&self.pool, &node_ids, &self.namespace).await?;
 
             let topo_map: Option<HashMap<Uuid, TopologicalConfidence>> = if self.topological_enabled
             {
@@ -1522,6 +1534,7 @@ type NodeRow = (
 async fn fetch_node_map(
     pool: &PgPool,
     node_ids: &[Uuid],
+    namespace: &str,
 ) -> anyhow::Result<HashMap<Uuid, NodeRow>> {
     let rows = sqlx::query_as::<_, NodeRow>(
         "WITH article_trust AS (
@@ -1549,9 +1562,11 @@ async fn fetch_node_map(
          FROM   covalence.nodes n
          LEFT JOIN article_trust at ON at.node_id = n.id
          WHERE  n.id = ANY($1)
-           AND  n.status = 'active'",
+           AND  n.status = 'active'
+           AND  n.namespace = $2",
     )
     .bind(node_ids)
+    .bind(namespace)
     .fetch_all(pool)
     .await?;
 

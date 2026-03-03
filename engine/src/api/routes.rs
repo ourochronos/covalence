@@ -8,6 +8,7 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 
+use super::extractors::Namespace;
 use super::openapi::{openapi_json, swagger_ui};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -124,17 +125,22 @@ async fn reload_shared_graph(state: &AppState) {
 
 async fn source_ingest(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Json(req): Json<IngestRequest>,
 ) -> impl IntoResponse {
-    let svc = SourceService::new(state.pool);
+    let svc = SourceService::new(state.pool).with_namespace(ns);
     match svc.ingest(req).await {
         Ok(resp) => (StatusCode::CREATED, Json(serde_json::json!({"data": resp}))).into_response(),
         Err(e) => e.into_response(),
     }
 }
 
-async fn source_get(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let svc = SourceService::new(state.pool);
+async fn source_get(
+    State(state): State<AppState>,
+    Namespace(ns): Namespace,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let svc = SourceService::new(state.pool).with_namespace(ns);
     match svc.get(id).await {
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
@@ -143,9 +149,10 @@ async fn source_get(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl
 
 async fn source_list(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Query(params): Query<ListParams>,
 ) -> impl IntoResponse {
-    let svc = SourceService::new(state.pool);
+    let svc = SourceService::new(state.pool).with_namespace(ns);
     match svc.list(params).await {
         Ok(resp) => {
             Json(serde_json::json!({"data": resp, "meta": {"count": resp.len()}})).into_response()
@@ -154,8 +161,12 @@ async fn source_list(
     }
 }
 
-async fn source_delete(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let svc = SourceService::new(state.pool);
+async fn source_delete(
+    State(state): State<AppState>,
+    Namespace(ns): Namespace,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let svc = SourceService::new(state.pool).with_namespace(ns);
     match svc.delete(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_response(),
@@ -166,17 +177,22 @@ async fn source_delete(State(state): State<AppState>, Path(id): Path<Uuid>) -> i
 
 async fn article_create(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Json(req): Json<CreateArticleRequest>,
 ) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.create(req).await {
         Ok(resp) => (StatusCode::CREATED, Json(serde_json::json!({"data": resp}))).into_response(),
         Err(e) => e.into_response(),
     }
 }
 
-async fn article_get(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+async fn article_get(
+    State(state): State<AppState>,
+    Namespace(ns): Namespace,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.get(id).await {
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
@@ -192,9 +208,10 @@ struct ArticleListQuery {
 
 async fn article_list(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Query(params): Query<ArticleListQuery>,
 ) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc
         .list(
             params.limit.unwrap_or(20),
@@ -212,26 +229,35 @@ async fn article_list(
 
 async fn article_update(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateArticleRequest>,
 ) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.update(id, req).await {
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
     }
 }
 
-async fn article_delete(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+async fn article_delete(
+    State(state): State<AppState>,
+    Namespace(ns): Namespace,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.delete(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_response(),
     }
 }
 
-async fn article_split(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+async fn article_split(
+    State(state): State<AppState>,
+    Namespace(ns): Namespace,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.split(id).await {
         Ok(resp) => (StatusCode::CREATED, Json(serde_json::json!({"data": resp}))).into_response(),
         Err(e) => e.into_response(),
@@ -240,9 +266,10 @@ async fn article_split(State(state): State<AppState>, Path(id): Path<Uuid>) -> i
 
 async fn article_merge(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Json(req): Json<MergeRequest>,
 ) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.merge(req).await {
         Ok(resp) => (StatusCode::CREATED, Json(serde_json::json!({"data": resp}))).into_response(),
         Err(e) => e.into_response(),
@@ -251,9 +278,10 @@ async fn article_merge(
 
 async fn article_compile(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Json(req): Json<CompileRequest>,
 ) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.compile(req).await {
         Ok(resp) => (
             StatusCode::ACCEPTED,
@@ -273,10 +301,11 @@ struct ProvenanceQuery {
 
 async fn article_provenance(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Path(id): Path<Uuid>,
     Query(params): Query<ProvenanceQuery>,
 ) -> impl IntoResponse {
-    let svc = ArticleService::new(state.pool);
+    let svc = ArticleService::new(state.pool).with_namespace(ns);
     match svc.provenance(id, params.max_depth).await {
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
@@ -450,6 +479,7 @@ async fn admin_sync_edges(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn search_handler(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Json(mut req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
     // ── Live synthesis gate (covalence#59) ──────────────────────────────────
@@ -480,6 +510,7 @@ async fn search_handler(
     }
 
     let service = SearchService::new(state.pool.clone())
+        .with_namespace(ns)
         .with_graph(state.graph.clone())
         .with_llm(state.llm.clone());
     service.init().await;
@@ -511,6 +542,7 @@ async fn search_handler(
 /// eval harnesses, weight tuning, and debugging relevance issues.
 async fn search_debug_handler(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Json(mut req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
     // Auto-embed query text if no embedding provided (same as /search).
@@ -524,7 +556,9 @@ async fn search_debug_handler(
             Err(e) => tracing::warn!("failed to embed search/debug query: {e:#}"),
         }
     }
-    let service = SearchService::new(state.pool.clone()).with_graph(state.graph.clone());
+    let service = SearchService::new(state.pool.clone())
+        .with_namespace(ns)
+        .with_graph(state.graph.clone());
     service.init().await;
     let debug = service
         .search_debug(req)
@@ -537,9 +571,10 @@ async fn search_debug_handler(
 
 async fn contention_list(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
-    let svc = ContentionService::new(state.pool.clone());
+    let svc = ContentionService::new(state.pool.clone()).with_namespace(ns);
     let article_id = params.get("node_id").and_then(|s| s.parse().ok());
     let status = params.get("status").cloned();
     let items = svc.list(article_id, status).await?;
@@ -548,9 +583,10 @@ async fn contention_list(
 
 async fn contention_get(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
-    let svc = ContentionService::new(state.pool.clone());
+    let svc = ContentionService::new(state.pool.clone()).with_namespace(ns);
     match svc.get(id).await? {
         Some(c) => Ok(Json(serde_json::json!({"data": c}))),
         None => Err(crate::errors::AppError::NotFound(
@@ -561,10 +597,11 @@ async fn contention_get(
 
 async fn contention_resolve(
     State(state): State<AppState>,
+    Namespace(ns): Namespace,
     Path(id): Path<Uuid>,
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
-    let svc = ContentionService::new(state.pool.clone());
+    let svc = ContentionService::new(state.pool.clone()).with_namespace(ns);
     let c = svc.resolve(id, req).await?;
     Ok(Json(serde_json::json!({"data": c})))
 }

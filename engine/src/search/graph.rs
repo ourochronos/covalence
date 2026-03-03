@@ -70,6 +70,7 @@ impl GraphAdaptor {
         pool: &PgPool,
         frontier: &[Uuid],
         priority: &[String],
+        namespace: &str,
     ) -> anyhow::Result<Vec<(Uuid, f64)>> {
         if frontier.is_empty() {
             return Ok(vec![]);
@@ -85,12 +86,14 @@ impl GraphAdaptor {
                         (e.weight * e.confidence)::float8                        AS score
                     FROM covalence.edges e
                     WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
+                      AND e.namespace = $2
                 ) sub
                 JOIN covalence.nodes n ON n.id = sub.neighbor_id
-                WHERE n.status = 'active'
+                WHERE n.status = 'active' AND n.namespace = $2
                 ORDER BY neighbor_id, score DESC",
             )
             .bind(frontier)
+            .bind(namespace)
             .fetch_all(pool)
             .await?
         } else {
@@ -101,15 +104,17 @@ impl GraphAdaptor {
                         CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
                              ELSE e.source_node_id END                           AS neighbor_id,
                         (e.weight * e.confidence
-                         * CASE WHEN e.edge_type = ANY($2) THEN 2.0 ELSE 1.0 END)::float8 AS score
+                         * CASE WHEN e.edge_type = ANY($3) THEN 2.0 ELSE 1.0 END)::float8 AS score
                     FROM covalence.edges e
                     WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
+                      AND e.namespace = $2
                 ) sub
                 JOIN covalence.nodes n ON n.id = sub.neighbor_id
-                WHERE n.status = 'active'
+                WHERE n.status = 'active' AND n.namespace = $2
                 ORDER BY neighbor_id, score DESC",
             )
             .bind(frontier)
+            .bind(namespace)
             .bind(priority)
             .fetch_all(pool)
             .await?
@@ -172,7 +177,8 @@ impl DimensionAdaptor for GraphAdaptor {
             // Decay factor for this hop: 1.0 for hop 1, 0.7 for hop 2, 0.49 for hop 3.
             let decay = HOP_DECAY.powi((hop as i32) - 1);
 
-            let rows = Self::fetch_frontier_neighbors(pool, &frontier, &priority).await?;
+            let rows = Self::fetch_frontier_neighbors(pool, &frontier, &priority, &query.namespace)
+                .await?;
 
             let mut next_frontier: Vec<Uuid> = Vec::new();
 

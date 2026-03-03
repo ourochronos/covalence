@@ -67,21 +67,23 @@ impl DimensionAdaptor for VectorAdaptor {
                     SELECT ne.node_id, (ne.embedding::vector <=> $1::vector)::float8 AS distance
                     FROM covalence.node_embeddings ne
                     JOIN covalence.nodes n ON n.id = ne.node_id
-                    WHERE n.status = 'active' AND ne.node_id = ANY($2)
+                    WHERE n.status = 'active' AND n.namespace = $2 AND ne.node_id = ANY($3)
                     UNION ALL
                     -- Section-level embeddings (sub-document precision)
                     SELECT ns.node_id, (ns.embedding::vector <=> $1::vector)::float8 AS distance
                     FROM covalence.node_sections ns
                     JOIN covalence.nodes n ON n.id = ns.node_id
-                    WHERE n.status = 'active' AND ns.node_id = ANY($2) AND ns.embedding IS NOT NULL
+                    WHERE n.status = 'active' AND n.namespace = $2
+                      AND ns.node_id = ANY($3) AND ns.embedding IS NOT NULL
                 )
                 SELECT node_id, MIN(distance) AS distance
                 FROM candidates
                 GROUP BY node_id
                 ORDER BY distance
-                LIMIT $3",
+                LIMIT $4",
             )
             .bind(&vec_str)
+            .bind(&query.namespace)
             .bind(candidates)
             .bind(limit as i64)
             .fetch_all(pool)
@@ -93,21 +95,22 @@ impl DimensionAdaptor for VectorAdaptor {
                     SELECT ne.node_id, (ne.embedding::vector <=> $1::vector)::float8 AS distance
                     FROM covalence.node_embeddings ne
                     JOIN covalence.nodes n ON n.id = ne.node_id
-                    WHERE n.status = 'active'
+                    WHERE n.status = 'active' AND n.namespace = $2
                     UNION ALL
                     -- Section-level embeddings (sub-document precision)
                     SELECT ns.node_id, (ns.embedding::vector <=> $1::vector)::float8 AS distance
                     FROM covalence.node_sections ns
                     JOIN covalence.nodes n ON n.id = ns.node_id
-                    WHERE n.status = 'active' AND ns.embedding IS NOT NULL
+                    WHERE n.status = 'active' AND n.namespace = $2 AND ns.embedding IS NOT NULL
                 )
                 SELECT node_id, MIN(distance) AS distance
                 FROM candidates
                 GROUP BY node_id
                 ORDER BY distance
-                LIMIT $2",
+                LIMIT $3",
             )
             .bind(&vec_str)
+            .bind(&query.namespace)
             .bind(limit as i64)
             .fetch_all(pool)
             .await?

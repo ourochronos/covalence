@@ -38,6 +38,9 @@ pub struct DimensionQuery {
     /// Maximum number of graph traversal hops (1–3). Only used by
     /// [`GraphAdaptor`]; other adaptors ignore this field.
     pub max_hops: Option<u32>,
+    /// Namespace filter — only nodes whose `namespace` column matches this
+    /// value are returned.  Defaults to `"default"`.
+    pub namespace: String,
 }
 
 #[async_trait]

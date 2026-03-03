@@ -96,12 +96,23 @@ pub struct CompileJobResponse {
 pub struct ArticleService {
     pool: PgPool,
     graph: SqlGraphRepository,
+    namespace: String,
 }
 
 impl ArticleService {
     pub fn new(pool: PgPool) -> Self {
         let graph = SqlGraphRepository::new(pool.clone());
-        Self { pool, graph }
+        Self {
+            pool,
+            graph,
+            namespace: "default".into(),
+        }
+    }
+
+    /// Set the namespace for this service instance.
+    pub fn with_namespace(mut self, ns: String) -> Self {
+        self.namespace = ns;
+        self
     }
 
     /// Create an article directly (agent-authored).
@@ -117,9 +128,9 @@ impl ArticleService {
         sqlx::query(
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, epistemic_type, domain_path, \
-              content_hash, size_tokens, metadata, confidence, \
+              content_hash, size_tokens, metadata, confidence, namespace, \
               created_at, modified_at, accessed_at) \
-             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $9, $9)",
+             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $10, $10, $10)",
         )
         .bind(id)
         .bind(&req.title)
@@ -129,6 +140,7 @@ impl ArticleService {
         .bind(&content_hash)
         .bind(size_tokens)
         .bind(&metadata)
+        .bind(&self.namespace)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -184,9 +196,11 @@ impl ArticleService {
              (SELECT COUNT(*) FROM covalence.edges e \
               WHERE (e.source_node_id = n.id OR e.target_node_id = n.id) \
               AND e.edge_type IN ('CONTRADICTS', 'CONTENDS')) AS contention_count \
-             FROM covalence.nodes n WHERE n.id = $1 AND n.node_type = 'article'",
+             FROM covalence.nodes n \
+             WHERE n.id = $1 AND n.node_type = 'article' AND n.namespace = $2",
         )
         .bind(id)
+        .bind(&self.namespace)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("article {id}")))?;
@@ -606,10 +620,11 @@ impl ArticleService {
                  n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
-                 WHERE n.node_type = 'article' AND n.status = $1 AND n.id > $2 \
-                 ORDER BY n.created_at DESC LIMIT $3",
+                 WHERE n.node_type = 'article' AND n.status = $1 AND n.namespace = $2 AND n.id > $3 \
+                 ORDER BY n.created_at DESC LIMIT $4",
             )
             .bind(status_filter)
+            .bind(&self.namespace)
             .bind(cursor)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -621,10 +636,11 @@ impl ArticleService {
                  n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
-                 WHERE n.node_type = 'article' AND n.status = $1 \
-                 ORDER BY n.created_at DESC LIMIT $2",
+                 WHERE n.node_type = 'article' AND n.status = $1 AND n.namespace = $2 \
+                 ORDER BY n.created_at DESC LIMIT $3",
             )
             .bind(status_filter)
+            .bind(&self.namespace)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?

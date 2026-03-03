@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS covalence.nodes (
     accessed_at     TIMESTAMPTZ      DEFAULT now(),
     archived_at     TIMESTAMPTZ,
     usage_score     DOUBLE PRECISION DEFAULT 0.5,
+    namespace       TEXT             NOT NULL DEFAULT 'default',
     content_tsv     TSVECTOR         GENERATED ALWAYS AS (
                         to_tsvector('english',
                             COALESCE(title, '') || ' ' || COALESCE(content, ''))
@@ -68,7 +69,8 @@ CREATE TABLE IF NOT EXISTS covalence.edges (
     confidence      DOUBLE PRECISION DEFAULT 1.0,
     metadata        JSONB            DEFAULT '{}',
     created_at      TIMESTAMPTZ      DEFAULT now(),
-    created_by      TEXT
+    created_by      TEXT,
+    namespace       TEXT             NOT NULL DEFAULT 'default'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS edges_dedup_idx
@@ -82,7 +84,8 @@ CREATE TABLE IF NOT EXISTS covalence.node_embeddings (
                                      REFERENCES covalence.nodes(id) ON DELETE CASCADE,
     embedding       halfvec(1536),
     model           TEXT             DEFAULT 'text-embedding-3-small',
-    created_at      TIMESTAMPTZ      DEFAULT now()
+    created_at      TIMESTAMPTZ      DEFAULT now(),
+    namespace       TEXT             NOT NULL DEFAULT 'default'
 );
 
 -- -----------------------------------------------------------------------------
@@ -94,7 +97,8 @@ CREATE TABLE IF NOT EXISTS covalence.usage_traces (
     session_id      TEXT,
     query_text      TEXT,
     retrieval_rank  INTEGER,
-    accessed_at     TIMESTAMPTZ      DEFAULT now()
+    accessed_at     TIMESTAMPTZ      DEFAULT now(),
+    namespace       TEXT             NOT NULL DEFAULT 'default'
 );
 
 -- -----------------------------------------------------------------------------
@@ -112,7 +116,8 @@ CREATE TABLE IF NOT EXISTS covalence.contentions (
     resolution      TEXT,
     materiality     DOUBLE PRECISION,
     detected_at     TIMESTAMPTZ      DEFAULT now(),
-    resolved_at     TIMESTAMPTZ
+    resolved_at     TIMESTAMPTZ,
+    namespace       TEXT             NOT NULL DEFAULT 'default'
 );
 
 -- -----------------------------------------------------------------------------
@@ -219,6 +224,7 @@ CREATE TABLE IF NOT EXISTS covalence.node_sections (
     embedding       halfvec(1536),
     model           TEXT             DEFAULT 'text-embedding-3-small',
     created_at      TIMESTAMPTZ      DEFAULT now(),
+    namespace       TEXT             NOT NULL DEFAULT 'default',
     CONSTRAINT node_sections_unique UNIQUE (node_id, tree_path)
 );
 
@@ -315,6 +321,28 @@ CREATE INDEX IF NOT EXISTS node_sections_node_id_idx
 
 CREATE INDEX IF NOT EXISTS node_sections_depth_idx
     ON covalence.node_sections (depth);
+
+-- covalence#47: Namespace isolation indexes
+CREATE INDEX IF NOT EXISTS nodes_namespace_idx
+    ON covalence.nodes (namespace);
+
+CREATE INDEX IF NOT EXISTS nodes_namespace_status_idx
+    ON covalence.nodes (namespace, status);
+
+CREATE INDEX IF NOT EXISTS edges_namespace_idx
+    ON covalence.edges (namespace);
+
+CREATE INDEX IF NOT EXISTS node_embeddings_namespace_idx
+    ON covalence.node_embeddings (namespace);
+
+CREATE INDEX IF NOT EXISTS node_sections_namespace_idx
+    ON covalence.node_sections (namespace);
+
+CREATE INDEX IF NOT EXISTS usage_traces_namespace_idx
+    ON covalence.usage_traces (namespace);
+
+CREATE INDEX IF NOT EXISTS contentions_namespace_idx
+    ON covalence.contentions (namespace);
 
 -- =============================================================================
 -- PERMISSIONS

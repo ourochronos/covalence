@@ -68,12 +68,23 @@ pub struct SourceResponse {
 pub struct SourceService {
     pool: PgPool,
     graph: SqlGraphRepository,
+    namespace: String,
 }
 
 impl SourceService {
     pub fn new(pool: PgPool) -> Self {
         let graph = SqlGraphRepository::new(pool.clone());
-        Self { pool, graph }
+        Self {
+            pool,
+            graph,
+            namespace: "default".into(),
+        }
+    }
+
+    /// Set the namespace for this service instance.
+    pub fn with_namespace(mut self, ns: String) -> Self {
+        self.namespace = ns;
+        self
     }
 
     /// Ingest a source — idempotent via SHA-256 fingerprint (SPEC §8.1 fast path).
@@ -81,11 +92,13 @@ impl SourceService {
         // 1. Compute fingerprint
         let fingerprint = hex::encode(Sha256::digest(req.content.as_bytes()));
 
-        // 2. Check for existing source with same fingerprint (idempotent)
+        // 2. Check for existing source with same fingerprint (idempotent, scoped to namespace)
         let existing = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM covalence.nodes WHERE fingerprint = $1 AND node_type = 'source'",
+            "SELECT id FROM covalence.nodes \
+             WHERE fingerprint = $1 AND node_type = 'source' AND namespace = $2",
         )
         .bind(&fingerprint)
+        .bind(&self.namespace)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -112,9 +125,9 @@ impl SourceService {
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, source_type, reliability, \
               fingerprint, content_hash, size_tokens, metadata, \
-              confidence, \
+              confidence, namespace, \
               created_at, modified_at, accessed_at) \
-             VALUES ($1, 'source', $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $11, $11)",
+             VALUES ($1, 'source', $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $12)",
         )
         .bind(id)
         .bind(&req.title)
@@ -126,6 +139,7 @@ impl SourceService {
         .bind(size_tokens)
         .bind(&metadata)
         .bind(reliability as f64)
+        .bind(&self.namespace)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -168,9 +182,10 @@ impl SourceService {
             "SELECT id, title, content, source_type, status, \
              confidence, reliability, fingerprint, metadata, version, \
              created_at, modified_at \
-             FROM covalence.nodes WHERE id = $1 AND node_type = 'source'",
+             FROM covalence.nodes WHERE id = $1 AND node_type = 'source' AND namespace = $2",
         )
         .bind(id)
+        .bind(&self.namespace)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("source {id}")))?;
@@ -181,11 +196,12 @@ impl SourceService {
     /// List sources with optional filters.
     pub async fn list(&self, params: ListParams) -> AppResult<Vec<SourceResponse>> {
         let limit = params.limit.unwrap_or(20).min(100);
-        let mut sql = String::from(
+        let escaped_ns = self.namespace.replace('\'', "''");
+        let mut sql = format!(
             "SELECT id, title, content, source_type, status, \
              confidence, reliability, fingerprint, metadata, version, \
              created_at, modified_at \
-             FROM covalence.nodes WHERE node_type = 'source'",
+             FROM covalence.nodes WHERE node_type = 'source' AND namespace = '{escaped_ns}'",
         );
 
         if let Some(ref st) = params.source_type {

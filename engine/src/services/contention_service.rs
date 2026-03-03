@@ -42,11 +42,21 @@ fn contention_from_row(row: &sqlx::postgres::PgRow) -> Result<Contention, sqlx::
 
 pub struct ContentionService {
     pool: PgPool,
+    namespace: String,
 }
 
 impl ContentionService {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            namespace: "default".into(),
+        }
+    }
+
+    /// Set the namespace for this service instance.
+    pub fn with_namespace(mut self, ns: String) -> Self {
+        self.namespace = ns;
+        self
     }
 
     pub async fn list(
@@ -58,10 +68,12 @@ impl ContentionService {
             "SELECT id, node_id, source_node_id, description, status,
                     resolution, severity, detected_at, resolved_at
              FROM covalence.contentions
-             WHERE ($1::uuid IS NULL OR node_id = $1)
-               AND ($2::text IS NULL OR status = $2)
+             WHERE namespace = $1
+               AND ($2::uuid IS NULL OR node_id = $2)
+               AND ($3::text IS NULL OR status = $3)
              ORDER BY detected_at DESC",
         )
+        .bind(&self.namespace)
         .bind(node_id)
         .bind(status.as_deref())
         .fetch_all(&self.pool)
@@ -95,12 +107,17 @@ impl ContentionService {
     ) -> Result<Contention, sqlx::Error> {
         let id = Uuid::new_v4();
         let row = sqlx::query(
-            "INSERT INTO covalence.contentions (id, node_id, source_node_id, status, description, detected_at)
-             VALUES ($1, $2, $3, 'detected', $4, now())
+            "INSERT INTO covalence.contentions \
+             (id, node_id, source_node_id, status, description, namespace, detected_at)
+             VALUES ($1, $2, $3, 'detected', $4, $5, now())
              RETURNING id, node_id, source_node_id, description, status,
-                       resolution, severity, detected_at, resolved_at"
+                       resolution, severity, detected_at, resolved_at",
         )
-        .bind(id).bind(node_id).bind(source_node_id).bind(description)
+        .bind(id)
+        .bind(node_id)
+        .bind(source_node_id)
+        .bind(description)
+        .bind(&self.namespace)
         .fetch_one(&self.pool)
         .await?;
         contention_from_row(&row)

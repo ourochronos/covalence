@@ -42,6 +42,7 @@ mod test_embed;
 mod test_graph_stats;
 mod test_memory_recall;
 mod test_merge;
+mod test_namespace;
 mod test_openapi;
 mod test_search_precision;
 mod test_search_temporal;

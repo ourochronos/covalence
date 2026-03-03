@@ -1,3 +1,4 @@
+pub mod extractors;
 pub mod openapi;
 pub mod routes;
 
