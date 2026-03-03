@@ -14,8 +14,7 @@
 .env
 *.local
 
-# Rust
-Cargo.lock
+# Rust — Cargo.lock is intentionally committed (binary application, not library)
 
 # Go
 /cli/vendor/
