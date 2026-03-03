@@ -5,6 +5,14 @@
 //! Step 3 (sequential): Structural from same anchor set (covalence#52)
 //! Step 4: Score fusion (weighted dimensional + confidence + freshness)
 //!
+//! ## Source Recency Bonus (covalence#63)
+//!
+//! Newly-ingested source nodes have no graph/topological connections and
+//! therefore lose to well-connected articles even when more relevant.  To
+//! compensate, a temporary multiplier (up to +20%) is applied to source nodes
+//! whose `created_at` is within 24 hours of query time.  The multiplier decays
+//! linearly to zero at the 24-hour mark so there is no discontinuity.
+//!
 //! ## Search Modes
 //!
 //! * [`SearchMode::Standard`] (default) — flat search over all node types,
@@ -1664,6 +1672,21 @@ fn build_results(
         };
         let final_score = base_score + title_bonus;
 
+        // Source recency bonus (covalence#63): recently-ingested orphan sources
+        // have no topological connections yet; compensate with a temporary boost
+        // that decays linearly to zero over 24 hours.
+        let final_score = if node_type.as_str() == "source" {
+            let age_hours = (chrono::Utc::now() - *created_at).num_seconds().max(0) as f64 / 3600.0;
+            if age_hours < 24.0 {
+                let multiplier = 1.0 + 0.20 * (1.0 - age_hours / 24.0);
+                final_score * multiplier
+            } else {
+                final_score
+            }
+        } else {
+            final_score
+        };
+
         results.push(SearchResult {
             node_id: *node_id,
             score: final_score,
@@ -1879,5 +1902,52 @@ mod tests {
         let bias = 1.0f64;
         let weight = 0.10 + bias * 0.30;
         assert!((weight - 0.40).abs() < 0.001);
+    }
+
+    // ── Source recency bonus (covalence#63) ──────────────────────────────────
+
+    #[test]
+    fn test_source_recency_bonus_fresh() {
+        // A source created right now should receive close to 1.20x multiplier.
+        let created_at = chrono::Utc::now();
+        let base_score = 0.5f64;
+
+        let age_hours = (chrono::Utc::now() - created_at).num_seconds().max(0) as f64 / 3600.0;
+        let boosted = if age_hours < 24.0 {
+            let multiplier = 1.0 + 0.20 * (1.0 - age_hours / 24.0);
+            base_score * multiplier
+        } else {
+            base_score
+        };
+
+        // Multiplier should be very close to 1.20 for a brand-new source.
+        assert!(
+            boosted > base_score * 1.19,
+            "fresh source should get roughly 1.20x bonus, got {boosted}"
+        );
+        assert!(
+            boosted <= base_score * 1.21,
+            "bonus should not exceed 1.21x, got {boosted}"
+        );
+    }
+
+    #[test]
+    fn test_source_recency_bonus_stale() {
+        // A source created 25 hours ago should receive no bonus.
+        let created_at = chrono::Utc::now() - chrono::Duration::hours(25);
+        let base_score = 0.5f64;
+
+        let age_hours = (chrono::Utc::now() - created_at).num_seconds().max(0) as f64 / 3600.0;
+        let final_score = if age_hours < 24.0 {
+            let multiplier = 1.0 + 0.20 * (1.0 - age_hours / 24.0);
+            base_score * multiplier
+        } else {
+            base_score
+        };
+
+        assert!(
+            (final_score - base_score).abs() < 0.001,
+            "25h-old source should receive no recency bonus, got {final_score}"
+        );
     }
 }
