@@ -44,6 +44,7 @@ mod test_memory_recall;
 mod test_merge;
 mod test_namespace;
 mod test_openapi;
+mod test_search_freshness;
 mod test_search_precision;
 mod test_search_temporal;
 mod test_session_ingestion;
