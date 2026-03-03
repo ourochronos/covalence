@@ -70,7 +70,21 @@ for f in sql/*.sql; do
 done
 ```
 
-#### 3 — Build and run the engine
+#### 3 — Register historical migrations with SQLx (existing instances only)
+
+The engine uses `sqlx::migrate!()` to auto-apply new migrations on startup
+(tracking#106).  Migrations 001–017 were applied before this feature existed,
+so they must be registered in the `_sqlx_migrations` tracking table once:
+
+```bash
+DATABASE_URL=postgres://covalence:covalence@localhost:5434/covalence \
+  ./scripts/seed-sqlx-migrations.sh
+```
+
+This script is **idempotent** — safe to re-run.  Skip this step on a **fresh**
+database (the engine handles everything automatically from a clean slate).
+
+#### 4 — Build and run the engine
 
 ```bash
 cd engine
@@ -78,7 +92,35 @@ cargo build --release
 cargo run --release
 ```
 
+The engine auto-applies any unapplied migrations in `engine/migrations/` on
+every startup before accepting traffic.
+
 The engine listens on **http://localhost:8430** by default.
+
+### Adding new database migrations
+
+New migrations live in **`engine/migrations/`** and are managed by
+[SQLx](https://github.com/launchbadger/sqlx).
+
+**Naming convention** — files must follow the pattern:
+
+```
+{version}_{description}.sql
+```
+
+where `{version}` is an integer **greater than 17** (the last manually-applied
+migration).  Example:
+
+```
+engine/migrations/018_add_tags_table.sql
+```
+
+The migration is automatically applied the next time the engine starts.  No
+manual `psql` invocation is needed.
+
+**Keeping `sql/` as the historical record** — files in `sql/001_*.sql` through
+`sql/017_*.sql` are the immutable audit trail of the pre-SQLx era.  Do **not**
+delete or modify them.  New migrations go only in `engine/migrations/`.
 
 ### Environment variables
 

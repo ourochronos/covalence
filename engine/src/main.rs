@@ -35,6 +35,15 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("connected to database");
 
+    // ── Auto-apply pending SQLx migrations (tracking#106) ─────────────────────
+    // Migrations 001-017 were applied manually before this feature was added.
+    // Run `scripts/seed-sqlx-migrations.sh` once on an existing instance to
+    // register those historical migrations in _sqlx_migrations so SQLx won't
+    // attempt to re-run them.  New migrations (018+) go in engine/migrations/
+    // using the SQLx naming convention: {version}_{description}.sql
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    tracing::info!("database migrations up to date");
+
     // Spawn slow-path background worker
     let worker_pool = pool.clone();
     tokio::spawn(async move {

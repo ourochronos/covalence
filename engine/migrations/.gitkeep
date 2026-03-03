@@ -1,0 +1,9 @@
+# This directory holds SQLx-managed migrations for Covalence Engine (018+).
+#
+# Migrations 001-017 were applied manually and are recorded in the
+# _sqlx_migrations table via scripts/seed-sqlx-migrations.sh.
+#
+# New migrations must follow the SQLx naming convention:
+#   {version}_{description}.sql
+# where {version} is an integer greater than 17 (e.g. 018_add_tags.sql).
+# SQLx will auto-apply unapplied migrations on engine startup.
