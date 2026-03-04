@@ -473,6 +473,13 @@ GRANT ALL ON ALL TABLES IN SCHEMA covalence TO covalence;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA covalence TO covalence;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA covalence TO covalence;
 
+-- Migration 028: EWC structural importance (covalence#101)
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS structural_importance FLOAT DEFAULT 0.0;
+
+CREATE INDEX IF NOT EXISTS idx_nodes_structural_importance
+    ON covalence.nodes(structural_importance);
+
 -- Migration 027: Persistent gap registry (covalence#100)
 CREATE TABLE IF NOT EXISTS covalence.gap_log (
     id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

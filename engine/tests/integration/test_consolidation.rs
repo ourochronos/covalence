@@ -643,6 +643,7 @@ async fn test_maintenance_scan_queues_due_articles() {
             scan_due_consolidations: Some(true),
             refresh_inference: None,
             compute_gaps: None,
+            compute_structural_importance: None,
         })
         .await
         .expect("maintenance should succeed");

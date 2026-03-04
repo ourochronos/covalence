@@ -5,10 +5,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::errors::*;
-use crate::graph::{
-    GraphRepository, SharedGraph, SqlGraphRepository,
-    algorithms::{pagerank, structural_importance},
-};
+use crate::graph::{GraphRepository, SharedGraph, SqlGraphRepository, algorithms::pagerank};
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct StatsResponse {
@@ -73,6 +70,10 @@ pub struct MaintenanceRequest {
     /// Topics with query_count >= 3 are upserted; gap_score computed from
     /// avg_top_score and normalized demand.
     pub compute_gaps: Option<bool>,
+    /// When `true`, recompute the `structural_importance` column for all active
+    /// article nodes (covalence#101).  Uses in-degree (edges pointing at the node)
+    /// plus contention accommodation count plus pinned flag.
+    pub compute_structural_importance: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -274,70 +275,50 @@ impl AdminService {
             ).fetch_one(&self.pool).await?;
 
             if active_count > max_active {
-                // ── Bridge / hub protection (covalence#74) ────────────────────
-                // Compute structural importance from the in-memory graph and
-                // protect the top 5% most important nodes from eviction, even
-                // if their usage_score is the lowest in the corpus.  These are
-                // bridge nodes that connect distinct knowledge clusters — their
-                // removal would fragment cross-domain retrieval.
-                let protected_ids: Vec<Uuid> = if let Some(shared) = &self.shared_graph {
-                    let graph = shared.read().await;
-                    let importance = structural_importance(&graph);
-                    let node_count = importance.len();
-                    // Protect at least 1 node, up to 5% of the graph.
-                    let protect_count = (node_count as f64 * 0.05).ceil() as usize;
-                    let protect_count = protect_count.max(1);
-                    let mut sorted: Vec<(Uuid, f64)> = importance.into_iter().collect();
-                    sorted
-                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    drop(graph);
-                    tracing::debug!(
-                        protect_count,
-                        node_count,
-                        "eviction: protecting top structurally-important nodes"
-                    );
-                    sorted
-                        .into_iter()
-                        .take(protect_count)
-                        .map(|(id, _)| id)
-                        .collect()
-                } else {
-                    vec![]
-                };
-
-                // RETURNING id lets us remove each evicted node from the live
-                // AGE graph while preserving the SQL edges for history.
-                let evicted_rows = if protected_ids.is_empty() {
-                    // No structural data available — use original usage_score order.
-                    sqlx::query(
-                        "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \
-                         WHERE id IN ( \
-                           SELECT id FROM covalence.nodes \
-                           WHERE node_type = 'article' AND status = 'active' AND pinned = false \
-                           ORDER BY usage_score ASC LIMIT $1 \
-                         ) \
-                         RETURNING id",
+                // ── Structural-importance eviction guard (covalence#101) ───────
+                // Use the persisted structural_importance column to compute a
+                // combined evict_score.  Articles with structural_importance >= 0.8
+                // are fully protected.  The rest are ranked by:
+                //
+                //   evict_score = (1 - structural_importance)
+                //               * (1 - usage_score_normalized)
+                //
+                // Lower evict_score → evicted first (least load-bearing + least used).
+                let evicted_rows = sqlx::query(
+                    r#"
+                    WITH candidates AS (
+                        SELECT
+                            id,
+                            structural_importance,
+                            usage_score,
+                            usage_score / NULLIF(MAX(usage_score) OVER (), 0) AS usage_score_normalized
+                        FROM covalence.nodes
+                        WHERE node_type = 'article'
+                          AND status    = 'active'
+                          AND pinned    = false
+                          AND structural_importance < 0.8
+                    ),
+                    scored AS (
+                        SELECT
+                            id,
+                            (1.0 - structural_importance)
+                            * (1.0 - COALESCE(usage_score_normalized, 0.0)) AS evict_score
+                        FROM candidates
                     )
-                    .bind(evict_count)
-                    .fetch_all(&self.pool)
-                    .await?
-                } else {
-                    // Bridge-aware eviction: exclude structurally-important nodes.
-                    sqlx::query(
-                        "UPDATE covalence.nodes SET status = 'archived', archived_at = now() \
-                         WHERE id IN ( \
-                           SELECT id FROM covalence.nodes \
-                           WHERE node_type = 'article' AND status = 'active' AND pinned = false \
-                             AND id != ALL($2::uuid[]) \
-                           ORDER BY usage_score ASC LIMIT $1 \
-                         ) \
-                         RETURNING id",
-                    )
-                    .bind(evict_count)
-                    .bind(&protected_ids)
-                    .fetch_all(&self.pool)
-                    .await?
-                };
+                    UPDATE covalence.nodes
+                       SET status      = 'archived',
+                           archived_at = now()
+                     WHERE id IN (
+                         SELECT id FROM scored
+                         ORDER BY evict_score ASC
+                         LIMIT $1
+                     )
+                    RETURNING id
+                    "#,
+                )
+                .bind(evict_count)
+                .fetch_all(&self.pool)
+                .await?;
 
                 let evicted_count = evicted_rows.len();
                 for row in &evicted_rows {
@@ -351,9 +332,8 @@ impl AdminService {
                 }
 
                 actions.push(format!(
-                    "evicted {evicted_count} low-usage articles \
-                     ({} bridge nodes protected)",
-                    protected_ids.len()
+                    "evicted {evicted_count} articles by evict_score \
+                     (structural_importance >= 0.8 protected)"
                 ));
             } else {
                 actions.push(format!(
@@ -446,6 +426,11 @@ impl AdminService {
         if req.compute_gaps.unwrap_or(false) {
             let n = self.compute_gap_registry().await?;
             actions.push(format!("compute_gaps: upserted {n} gap topics"));
+        }
+
+        if req.compute_structural_importance.unwrap_or(false) {
+            let n = self.compute_structural_importance().await?;
+            actions.push(format!("compute_structural_importance: updated {n} nodes"));
         }
 
         if actions.is_empty() {
@@ -1120,6 +1105,82 @@ impl AdminService {
                 healthy: queue_val < 0.05,
             },
         })
+    }
+}
+
+// ── Structural Importance (covalence#101) ───────────────────────────────────
+
+impl AdminService {
+    /// Batch-recompute the `structural_importance` column for all active article
+    /// nodes using a formula based on:
+    ///
+    /// - **in_degree**: number of active edges pointing at the node.
+    /// - **accommodation_count**: contentions resolved with `resolution = 'supersede_b'`
+    ///   (i.e. the source won, meaning the article was important enough to be
+    ///   updated / the system accommodated it).
+    /// - **pinned**: adds a flat 0.5 bonus.
+    ///
+    /// Formula (all terms clamped to [0, 1] via LEAST):
+    /// ```text
+    /// structural_importance = LEAST(1.0,
+    ///     log(1 + in_degree) / NULLIF(log(1 + max_in_degree), 0)
+    ///   + CASE WHEN pinned THEN 0.5 ELSE 0.0 END
+    ///   + 0.3 * accommodation_count / NULLIF(max_accommodation_count, 0)
+    /// )
+    /// ```
+    ///
+    /// When there are no edges at all (`max_in_degree = 0`) every node is set to
+    /// 0.0 (with pinned still getting +0.5, clamped to its raw value).
+    ///
+    /// Returns the number of rows updated.
+    pub async fn compute_structural_importance(&self) -> AppResult<u64> {
+        let result = sqlx::query(
+            r#"
+            WITH raw AS (
+                SELECT
+                    n.id,
+                    n.pinned,
+                    (SELECT COUNT(*)
+                     FROM covalence.edges e
+                     WHERE e.target_node_id = n.id
+                       AND e.valid_to IS NULL) AS in_degree,
+                    (SELECT COUNT(*)
+                     FROM covalence.contentions c
+                     WHERE c.node_id = n.id
+                       AND c.resolution = 'supersede_b') AS accommodation_count
+                FROM covalence.nodes n
+                WHERE n.node_type = 'article'
+                  AND n.status    = 'active'
+            ),
+            maxima AS (
+                SELECT
+                    MAX(in_degree)::float           AS max_in_degree,
+                    MAX(accommodation_count)::float AS max_accommodation_count
+                FROM raw
+            )
+            UPDATE covalence.nodes dst
+               SET structural_importance = LEAST(1.0,
+                       COALESCE(
+                           ln(1.0 + raw.in_degree::float)
+                           / NULLIF(ln(1.0 + maxima.max_in_degree), 0),
+                           0.0
+                       )
+                   + CASE WHEN raw.pinned THEN 0.5 ELSE 0.0 END
+                   + COALESCE(
+                           0.3 * raw.accommodation_count::float
+                           / NULLIF(maxima.max_accommodation_count, 0),
+                           0.0
+                     )
+               )
+              FROM raw
+              CROSS JOIN maxima
+             WHERE dst.id = raw.id
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 }
 
