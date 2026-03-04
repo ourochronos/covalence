@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Cranfield golden query set for Covalence search quality evaluation. Each entry defines a representative query, the recommended search mode/strategy, a human description of what is being tested, and a minimum score threshold a hit must meet to be counted as a successful retrieval. Without a fixed corpus, relevance judgments cannot be pre-assigned — see README.md for Phase 2 plans.",
-  "version": "1.0.0",
+  "$comment": "Cranfield golden query set for Covalence search quality evaluation. Each entry defines a representative query, the recommended search mode/strategy, a human description of what is being tested, and a minimum score threshold a hit must meet to be counted as a successful retrieval. Without a fixed corpus, relevance judgments cannot be pre-assigned — see README.md for methodology.",
+  "version": "2.0.0",
   "queries": [
     {
       "id": "q01",
@@ -222,6 +222,171 @@
       "min_score": 0.08,
       "description": "Configuration/environment variable lookup — tests precise lexical recall for exact configuration key names that a user might search for.",
       "tags": ["configuration", "openai", "precise"]
+    },
+    {
+      "id": "q21",
+      "query": "memory reconsolidation retrieval-induced update destabilization",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "causal",
+      "limit": 5,
+      "min_score": 0.12,
+      "description": "Neuroscience/causal query — tests vector recall for biological memory research content about reconsolidation as a retrieval-triggered update mechanism.",
+      "tags": ["neuroscience", "reconsolidation", "causal"]
+    },
+    {
+      "id": "q22",
+      "query": "CRDT conflict-free replicated data type distributed knowledge federation",
+      "mode": "standard",
+      "strategy": "graph",
+      "intent": "entity",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Distributed-systems entity query — tests graph-strategy routing for content about CRDTs applied to federated knowledge graphs.",
+      "tags": ["crdt", "federation", "distributed"]
+    },
+    {
+      "id": "q23",
+      "query": "cognitive architecture ACT-R SOAR working memory procedural",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.12,
+      "description": "Named-architecture lexical query — verifies that content about classical cognitive architectures (ACT-R, SOAR) is retrievable via lexical-heavy matching.",
+      "tags": ["cognitive-architecture", "ACT-R", "SOAR"]
+    },
+    {
+      "id": "q24",
+      "query": "causal inference do-calculus Pearl intervention counterfactual",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "causal",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Causal-inference technical query using Pearl's do-calculus notation — tests vector similarity for content about causal reasoning methods.",
+      "tags": ["causal-inference", "do-calculus", "Pearl"]
+    },
+    {
+      "id": "q25",
+      "query": "spacing effect spaced repetition long-term memory retention",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": "temporal",
+      "limit": 5,
+      "min_score": 0.12,
+      "description": "Temporal/neuroscience query — tests balanced retrieval for the spacing effect research relevant to Covalence's decay and refresh model.",
+      "tags": ["spacing-effect", "retention", "temporal"]
+    },
+    {
+      "id": "q26",
+      "query": "Dung abstract argumentation framework grounded preferred extensions",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.12,
+      "description": "Formal argumentation theory query — tests lexical recall for Dung-framework terminology relevant to the Covalence contention resolution system.",
+      "tags": ["argumentation", "Dung", "contention"]
+    },
+    {
+      "id": "q27",
+      "query": "agent memory beyond RAG hierarchical retrieval xMemory",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "entity",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Agent-memory architecture query — tests exploratory vector retrieval for research on advanced memory systems beyond retrieval-augmented generation.",
+      "tags": ["agent-memory", "RAG", "hierarchical"]
+    },
+    {
+      "id": "q28",
+      "query": "social epistemology testimony collective knowledge networks",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "causal",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Epistemology/social query — tests vector similarity for content about social dimensions of knowledge and how it informs Covalence's trust model.",
+      "tags": ["epistemology", "social", "trust"]
+    },
+    {
+      "id": "q29",
+      "query": "process improvement trigger-based habits continuous workflow",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Operational/meta query — tests balanced retrieval for content about process improvement frameworks applied to AI agent operations.",
+      "tags": ["process-improvement", "workflow", "operational"]
+    },
+    {
+      "id": "q30",
+      "query": "Ebbinghaus forgetting curve exponential decay retention",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "temporal",
+      "limit": 5,
+      "min_score": 0.12,
+      "description": "Memory-science lexical query — tests precise retrieval for Ebbinghaus forgetting-curve content; relevant to Covalence's organic forgetting and decay model.",
+      "tags": ["ebbinghaus", "forgetting", "decay"]
+    },
+    {
+      "id": "q31",
+      "query": "knowledge graph rule mining inference Horn clause AMIE",
+      "mode": "standard",
+      "strategy": "graph",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "KG reasoning graph-strategy query — tests that graph-weighted retrieval surfaces content about rule-based inference methods applicable to Covalence.",
+      "tags": ["knowledge-graph", "inference", "rules"]
+    },
+    {
+      "id": "q32",
+      "query": "epistemic democratization societal impact individual institutional",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Mission/vision query — tests exploratory vector retrieval for content about Covalence's societal purpose and epistemic equity framing.",
+      "tags": ["societal", "epistemology", "mission"]
+    },
+    {
+      "id": "q33",
+      "query": "complementary learning systems hippocampus neocortex consolidation",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "causal",
+      "limit": 5,
+      "min_score": 0.12,
+      "description": "Neuroscience / CLS theory query — tests exploratory vector retrieval for content about the hippocampus-neocortex memory transfer model.",
+      "tags": ["neuroscience", "CLS", "consolidation"]
+    },
+    {
+      "id": "q34",
+      "query": "eventual consistency strong consistency CAP theorem",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Distributed-systems terminology query — tests lexical recall for CAP theorem and consistency-model content relevant to federation design.",
+      "tags": ["distributed", "consistency", "CAP"]
+    },
+    {
+      "id": "q35",
+      "query": "metacognition epistemic uncertainty AI knowing what you don't know",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "causal",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Cross-domain prose query — tests vector retrieval for metacognition content that spans AI and epistemology, using a colloquial phrasing.",
+      "tags": ["metacognition", "uncertainty", "epistemic"]
     }
   ]
 }
