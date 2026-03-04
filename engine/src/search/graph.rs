@@ -91,9 +91,8 @@ impl GraphAdaptor {
 
         let rows = if priority.is_empty() {
             // No intent filter — all edge types (filtered by causal_weight if set).
-            sqlx::query_as::<_, (Uuid, f64)>(
-                &format!(
-                    "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
+            sqlx::query_as::<_, (Uuid, f64)>(&format!(
+                "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
                         SELECT
                             CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
                                  ELSE e.source_node_id END                           AS neighbor_id,
@@ -107,8 +106,7 @@ impl GraphAdaptor {
                     JOIN covalence.nodes n ON n.id = sub.neighbor_id
                     WHERE n.status = 'active' AND n.namespace = $2
                     ORDER BY neighbor_id, score DESC"
-                ),
-            )
+            ))
             .bind(frontier)
             .bind(namespace)
             .fetch_all(pool)

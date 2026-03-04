@@ -34,7 +34,14 @@ async fn test_causal_weight_originates_is_1_0() {
 
     let graph = SqlGraphRepository::new(pool.clone());
     let edge = graph
-        .create_edge(src, art, EdgeType::Originates, 1.0, "test", serde_json::json!({}))
+        .create_edge(
+            src,
+            art,
+            EdgeType::Originates,
+            1.0,
+            "test",
+            serde_json::json!({}),
+        )
         .await
         .expect("create_edge(Originates) should succeed");
 
@@ -46,13 +53,12 @@ async fn test_causal_weight_originates_is_1_0() {
     );
 
     // Confirm the value was persisted to the database.
-    let db_weight: f64 = sqlx::query_scalar(
-        "SELECT causal_weight FROM covalence.edges WHERE id = $1",
-    )
-    .bind(edge.id)
-    .fetch_one(&pool)
-    .await
-    .expect("causal_weight column must exist on edges");
+    let db_weight: f64 =
+        sqlx::query_scalar("SELECT causal_weight FROM covalence.edges WHERE id = $1")
+            .bind(edge.id)
+            .fetch_one(&pool)
+            .await
+            .expect("causal_weight column must exist on edges");
 
     assert!(
         (db_weight - 1.0).abs() < 0.001,
@@ -80,7 +86,14 @@ async fn test_causal_weight_relates_to_is_0_15() {
 
     let graph = SqlGraphRepository::new(pool.clone());
     let edge = graph
-        .create_edge(src, art, EdgeType::RelatesTo, 1.0, "test", serde_json::json!({}))
+        .create_edge(
+            src,
+            art,
+            EdgeType::RelatesTo,
+            1.0,
+            "test",
+            serde_json::json!({}),
+        )
         .await
         .expect("create_edge(RelatesTo) should succeed");
 
@@ -92,13 +105,12 @@ async fn test_causal_weight_relates_to_is_0_15() {
     );
 
     // Database-persisted value.
-    let db_weight: f64 = sqlx::query_scalar(
-        "SELECT causal_weight FROM covalence.edges WHERE id = $1",
-    )
-    .bind(edge.id)
-    .fetch_one(&pool)
-    .await
-    .expect("causal_weight must be persisted");
+    let db_weight: f64 =
+        sqlx::query_scalar("SELECT causal_weight FROM covalence.edges WHERE id = $1")
+            .bind(edge.id)
+            .fetch_one(&pool)
+            .await
+            .expect("causal_weight must be persisted");
 
     assert!(
         (db_weight - 0.15).abs() < 0.001,
@@ -127,9 +139,7 @@ async fn test_min_causal_weight_excludes_low_weight_edges() {
     let src_high = fix
         .insert_source("mcw-src-high", "high-causal content")
         .await;
-    let src_low = fix
-        .insert_source("mcw-src-low", "low-causal content")
-        .await;
+    let src_low = fix.insert_source("mcw-src-low", "low-causal content").await;
     let article = fix
         .insert_article("mcw-article", "central article for traversal test")
         .await;
@@ -260,15 +270,16 @@ async fn test_provenance_confidence_column_exists_on_nodes() {
     );
 
     // Verify it is nullable by inserting a node and confirming NULL is accepted.
-    let node_id = fix.insert_source("prov-conf-test", "provenance confidence test").await;
+    let node_id = fix
+        .insert_source("prov-conf-test", "provenance confidence test")
+        .await;
 
-    let stored_val: Option<f64> = sqlx::query_scalar(
-        "SELECT provenance_confidence FROM covalence.nodes WHERE id = $1",
-    )
-    .bind(node_id)
-    .fetch_one(&pool)
-    .await
-    .expect("provenance_confidence select should succeed");
+    let stored_val: Option<f64> =
+        sqlx::query_scalar("SELECT provenance_confidence FROM covalence.nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_one(&pool)
+            .await
+            .expect("provenance_confidence select should succeed");
 
     assert!(
         stored_val.is_none(),
@@ -276,21 +287,18 @@ async fn test_provenance_confidence_column_exists_on_nodes() {
     );
 
     // Verify we can SET a value.
-    sqlx::query(
-        "UPDATE covalence.nodes SET provenance_confidence = 0.75 WHERE id = $1",
-    )
-    .bind(node_id)
-    .execute(&pool)
-    .await
-    .expect("setting provenance_confidence should succeed");
+    sqlx::query("UPDATE covalence.nodes SET provenance_confidence = 0.75 WHERE id = $1")
+        .bind(node_id)
+        .execute(&pool)
+        .await
+        .expect("setting provenance_confidence should succeed");
 
-    let updated_val: Option<f64> = sqlx::query_scalar(
-        "SELECT provenance_confidence FROM covalence.nodes WHERE id = $1",
-    )
-    .bind(node_id)
-    .fetch_one(&pool)
-    .await
-    .expect("read after update");
+    let updated_val: Option<f64> =
+        sqlx::query_scalar("SELECT provenance_confidence FROM covalence.nodes WHERE id = $1")
+            .bind(node_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read after update");
 
     assert!(
         updated_val.is_some(),
@@ -401,7 +409,11 @@ async fn test_contradicts_edge_service_causal_weight() {
     .await
     .expect("fetch both CONTRADICTS edges");
 
-    assert_eq!(weights.len(), 2, "both forward and inverse edges must exist");
+    assert_eq!(
+        weights.len(),
+        2,
+        "both forward and inverse edges must exist"
+    );
     for w in &weights {
         assert!(
             (w - 0.50).abs() < 0.001,
