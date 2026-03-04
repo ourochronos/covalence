@@ -67,6 +67,13 @@ ALTER TABLE covalence.nodes
 ALTER TABLE covalence.nodes
     ADD COLUMN IF NOT EXISTS consolidation_count INT NOT NULL DEFAULT 0;
 
+-- Migration 024: Faceted classification (covalence#92).
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS facet_function TEXT[] NULL DEFAULT NULL;
+
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS facet_scope TEXT[] NULL DEFAULT NULL;
+
 -- Migration 021: index for heartbeat query (covalence#67 final).
 CREATE INDEX IF NOT EXISTS idx_nodes_next_consolidation_at
     ON covalence.nodes (next_consolidation_at)
@@ -304,6 +311,14 @@ CREATE INDEX IF NOT EXISTS nodes_metadata_gin_idx
 
 CREATE INDEX IF NOT EXISTS nodes_content_tsv_gin_idx
     ON covalence.nodes USING gin (content_tsv);
+
+CREATE INDEX IF NOT EXISTS nodes_facet_function_gin_idx
+    ON covalence.nodes USING gin (facet_function)
+    WHERE facet_function IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS nodes_facet_scope_gin_idx
+    ON covalence.nodes USING gin (facet_scope)
+    WHERE facet_scope IS NOT NULL;
 
 -- B-tree indexes
 CREATE INDEX IF NOT EXISTS nodes_type_status_idx

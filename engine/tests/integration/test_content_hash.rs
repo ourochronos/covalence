@@ -42,6 +42,8 @@ async fn test_source_ingest_populates_content_hash() {
         session_id: None,
         reliability: None,
         capture_method: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let resp = svc.ingest(req).await.expect("ingest must succeed");
@@ -91,6 +93,8 @@ async fn test_source_get_exposes_content_hash() {
         session_id: None,
         reliability: None,
         capture_method: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let ingested = svc.ingest(req).await.expect("ingest must succeed");
@@ -132,6 +136,8 @@ async fn test_article_create_populates_content_hash() {
         epistemic_type: None,
         source_ids: None,
         metadata: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let resp = svc.create(req).await.expect("article create must succeed");
@@ -169,6 +175,8 @@ async fn test_article_update_changes_content_hash() {
         epistemic_type: None,
         source_ids: None,
         metadata: None,
+        facet_function: None,
+        facet_scope: None,
     };
     let created = svc
         .create(create_req)
@@ -193,6 +201,8 @@ async fn test_article_update_changes_content_hash() {
         domain_path: None,
         metadata: None,
         pinned: None,
+        facet_function: None,
+        facet_scope: None,
     };
     let updated = svc
         .update(created.id, update_req)
@@ -237,6 +247,8 @@ async fn test_article_get_exposes_content_hash() {
         epistemic_type: None,
         source_ids: None,
         metadata: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let created = svc.create(req).await.expect("article create must succeed");

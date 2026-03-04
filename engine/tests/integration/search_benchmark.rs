@@ -582,6 +582,8 @@ async fn search_benchmark_precision_and_latency() {
             before: None,
             min_score: None,
             spreading_activation: None,
+            facet_function: None,
+            facet_scope: None,
         };
 
         let t0 = Instant::now();
@@ -714,6 +716,8 @@ async fn search_benchmark_no_total_miss() {
             before: None,
             min_score: None,
             spreading_activation: None,
+            facet_function: None,
+            facet_scope: None,
         };
 
         let (search_results, _meta) = svc
@@ -778,6 +782,8 @@ async fn search_benchmark_per_query_floor() {
             before: None,
             min_score: None,
             spreading_activation: None,
+            facet_function: None,
+            facet_scope: None,
         };
 
         let (search_results, _meta) = svc
@@ -831,6 +837,8 @@ async fn search_benchmark_single_query_latency_budget() {
             before: None,
             min_score: None,
             spreading_activation: None,
+            facet_function: None,
+            facet_scope: None,
         })
         .await;
 
@@ -854,6 +862,8 @@ async fn search_benchmark_single_query_latency_budget() {
             before: None,
             min_score: None,
             spreading_activation: None,
+            facet_function: None,
+            facet_scope: None,
         };
 
         let t0 = Instant::now();

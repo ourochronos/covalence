@@ -20,6 +20,10 @@ pub struct CreateArticleRequest {
     pub source_ids: Option<Vec<Uuid>>,
     #[schema(value_type = Object)]
     pub metadata: Option<serde_json::Value>,
+    /// Functional facet — what does this knowledge DO? (covalence#92)
+    pub facet_function: Option<Vec<String>>,
+    /// Scope facet — abstraction level. (covalence#92)
+    pub facet_scope: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
@@ -31,6 +35,10 @@ pub struct UpdateArticleRequest {
     #[schema(value_type = Object)]
     pub metadata: Option<serde_json::Value>,
     pub pinned: Option<bool>,
+    /// Functional facet — what does this knowledge DO? (covalence#92)
+    pub facet_function: Option<Vec<String>>,
+    /// Scope facet — abstraction level. (covalence#92)
+    pub facet_scope: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
@@ -80,6 +88,10 @@ pub struct ArticleResponse {
     /// (e.g. in list responses).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale: Option<bool>,
+    /// Functional facet — what does this knowledge DO? (covalence#92)
+    pub facet_function: Option<Vec<String>>,
+    /// Scope facet — abstraction level. (covalence#92)
+    pub facet_scope: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -135,10 +147,11 @@ impl ArticleService {
             "INSERT INTO covalence.nodes \
              (id, node_type, title, content, status, epistemic_type, domain_path, \
               content_hash, size_tokens, metadata, confidence, namespace, \
+              facet_function, facet_scope, \
               created_at, modified_at, accessed_at, \
               next_consolidation_at, consolidation_count) \
-             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $10, $10, $10, \
-                     $11, 0)",
+             VALUES ($1, 'article', $2, $3, 'active', $4, $5, $6, $7, $8, 0.5, $9, $10, $11, $12, $12, $12, \
+                     $13, 0)",
         )
         .bind(id)
         .bind(&req.title)
@@ -149,6 +162,8 @@ impl ArticleService {
         .bind(size_tokens)
         .bind(&metadata)
         .bind(&self.namespace)
+        .bind(&req.facet_function)
+        .bind(&req.facet_scope)
         .bind(now)
         .bind(first_consolidation_at)
         .execute(&self.pool)
@@ -209,7 +224,7 @@ impl ArticleService {
         let row = sqlx::query(
             "SELECT n.id, n.title, n.content, n.status, n.confidence, \
              n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
-             n.content_hash, n.created_at, n.modified_at, \
+             n.content_hash, n.facet_function, n.facet_scope, n.created_at, n.modified_at, \
              (SELECT COUNT(*) FROM covalence.edges e \
               WHERE (e.source_node_id = n.id OR e.target_node_id = n.id) \
               AND e.edge_type IN ('CONTRADICTS', 'CONTENDS')) AS contention_count \
@@ -334,6 +349,24 @@ impl ArticleService {
             .execute(&self.pool)
             .await?;
         }
+        if let Some(ref facet_function) = req.facet_function {
+            sqlx::query(
+                "UPDATE covalence.nodes SET facet_function = $2, modified_at = now() WHERE id = $1",
+            )
+            .bind(id)
+            .bind(facet_function)
+            .execute(&self.pool)
+            .await?;
+        }
+        if let Some(ref facet_scope) = req.facet_scope {
+            sqlx::query(
+                "UPDATE covalence.nodes SET facet_scope = $2, modified_at = now() WHERE id = $1",
+            )
+            .bind(id)
+            .bind(facet_scope)
+            .execute(&self.pool)
+            .await?;
+        }
 
         // Re-queue embedding if content changed (with contextual preamble, covalence#73).
         // Use updated field values if available, falling back to the pre-update snapshot.
@@ -448,6 +481,8 @@ impl ArticleService {
                 epistemic_type: original.epistemic_type.clone(),
                 source_ids: None,
                 metadata: Some(original.metadata.clone()),
+                facet_function: original.facet_function.clone(),
+                facet_scope: original.facet_scope.clone(),
             })
             .await?;
 
@@ -459,6 +494,8 @@ impl ArticleService {
                 epistemic_type: original.epistemic_type.clone(),
                 source_ids: None,
                 metadata: Some(original.metadata.clone()),
+                facet_function: original.facet_function.clone(),
+                facet_scope: original.facet_scope.clone(),
             })
             .await?;
 
@@ -568,6 +605,8 @@ impl ArticleService {
                 epistemic_type: a.epistemic_type.clone(),
                 source_ids: None,
                 metadata: Some(a.metadata.clone()),
+                facet_function: None,
+                facet_scope: None,
             })
             .await?;
 
@@ -687,7 +726,7 @@ impl ArticleService {
             sqlx::query(
                 "SELECT n.id, n.title, n.content, n.status, n.confidence, \
                  n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
-                 n.content_hash, n.created_at, n.modified_at, \
+                 n.content_hash, n.facet_function, n.facet_scope, n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
                  WHERE n.node_type = 'article' AND n.status = $1 AND n.namespace = $2 AND n.id > $3 \
@@ -703,7 +742,7 @@ impl ArticleService {
             sqlx::query(
                 "SELECT n.id, n.title, n.content, n.status, n.confidence, \
                  n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
-                 n.content_hash, n.created_at, n.modified_at, \
+                 n.content_hash, n.facet_function, n.facet_scope, n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
                  WHERE n.node_type = 'article' AND n.status = $1 AND n.namespace = $2 \
@@ -741,5 +780,7 @@ fn article_from_row(row: &PgRow) -> ArticleResponse {
         content_hash: row.get("content_hash"),
         created_at: row.get("created_at"),
         modified_at: row.get("modified_at"),
+        facet_function: row.get("facet_function"),
+        facet_scope: row.get("facet_scope"),
     }
 }

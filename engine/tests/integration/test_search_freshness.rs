@@ -81,6 +81,8 @@ fn make_req(query: &str) -> SearchRequest {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     }
 }
 

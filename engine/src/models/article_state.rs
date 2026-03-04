@@ -301,6 +301,8 @@ mod tests {
             created_at: Utc::now(),
             modified_at: Utc::now(),
             stale: None,
+            facet_function: None,
+            facet_scope: None,
         }
     }
 

@@ -65,6 +65,8 @@ async fn test_lexical_fallback_fires_for_multi_term_query() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, meta) = svc.search(req).await.expect("search should succeed");
@@ -152,6 +154,8 @@ async fn test_title_match_boost_elevates_exact_title_match() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -242,6 +246,8 @@ async fn test_min_score_filters_weak_results() {
         before: None,
         min_score: Some(0.75),
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_filtered, _) = svc
@@ -277,6 +283,8 @@ async fn test_min_score_filters_weak_results() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_unfiltered, _) = svc

@@ -137,6 +137,8 @@ async fn test_ingest_rejects_oversized_content() {
         session_id: None,
         reliability: None,
         capture_method: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let result = svc.ingest(req).await;
@@ -169,6 +171,8 @@ async fn test_ingest_accepts_content_at_limit() {
         session_id: None,
         reliability: None,
         capture_method: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let result = svc.ingest(req).await;
@@ -196,6 +200,8 @@ async fn test_ingest_accepts_normal_content() {
         session_id: None,
         reliability: None,
         capture_method: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let result = svc.ingest(req).await;

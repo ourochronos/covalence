@@ -310,6 +310,8 @@ impl SessionService {
             session_id: Some(session_id),
             reliability: None,
             capture_method: Some("system".to_string()),
+            facet_function: None,
+            facet_scope: None,
         };
 
         let source = source_svc.ingest(ingest_req).await?;

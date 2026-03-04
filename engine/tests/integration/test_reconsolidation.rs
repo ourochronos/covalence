@@ -145,6 +145,8 @@ async fn test_search_queues_reconsolidate_for_orphan_source() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -397,6 +399,8 @@ async fn test_reconsolidation_respects_cooldown() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
     let _ = svc.search(req).await;
 

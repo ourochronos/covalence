@@ -168,6 +168,16 @@ pub struct SearchRequest {
     /// Capped at 0.15 per neighbour.  Default: `false` (explicit opt-in).
     #[serde(default)]
     pub spreading_activation: Option<bool>,
+    /// Facet filter — functional dimension (covalence#92 Phase 1).
+    /// When set, only nodes where `facet_function @> facet_function` are returned.
+    /// Nodes with NULL `facet_function` are excluded when this filter is active.
+    #[serde(default)]
+    pub facet_function: Option<Vec<String>>,
+    /// Facet filter — scope dimension (covalence#92 Phase 1).
+    /// When set, only nodes where `facet_scope @> facet_scope` are returned.
+    /// Nodes with NULL `facet_scope` are excluded when this filter is active.
+    #[serde(default)]
+    pub facet_scope: Option<Vec<String>>,
 }
 
 fn default_limit() -> usize {
@@ -226,6 +236,12 @@ pub struct SearchResult {
     /// inbound-edge diversity).  `None` when the feature flag
     /// `COVALENCE_TOPOLOGICAL_CONFIDENCE` is not enabled.
     pub topological_score: Option<f64>,
+    /// Functional facet — what does this knowledge DO? (covalence#92)
+    /// Used for facet_function filter application.
+    pub facet_function: Option<Vec<String>>,
+    /// Scope facet — abstraction level. (covalence#92)
+    /// Used for facet_scope filter application.
+    pub facet_scope: Option<Vec<String>>,
 }
 
 /// Metadata about the search execution.
@@ -565,6 +581,24 @@ impl SearchService {
                     .is_some_and(|dp| dp.iter().any(|d| filter_paths.contains(d)))
             });
         }
+        // Facet filters (covalence#92 Phase 1) — applied after domain_path filter.
+        // @> semantics: result's facet must contain ALL requested values.
+        if let Some(ref ff) = req.facet_function {
+            let ff_refs = ff.iter().map(String::as_str).collect::<Vec<_>>();
+            results.retain(|r| {
+                r.facet_function
+                    .as_ref()
+                    .is_some_and(|f| ff_refs.iter().all(|v| f.iter().any(|fv| fv == v)))
+            });
+        }
+        if let Some(ref fs) = req.facet_scope {
+            let fs_refs = fs.iter().map(String::as_str).collect::<Vec<_>>();
+            results.retain(|r| {
+                r.facet_scope
+                    .as_ref()
+                    .is_some_and(|f| fs_refs.iter().all(|v| f.iter().any(|fv| fv == v)))
+            });
+        }
         // Temporal post-filters: exclude nodes outside the requested date range.
         if let Some(after) = req.after {
             results.retain(|r| r.created_at.is_none_or(|ca| ca > after));
@@ -669,6 +703,8 @@ impl SearchService {
                                         trust,
                                         domain_path,
                                         created_at,
+                                        facet_function,
+                                        facet_scope,
                                     ) = node;
                                     results.push(SearchResult {
                                         node_id,
@@ -690,6 +726,8 @@ impl SearchService {
                                         graph_hops: Some(1),
                                         created_at: Some(*created_at),
                                         topological_score: None,
+                                        facet_function: facet_function.clone(),
+                                        facet_scope: facet_scope.clone(),
                                     });
                                 }
                             }
@@ -779,6 +817,8 @@ impl SearchService {
                                         trust,
                                         domain_path,
                                         created_at,
+                                        facet_function,
+                                        facet_scope,
                                     ) = node;
                                     // Score descends gently per rank.
                                     let ppr_score = base_score * 0.9_f64.powi(rank as i32);
@@ -803,6 +843,8 @@ impl SearchService {
                                         graph_hops: Some(1),
                                         created_at: Some(*created_at),
                                         topological_score: None,
+                                        facet_function: facet_function.clone(),
+                                        facet_scope: facet_scope.clone(),
                                     });
                                 }
                             }
@@ -1107,6 +1149,8 @@ impl SearchService {
                         trust,
                         domain_path,
                         created_at,
+                        facet_function,
+                        facet_scope,
                     ) = node;
 
                     let parent_score = *parent_score_map.get(parent_article_id).unwrap_or(&0.5);
@@ -1145,6 +1189,8 @@ impl SearchService {
                         graph_hops: None, // expanded via provenance, not graph traversal
                         created_at: Some(*created_at),
                         topological_score: None,
+                        facet_function: facet_function.clone(),
+                        facet_scope: facet_scope.clone(),
                     })
                 })
                 .collect()
@@ -1288,6 +1334,8 @@ impl SearchService {
             before: req.before,
             min_score: req.min_score,
             spreading_activation: None, // synthesis does not use spreading
+            facet_function: req.facet_function,
+            facet_scope: req.facet_scope,
         };
 
         // Step 1 — run standard 4-D search over sources.
@@ -1849,6 +1897,8 @@ type NodeRow = (
     f64,
     Option<Vec<String>>,
     DateTime<Utc>,
+    Option<Vec<String>>,
+    Option<Vec<String>>,
 );
 
 /// Bulk-fetch node metadata (including trust scores) for the given IDs.
@@ -1879,7 +1929,9 @@ async fn fetch_node_map(
                     ELSE COALESCE(at.avg_reliability, 0.5)
                 END::float8                               AS trust_score,
                 n.domain_path,
-                n.created_at
+                n.created_at,
+                n.facet_function,
+                n.facet_scope
          FROM   covalence.nodes n
          LEFT JOIN article_trust at ON at.node_id = n.id
          WHERE  n.id = ANY($1)
@@ -1977,8 +2029,19 @@ fn build_results(
         let Some(node) = node_map.get(node_id) else {
             continue;
         };
-        let (_, node_type, title, preview, confidence, modified_at, trust, domain_path, created_at) =
-            node;
+        let (
+            _,
+            node_type,
+            title,
+            preview,
+            confidence,
+            modified_at,
+            trust,
+            domain_path,
+            created_at,
+            facet_function,
+            facet_scope,
+        ) = node;
 
         // ── RRF score: weighted sum of 1/(k + rank) across dimensions ─────────
         // Nodes absent from a dimension's rank map contribute 0 for that dimension.
@@ -2084,6 +2147,8 @@ fn build_results(
             graph_hops: graph_hops_map.get(node_id).copied(),
             created_at: Some(*created_at),
             topological_score: topo_score_out,
+            facet_function: facet_function.clone(),
+            facet_scope: facet_scope.clone(),
         });
     }
     results

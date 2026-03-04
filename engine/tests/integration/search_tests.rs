@@ -151,6 +151,8 @@ async fn source_reliability_affects_ranking() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -258,6 +260,8 @@ async fn article_trust_derived_from_source_reliability() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -329,6 +333,8 @@ async fn article_without_sources_gets_default_trust() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -398,6 +404,8 @@ async fn test_hierarchical_search_returns_articles_first() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc
@@ -489,6 +497,8 @@ async fn test_hierarchical_search_expands_sources() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc
@@ -586,6 +596,8 @@ async fn test_standard_mode_unchanged() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     // Default mode (mode = None).
@@ -606,6 +618,8 @@ async fn test_standard_mode_unchanged() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_explicit, _) = svc
@@ -687,6 +701,8 @@ async fn test_recency_bias_default_unchanged() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     // Request with explicit recency_bias = 0.0.
@@ -707,6 +723,8 @@ async fn test_recency_bias_default_unchanged() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_none, _) = svc
@@ -810,6 +828,8 @@ async fn test_recency_bias_favors_recent() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc
@@ -903,6 +923,8 @@ async fn test_domain_path_filter_includes_matching() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc
@@ -973,6 +995,8 @@ async fn test_domain_path_filter_excludes_untagged() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc
@@ -1044,6 +1068,8 @@ async fn test_domain_path_filter_none_returns_all() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _meta) = svc
@@ -1134,6 +1160,8 @@ async fn test_graph_multi_hop_reaches_distant_nodes() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_1hop, _) = svc
@@ -1168,6 +1196,8 @@ async fn test_graph_multi_hop_reaches_distant_nodes() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_2hop, _) = svc
@@ -1234,6 +1264,8 @@ async fn test_graph_multi_hop_score_decay() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results, _) = svc
@@ -1328,6 +1360,8 @@ async fn test_graph_strategy_defaults_to_2_hops() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_graph, _) = svc
@@ -1359,6 +1393,8 @@ async fn test_graph_strategy_defaults_to_2_hops() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        facet_function: None,
+        facet_scope: None,
     };
 
     let (results_balanced, _) = svc

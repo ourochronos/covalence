@@ -26,6 +26,8 @@ async fn insert_ns_source(fix: &mut TestFixture, ns: &str, title: &str, content:
         metadata: None,
         session_id: None,
         capture_method: None,
+        facet_function: None,
+        facet_scope: None,
     };
     let svc = SourceService::new(fix.pool.clone()).with_namespace(ns.to_string());
     let resp = svc.ingest(req).await.expect("ingest should succeed");
@@ -42,6 +44,8 @@ async fn insert_ns_article(fix: &mut TestFixture, ns: &str, title: &str, content
         epistemic_type: None,
         domain_path: None,
         metadata: None,
+        facet_function: None,
+        facet_scope: None,
     };
     let svc = ArticleService::new(fix.pool.clone()).with_namespace(ns.to_string());
     let resp = svc.create(req).await.expect("create should succeed");
@@ -236,6 +240,8 @@ async fn test_namespace_search_isolation() {
             before: None,
             min_score: None,
             spreading_activation: None,
+            facet_function: None,
+            facet_scope: None,
         })
         .await
         .expect("alpha search should succeed");
@@ -278,6 +284,8 @@ async fn test_namespace_search_isolation() {
             before: None,
             min_score: None,
             spreading_activation: None,
+            facet_function: None,
+            facet_scope: None,
         })
         .await
         .expect("beta search should succeed");
