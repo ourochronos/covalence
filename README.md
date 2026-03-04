@@ -374,6 +374,40 @@ Tombstones preserve audit continuity on delete. The async slow-path queue handle
 
 ---
 
+## Search Quality: Cranfield Test Harness
+
+Covalence ships a [Cranfield-methodology](https://en.wikipedia.org/wiki/Cranfield_experiments)
+test harness for measuring and guarding search quality across code changes.
+
+The harness lives in [`tests/cranfield/`](tests/cranfield/) and consists of:
+
+- **`golden_queries.json`** — 20 representative queries covering every search
+  mode (`standard`, `hierarchical`), strategy (`balanced`, `precise`,
+  `exploratory`, `graph`), and intent (`factual`, `temporal`, `causal`,
+  `entity`), each with a minimum score threshold.
+- **`run_harness.sh`** — a shell driver that calls `POST /search` for each
+  query and prints a colour-coded pass/fail table.
+
+### Run the harness
+
+```bash
+# Engine must be running
+docker compose up -d
+
+./tests/cranfield/run_harness.sh
+# or against a remote instance:
+./tests/cranfield/run_harness.sh --url https://my-covalence-host:8430
+```
+
+Exit code `0` = all pass, `1` = at least one failure.
+
+See [`tests/cranfield/README.md`](tests/cranfield/README.md) for full
+documentation: how to interpret results, how to add queries, and the Phase 2
+roadmap (fixed corpus + explicit relevance judgments → recall/precision/MAP
+metrics).
+
+---
+
 ## License
 
 MIT

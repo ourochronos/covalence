@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Cranfield golden query set for Covalence search quality evaluation. Each entry defines a representative query, the recommended search mode/strategy, a human description of what is being tested, and a minimum score threshold a hit must meet to be counted as a successful retrieval. Without a fixed corpus, relevance judgments cannot be pre-assigned — see README.md for Phase 2 plans.",
+  "version": "1.0.0",
+  "queries": [
+    {
+      "id": "q01",
+      "query": "how does confidence scoring work",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Baseline vector retrieval — tests that the engine can surface articles about the epistemic confidence model from a natural-language prose question.",
+      "tags": ["confidence", "epistemic", "baseline"]
+    },
+    {
+      "id": "q02",
+      "query": "provenance tracking article sources",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Lexical-heavy precise strategy — verifies that exact domain terms ('provenance', 'article', 'sources') score highly when the lexical dimension is weighted up.",
+      "tags": ["provenance", "precise", "lexical"]
+    },
+    {
+      "id": "q03",
+      "query": "contention detection and resolution supersede contradicts",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Multi-term keyword query covering the contention lifecycle — tests lexical recall for low-frequency technical vocabulary.",
+      "tags": ["contentions", "lifecycle", "lexical"]
+    },
+    {
+      "id": "q04",
+      "query": "graph traversal neighborhood edges hops",
+      "mode": "standard",
+      "strategy": "graph",
+      "intent": "entity",
+      "limit": 10,
+      "min_score": 0.08,
+      "description": "Graph-heavy strategy — verifies that the graph dimension contributes meaningfully when querying about relational structure.",
+      "tags": ["graph", "traversal", "edges"]
+    },
+    {
+      "id": "q05",
+      "query": "pgvector HNSW halfvec embeddings semantic search",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Technical terminology query — tests that rare implementation-specific terms ('halfvec', 'HNSW') are recoverable via lexical matching.",
+      "tags": ["embeddings", "vector", "technical"]
+    },
+    {
+      "id": "q06",
+      "query": "what happens when a source contradicts an existing article",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "causal",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Causal/process question — tests vector similarity for conceptual understanding queries that don't use exact field names.",
+      "tags": ["contentions", "causal", "exploratory"]
+    },
+    {
+      "id": "q07",
+      "query": "slow path queue compile embed split merge",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Multi-token operational query — verifies the engine surfaces queue-related content using balanced fusion of vector and lexical signals.",
+      "tags": ["queue", "async", "operations"]
+    },
+    {
+      "id": "q08",
+      "query": "recency bias freshness weight scoring",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": "temporal",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Temporal intent query — tests that temporal scoring metadata (freshness, recency_bias) surfaces content describing time-weighted retrieval.",
+      "tags": ["temporal", "freshness", "scoring"]
+    },
+    {
+      "id": "q09",
+      "query": "compile sources into article LLM summarization",
+      "mode": "hierarchical",
+      "strategy": "balanced",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Hierarchical mode — validates that article-first retrieval with source expansion works for queries about the compilation pipeline.",
+      "tags": ["hierarchical", "compilation", "articles"]
+    },
+    {
+      "id": "q10",
+      "query": "Rust actix-web async tokio runtime",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Implementation-technology query — tests recall of content about the engine's Rust/async stack using lexical-heavy matching.",
+      "tags": ["rust", "implementation", "precise"]
+    },
+    {
+      "id": "q11",
+      "query": "organic eviction capacity management forgetting",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Bounded-memory lifecycle query — verifies that eviction and capacity management concepts are findable.",
+      "tags": ["eviction", "lifecycle", "capacity"]
+    },
+    {
+      "id": "q12",
+      "query": "search ranking formula relevance confidence freshness",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.1,
+      "description": "Exploratory query about the composite scoring formula — tests vector retrieval for conceptual documentation.",
+      "tags": ["scoring", "formula", "exploratory"]
+    },
+    {
+      "id": "q13",
+      "query": "node lifecycle active superseded archived tombstone",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "State machine / lifecycle query — lexical match on enum-like terms; tests that domain-specific vocabulary is indexed and retrievable.",
+      "tags": ["lifecycle", "nodes", "states"]
+    },
+    {
+      "id": "q14",
+      "query": "Apache AGE graph database PostgreSQL",
+      "mode": "standard",
+      "strategy": "graph",
+      "intent": "entity",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Named-entity query — tests entity-intent routing and graph-strategy weighting for a specific technology name.",
+      "tags": ["age", "graph", "entity"]
+    },
+    {
+      "id": "q15",
+      "query": "domain path filter hierarchical tags classification",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Structural/metadata query — verifies that content about domain_path filtering is surfaced.",
+      "tags": ["domain", "filter", "structural"]
+    },
+    {
+      "id": "q16",
+      "query": "session ingestion auto-recall auto-capture OpenClaw plugin",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": null,
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Plugin/integration query — tests that documentation about the OpenClaw integration is retrievable.",
+      "tags": ["plugin", "session", "openclaw"]
+    },
+    {
+      "id": "q17",
+      "query": "vector lexical graph structural dimension weights fusion RRF",
+      "mode": "standard",
+      "strategy": "exploratory",
+      "intent": null,
+      "limit": 10,
+      "min_score": 0.08,
+      "description": "Comprehensive multi-dimension query — tests that core hybrid search architecture documentation scores well across all four search dimensions.",
+      "tags": ["fusion", "hybrid", "dimensions"]
+    },
+    {
+      "id": "q18",
+      "query": "knowledge base health stats queue depth capacity",
+      "mode": "standard",
+      "strategy": "balanced",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Admin/observability query — verifies that health and statistics endpoints documentation is surfaced.",
+      "tags": ["admin", "health", "observability"]
+    },
+    {
+      "id": "q19",
+      "query": "tree index hierarchical parent child structure",
+      "mode": "hierarchical",
+      "strategy": "graph",
+      "intent": "entity",
+      "limit": 10,
+      "min_score": 0.06,
+      "description": "Graph + hierarchical mode combination — tests that graph traversal and hierarchical article expansion work together for structural queries.",
+      "tags": ["tree-index", "hierarchical", "graph"]
+    },
+    {
+      "id": "q20",
+      "query": "OpenAI embeddings text-embedding-3-small OPENAI_API_KEY environment variable",
+      "mode": "standard",
+      "strategy": "precise",
+      "intent": "factual",
+      "limit": 5,
+      "min_score": 0.08,
+      "description": "Configuration/environment variable lookup — tests precise lexical recall for exact configuration key names that a user might search for.",
+      "tags": ["configuration", "openai", "precise"]
+    }
+  ]
+}
