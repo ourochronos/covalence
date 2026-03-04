@@ -20,6 +20,7 @@ pub mod decay;
 pub mod divergence;
 pub mod llm;
 pub mod merge_edges;
+pub mod navigation;
 pub mod openai;
 pub mod reconsolidation;
 pub mod tree_index;
