@@ -274,6 +274,43 @@ impl AdminService {
                 "timed out {} stale queue jobs",
                 result.rows_affected()
             ));
+
+            // Pass A — archive stale failed embed tasks for nodes that now have embeddings.
+            // These are orphaned failure records left over from jobs that were later satisfied
+            // by an embed-all run (closes #128).
+            let embed_result = sqlx::query(
+                r#"DELETE FROM covalence.slow_path_queue
+                   WHERE task_type = 'embed'
+                     AND status = 'failed'
+                     AND node_id IS NOT NULL
+                     AND updated_at < now() - interval '1 hour'
+                     AND EXISTS (
+                       SELECT 1 FROM covalence.node_embeddings ne
+                       WHERE ne.node_id = slow_path_queue.node_id
+                     )"#,
+            )
+            .execute(&self.pool)
+            .await?;
+            actions.push(format!(
+                "archived {} stale failed embed jobs (node now embedded)",
+                embed_result.rows_affected()
+            ));
+
+            // Pass B — remove stale failed tasks with a null node_id.
+            // These are malformed entries with no valid target that can never be retried
+            // (closes #128).
+            let null_node_result = sqlx::query(
+                r#"DELETE FROM covalence.slow_path_queue
+                   WHERE status = 'failed'
+                     AND node_id IS NULL
+                     AND updated_at < now() - interval '24 hours'"#,
+            )
+            .execute(&self.pool)
+            .await?;
+            actions.push(format!(
+                "archived {} stale null-node failed jobs",
+                null_node_result.rows_affected()
+            ));
         }
 
         if req.evict_if_over_capacity.unwrap_or(false) {
