@@ -55,6 +55,7 @@ mod test_gap_registry_phase2;
 mod test_graph_health;
 mod test_graph_stats;
 mod test_kg_inference;
+mod test_lexical_ilike;
 mod test_memory_recall;
 mod test_merge;
 mod test_namespace;
