@@ -143,7 +143,7 @@ pub async fn run_with_token(pool: PgPool, llm: Arc<dyn LlmClient>, token: Cancel
         if join_set.len() >= MAX_CONCURRENT_LLM_TASKS {
             tracing::debug!(
                 in_flight = join_set.len(),
-                cap       = MAX_CONCURRENT_LLM_TASKS,
+                cap = MAX_CONCURRENT_LLM_TASKS,
                 "worker: concurrency cap reached — skipping claim this cycle"
             );
         } else {
