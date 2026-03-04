@@ -939,6 +939,38 @@ pub async fn handle_compile(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // ── 1b. Source cap (covalence#85) ───────────────────────────────────────
+    // "Lost in the middle" degradation: faithfulness drops when relevant
+    // content is buried in the centre of a long context window.  Capping at
+    // MAX_COMPILATION_SOURCES keeps all source material near the context edges
+    // where attention is strongest.  When more sources exist we keep the
+    // MAX_COMPILATION_SOURCES with the highest reliability score so the most
+    // trustworthy content is always included.
+    const MAX_COMPILATION_SOURCES: usize = 7;
+    let original_source_count = source_ids.len();
+    let source_ids = if original_source_count > MAX_COMPILATION_SOURCES {
+        let capped: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM covalence.nodes \
+             WHERE  id = ANY($1) \
+             ORDER BY COALESCE(reliability, 0.5) DESC \
+             LIMIT  $2",
+        )
+        .bind(&source_ids)
+        .bind(MAX_COMPILATION_SOURCES as i64)
+        .fetch_all(pool)
+        .await
+        .context("compile: failed to score sources for cap")?;
+        tracing::info!(
+            task_id   = %task.id,
+            original  = original_source_count,
+            capped_to = capped.len(),
+            "compile: source cap applied (covalence#85)"
+        );
+        capped
+    } else {
+        source_ids
+    };
+
     // ── 2. Fetch source content ─────────────────────────────────────────────
     let rows = sqlx::query("SELECT id, title, content FROM covalence.nodes WHERE id = ANY($1)")
         .bind(&source_ids)
@@ -966,6 +998,15 @@ pub async fn handle_compile(
         .collect();
 
     // ── 3. Build prompt ─────────────────────────────────────────────────────
+    // Prompt caching (covalence#85): Anthropic's cache_control header requires
+    // a structured system-message object with {"type": "ephemeral"} on the
+    // system turn.  The current LlmClient trait exposes only
+    // `complete(prompt: &str, max_tokens: u32)` — a single undifferentiated
+    // string — with no facility for per-message metadata or provider-specific
+    // headers.  Until the trait is extended to support system/user message
+    // separation and a `cache_control` field, prompt caching cannot be enabled
+    // here without coupling this module directly to the Anthropic HTTP client
+    // (undesirable).  Track progress in covalence#85 (next-2-weeks backlog).
     let mut sources_block = String::new();
     for s in &sources {
         sources_block.push_str(&format!(
@@ -1015,6 +1056,8 @@ Respond ONLY with valid JSON (no markdown fences), exactly:\n\
     {{\"source_id\": \"<uuid>\", \"relationship\": \"originates|confirms|supersedes|contradicts|contends\"}}\n\
   ]\n\
 }}\n\
+\n\
+Think step by step when synthesizing these sources.\n\
 \n\
 SOURCE DOCUMENTS:\n\
 {sources_block}"

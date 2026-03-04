@@ -231,6 +231,17 @@ pub async fn handle_reconsolidate(
     // Source content is wrapped in XML tags so the LLM treats it as
     // structured data rather than instructions (Fix #84 — prompt injection
     // defence for RAG pipelines).
+    //
+    // Prompt caching (covalence#85): Anthropic's cache_control header
+    // requires the API request to carry a structured system-message object
+    // with {"type": "ephemeral"} on the system turn.  The current
+    // LlmClient trait exposes only `complete(prompt: &str, max_tokens: u32)`
+    // — a single undifferentiated string — with no facility for per-message
+    // metadata or provider-specific headers.  Until the trait is extended to
+    // support system/user message separation and a `cache_control` field,
+    // prompt caching cannot be enabled here without coupling this module
+    // directly to the Anthropic HTTP client (undesirable).  Track progress
+    // in covalence#85 (next-2-weeks backlog item).
     let mut sources_block = String::new();
     for s in &sources {
         sources_block.push_str(&format!(
@@ -264,6 +275,8 @@ Respond ONLY with valid JSON (no markdown fences), exactly:\n\
     {{\"source_id\": \"<uuid>\", \"relationship\": \"originates|confirms|supersedes|contradicts|contends\"}}\n\
   ]\n\
 }}\n\
+\n\
+Think step by step when synthesizing these sources.\n\
 \n\
 SOURCE DOCUMENTS:\n\
 {sources_block}"
