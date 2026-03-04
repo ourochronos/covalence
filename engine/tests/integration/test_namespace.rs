@@ -235,6 +235,7 @@ async fn test_namespace_search_isolation() {
             after: None,
             before: None,
             min_score: None,
+        spreading_activation: None,
         })
         .await
         .expect("alpha search should succeed");
@@ -276,6 +277,7 @@ async fn test_namespace_search_isolation() {
             after: None,
             before: None,
             min_score: None,
+        spreading_activation: None,
         })
         .await
         .expect("beta search should succeed");

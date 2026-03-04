@@ -48,6 +48,7 @@ fn make_req(query: &str) -> SearchRequest {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     }
 }
 
@@ -692,6 +693,7 @@ async fn test_relevant_document_scores_above_noise() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let debug = service

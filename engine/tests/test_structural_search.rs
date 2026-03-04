@@ -175,6 +175,7 @@ async fn test_structural_strategy_preset() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (_results, meta) = service.search(req).await.expect("search should not error");

@@ -53,6 +53,7 @@ mod test_openapi;
 mod test_reconsolidation;
 mod test_search_freshness;
 mod test_search_precision;
+mod test_spreading_activation;
 mod test_search_temporal;
 mod test_security;
 mod test_session_ingestion;

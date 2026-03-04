@@ -126,6 +126,7 @@ impl AuditService {
             after: None,
             before: None,
             min_score: None,
+            spreading_activation: None,
         };
 
         let search_svc = SearchService::new(self.pool.clone()).with_graph(self.graph.clone());

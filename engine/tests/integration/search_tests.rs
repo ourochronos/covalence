@@ -150,6 +150,7 @@ async fn source_reliability_affects_ranking() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -256,6 +257,7 @@ async fn article_trust_derived_from_source_reliability() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -326,6 +328,7 @@ async fn article_without_sources_gets_default_trust() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc.search(req).await.expect("search should succeed");
@@ -394,6 +397,7 @@ async fn test_hierarchical_search_returns_articles_first() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc
@@ -484,6 +488,7 @@ async fn test_hierarchical_search_expands_sources() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc
@@ -580,6 +585,7 @@ async fn test_standard_mode_unchanged() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     // Default mode (mode = None).
@@ -599,6 +605,7 @@ async fn test_standard_mode_unchanged() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results_explicit, _) = svc
@@ -679,6 +686,7 @@ async fn test_recency_bias_default_unchanged() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     // Request with explicit recency_bias = 0.0.
@@ -698,6 +706,7 @@ async fn test_recency_bias_default_unchanged() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results_none, _) = svc
@@ -800,6 +809,7 @@ async fn test_recency_bias_favors_recent() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc
@@ -892,6 +902,7 @@ async fn test_domain_path_filter_includes_matching() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc
@@ -961,6 +972,7 @@ async fn test_domain_path_filter_excludes_untagged() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc
@@ -1031,6 +1043,7 @@ async fn test_domain_path_filter_none_returns_all() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _meta) = svc
@@ -1120,6 +1133,7 @@ async fn test_graph_multi_hop_reaches_distant_nodes() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results_1hop, _) = svc
@@ -1153,6 +1167,7 @@ async fn test_graph_multi_hop_reaches_distant_nodes() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results_2hop, _) = svc
@@ -1218,6 +1233,7 @@ async fn test_graph_multi_hop_score_decay() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results, _) = svc
@@ -1311,6 +1327,7 @@ async fn test_graph_strategy_defaults_to_2_hops() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results_graph, _) = svc
@@ -1341,6 +1358,7 @@ async fn test_graph_strategy_defaults_to_2_hops() {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     };
 
     let (results_balanced, _) = svc

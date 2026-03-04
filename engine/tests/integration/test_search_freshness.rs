@@ -80,6 +80,7 @@ fn make_req(query: &str) -> SearchRequest {
         after: None,
         before: None,
         min_score: None,
+        spreading_activation: None,
     }
 }
 

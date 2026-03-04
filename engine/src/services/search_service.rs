@@ -160,6 +160,14 @@ pub struct SearchRequest {
     /// Useful for precision queries: set to 0.6 to avoid weak matches.
     #[serde(default)]
     pub min_score: Option<f64>,
+    /// Enable ACT-R spreading activation (covalence#86). When `true`, the
+    /// top-K initial results boost the scores of their first-degree graph
+    /// neighbours that were not found by the 4-D search.
+    ///
+    /// Formula: `spread_boost = parent_score × 0.25 × edge_type_multiplier`
+    /// Capped at 0.15 per neighbour.  Default: `false` (explicit opt-in).
+    #[serde(default)]
+    pub spreading_activation: Option<bool>,
 }
 
 fn default_limit() -> usize {
@@ -565,6 +573,143 @@ impl SearchService {
             results.retain(|r| r.created_at.is_none_or(|ca| ca < before));
         }
         results.truncate(req.limit);
+
+        // ── Spreading activation (covalence#86) ──────────────────────────────
+        // ACT-R-inspired: high-scoring results activate their first-degree
+        // graph neighbours.  Enabled only when `spreading_activation=true` in
+        // the request (explicit opt-in; default off).
+        //
+        // For the top-K results (K=5) we fetch all adjacent edges, then for
+        // each neighbour NOT already in the result set we compute:
+        //   spread_score = parent_score × 0.25 × edge_type_multiplier
+        // where edge_type_multiplier: CONFIRMS=1.0, ORIGINATES=0.9,
+        // SUPERSEDES=0.8, all others=0.5.
+        // Spread score is capped at 0.15 (no neighbour can score higher
+        // than 0.15 purely from spreading).
+        if req.spreading_activation.unwrap_or(false) && !results.is_empty() {
+            const SPREAD_TOP_K: usize = 5;
+            const SPREAD_FACTOR: f64 = 0.25;
+            const SPREAD_CAP: f64 = 0.15;
+
+            let top_k: Vec<(Uuid, f64)> = results
+                .iter()
+                .take(SPREAD_TOP_K)
+                .map(|r| (r.node_id, r.score))
+                .collect();
+            let top_k_ids: Vec<Uuid> = top_k.iter().map(|(id, _)| *id).collect();
+
+            let already_present: std::collections::HashSet<Uuid> =
+                results.iter().map(|r| r.node_id).collect();
+
+            // Fetch first-degree neighbours in both edge directions.
+            // UNION ALL to capture outbound (parent → neighbour) and
+            // inbound (neighbour → parent) edges from each top-k seed.
+            let neighbor_rows = sqlx::query_as::<_, (Uuid, Uuid, String)>(
+                "SELECT e.source_node_id AS parent_id,
+                        e.target_node_id AS neighbor_id,
+                        e.edge_type
+                 FROM   covalence.edges e
+                 WHERE  e.source_node_id = ANY($1)
+                   AND  e.valid_to IS NULL
+                 UNION ALL
+                 SELECT e.target_node_id AS parent_id,
+                        e.source_node_id AS neighbor_id,
+                        e.edge_type
+                 FROM   covalence.edges e
+                 WHERE  e.target_node_id = ANY($1)
+                   AND  e.valid_to IS NULL",
+            )
+            .bind(&top_k_ids)
+            .fetch_all(&self.pool)
+            .await;
+
+            if let Ok(rows) = neighbor_rows {
+                let parent_score_map: HashMap<Uuid, f64> = top_k.iter().cloned().collect();
+
+                // For each (parent, neighbour, edge_type) compute spread score;
+                // keep the best score per unique neighbour.
+                let mut spread_candidates: HashMap<Uuid, f64> = HashMap::new();
+
+                for (parent_id, neighbor_id, edge_type_str) in &rows {
+                    if already_present.contains(neighbor_id) {
+                        continue;
+                    }
+                    let parent_score = *parent_score_map.get(parent_id).unwrap_or(&0.0);
+                    let edge_multiplier = match edge_type_str.as_str() {
+                        "CONFIRMS" => 1.0_f64,
+                        "ORIGINATES" => 0.9,
+                        "SUPERSEDES" => 0.8,
+                        _ => 0.5,
+                    };
+                    let spread_score =
+                        (parent_score * SPREAD_FACTOR * edge_multiplier).min(SPREAD_CAP);
+                    spread_candidates
+                        .entry(*neighbor_id)
+                        .and_modify(|s| {
+                            if spread_score > *s {
+                                *s = spread_score;
+                            }
+                        })
+                        .or_insert(spread_score);
+                }
+
+                if !spread_candidates.is_empty() {
+                    let candidate_ids: Vec<Uuid> = spread_candidates.keys().cloned().collect();
+                    match fetch_node_map(&self.pool, &candidate_ids, &self.namespace).await {
+                        Ok(spread_node_map) => {
+                            for (node_id, spreading_score) in spread_candidates {
+                                if let Some(node) = spread_node_map.get(&node_id) {
+                                    let (
+                                        _,
+                                        node_type,
+                                        title,
+                                        preview,
+                                        confidence,
+                                        _,
+                                        trust,
+                                        domain_path,
+                                        created_at,
+                                    ) = node;
+                                    results.push(SearchResult {
+                                        node_id,
+                                        score: spreading_score,
+                                        vector_score: None,
+                                        lexical_score: None,
+                                        // Surface the spreading score in the
+                                        // graph_score field so callers can
+                                        // identify spreading-derived results.
+                                        graph_score: Some(spreading_score),
+                                        structural_score: None,
+                                        confidence: *confidence,
+                                        trust_score: Some(*trust),
+                                        node_type: node_type.clone(),
+                                        title: title.clone(),
+                                        content_preview: preview.clone(),
+                                        domain_path: domain_path.clone(),
+                                        expanded_from: None,
+                                        graph_hops: Some(1),
+                                        created_at: Some(*created_at),
+                                        topological_score: None,
+                                    });
+                                }
+                            }
+                            tracing::debug!(
+                                "spreading_activation: appended graph-neighbour results"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "spreading_activation: fetch_node_map failed (non-fatal): {e:#}"
+                            );
+                        }
+                    }
+                }
+            } else if let Err(e) = neighbor_rows {
+                tracing::debug!(
+                    "spreading_activation: edge query failed (non-fatal): {e:#}"
+                );
+            }
+        }
 
         // ── PPR query expansion (covalence#74) ───────────────────────────────
         // Starting from the top-k results as seeds, walk the in-memory graph
@@ -1144,6 +1289,7 @@ impl SearchService {
             after: req.after,
             before: req.before,
             min_score: req.min_score,
+            spreading_activation: None, // synthesis does not use spreading
         };
 
         // Step 1 — run standard 4-D search over sources.
