@@ -69,6 +69,10 @@ pub struct MaintenanceRequest {
     /// When `true`, refresh the `covalence.contends_derived` materialized view
     /// (covalence#99).  Equivalent to calling `POST /admin/refresh-inference`.
     pub refresh_inference: Option<bool>,
+    /// When `true`, aggregate gap_log (past 30 days) → gap_registry (covalence#100).
+    /// Topics with query_count >= 3 are upserted; gap_score computed from
+    /// avg_top_score and normalized demand.
+    pub compute_gaps: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -437,6 +441,11 @@ impl AdminService {
         if req.refresh_inference.unwrap_or(false) {
             self.refresh_inference_view().await?;
             actions.push("refreshed contends_derived materialized view".into());
+        }
+
+        if req.compute_gaps.unwrap_or(false) {
+            let n = self.compute_gap_registry().await?;
+            actions.push(format!("compute_gaps: upserted {n} gap topics"));
         }
 
         if actions.is_empty() {
@@ -1111,5 +1120,132 @@ impl AdminService {
                 healthy: queue_val < 0.05,
             },
         })
+    }
+}
+
+// ── Gap Registry (covalence#100) ────────────────────────────────────────────
+
+/// A single entry from the gap registry, returned by `GET /admin/gaps`.
+#[derive(Debug, serde::Serialize)]
+pub struct GapEntry {
+    pub id: Uuid,
+    pub topic: String,
+    pub namespace: String,
+    pub query_count: i32,
+    pub avg_top_score: Option<f64>,
+    pub last_queried_at: Option<DateTime<Utc>>,
+    pub gap_score: Option<f64>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AdminService {
+    /// Aggregate `gap_log` (past 30 days) into `gap_registry`.
+    ///
+    /// Algorithm:
+    /// 1. Group gap_log by `lower(trim(query))` + `namespace`.
+    /// 2. Keep only groups with `query_count >= 3`.
+    /// 3. Compute `gap_score = 0.70*(1-avg_top_score) + 0.30*(normalized demand)`.
+    ///    - `avg_top_score` defaults to 0.0 when all results were empty (no score).
+    ///    - `normalized demand` = `query_count / max(query_count over all groups)`.
+    /// 4. UPSERT into `gap_registry` (keyed on `(topic, namespace)`).
+    ///
+    /// Returns the number of topics upserted.
+    pub async fn compute_gap_registry(&self) -> AppResult<i64> {
+        // Aggregate gap_log → gap_registry for topics with >= 3 queries.
+        // gap_score = 0.70*(1-avg_top_score) + 0.30*(normalized demand)
+        sqlx::query(
+            r#"
+            WITH agg AS (
+                SELECT
+                    lower(trim(query))          AS topic,
+                    namespace,
+                    COUNT(*)::int               AS query_count,
+                    AVG(COALESCE(top_score, 0)) AS avg_top_score,
+                    MAX(created_at)             AS last_queried_at
+                FROM covalence.gap_log
+                WHERE created_at >= now() - interval '30 days'
+                GROUP BY lower(trim(query)), namespace
+                HAVING COUNT(*) >= 3
+            ),
+            max_demand AS (
+                SELECT GREATEST(MAX(query_count), 1)::float AS max_qc FROM agg
+            ),
+            scored AS (
+                SELECT
+                    agg.topic,
+                    agg.namespace,
+                    agg.query_count,
+                    agg.avg_top_score,
+                    agg.last_queried_at,
+                    0.70 * (1.0 - agg.avg_top_score)
+                    + 0.30 * (agg.query_count::float / max_demand.max_qc)
+                        AS gap_score
+                FROM agg
+                CROSS JOIN max_demand
+            )
+            INSERT INTO covalence.gap_registry
+                (id, topic, namespace, query_count, avg_top_score,
+                 last_queried_at, gap_score, status, created_at, updated_at)
+            SELECT
+                gen_random_uuid(),
+                topic,
+                namespace,
+                query_count,
+                avg_top_score,
+                last_queried_at,
+                gap_score,
+                'open',
+                now(),
+                now()
+            FROM scored
+            ON CONFLICT (topic, namespace) DO UPDATE
+                SET query_count     = EXCLUDED.query_count,
+                    avg_top_score   = EXCLUDED.avg_top_score,
+                    last_queried_at = EXCLUDED.last_queried_at,
+                    gap_score       = EXCLUDED.gap_score,
+                    updated_at      = now()
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() as i64)
+        .map_err(AppError::Database)
+    }
+
+    /// Return the top-10 open gap topics sorted by `gap_score DESC`.
+    pub async fn list_gaps(&self, namespace: Option<&str>) -> AppResult<Vec<GapEntry>> {
+        let rows = sqlx::query(
+            "SELECT id, topic, namespace, query_count, avg_top_score,
+                    last_queried_at, gap_score, status, created_at, updated_at
+             FROM covalence.gap_registry
+             WHERE status = 'open'
+               AND ($1::text IS NULL OR namespace = $1)
+             ORDER BY gap_score DESC NULLS LAST
+             LIMIT 10",
+        )
+        .bind(namespace)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|r| {
+                use sqlx::Row;
+                Ok(GapEntry {
+                    id: r.try_get("id")?,
+                    topic: r.try_get("topic")?,
+                    namespace: r.try_get("namespace")?,
+                    query_count: r.try_get("query_count")?,
+                    avg_top_score: r.try_get("avg_top_score")?,
+                    last_queried_at: r.try_get("last_queried_at")?,
+                    gap_score: r.try_get("gap_score")?,
+                    status: r.try_get("status")?,
+                    created_at: r.try_get("created_at")?,
+                    updated_at: r.try_get("updated_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(AppError::Database)
     }
 }

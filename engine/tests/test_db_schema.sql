@@ -472,3 +472,36 @@ GRANT USAGE ON SCHEMA covalence TO covalence;
 GRANT ALL ON ALL TABLES IN SCHEMA covalence TO covalence;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA covalence TO covalence;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA covalence TO covalence;
+
+-- Migration 027: Persistent gap registry (covalence#100)
+CREATE TABLE IF NOT EXISTS covalence.gap_log (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    query        TEXT        NOT NULL,
+    top_score    FLOAT,
+    result_count INTEGER,
+    session_id   TEXT,
+    namespace    TEXT        NOT NULL DEFAULT 'default',
+    created_at   TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS gap_log_created_at_idx  ON covalence.gap_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS gap_log_namespace_idx   ON covalence.gap_log (namespace);
+CREATE INDEX IF NOT EXISTS gap_log_query_idx       ON covalence.gap_log (lower(trim(query)));
+
+CREATE TABLE IF NOT EXISTS covalence.gap_registry (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    topic           TEXT        NOT NULL,
+    namespace       TEXT        NOT NULL DEFAULT 'default',
+    query_count     INTEGER     DEFAULT 0,
+    avg_top_score   FLOAT,
+    last_queried_at TIMESTAMPTZ,
+    gap_score       FLOAT,
+    status          TEXT        DEFAULT 'open',
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (topic, namespace)
+);
+
+CREATE INDEX IF NOT EXISTS gap_registry_gap_score_idx  ON covalence.gap_registry (gap_score DESC);
+CREATE INDEX IF NOT EXISTS gap_registry_status_idx     ON covalence.gap_registry (status);
+CREATE INDEX IF NOT EXISTS gap_registry_namespace_idx  ON covalence.gap_registry (namespace);

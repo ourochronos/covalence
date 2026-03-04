@@ -383,7 +383,13 @@ impl SearchService {
         &self,
         req: SearchRequest,
     ) -> anyhow::Result<(Vec<SearchResult>, SearchMeta)> {
-        match req.mode.clone().unwrap_or_default() {
+        // Capture fields for gap_log before req is consumed.
+        let log_query = req.query.clone();
+        let log_session_id = req.session_id.map(|u| u.to_string());
+        let log_namespace = self.namespace.clone();
+        let log_pool = self.pool.clone();
+
+        let result = match req.mode.clone().unwrap_or_default() {
             SearchMode::Standard => self.search_standard(req).await,
             SearchMode::Hierarchical => self.search_hierarchical(req).await,
             // Synthesis returns a different response shape.  The route handler
@@ -393,7 +399,30 @@ impl SearchService {
                 "synthesis mode uses a different response shape; \
                  call search_synthesis() instead of search()"
             ),
+        };
+
+        // ── Gap log (covalence#100) — fire-and-forget ─────────────────────────
+        if let Ok((ref results, _)) = result {
+            let top_score = results.first().map(|r| r.score);
+            let result_count = results.len() as i32;
+            tokio::spawn(async move {
+                let r = sqlx::query(
+                    "INSERT INTO covalence.gap_log                      (id, query, top_score, result_count, session_id, namespace)                      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)",
+                )
+                .bind(&log_query)
+                .bind(top_score)
+                .bind(result_count)
+                .bind(log_session_id)
+                .bind(&log_namespace)
+                .execute(&log_pool)
+                .await;
+                if let Err(e) = r {
+                    tracing::warn!("gap_log insert failed (non-fatal): {e}");
+                }
+            });
         }
+
+        result
     }
 
     // ── Standard (flat) search ────────────────────────────────────────────────

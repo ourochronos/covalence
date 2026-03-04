@@ -102,6 +102,8 @@ pub fn router() -> Router<AppState> {
         // Divergence detection (covalence#58)
         .route("/admin/divergence/scan", get(admin_divergence_scan))
         .route("/admin/divergence/report", get(admin_divergence_report))
+        // Gap registry (covalence#100)
+        .route("/admin/gaps", get(admin_gaps))
 }
 
 // ── Graph reload helper ─────────────────────────────────────────
@@ -1044,6 +1046,24 @@ struct AuditQuery {
 /// consensus articles ranked by confidence, active contentions with both sides,
 /// a provenance source summary, confidence distribution statistics, and graph
 /// topology metrics.
+
+/// `GET /admin/gaps` — top-10 open gap topics sorted by gap_score DESC (covalence#100).
+///
+/// Returns topics that have been queried ≥ 3 times in the past 30 days but
+/// consistently returned low-scoring results, indicating knowledge gaps.
+/// Optionally filter by `namespace` query parameter.
+async fn admin_gaps(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let svc = AdminService::new(state.pool);
+    let namespace = params.get("namespace").map(|s| s.as_str());
+    match svc.list_gaps(namespace).await {
+        Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
 async fn admin_knowledge_audit(
     State(state): State<AppState>,
     Query(params): Query<AuditQuery>,

@@ -45,6 +45,7 @@ mod test_decay;
 mod test_embed;
 mod test_epistemic_slis;
 mod test_faceted_classification;
+mod test_gap_registry;
 mod test_graph_health;
 mod test_graph_stats;
 mod test_kg_inference;

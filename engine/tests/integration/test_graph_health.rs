@@ -187,6 +187,7 @@ async fn bridge_node_survives_eviction() {
             graph_embeddings_method: None,
             scan_due_consolidations: None,
             refresh_inference: None,
+            compute_gaps: None,
         })
         .await
         .expect("maintenance call failed");
