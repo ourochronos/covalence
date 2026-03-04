@@ -59,6 +59,7 @@ async fn test_ecm_fk_cascade_on_edge_delete() {
         direction_conf: Some(0.99),
         hidden_conf_risk: Some(0.05),
         temporal_lag_ms: None,
+        notes: None,
     };
     db_ecm::upsert(&pool, &payload)
         .await
@@ -295,6 +296,7 @@ async fn test_ecm_min_causal_strength_filter() {
             direction_conf: Some(0.95),
             hidden_conf_risk: Some(0.05),
             temporal_lag_ms: None,
+            notes: None,
         },
     )
     .await
@@ -312,6 +314,7 @@ async fn test_ecm_min_causal_strength_filter() {
             direction_conf: Some(0.50),
             hidden_conf_risk: Some(0.50),
             temporal_lag_ms: None,
+            notes: None,
         },
     )
     .await
@@ -380,6 +383,7 @@ async fn test_ecm_upsert_idempotency() {
         direction_conf: Some(0.65),
         hidden_conf_risk: Some(0.35),
         temporal_lag_ms: Some(500),
+        notes: None,
     };
 
     // First upsert.
