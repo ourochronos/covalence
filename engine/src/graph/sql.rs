@@ -60,6 +60,8 @@ impl GraphRepository for SqlGraphRepository {
     /// Create a typed edge — SQL INSERT only.  `age_id` is left NULL.
     /// `valid_from` defaults to the DB `now()` (same as `created_at`); `valid_to` is NULL
     /// (edge is immediately active).
+    ///
+    /// `causal_weight` is auto-populated from [`EdgeType::causal_weight`] (covalence#75).
     async fn create_edge(
         &self,
         from_id: Uuid,
@@ -71,12 +73,13 @@ impl GraphRepository for SqlGraphRepository {
     ) -> GraphResult<Edge> {
         let edge_id = Uuid::new_v4();
         let now = chrono::Utc::now();
+        let causal_weight = edge_type.causal_weight();
 
         sqlx::query(
             "INSERT INTO covalence.edges \
              (id, source_node_id, target_node_id, edge_type, \
-              weight, confidence, metadata, created_at, created_by, valid_from) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $8)",
+              weight, confidence, causal_weight, metadata, created_at, created_by, valid_from) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9)",
         )
         .bind(edge_id)
         .bind(from_id)
@@ -84,6 +87,7 @@ impl GraphRepository for SqlGraphRepository {
         .bind(edge_type.as_label())
         .bind(1.0f32)
         .bind(confidence)
+        .bind(causal_weight)
         .bind(&properties)
         .bind(now)
         .bind(created_by)
@@ -98,6 +102,7 @@ impl GraphRepository for SqlGraphRepository {
             edge_type,
             weight: 1.0,
             confidence,
+            causal_weight,
             metadata: properties,
             created_at: now,
             created_by: Some(created_by.to_string()),
@@ -512,6 +517,12 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
         pinned: row.try_get::<Option<bool>, _>("pinned")?.unwrap_or(false),
         version: row.try_get::<Option<i32>, _>("version")?.unwrap_or(1),
         usage_score: row.try_get::<Option<f64>, _>("usage_score")?.unwrap_or(0.5) as f32,
+        // provenance_confidence: nullable, populated by Phase 1+ worker (covalence#75).
+        // Graceful fallback for rows that predate migration 033.
+        provenance_confidence: row
+            .try_get::<Option<f64>, _>("provenance_confidence")
+            .unwrap_or(None)
+            .map(|v| v as f32),
         created_at: row.try_get("created_at")?,
         modified_at: row.try_get("modified_at")?,
         accessed_at: row.try_get("accessed_at")?,
@@ -555,6 +566,12 @@ fn edge_from_row(row: &PgRow) -> GraphResult<Edge> {
             .try_get::<Option<f64>, _>("confidence")
             .or_else(|_| row.try_get::<Option<f64>, _>("edge_confidence"))?
             .unwrap_or(1.0) as f32,
+        // causal_weight defaults to 0.5 if the column is absent (e.g. older rows
+        // created before migration 033 ran, or queries that don't SELECT it).
+        causal_weight: row
+            .try_get::<Option<f64>, _>("causal_weight")
+            .unwrap_or(Some(0.5))
+            .unwrap_or(0.5) as f32,
         metadata: row
             .try_get::<serde_json::Value, _>("metadata")
             .or_else(|_| row.try_get::<serde_json::Value, _>("edge_metadata"))

@@ -65,55 +65,72 @@ impl GraphAdaptor {
     ///
     /// Returns `(neighbor_id, raw_score)` pairs (before hop-decay is applied).
     /// Priority edge types are boosted 2× when `priority` is non-empty.
+    /// When `min_causal_weight` is `Some(w)`, only edges with
+    /// `causal_weight >= w` are traversed (covalence#75).
     /// The caller is responsible for filtering already-visited nodes.
     async fn fetch_frontier_neighbors(
         pool: &PgPool,
         frontier: &[Uuid],
         priority: &[String],
         namespace: &str,
+        min_causal_weight: Option<f32>,
     ) -> anyhow::Result<Vec<(Uuid, f64)>> {
         if frontier.is_empty() {
             return Ok(vec![]);
         }
 
+        // Build the causal_weight filter clause. When min_causal_weight is set
+        // we add a literal comparison; otherwise the clause is empty.
+        //
+        // We use inline SQL rather than a bound parameter for this optional
+        // clause because sqlx does not support conditional bind counts cleanly.
+        let causal_filter = match min_causal_weight {
+            Some(w) => format!("AND e.causal_weight >= {w}"),
+            None => String::new(),
+        };
+
         let rows = if priority.is_empty() {
-            // No intent filter — all edge types
-            sqlx::query_as::<_, (Uuid, f64)>(
+            // No intent filter — all edge types (filtered by causal_weight if set).
+            sqlx::query_as::<_, (Uuid, f64)>(&format!(
                 "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
-                    SELECT
-                        CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
-                             ELSE e.source_node_id END                           AS neighbor_id,
-                        (e.weight * e.confidence)::float8                        AS score
-                    FROM covalence.edges e
-                    WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
-                      AND e.namespace = $2
-                      AND e.valid_to IS NULL
-                ) sub
-                JOIN covalence.nodes n ON n.id = sub.neighbor_id
-                WHERE n.status = 'active' AND n.namespace = $2
-                ORDER BY neighbor_id, score DESC",
-            )
+                        SELECT
+                            CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
+                                 ELSE e.source_node_id END                           AS neighbor_id,
+                            (e.weight * e.confidence)::float8                        AS score
+                        FROM covalence.edges e
+                        WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
+                          AND e.namespace = $2
+                          AND e.valid_to IS NULL
+                          {causal_filter}
+                    ) sub
+                    JOIN covalence.nodes n ON n.id = sub.neighbor_id
+                    WHERE n.status = 'active' AND n.namespace = $2
+                    ORDER BY neighbor_id, score DESC"
+            ))
             .bind(frontier)
             .bind(namespace)
             .fetch_all(pool)
             .await?
         } else {
-            // Intent-filtered: boost priority edge types by 2×
+            // Intent-filtered: boost priority edge types by 2×.
             sqlx::query_as::<_, (Uuid, f64)>(
-                "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
-                    SELECT
-                        CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
-                             ELSE e.source_node_id END                           AS neighbor_id,
-                        (e.weight * e.confidence
-                         * CASE WHEN e.edge_type = ANY($3) THEN 2.0 ELSE 1.0 END)::float8 AS score
-                    FROM covalence.edges e
-                    WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
-                      AND e.namespace = $2
-                      AND e.valid_to IS NULL
-                ) sub
-                JOIN covalence.nodes n ON n.id = sub.neighbor_id
-                WHERE n.status = 'active' AND n.namespace = $2
-                ORDER BY neighbor_id, score DESC",
+                &format!(
+                    "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
+                        SELECT
+                            CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
+                                 ELSE e.source_node_id END                           AS neighbor_id,
+                            (e.weight * e.confidence
+                             * CASE WHEN e.edge_type = ANY($3) THEN 2.0 ELSE 1.0 END)::float8 AS score
+                        FROM covalence.edges e
+                        WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
+                          AND e.namespace = $2
+                          AND e.valid_to IS NULL
+                          {causal_filter}
+                    ) sub
+                    JOIN covalence.nodes n ON n.id = sub.neighbor_id
+                    WHERE n.status = 'active' AND n.namespace = $2
+                    ORDER BY neighbor_id, score DESC"
+                ),
             )
             .bind(frontier)
             .bind(namespace)
@@ -163,6 +180,7 @@ impl DimensionAdaptor for GraphAdaptor {
 
         let priority = Self::priority_edges(query.intent.as_ref());
         let max_hops = query.max_hops.unwrap_or(1).clamp(1, MAX_HOPS_LIMIT);
+        let min_causal_weight = query.min_causal_weight;
 
         // ── BFS state ──────────────────────────────────────────────────────────
         // `visited` starts with all anchor nodes so the BFS never returns them.
@@ -179,8 +197,14 @@ impl DimensionAdaptor for GraphAdaptor {
             // Decay factor for this hop: 1.0 for hop 1, 0.7 for hop 2, 0.49 for hop 3.
             let decay = HOP_DECAY.powi((hop as i32) - 1);
 
-            let rows = Self::fetch_frontier_neighbors(pool, &frontier, &priority, &query.namespace)
-                .await?;
+            let rows = Self::fetch_frontier_neighbors(
+                pool,
+                &frontier,
+                &priority,
+                &query.namespace,
+                min_causal_weight,
+            )
+            .await?;
 
             let mut next_frontier: Vec<Uuid> = Vec::new();
 

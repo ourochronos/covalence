@@ -1,0 +1,7 @@
+[advisories]
+# RUSTSEC-2023-0071: Marvin Attack on rsa crate (timing sidechannel).
+# This advisory applies to RSA decryption in MySQL authentication.
+# Covalence uses PostgreSQL exclusively — sqlx-mysql is a transitive
+# dependency of sqlx but we make no MySQL connections, so this attack
+# vector is not present in our deployment.
+ignore = ["RUSTSEC-2023-0071"]

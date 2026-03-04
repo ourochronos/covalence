@@ -109,6 +109,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS edges_dedup_idx
 ALTER TABLE covalence.edges ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE covalence.edges ADD COLUMN IF NOT EXISTS valid_to   TIMESTAMPTZ NULL;
 
+-- Migration 033: causal semantics (covalence#75).
+ALTER TABLE covalence.edges ADD COLUMN IF NOT EXISTS causal_weight FLOAT NOT NULL DEFAULT 0.5;
+ALTER TABLE covalence.nodes ADD COLUMN IF NOT EXISTS provenance_confidence FLOAT;
+
 -- Partial index for superseded-edge lookups.
 CREATE INDEX IF NOT EXISTS idx_edges_valid_to
     ON covalence.edges (valid_to)

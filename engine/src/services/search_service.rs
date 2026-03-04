@@ -168,6 +168,19 @@ pub struct SearchRequest {
     /// Capped at 0.15 per neighbour.  Default: `false` (explicit opt-in).
     #[serde(default)]
     pub spreading_activation: Option<bool>,
+    /// Minimum causal weight for graph traversal edges (covalence#75).
+    ///
+    /// When provided, the graph BFS step restricts traversal to edges whose
+    /// `causal_weight >= min_causal_weight`.  This filters out low-causal-
+    /// strength relationships (e.g. RELATES_TO = 0.15) from the traversal.
+    ///
+    /// Typical thresholds:
+    /// - 0.60 → keeps CONFIRMS, EXTENDS, SUPERSEDES, ORIGINATES
+    /// - 0.95 → keeps only SUPERSEDES and ORIGINATES
+    ///
+    /// Default: `None` (all edges traversed — backward compatible).
+    #[serde(default)]
+    pub min_causal_weight: Option<f64>,
     /// Facet filter — functional dimension (covalence#92 Phase 1).
     /// When set, only nodes where `facet_function @> facet_function` are returned.
     /// Nodes with NULL `facet_function` are excluded when this filter is active.
@@ -488,6 +501,7 @@ impl SearchService {
             session_id: req.session_id,
             node_types: req.node_types,
             max_hops: Some(effective_max_hops),
+            min_causal_weight: req.min_causal_weight.map(|w| w.clamp(0.0, 1.0) as f32),
             namespace: self.namespace.clone(),
         };
 
@@ -1006,6 +1020,7 @@ impl SearchService {
             session_id: req.session_id,
             node_types: Some(vec!["article".into()]),
             max_hops: Some(effective_max_hops),
+            min_causal_weight: req.min_causal_weight.map(|w| w.clamp(0.0, 1.0) as f32),
             namespace: self.namespace.clone(),
         };
 
@@ -1419,6 +1434,7 @@ impl SearchService {
             before: req.before,
             min_score: req.min_score,
             spreading_activation: None, // synthesis does not use spreading
+            min_causal_weight: req.min_causal_weight,
             facet_function: req.facet_function,
             facet_scope: req.facet_scope,
             explain: req.explain,
@@ -1567,6 +1583,7 @@ impl SearchService {
             session_id: req.session_id,
             node_types: req.node_types,
             max_hops: Some(effective_max_hops),
+            min_causal_weight: req.min_causal_weight.map(|w| w.clamp(0.0, 1.0) as f32),
             namespace: self.namespace.clone(),
         };
 

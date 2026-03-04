@@ -201,7 +201,8 @@ impl DimensionAdaptor for LexicalAdaptor {
                 let escaped = w
                     .replace('\\', "\\\\")
                     .replace('%', "\\%")
-                    .replace('_', "\\_");
+                    .replace('_', "\\_")
+                    .replace('\'', "''"); // escape single quotes for SQL
                 format!("title ILIKE '%{}%'", escaped)
             })
             .collect();
