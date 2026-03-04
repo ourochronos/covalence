@@ -283,7 +283,7 @@ impl AdminService {
                    WHERE task_type = 'embed'
                      AND status = 'failed'
                      AND node_id IS NOT NULL
-                     AND updated_at < now() - interval '1 hour'
+                     AND COALESCE(completed_at, started_at, created_at) < now() - interval '1 hour'
                      AND EXISTS (
                        SELECT 1 FROM covalence.node_embeddings ne
                        WHERE ne.node_id = slow_path_queue.node_id
@@ -303,7 +303,7 @@ impl AdminService {
                 r#"DELETE FROM covalence.slow_path_queue
                    WHERE status = 'failed'
                      AND node_id IS NULL
-                     AND updated_at < now() - interval '24 hours'"#,
+                     AND COALESCE(completed_at, started_at, created_at) < now() - interval '24 hours'"#,
             )
             .execute(&self.pool)
             .await?;
