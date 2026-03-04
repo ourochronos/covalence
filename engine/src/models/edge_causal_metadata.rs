@@ -97,6 +97,8 @@ pub struct EdgeCausalMetadata {
     pub hidden_conf_risk: f64,
     /// Optional temporal delay between cause and effect (milliseconds).
     pub temporal_lag_ms: Option<i32>,
+    /// Free-text annotation (added in migration 035, covalence#143).
+    pub notes: Option<String>,
     /// Row creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Row last-update timestamp (managed by the DB trigger).
@@ -104,16 +106,17 @@ pub struct EdgeCausalMetadata {
 }
 
 // =============================================================================
-// Upsert payload
+// Patch payload (formerly EdgeCausalMetadataUpsert)
 // =============================================================================
 
 /// API / internal payload used to create or update a causal metadata row.
 ///
-/// All fields except `edge_id` are optional; absent fields retain their
-/// current DB value on update (via the `DO UPDATE SET … = EXCLUDED.…`
-/// pattern) or use column defaults on insert.
+/// Renamed from `EdgeCausalMetadataUpsert` in migration 035 (covalence#143, #145).
+/// All fields except `edge_id` are optional; when a field is `None` the stored
+/// procedure `covalence.upsert_causal_metadata` preserves the existing database
+/// value via `COALESCE`, fixing the silent-reset bug (#145).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EdgeCausalMetadataUpsert {
+pub struct EdgeCausalMetadataPatch {
     /// The edge to enrich.
     pub edge_id: Uuid,
     /// Override the default `association` level.
@@ -122,10 +125,10 @@ pub struct EdgeCausalMetadataUpsert {
     pub causal_strength: Option<f64>,
     /// Override the default `structural_prior` evidence type.
     pub evidence_type: Option<CausalEvidenceType>,
-    /// Override the default `0.5` directional confidence.
-    pub direction_conf: Option<f64>,
-    /// Override the default `0.5` hidden-confounder risk.
-    pub hidden_conf_risk: Option<f64>,
-    /// Optional temporal lag in milliseconds.
-    pub temporal_lag_ms: Option<i32>,
+    /// Optional free-text annotation.
+    pub notes: Option<String>,
 }
+
+/// Backward-compatibility alias — new code should use [`EdgeCausalMetadataPatch`].
+#[deprecated(since = "0.35.0", note = "Use EdgeCausalMetadataPatch instead")]
+pub type EdgeCausalMetadataUpsert = EdgeCausalMetadataPatch;
