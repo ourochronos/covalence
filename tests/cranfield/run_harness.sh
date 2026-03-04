@@ -42,11 +42,11 @@ FAIL_FAST=false
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -u|--url)      BASE_URL="$2";      shift 2 ;;
-    -k|--api-key)  API_KEY="$2";       shift 2 ;;
-    -q|--queries)  QUERIES_FILE="$2";  shift 2 ;;
-    -v|--verbose)  VERBOSE=true;       shift   ;;
-    -f|--fail-fast) FAIL_FAST=true;    shift   ;;
+    -u|--url)      BASE_URL="${2:-}";      shift 2 ;;
+    -k|--api-key)  API_KEY="${2:-}";       shift 2 ;;
+    -q|--queries)  QUERIES_FILE="${2:-}";  shift 2 ;;
+    -v|--verbose)  VERBOSE=true;           shift   ;;
+    -f|--fail-fast) FAIL_FAST=true;        shift   ;;
     -h|--help)
       sed -n '2,/^# ===\+/p' "$0" | grep '^#' | sed 's/^# \?//'
       exit 0
@@ -155,7 +155,7 @@ while IFS= read -r ROW; do
   HTTP_RESPONSE=$(curl -s -w "\n__HTTP_STATUS__%{http_code}" \
     -X POST "$SEARCH_URL" \
     -H "Content-Type: application/json" \
-    "${auth_flags[@]}" \
+    "${auth_flags[@]+"${auth_flags[@]}"}" \
     -d "$PAYLOAD" 2>&1) || true
 
   HTTP_STATUS=$(echo "$HTTP_RESPONSE" | grep '__HTTP_STATUS__' | sed 's/__HTTP_STATUS__//')
