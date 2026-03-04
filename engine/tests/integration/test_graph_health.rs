@@ -179,16 +179,9 @@ async fn bridge_node_survives_eviction() {
     // Trigger eviction: active_count (6) > COVALENCE_MAX_ARTICLES (5).
     let result = admin
         .maintenance(MaintenanceRequest {
-            recompute_scores: None,
-            process_queue: None,
             evict_if_over_capacity: Some(true),
             evict_count: Some(2),
-            recompute_graph_embeddings: None,
-            graph_embeddings_method: None,
-            scan_due_consolidations: None,
-            refresh_inference: None,
-            compute_gaps: None,
-            compute_structural_importance: None,
+            ..Default::default()
         })
         .await
         .expect("maintenance call failed");

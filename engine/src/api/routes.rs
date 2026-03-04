@@ -16,6 +16,9 @@ use uuid::Uuid;
 use crate::services::audit_service::AuditService;
 use crate::services::concerns_service::{ConcernsService, UpsertConcernRequest};
 use crate::services::provenance_trace_service::{ProvenanceTraceService, TraceRequest};
+use crate::services::task_service::{
+    CreateTaskRequest, ListTasksParams, TaskService, UpdateTaskRequest,
+};
 use crate::services::{
     admin_service::*, article_service::*, contention_service::*, edge_service::*,
     memory_service::*, search_service::*, session_service::*, source_service::*,
@@ -73,6 +76,12 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{id}/messages", get(session_get_messages))
         .route("/sessions/{id}/flush", post(session_flush))
         .route("/sessions/{id}/finalize", post(session_finalize))
+        // Tasks (covalence#114) — /tasks/stats MUST precede /{id} catch-all
+        .route("/tasks/stats", get(task_stats))
+        .route("/tasks", post(task_create))
+        .route("/tasks", get(task_list))
+        .route("/tasks/{id}", get(task_get))
+        .route("/tasks/{id}", patch(task_update))
         // Dashboard
         .route("/dashboard", get(dashboard_handler))
         // Admin
@@ -1076,6 +1085,60 @@ async fn admin_knowledge_audit(
     let svc = AuditService::new(state.pool.clone(), state.graph.clone());
     let report = svc.audit(&params.q).await?;
     Ok(Json(serde_json::json!({ "data": report })))
+}
+
+// ── Task handlers (covalence#114) ──────────────────────────────
+
+async fn task_create(
+    State(state): State<AppState>,
+    Json(req): Json<CreateTaskRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), crate::errors::AppError> {
+    let svc = TaskService::new(state.pool);
+    let task = svc.create(req).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "data": task })),
+    ))
+}
+
+async fn task_list(
+    State(state): State<AppState>,
+    Query(params): Query<ListTasksParams>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = TaskService::new(state.pool);
+    let tasks = svc.list(params).await?;
+    Ok(Json(
+        serde_json::json!({ "data": tasks, "meta": { "count": tasks.len() } }),
+    ))
+}
+
+async fn task_get(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = TaskService::new(state.pool);
+    match svc.get(id).await? {
+        Some(t) => Ok(Json(serde_json::json!({ "data": t }))),
+        None => Err(crate::errors::AppError::NotFound("task not found".into())),
+    }
+}
+
+async fn task_update(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateTaskRequest>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = TaskService::new(state.pool);
+    let task = svc.update(id, req).await?;
+    Ok(Json(serde_json::json!({ "data": task })))
+}
+
+async fn task_stats(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = TaskService::new(state.pool);
+    let stats = svc.stats().await?;
+    Ok(Json(serde_json::json!({ "data": stats })))
 }
 
 // ── Health handler ──────────────────────────────────────────────

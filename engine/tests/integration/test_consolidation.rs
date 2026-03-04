@@ -634,16 +634,8 @@ async fn test_maintenance_scan_queues_due_articles() {
     let svc = AdminService::new(fix.pool.clone());
     let resp = svc
         .maintenance(MaintenanceRequest {
-            recompute_scores: None,
-            process_queue: None,
-            evict_if_over_capacity: None,
-            evict_count: None,
-            recompute_graph_embeddings: None,
-            graph_embeddings_method: None,
             scan_due_consolidations: Some(true),
-            refresh_inference: None,
-            compute_gaps: None,
-            compute_structural_importance: None,
+            ..Default::default()
         })
         .await
         .expect("maintenance should succeed");

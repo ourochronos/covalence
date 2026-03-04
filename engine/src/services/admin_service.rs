@@ -47,7 +47,7 @@ pub struct EmbeddingStats {
     pub nodes_without: i64,
 }
 
-#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, serde::Deserialize, utoipa::ToSchema)]
 pub struct MaintenanceRequest {
     pub recompute_scores: Option<bool>,
     pub process_queue: Option<bool>,
@@ -74,6 +74,15 @@ pub struct MaintenanceRequest {
     /// article nodes (covalence#101).  Uses in-degree (edges pointing at the node)
     /// plus contention accommodation count plus pinned flag.
     pub compute_structural_importance: Option<bool>,
+    /// When `true`, mark any running tasks whose `timeout_at < now()` as
+    /// `failed` with `failure_class = 'timeout'` (covalence#114).
+    pub timeout_stale_tasks: Option<bool>,
+    /// When `true`, generate (or refresh) the "KB Topology Map" landmark article
+    /// describing the KB's current structure (covalence#112).
+    pub generate_topology_map: Option<bool>,
+    /// When `true`, generate (or refresh) "Domain Overview" landmark articles for
+    /// every top-level domain with ≥ 5 active articles (covalence#112).
+    pub generate_domain_landmarks: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -293,9 +302,10 @@ impl AdminService {
                             usage_score,
                             usage_score / NULLIF(MAX(usage_score) OVER (), 0) AS usage_score_normalized
                         FROM covalence.nodes
-                        WHERE node_type = 'article'
-                          AND status    = 'active'
-                          AND pinned    = false
+                        WHERE node_type    = 'article'
+                          AND status       = 'active'
+                          AND pinned       = false
+                          AND is_landmark  = false
                           AND structural_importance < 0.8
                     ),
                     scored AS (
@@ -431,6 +441,33 @@ impl AdminService {
         if req.compute_structural_importance.unwrap_or(false) {
             let n = self.compute_structural_importance().await?;
             actions.push(format!("compute_structural_importance: updated {n} nodes"));
+        }
+
+        if req.timeout_stale_tasks.unwrap_or(false) {
+            let svc = crate::services::task_service::TaskService::new(self.pool.clone());
+            let n = svc.timeout_stale().await?;
+            actions.push(format!("timeout_stale_tasks: timed out {n} running tasks"));
+        }
+
+        if req.generate_topology_map.unwrap_or(false) {
+            let result = crate::worker::navigation::generate_topology_map(&self.pool)
+                .await
+                .map_err(crate::errors::AppError::Internal)?;
+            actions.push(format!(
+                "generate_topology_map: article={}, domains={}, bridges={}, hubs={}",
+                result.article_id, result.domain_count, result.bridge_count, result.hub_count,
+            ));
+        }
+
+        if req.generate_domain_landmarks.unwrap_or(false) {
+            let result = crate::worker::navigation::generate_domain_landmarks(&self.pool, 5)
+                .await
+                .map_err(crate::errors::AppError::Internal)?;
+            actions.push(format!(
+                "generate_domain_landmarks: upserted={}, domains=[{}]",
+                result.upserted,
+                result.domains.join(", "),
+            ));
         }
 
         if actions.is_empty() {

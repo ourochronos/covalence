@@ -9,3 +9,4 @@ pub mod provenance_trace_service;
 pub mod search_service;
 pub mod session_service;
 pub mod source_service;
+pub mod task_service;

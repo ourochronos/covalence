@@ -480,6 +480,14 @@ ALTER TABLE covalence.nodes
 CREATE INDEX IF NOT EXISTS idx_nodes_structural_importance
     ON covalence.nodes(structural_importance);
 
+-- Migration 030: KB Navigation Landmarks (covalence#112)
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS is_landmark BOOLEAN NOT NULL DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS idx_nodes_is_landmark
+    ON covalence.nodes(is_landmark)
+    WHERE is_landmark = true;
+
 -- Migration 027: Persistent gap registry (covalence#100)
 CREATE TABLE IF NOT EXISTS covalence.gap_log (
     id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -512,3 +520,37 @@ CREATE TABLE IF NOT EXISTS covalence.gap_registry (
 CREATE INDEX IF NOT EXISTS gap_registry_gap_score_idx  ON covalence.gap_registry (gap_score DESC);
 CREATE INDEX IF NOT EXISTS gap_registry_status_idx     ON covalence.gap_registry (status);
 CREATE INDEX IF NOT EXISTS gap_registry_namespace_idx  ON covalence.gap_registry (namespace);
+
+-- Migration 031: Task state machine (covalence#114)
+CREATE TABLE IF NOT EXISTS covalence.tasks (
+  id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  label               TEXT        NOT NULL,
+  issue_ref           TEXT,
+  status              TEXT        NOT NULL DEFAULT 'pending'
+                                  CHECK (status IN ('pending','assigned','running','done','failed')),
+  assigned_session_id TEXT,
+  started_at          TIMESTAMPTZ,
+  completed_at        TIMESTAMPTZ,
+  timeout_at          TIMESTAMPTZ,
+  failure_class       TEXT,
+  result_summary      TEXT,
+  metadata            JSONB       NOT NULL DEFAULT '{}',
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION covalence.tasks_set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_tasks_updated_at ON covalence.tasks;
+CREATE TRIGGER trg_tasks_updated_at
+  BEFORE UPDATE ON covalence.tasks
+  FOR EACH ROW EXECUTE FUNCTION covalence.tasks_set_updated_at();
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status      ON covalence.tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created_at  ON covalence.tasks (created_at DESC);

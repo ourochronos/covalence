@@ -69,5 +69,7 @@ mod test_source_quality;
 mod test_split;
 mod test_spreading_activation;
 mod test_staleness;
+mod test_tasks;
 mod test_temporal_edges;
+mod test_navigation;
 mod test_tree;
