@@ -90,6 +90,7 @@ async fn search_after_excludes_old_content() {
         spreading_activation: None,
         facet_function: None,
         facet_scope: None,
+        explain: None,
     };
 
     let (results, _meta) = svc
@@ -163,6 +164,7 @@ async fn search_before_excludes_new_content() {
         spreading_activation: None,
         facet_function: None,
         facet_scope: None,
+        explain: None,
     };
 
     let (results, _meta) = svc
@@ -246,6 +248,7 @@ async fn search_date_range_combined() {
         spreading_activation: None,
         facet_function: None,
         facet_scope: None,
+        explain: None,
     };
 
     let (results, _meta) = svc

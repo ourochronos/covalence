@@ -178,6 +178,11 @@ pub struct SearchRequest {
     /// Nodes with NULL `facet_scope` are excluded when this filter is active.
     #[serde(default)]
     pub facet_scope: Option<Vec<String>>,
+    /// When `true`, each result includes a [`SearchExplanation`] with per-dimension
+    /// normalized sub-scores and the effective fusion weights.
+    /// Defaults to `false` (no overhead).
+    #[serde(default)]
+    pub explain: Option<bool>,
 }
 
 fn default_limit() -> usize {
@@ -242,6 +247,38 @@ pub struct SearchResult {
     /// Scope facet — abstraction level. (covalence#92)
     /// Used for facet_scope filter application.
     pub facet_scope: Option<Vec<String>>,
+    /// Per-dimension score breakdown. Populated only when `explain=true` was
+    /// set on the [`SearchRequest`]; `None` otherwise.
+    pub explanation: Option<SearchExplanation>,
+}
+
+/// Per-dimension fusion weights included in a [`SearchExplanation`].
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct ExplainDimensionWeights {
+    pub vector: f32,
+    pub lexical: f32,
+    pub graph: f32,
+    pub structural: f32,
+}
+
+/// Optional explanation attached to each [`SearchResult`] when `explain=true`.
+///
+/// Contains the raw per-dimension normalized scores that contributed to the
+/// final fused score, plus the effective fusion weights used for this request.
+/// All score fields are `None` when the corresponding dimension did not
+/// produce a result for this node (absent → treated as rank-0 in RRF).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct SearchExplanation {
+    /// Normalized vector-dimension score in \[0, 1\], or `None` if not scored.
+    pub vector_score: Option<f32>,
+    /// Normalized lexical-dimension score in \[0, 1\], or `None` if not scored.
+    pub lexical_score: Option<f32>,
+    /// Normalized graph-dimension score in \[0, 1\], or `None` if not scored.
+    pub graph_score: Option<f32>,
+    /// Normalized structural-dimension score in \[0, 1\], or `None` if not scored.
+    pub structural_score: Option<f32>,
+    /// Effective fusion weights used for this request (sums to ~1.0).
+    pub dimension_weights: ExplainDimensionWeights,
 }
 
 /// Metadata about the search execution.
@@ -586,6 +623,7 @@ impl SearchService {
         let req_ff = req.facet_function.as_deref();
         let req_fs = req.facet_scope.as_deref();
 
+        let explain_flag = req.explain.unwrap_or(false);
         let mut results = build_results(
             &node_scores,
             &node_map,
@@ -600,6 +638,7 @@ impl SearchService {
             topo_map.as_ref(),
             req_ff,
             req_fs,
+            explain_flag,
         );
         results.sort_by(|a, b| {
             b.score
@@ -763,6 +802,7 @@ impl SearchService {
                                         topological_score: None,
                                         facet_function: facet_function.clone(),
                                         facet_scope: facet_scope.clone(),
+                                        explanation: None,
                                     });
                                 }
                             }
@@ -880,6 +920,7 @@ impl SearchService {
                                         topological_score: None,
                                         facet_function: facet_function.clone(),
                                         facet_scope: facet_scope.clone(),
+                                        explanation: None,
                                     });
                                 }
                             }
@@ -1103,6 +1144,7 @@ impl SearchService {
         // Post-filter to articles only: the dimension adaptors do not apply
         // the node_types restriction in DimensionQuery, so non-article nodes
         // may have slipped through when they share content with articles.
+        let explain_flag = req.explain.unwrap_or(false);
         let mut article_results = build_results(
             &article_scores,
             &article_node_map,
@@ -1117,6 +1159,7 @@ impl SearchService {
             article_topo_map.as_ref(),
             req_ff,
             req_fs,
+            explain_flag,
         );
         article_results.retain(|r| r.node_type == "article");
         article_results.sort_by(|a, b| {
@@ -1232,6 +1275,7 @@ impl SearchService {
                         topological_score: None,
                         facet_function: facet_function.clone(),
                         facet_scope: facet_scope.clone(),
+                        explanation: None,
                     })
                 })
                 .collect()
@@ -1377,6 +1421,7 @@ impl SearchService {
             spreading_activation: None, // synthesis does not use spreading
             facet_function: req.facet_function,
             facet_scope: req.facet_scope,
+            explain: req.explain,
         };
 
         // Step 1 — run standard 4-D search over sources.
@@ -1715,6 +1760,7 @@ impl SearchService {
                 topo_map.as_ref(),
                 None, // debug endpoint: no facet boost (no req available here)
                 None,
+                false, // debug endpoint does not populate explanation
             );
             results.sort_by(|a, b| {
                 b.score
@@ -2099,6 +2145,7 @@ fn build_results(
     topo_scores: Option<&HashMap<Uuid, TopologicalConfidence>>,
     req_facet_function: Option<&[String]>,
     req_facet_scope: Option<&[String]>,
+    explain: bool,
 ) -> Vec<SearchResult> {
     // ── Pre-compute per-dimension rank maps for RRF (covalence#73) ────────────
     let vec_rank_map = dim_rank_map(node_scores, |s| s.0);
@@ -2222,6 +2269,24 @@ fn build_results(
                 facet_scope,
             );
 
+        // Build per-dimension explanation when requested.
+        let explanation = if explain {
+            Some(SearchExplanation {
+                vector_score: vs.map(|s| s as f32),
+                lexical_score: ls.map(|s| s as f32),
+                graph_score: gs.map(|s| s as f32),
+                structural_score: ss.map(|s| s as f32),
+                dimension_weights: ExplainDimensionWeights {
+                    vector: w_vec,
+                    lexical: w_lex,
+                    graph: w_graph,
+                    structural: w_struct,
+                },
+            })
+        } else {
+            None
+        };
+
         results.push(SearchResult {
             node_id: *node_id,
             score: final_score,
@@ -2241,6 +2306,7 @@ fn build_results(
             topological_score: topo_score_out,
             facet_function: facet_function.clone(),
             facet_scope: facet_scope.clone(),
+            explanation,
         });
     }
     results

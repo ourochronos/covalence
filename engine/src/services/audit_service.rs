@@ -129,6 +129,7 @@ impl AuditService {
             spreading_activation: None,
             facet_function: None,
             facet_scope: None,
+            explain: None,
         };
 
         let search_svc = SearchService::new(self.pool.clone()).with_graph(self.graph.clone());
@@ -369,6 +370,7 @@ mod tests {
             topological_score: None,
             facet_function: None,
             facet_scope: None,
+            explanation: None,
         }
     }
 

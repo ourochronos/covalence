@@ -51,6 +51,7 @@ fn make_req(query: &str) -> SearchRequest {
         spreading_activation: None,
         facet_function: None,
         facet_scope: None,
+        explain: None,
     }
 }
 
@@ -698,6 +699,7 @@ async fn test_relevant_document_scores_above_noise() {
         spreading_activation: None,
         facet_function: None,
         facet_scope: None,
+        explain: None,
     };
 
     let debug = service

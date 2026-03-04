@@ -242,6 +242,7 @@ async fn test_namespace_search_isolation() {
             spreading_activation: None,
             facet_function: None,
             facet_scope: None,
+            explain: None,
         })
         .await
         .expect("alpha search should succeed");
@@ -286,6 +287,7 @@ async fn test_namespace_search_isolation() {
             spreading_activation: None,
             facet_function: None,
             facet_scope: None,
+            explain: None,
         })
         .await
         .expect("beta search should succeed");

@@ -153,6 +153,7 @@ async fn test_search_facet_filter() {
             spreading_activation: None,
             facet_function: Some(vec!["retrieval".into()]),
             facet_scope: None,
+            explain: None,
         })
         .await
         .expect("search should succeed");
@@ -238,6 +239,7 @@ async fn test_backward_compat() {
             spreading_activation: None,
             facet_function: None,
             facet_scope: None,
+            explain: None,
         })
         .await
         .expect("search without facet filter should succeed");
@@ -333,6 +335,7 @@ async fn test_facet_boost_raises_aligned_score() {
             spreading_activation: None,
             facet_function: None,
             facet_scope: None,
+            explain: None,
         })
         .await
         .expect("unfaceted search should succeed");
@@ -364,6 +367,7 @@ async fn test_facet_boost_raises_aligned_score() {
             spreading_activation: None,
             facet_function: Some(vec!["retrieval".into()]),
             facet_scope: None,
+            explain: None,
         })
         .await
         .expect("faceted search should succeed");
@@ -569,6 +573,7 @@ async fn test_no_facet_request_no_boost_applied() {
             spreading_activation: None,
             facet_function: None, // ← no facets on request
             facet_scope: None,
+            explain: None,
         })
         .await
         .expect("unfaceted search must not error");

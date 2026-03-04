@@ -60,6 +60,7 @@ fn make_req_spreading(query: &str, spreading_activation: bool) -> SearchRequest 
         spreading_activation: Some(spreading_activation),
         facet_function: None,
         facet_scope: None,
+        explain: None,
     }
 }
 

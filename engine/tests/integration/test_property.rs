@@ -62,6 +62,7 @@ fn make_req(query: impl Into<String>) -> SearchRequest {
         spreading_activation: None,
         facet_function: None,
         facet_scope: None,
+        explain: None,
     }
 }
 
