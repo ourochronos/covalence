@@ -87,6 +87,9 @@ pub enum EdgeType {
     // ── Argumentation / Attack (ASPIC+) ─────────────────────────
     Undercuts, // challenges the inference rule or methodology (undercutting attack)
 
+    // ── Quality / Review (covalence#105) ─────────────────────────
+    Critiques, // a critique observation evaluates an article (Reflexion loop)
+
     // ── Legacy aliases (from 001 schema, retained for migration) ─
     CompiledFrom, // alias for ORIGINATES
     Elaborates,   // alias for EXTENDS
@@ -117,6 +120,7 @@ impl EdgeType {
             EdgeType::CapturedIn => "CAPTURED_IN",
             EdgeType::Involves => "INVOLVES",
             EdgeType::Undercuts => "UNDERCUTS",
+            EdgeType::Critiques => "CRITIQUES",
             EdgeType::CompiledFrom => "COMPILED_FROM",
             EdgeType::Elaborates => "ELABORATES",
         }
@@ -210,6 +214,7 @@ impl FromStr for EdgeType {
             "CAPTURED_IN" => Ok(EdgeType::CapturedIn),
             "INVOLVES" => Ok(EdgeType::Involves),
             "UNDERCUTS" => Ok(EdgeType::Undercuts),
+            "CRITIQUES" => Ok(EdgeType::Critiques),
             "COMPILED_FROM" => Ok(EdgeType::CompiledFrom),
             "ELABORATES" => Ok(EdgeType::Elaborates),
             other => Err(format!("unknown edge type: {other}")),

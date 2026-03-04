@@ -15,6 +15,7 @@
 
 pub mod consolidation;
 pub mod contention;
+pub mod critique;
 pub mod decay;
 pub mod divergence;
 pub mod llm;
@@ -414,6 +415,7 @@ pub async fn execute_task(
         "divergence_scan" => divergence::handle_divergence_scan(pool, task).await,
         "reconsolidate" => reconsolidation::handle_reconsolidate(pool, llm, task).await,
         "consolidate_article" => consolidation::handle_consolidate_article(pool, llm, task).await,
+        "critique_article" => critique::handle_critique_article(pool, llm, task).await,
         "recompute_graph_embeddings" => {
             let method = task
                 .payload
@@ -1404,6 +1406,19 @@ SOURCE DOCUMENTS:\n\
         );
         enqueue_task(pool, "split", Some(article_id), json!({}), 4).await?;
     }
+
+    // Queue a deferred critique_article task (covalence#105 — Reflexion loop).
+    // Delayed 1 hour to allow embedding and other follow-up work to settle first.
+    let critique_after = chrono::Utc::now() + chrono::Duration::hours(1);
+    enqueue_task_at(
+        pool,
+        "critique_article",
+        Some(article_id),
+        json!({}),
+        2,
+        Some(critique_after),
+    )
+    .await?;
 
     tracing::info!(
         article_id  = %article_id,

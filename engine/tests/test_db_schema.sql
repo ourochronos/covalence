@@ -207,7 +207,7 @@ ALTER TABLE covalence.slow_path_queue
         'split', 'merge', 'embed', 'contention_check',
         'tree_index', 'tree_embed', 'recompile',
         'decay_check', 'divergence_scan', 'recompute_graph_embeddings',
-        'reconsolidate', 'consolidate_article'
+        'reconsolidate', 'consolidate_article', 'critique_article'
     ));
 
 -- -----------------------------------------------------------------------------

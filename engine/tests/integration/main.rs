@@ -41,6 +41,7 @@ mod test_concerns;
 mod test_consolidation;
 mod test_content_hash;
 mod test_contention;
+mod test_critique;
 mod test_dashboard;
 mod test_decay;
 mod test_distillation;
