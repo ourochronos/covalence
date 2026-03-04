@@ -15,6 +15,7 @@ export type CovalenceConfig = {
   autoCompileOnFlush: boolean;
   includeSystemMessages: boolean;
   inferenceEnabled: boolean;
+  inferenceToken?: string;
   inferenceModel?: string;
   embeddingModel: string;
   chatModel: string;
@@ -26,10 +27,12 @@ export const covalenceConfigSchema = {
 
     const serverUrl = resolveEnvVar(String(raw.serverUrl ?? "http://localhost:8430"));
     const authToken = raw.authToken ? resolveEnvVar(String(raw.authToken)) : undefined;
+    const inferenceToken = raw.inferenceToken ? resolveEnvVar(String(raw.inferenceToken)) : undefined;
 
     return {
       serverUrl: serverUrl.replace(/\/+$/, ""),
       authToken,
+      inferenceToken,
       autoRecall: raw.autoRecall !== false,
       autoCapture: raw.autoCapture === true,
       recallMaxResults: typeof raw.recallMaxResults === "number" ? raw.recallMaxResults : 5,

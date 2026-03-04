@@ -1121,6 +1121,7 @@ const covalencePlugin = {
 
     if (cfg.inferenceEnabled) {
       registerInferenceEndpoints(api, {
+        inferenceToken: cfg.inferenceToken,
         inferenceModel: cfg.inferenceModel,
         chatModel: cfg.chatModel,
         embeddingModel: cfg.embeddingModel,
