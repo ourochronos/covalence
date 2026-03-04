@@ -171,6 +171,33 @@ impl EdgeType {
         )
     }
 
+    /// Causal weight for this edge type (covalence#75).
+    ///
+    /// Reflects how strongly this edge type implies a causal relationship
+    /// between its endpoints.  Used to populate `covalence.edges.causal_weight`
+    /// on insert and to filter graph traversal via `min_causal_weight`.
+    ///
+    /// | relationship | causal_weight |
+    /// |---|---|
+    /// | originates | 1.0 |
+    /// | supersedes | 0.95 |
+    /// | extends | 0.70 |
+    /// | confirms | 0.60 |
+    /// | contradicts | 0.50 |
+    /// | relates_to | 0.15 |
+    /// | (default/other) | 0.5 |
+    pub fn causal_weight(&self) -> f32 {
+        match self {
+            EdgeType::Originates | EdgeType::CompiledFrom => 1.0,
+            EdgeType::Supersedes => 0.95,
+            EdgeType::Extends | EdgeType::Elaborates => 0.70,
+            EdgeType::Confirms => 0.60,
+            EdgeType::Contradicts => 0.50,
+            EdgeType::RelatesTo => 0.15,
+            _ => 0.5,
+        }
+    }
+
     /// Resolve legacy aliases to canonical names.
     #[allow(dead_code)]
     pub fn canonical(&self) -> EdgeType {
@@ -391,6 +418,10 @@ pub struct Node {
     pub pinned: bool,
     pub version: i32,
     pub usage_score: f32,
+    /// Dual confidence score derived from provenance chains (covalence#75).
+    /// Nullable — populated by the provenance-confidence worker (Phase 1+).
+    /// `None` until first computed.
+    pub provenance_confidence: Option<f32>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
     pub accessed_at: DateTime<Utc>,
@@ -406,6 +437,10 @@ pub struct Edge {
     pub edge_type: EdgeType,
     pub weight: f32,
     pub confidence: f32,
+    /// Causal weight for this edge (covalence#75).  Reflects how strongly the
+    /// relationship type implies causality; populated automatically on insert
+    /// from [`EdgeType::causal_weight`].  Defaults to 0.5 for unknown types.
+    pub causal_weight: f32,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub created_by: Option<String>,

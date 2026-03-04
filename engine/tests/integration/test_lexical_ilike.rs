@@ -54,6 +54,7 @@ async fn lexical_ilike_single_quote_escaping() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        min_causal_weight: None,
         facet_function: None,
         facet_scope: None,
         explain: None,

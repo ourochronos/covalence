@@ -38,6 +38,15 @@ pub struct DimensionQuery {
     /// Maximum number of graph traversal hops (1–3). Only used by
     /// [`GraphAdaptor`]; other adaptors ignore this field.
     pub max_hops: Option<u32>,
+    /// Minimum causal weight filter for graph traversal (covalence#75).
+    ///
+    /// When set, the graph dimension only traverses edges whose
+    /// `causal_weight >= min_causal_weight`.  This restricts BFS to
+    /// high-causal-strength edge types (e.g. 0.6 excludes RELATES_TO at 0.15
+    /// and CONTRADICTS at 0.50 but keeps CONFIRMS at 0.60 and above).
+    ///
+    /// Default: `None` (all edges traversed — backward compatible).
+    pub min_causal_weight: Option<f32>,
     /// Namespace filter — only nodes whose `namespace` column matches this
     /// value are returned.  Defaults to `"default"`.
     pub namespace: String,

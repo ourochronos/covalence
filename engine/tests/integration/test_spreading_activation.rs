@@ -58,6 +58,7 @@ fn make_req_spreading(query: &str, spreading_activation: bool) -> SearchRequest 
         before: None,
         min_score: None,
         spreading_activation: Some(spreading_activation),
+        min_causal_weight: None,
         facet_function: None,
         facet_scope: None,
         explain: None,

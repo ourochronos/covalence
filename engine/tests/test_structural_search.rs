@@ -58,6 +58,7 @@ async fn test_structural_search_feature_flag_off() {
         session_id: None,
         node_types: None,
         max_hops: None,
+        min_causal_weight: None,
         namespace: "default".to_string(),
     };
     // Use a fake anchor so the candidate list is non-empty.
@@ -176,6 +177,7 @@ async fn test_structural_strategy_preset() {
         before: None,
         min_score: None,
         spreading_activation: None,
+        min_causal_weight: None,
         facet_function: None,
         facet_scope: None,
         explain: None,

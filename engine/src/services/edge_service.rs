@@ -90,14 +90,15 @@ impl EdgeService {
             sqlx::query(
                 "INSERT INTO covalence.edges \
                  (id, source_node_id, target_node_id, edge_type, \
-                  weight, confidence, metadata, created_by, valid_from) \
-                 VALUES (gen_random_uuid(), $1, $2, 'CONTRADICTS', $3, $4, $5, $6, now()) \
+                  weight, confidence, causal_weight, metadata, created_by, valid_from) \
+                 VALUES (gen_random_uuid(), $1, $2, 'CONTRADICTS', $3, $4, $5, $6, $7, now()) \
                  ON CONFLICT (source_node_id, target_node_id, edge_type) DO NOTHING",
             )
             .bind(req.to_node_id) // B → becomes source of inverse
             .bind(req.from_node_id) // A → becomes target of inverse
             .bind(edge.weight)
             .bind(edge.confidence)
+            .bind(edge.causal_weight) // CONTRADICTS causal_weight = 0.50
             .bind(serde_json::json!({
                 "inferred_by":    "contradicts_symmetry",
                 "source_edge_id": edge.id.to_string(),
@@ -123,17 +124,21 @@ impl EdgeService {
         created_by: &str,
         props: &serde_json::Value,
     ) -> AppResult<Edge> {
+        // causal_weight for CONTRADICTS is always 0.50.
+        let causal_weight = EdgeType::Contradicts.causal_weight();
+
         // Attempt insert; silently skip if the edge already exists.
         sqlx::query(
             "INSERT INTO covalence.edges \
              (id, source_node_id, target_node_id, edge_type, \
-              weight, confidence, metadata, created_by, valid_from) \
-             VALUES (gen_random_uuid(), $1, $2, 'CONTRADICTS', 1.0, $3, $4, $5, now()) \
+              weight, confidence, causal_weight, metadata, created_by, valid_from) \
+             VALUES (gen_random_uuid(), $1, $2, 'CONTRADICTS', 1.0, $3, $4, $5, $6, now()) \
              ON CONFLICT (source_node_id, target_node_id, edge_type) DO NOTHING",
         )
         .bind(from_id)
         .bind(to_id)
         .bind(confidence)
+        .bind(causal_weight)
         .bind(props)
         .bind(created_by)
         .execute(&self.pool)
@@ -143,7 +148,7 @@ impl EdgeService {
         // Fetch the canonical row (inserted or pre-existing).
         let row = sqlx::query(
             "SELECT id, age_id, source_node_id, target_node_id, edge_type, \
-                    weight, confidence, metadata, created_at, created_by, \
+                    weight, confidence, causal_weight, metadata, created_at, created_by, \
                     valid_from, valid_to \
              FROM covalence.edges \
              WHERE source_node_id = $1 AND target_node_id = $2 \
@@ -169,6 +174,9 @@ impl EdgeService {
                 .map_err(AppError::Database)? as f32,
             confidence: row
                 .try_get::<f64, _>("confidence")
+                .map_err(AppError::Database)? as f32,
+            causal_weight: row
+                .try_get::<f64, _>("causal_weight")
                 .map_err(AppError::Database)? as f32,
             metadata: row.try_get("metadata").map_err(AppError::Database)?,
             created_at: row.try_get("created_at").map_err(AppError::Database)?,

@@ -60,6 +60,7 @@ fn make_req(query: impl Into<String>) -> SearchRequest {
         before: None,
         min_score: None,
         spreading_activation: None,
+        min_causal_weight: None,
         facet_function: None,
         facet_scope: None,
         explain: None,

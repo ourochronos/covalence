@@ -78,3 +78,4 @@ mod test_tasks;
 mod test_temporal_edges;
 mod test_tree;
 mod test_whatif_retract;
+mod test_causal_semantics;
