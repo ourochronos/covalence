@@ -601,9 +601,7 @@ impl SearchService {
                 // Sort expansion candidates by PPR score descending.
                 let mut ppr_candidates: Vec<(Uuid, f64)> = ppr_scores
                     .into_iter()
-                    .filter(|(id, score)| {
-                        !already_present.contains(id) && *score >= MIN_PPR_SCORE
-                    })
+                    .filter(|(id, score)| !already_present.contains(id) && *score >= MIN_PPR_SCORE)
                     .collect();
                 ppr_candidates
                     .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -624,8 +622,7 @@ impl SearchService {
                             // Base the expansion score slightly below the
                             // lowest current result score so expanded nodes
                             // sort after direct matches.
-                            let base_score =
-                                results.last().map(|r| r.score).unwrap_or(0.1) * 0.85;
+                            let base_score = results.last().map(|r| r.score).unwrap_or(0.1) * 0.85;
 
                             for (rank, node_id) in expand_ids.iter().enumerate() {
                                 if let Some(node) = expanded_map.get(node_id) {
@@ -641,8 +638,7 @@ impl SearchService {
                                         created_at,
                                     ) = node;
                                     // Score descends gently per rank.
-                                    let ppr_score =
-                                        base_score * 0.9_f64.powi(rank as i32);
+                                    let ppr_score = base_score * 0.9_f64.powi(rank as i32);
 
                                     results.push(SearchResult {
                                         node_id: *node_id,
@@ -673,7 +669,9 @@ impl SearchService {
                             );
                         }
                         Err(e) => {
-                            tracing::debug!("ppr_expansion: fetch_node_map failed (non-fatal): {e:#}");
+                            tracing::debug!(
+                                "ppr_expansion: fetch_node_map failed (non-fatal): {e:#}"
+                            );
                         }
                     }
                 }
@@ -974,7 +972,11 @@ impl SearchService {
                     // Apply the same freshness tiebreaker as standard mode,
                     // honouring the caller's recency_bias setting.
                     let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
-                    let freshness = if days < 0.001 { 1.0 } else { (days as f64).powf(-0.5).min(1.0) };
+                    let freshness = if days < 0.001 {
+                        1.0
+                    } else {
+                        (days as f64).powf(-0.5).min(1.0)
+                    };
                     let bias = recency_bias;
                     let freshness_weight = 0.10 + bias * 0.30;
                     let dim_weight = 1.0 - freshness_weight - 0.10;
@@ -1862,7 +1864,11 @@ fn build_results(
         // Power-law decay (ACT-R BLL alignment, covalence#76): days^-0.5
         // Guard against division-by-zero for brand-new nodes (days < 0.001).
         let days = (chrono::Utc::now() - modified_at).num_seconds() as f64 / 86400.0;
-        let freshness = if days < 0.001 { 1.0 } else { (days as f64).powf(-0.5).min(1.0) };
+        let freshness = if days < 0.001 {
+            1.0
+        } else {
+            (days as f64).powf(-0.5).min(1.0)
+        };
         let bias = recency_bias.clamp(0.0, 1.0);
         // freshness_weight scales from 0.10 (bias=0) to 0.40 (bias=1)
         let freshness_weight = 0.10 + bias * 0.30;

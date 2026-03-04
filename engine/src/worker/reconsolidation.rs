@@ -197,10 +197,13 @@ pub async fn handle_reconsolidate(
         .collect();
 
     // ── 5. Build the LLM compilation prompt ─────────────────────────────────
+    // Source content is wrapped in XML tags so the LLM treats it as
+    // structured data rather than instructions (Fix #84 — prompt injection
+    // defence for RAG pipelines).
     let mut sources_block = String::new();
     for s in &sources {
         sources_block.push_str(&format!(
-            "=== SOURCE {} ===\nTitle: {}\n\n{}\n\n",
+            "<source id=\"{}\">\n<title>{}</title>\n<content>\n{}\n</content>\n</source>\n\n",
             s.id, s.title, s.content
         ));
     }
@@ -235,9 +238,23 @@ SOURCE DOCUMENTS:\n\
 {sources_block}"
     );
 
-    // ── 6. LLM completion ────────────────────────────────────────────────────
+    // ── 6. LLM completion (with timeout — Fix #84) ──────────────────────────
+    // Wrap the LLM call in a 60-second timeout to prevent indefinite
+    // blocking on slow or hung API endpoints.
     let t0 = Instant::now();
-    let llm_result = llm.complete(&prompt, 4096).await;
+    let llm_result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        llm.complete(&prompt, 4096),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| {
+        tracing::warn!(
+            task_id    = %task.id,
+            article_id = %article_id,
+            "reconsolidate: LLM completion timed out after 60s"
+        );
+        Err(anyhow::anyhow!("LLM completion timed out after 60s"))
+    });
     let _llm_latency_ms = t0.elapsed().as_millis() as i32;
 
     let (new_title, new_content, source_relationships): (String, String, Vec<(Uuid, String)>) =

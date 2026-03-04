@@ -45,10 +45,7 @@ async fn create_source(app: &axum::Router, title: &str, content: &str) -> String
         .await
         .expect("bytes");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    json["data"]["id"]
-        .as_str()
-        .expect("id missing")
-        .to_string()
+    json["data"]["id"].as_str().expect("id missing").to_string()
 }
 
 /// POST /edges with a CONFIRMS relationship and return the edge id.
@@ -131,7 +128,10 @@ async fn bridge_node_survives_eviction() {
     for (id, title) in [
         (a1_id, "Cluster A article one"),
         (a2_id, "Cluster A article two"),
-        (bridge_id, "Bridge article connecting cluster A and cluster B"),
+        (
+            bridge_id,
+            "Bridge article connecting cluster A and cluster B",
+        ),
         (b1_id, "Cluster B article one"),
         (b2_id, "Cluster B article two"),
         (extra_id, "Disconnected extra article"),
@@ -150,21 +150,17 @@ async fn bridge_node_survives_eviction() {
 
     // Set usage scores: BRIDGE gets the lowest score so it would normally be
     // evicted first under a pure usage_score ordering.
-    sqlx::query(
-        "UPDATE covalence.nodes SET usage_score = 0.001 WHERE id = $1",
-    )
-    .bind(bridge_id)
-    .execute(&pool)
-    .await
-    .expect("set bridge usage_score");
+    sqlx::query("UPDATE covalence.nodes SET usage_score = 0.001 WHERE id = $1")
+        .bind(bridge_id)
+        .execute(&pool)
+        .await
+        .expect("set bridge usage_score");
 
-    sqlx::query(
-        "UPDATE covalence.nodes SET usage_score = 0.5 WHERE id = ANY($1::uuid[])",
-    )
-    .bind(&[a1_id, a2_id, b1_id, b2_id, extra_id] as &[Uuid])
-    .execute(&pool)
-    .await
-    .expect("set other usage_scores");
+    sqlx::query("UPDATE covalence.nodes SET usage_score = 0.5 WHERE id = ANY($1::uuid[])")
+        .bind(&[a1_id, a2_id, b1_id, b2_id, extra_id] as &[Uuid])
+        .execute(&pool)
+        .await
+        .expect("set other usage_scores");
 
     // Build the shared in-memory graph with the bridge topology:
     //   a1 → a2 → bridge → b1 → b2   (extra is isolated)
@@ -210,13 +206,12 @@ async fn bridge_node_survives_eviction() {
     );
 
     // At least one other article must have been evicted (evict_count = 2).
-    let active_count: i64 =
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM covalence.nodes WHERE status = 'active' AND node_type = 'article'"
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("count");
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM covalence.nodes WHERE status = 'active' AND node_type = 'article'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count");
     assert!(
         active_count < 6,
         "expected fewer than 6 active articles after eviction, got {active_count}"

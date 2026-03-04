@@ -63,5 +63,20 @@ jobs:
         working-directory: engine
         run: cargo fmt -- --check
 
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        working-directory: engine
+        run: cargo audit
+
   # openapi-client job will be added when covalence#57 is implemented
   # (auto-generate Python client from OpenAPI spec)

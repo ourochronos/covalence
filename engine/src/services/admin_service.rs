@@ -278,14 +278,11 @@ impl AdminService {
                     let importance = structural_importance(&graph);
                     let node_count = importance.len();
                     // Protect at least 1 node, up to 5% of the graph.
-                    let protect_count =
-                        (node_count as f64 * 0.05).ceil() as usize;
+                    let protect_count = (node_count as f64 * 0.05).ceil() as usize;
                     let protect_count = protect_count.max(1);
                     let mut sorted: Vec<(Uuid, f64)> = importance.into_iter().collect();
-                    sorted.sort_by(|a, b| {
-                        b.1.partial_cmp(&a.1)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    sorted
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     drop(graph);
                     tracing::debug!(
                         protect_count,

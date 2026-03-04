@@ -339,7 +339,11 @@ pub fn personalized_pagerank(
         .node_indices()
         .map(|idx| {
             let id = *graph.graph.node_weight(idx).unwrap_or(&Uuid::nil());
-            let initial = if seeds.contains(&id) { seed_weight } else { 0.0 };
+            let initial = if seeds.contains(&id) {
+                seed_weight
+            } else {
+                0.0
+            };
             (idx, initial)
         })
         .collect();
@@ -379,9 +383,7 @@ pub fn personalized_pagerank(
 
     ranks
         .into_iter()
-        .filter_map(|(idx, score)| {
-            graph.graph.node_weight(idx).copied().map(|id| (id, score))
-        })
+        .filter_map(|(idx, score)| graph.graph.node_weight(idx).copied().map(|id| (id, score)))
         .collect()
 }
 

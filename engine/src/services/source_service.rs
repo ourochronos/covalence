@@ -6,6 +6,10 @@ use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
 use crate::errors::*;
+
+/// Maximum allowed content size for a single ingested source (100 KiB).
+/// Larger payloads are rejected with HTTP 413 to prevent DoS via unbounded ingestion.
+const MAX_CONTENT_BYTES: usize = 100 * 1024;
 use crate::graph::{GraphRepository, SqlGraphRepository};
 use crate::models::*;
 
@@ -89,6 +93,16 @@ impl SourceService {
 
     /// Ingest a source — idempotent via SHA-256 fingerprint (SPEC §8.1 fast path).
     pub async fn ingest(&self, req: IngestRequest) -> AppResult<SourceResponse> {
+        // 0. Enforce content size limit (Fix #84 — DoS prevention).
+        if req.content.len() > MAX_CONTENT_BYTES {
+            return Err(AppError::PayloadTooLarge(format!(
+                "content exceeds maximum allowed size of {} bytes (got {} bytes); \
+                 split into smaller chunks or reduce content length",
+                MAX_CONTENT_BYTES,
+                req.content.len()
+            )));
+        }
+
         // 1. Compute fingerprint
         let fingerprint = hex::encode(Sha256::digest(req.content.as_bytes()));
 
@@ -196,34 +210,46 @@ impl SourceService {
     }
 
     /// List sources with optional filters.
+    ///
+    /// # Security
+    /// All user-supplied filter values are passed via SQLx bind parameters
+    /// (Fix #84 — SQL injection hardening).  No string interpolation of
+    /// user data into the query text.
     pub async fn list(&self, params: ListParams) -> AppResult<Vec<SourceResponse>> {
         let limit = params.limit.unwrap_or(20).min(100);
-        let escaped_ns = self.namespace.replace('\'', "''");
-        let mut sql = format!(
+
+        // Build a fully-parameterized query using SQLx QueryBuilder.
+        // push_bind() emits a $N placeholder and registers the value; no
+        // user data ever touches the query string itself.
+        let mut builder = sqlx::QueryBuilder::new(
             "SELECT id, title, content, source_type, status, \
              confidence, reliability, fingerprint, metadata, version, \
              created_at, modified_at \
-             FROM covalence.nodes WHERE node_type = 'source' AND namespace = '{escaped_ns}'",
+             FROM covalence.nodes WHERE node_type = 'source' AND namespace = ",
         );
+        builder.push_bind(&self.namespace);
 
         if let Some(ref st) = params.source_type {
-            sql.push_str(&format!(" AND source_type = '{st}'"));
+            builder.push(" AND source_type = ");
+            builder.push_bind(st);
         }
         if let Some(ref status) = params.status {
-            sql.push_str(&format!(" AND status = '{status}'"));
+            builder.push(" AND status = ");
+            builder.push_bind(status);
         }
         if let Some(ref q) = params.q {
-            sql.push_str(&format!(
-                " AND content_tsv @@ websearch_to_tsquery('english', '{}')",
-                q.replace('\'', "''")
-            ));
+            builder.push(" AND content_tsv @@ websearch_to_tsquery('english', ");
+            builder.push_bind(q);
+            builder.push(")");
         }
         if let Some(cursor) = params.cursor {
-            sql.push_str(&format!(" AND id > '{cursor}'"));
+            builder.push(" AND id > ");
+            builder.push_bind(cursor);
         }
-        sql.push_str(&format!(" ORDER BY created_at DESC LIMIT {limit}"));
+        builder.push(" ORDER BY created_at DESC LIMIT ");
+        builder.push_bind(limit);
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
         Ok(rows.iter().map(source_from_row).collect())
     }
 
