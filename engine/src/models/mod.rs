@@ -1,4 +1,9 @@
 pub mod article_state;
+pub mod edge_causal_metadata;
+
+pub use edge_causal_metadata::{
+    CausalEvidenceType, CausalLevel, EdgeCausalMetadata, EdgeCausalMetadataUpsert,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

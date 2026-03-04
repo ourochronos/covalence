@@ -2,6 +2,7 @@
 //! The binary entry-point remains `main.rs`.
 
 pub mod api;
+pub mod db;
 pub mod embeddings;
 pub mod errors;
 pub mod graph;

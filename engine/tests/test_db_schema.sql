@@ -565,3 +565,72 @@ CREATE TRIGGER trg_tasks_updated_at
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status      ON covalence.tasks (status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at  ON covalence.tasks (created_at DESC);
+
+-- Migration 033: Causal semantics (covalence#75)
+ALTER TABLE covalence.edges
+    ADD COLUMN IF NOT EXISTS causal_weight FLOAT NOT NULL DEFAULT 0.5;
+
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS provenance_confidence FLOAT;
+
+-- Migration 034: edge_causal_metadata (covalence#116)
+DO $$ BEGIN
+  CREATE TYPE covalence.causal_level_enum AS ENUM (
+    'association', 'intervention', 'counterfactual'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE covalence.causal_evidence_type_enum AS ENUM (
+    'structural_prior', 'expert_assertion', 'statistical', 'experimental',
+    'granger_temporal', 'llm_extracted', 'domain_rule'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS covalence.edge_causal_metadata (
+    edge_id           UUID                                  NOT NULL PRIMARY KEY,
+    causal_level      covalence.causal_level_enum           NOT NULL DEFAULT 'association',
+    causal_strength   FLOAT                                 NOT NULL DEFAULT 0.5
+                        CHECK (causal_strength >= 0.0 AND causal_strength <= 1.0),
+    evidence_type     covalence.causal_evidence_type_enum   NOT NULL DEFAULT 'structural_prior',
+    direction_conf    FLOAT                                 NOT NULL DEFAULT 0.5
+                        CHECK (direction_conf >= 0.0 AND direction_conf <= 1.0),
+    hidden_conf_risk  FLOAT                                 NOT NULL DEFAULT 0.5
+                        CHECK (hidden_conf_risk >= 0.0 AND hidden_conf_risk <= 1.0),
+    temporal_lag_ms   INT                                   CHECK (temporal_lag_ms IS NULL OR temporal_lag_ms >= 0),
+    created_at        TIMESTAMPTZ                           NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ                           NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_ecm_edge
+        FOREIGN KEY (edge_id)
+        REFERENCES covalence.edges(id)
+        ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE INDEX IF NOT EXISTS idx_ecm_causal_level
+    ON covalence.edge_causal_metadata (causal_level);
+
+CREATE INDEX IF NOT EXISTS idx_ecm_causal_strength
+    ON covalence.edge_causal_metadata (causal_strength DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ecm_evidence_type
+    ON covalence.edge_causal_metadata (evidence_type);
+
+CREATE INDEX IF NOT EXISTS idx_ecm_level_strength
+    ON covalence.edge_causal_metadata (causal_level, causal_strength DESC);
+
+CREATE OR REPLACE FUNCTION covalence._ecm_set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_ecm_updated_at ON covalence.edge_causal_metadata;
+CREATE TRIGGER trg_ecm_updated_at
+    BEFORE UPDATE ON covalence.edge_causal_metadata
+    FOR EACH ROW EXECUTE FUNCTION covalence._ecm_set_updated_at();
