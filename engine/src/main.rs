@@ -13,14 +13,27 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "covalence_engine=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // Initialize tracing.
+    // • RUST_LOG controls level filtering (defaults to "info").
+    // • RUST_LOG_FORMAT=json (or a release build) switches to JSON output.
+    //   Otherwise, human-readable output is used for development convenience.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+
+    let use_json = std::env::var("RUST_LOG_FORMAT").as_deref() == Ok("json")
+        || cfg!(not(debug_assertions));
+
+    if use_json {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     dotenvy::dotenv().ok();
 
