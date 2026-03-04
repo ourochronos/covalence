@@ -26,6 +26,7 @@
 //! | `test_merge`       | `merge`, `infer_edges`                            |
 //! | `test_contention`  | `contention_check`, `resolve_contention`          |
 //! | `test_decay`       | `decay_check`                                     |
+//! | `test_distillation`| progressive distillation pipeline (#104)          |
 
 mod helpers;
 
@@ -42,6 +43,7 @@ mod test_content_hash;
 mod test_contention;
 mod test_dashboard;
 mod test_decay;
+mod test_distillation;
 mod test_embed;
 mod test_epistemic_slis;
 mod test_ewc_structural;

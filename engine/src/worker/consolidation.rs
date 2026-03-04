@@ -11,6 +11,24 @@
 //! | 3 (after pass 3)                  | +1 week  (→ pass 4)         |
 //! | 4+ (after pass 4+)                | +1 month (→ pass N+1)       |
 //!
+//! # Progressive distillation pipeline (covalence#104)
+//!
+//! As articles accumulate consolidation passes they advance through four
+//! distillation stages.  The stage is derived from `consolidation_count`
+//! **read from the DB before the pass runs**:
+//!
+//! | count | Stage     | Source cap | Prompt suffix                              |
+//! |-------|-----------|------------|--------------------------------------------|
+//! | 0–2   | Rich      | 7 (legacy) | none                                       |
+//! | 3–4   | Selective | top-10     | compress to 75 %                           |
+//! | 5–6   | Condensed | top-6      | condense to 50 %                           |
+//! | 7+    | Distilled | top-4      | distil to core claims (35 %)               |
+//!
+//! Source ranking uses `trust_score × exp(-0.1 × days_old)` so both
+//! reliability and freshness influence selection.  Sources that fall outside
+//! the cap are marked non-destructively with `metadata.distilled_out_at` so
+//! they can be re-surfaced later.
+//!
 //! Orphan articles (those with no linked sources) are **skipped** — they have
 //! no source material to synthesise and advancing them serves no purpose.
 //!
@@ -54,6 +72,72 @@ pub const SCHEDULE_PASS_4_WEEKS: i64 = 1;
 
 /// Delay after pass 4+ completes before the next pass is eligible (1 month ≈ 30 days).
 pub const SCHEDULE_PASS_N_DAYS: i64 = 30;
+
+// ─── distillation pipeline (covalence#104) ────────────────────────────────────
+
+/// The distillation stage reached at a given `consolidation_count`.
+///
+/// The stage is computed from the count **before** the current pass increments
+/// it, so pass 1 (count=0) is always Rich.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistillationStage {
+    /// count 0–2: full synthesis, all sources (legacy 7-source cap applies).
+    Rich,
+    /// count 3–4: ranked selection of top-10 sources; prompt instructs 75 % compression.
+    Selective,
+    /// count 5–6: top-6 sources; prompt instructs 50 % compression.
+    Condensed,
+    /// count 7+: top-4 sources; prompt instructs 35 % distillation.
+    Distilled,
+}
+
+impl DistillationStage {
+    /// Derive the stage from the article's current `consolidation_count` value.
+    pub fn from_count(count: i32) -> Self {
+        match count {
+            i32::MIN..=2 => Self::Rich,
+            3..=4 => Self::Selective,
+            5..=6 => Self::Condensed,
+            _ => Self::Distilled,
+        }
+    }
+
+    /// Maximum number of sources for this stage, or `None` for stage 1 (uses
+    /// the legacy 7-source cap from covalence#85).
+    pub fn source_cap(self) -> Option<usize> {
+        match self {
+            Self::Rich => None,
+            Self::Selective => Some(10),
+            Self::Condensed => Some(6),
+            Self::Distilled => Some(4),
+        }
+    }
+
+    /// Optional prompt suffix instructing the LLM to compress / distil.
+    pub fn prompt_suffix(self) -> Option<&'static str> {
+        match self {
+            Self::Rich => None,
+            Self::Selective => Some(
+                "Compress to 75% of current length. \
+                 Preserve all supporting claims and provenance chain.",
+            ),
+            Self::Condensed => Some(
+                "Condense to 50% of current length. \
+                 Core claims only, with supporting evidence.",
+            ),
+            Self::Distilled => Some(
+                "Distill to core claims only. 35% of current length. \
+                 Drop all context, keep only essential assertions and provenance.",
+            ),
+        }
+    }
+
+    /// Return `true` for stages that always trigger a recompile regardless of
+    /// whether new sources arrived (stages 2–4).
+    pub fn always_recompile(self) -> bool {
+        self != Self::Rich
+    }
+}
 
 // ─── internal helpers ─────────────────────────────────────────────────────────
 
@@ -103,22 +187,90 @@ pub fn next_pass_delay(completed_pass: i32) -> chrono::Duration {
     }
 }
 
+/// Select up to `cap` source IDs from `candidate_ids`, ranked by
+/// `trust_score × exp(-0.1 × days_old)` (covalence#104 recency formula).
+///
+/// `reliability` is used as the trust_score proxy (same column as the
+/// covalence#85 source cap).  Days are computed from `created_at`.
+async fn select_by_trust_recency(
+    pool: &PgPool,
+    candidate_ids: &[Uuid],
+    cap: usize,
+) -> anyhow::Result<Vec<Uuid>> {
+    if candidate_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    sqlx::query_scalar(
+        "SELECT id
+         FROM   covalence.nodes
+         WHERE  id = ANY($1)
+         ORDER BY
+             COALESCE(reliability, 0.5)
+             * EXP(-0.1 * EXTRACT(EPOCH FROM (now() - COALESCE(created_at, now()))) / 86400.0)
+             DESC
+         LIMIT $2",
+    )
+    .bind(candidate_ids)
+    .bind(cap as i64)
+    .fetch_all(pool)
+    .await
+    .context("select_by_trust_recency: failed to rank sources")
+}
+
+/// Mark sources that fell outside the distillation cap with
+/// `metadata.distilled_out_at = <now>` (non-destructive; edges are kept).
+async fn mark_distilled_out(pool: &PgPool, source_ids: &[Uuid]) -> anyhow::Result<()> {
+    if source_ids.is_empty() {
+        return Ok(());
+    }
+    let now_str = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE covalence.nodes
+         SET metadata = jsonb_set(
+             COALESCE(metadata, '{}'::jsonb),
+             '{distilled_out_at}',
+             to_jsonb($1::text),
+             true
+         )
+         WHERE id = ANY($2)",
+    )
+    .bind(&now_str)
+    .bind(source_ids)
+    .execute(pool)
+    .await
+    .context("mark_distilled_out: failed to update source metadata")?;
+
+    tracing::debug!(
+        count = source_ids.len(),
+        "consolidate_article: marked sources as distilled_out"
+    );
+    Ok(())
+}
+
 // ─── handler ──────────────────────────────────────────────────────────────────
 
 /// Handle a `consolidate_article` task.
 ///
 /// Steps:
 /// 1. Parse `article_id` and `pass` from the payload.
-/// 2. Fetch the article — skip if not found or archived.
+/// 2. Fetch the article — skip if not found or archived.  Also read
+///    `consolidation_count` to determine the distillation stage (covalence#104).
 /// 3. **Orphan guard** — skip if the article has zero linked sources.  An
 ///    article with no sources has nothing to synthesise; advancing it wastes
 ///    LLM capacity and does not converge toward a better article.
 /// 4. Check for new sources ingested since `modified_at` that are not yet
 ///    linked to the article (mirrors the orphan-detection logic from
 ///    reconsolidation.rs).
-/// 5. If new sources exist: re-compile using the same LLM synthesis prompt
-///    as reconsolidation, then update article content + create provenance edges.
-/// 6. Increment `consolidation_count` and set `next_consolidation_at` using
+/// 5. Determine whether a recompile is needed:
+///    - Stage 1 (Rich): only when new sources exist (unchanged behaviour).
+///    - Stages 2–4: always recompile to apply progressive distillation.
+/// 6. Select sources for the recompile:
+///    - Stage 1: existing `reliability`-ranked cap of 7 (covalence#85).
+///    - Stages 2–4: `trust_score × recency_factor` ranking, top-N per stage;
+///      dropped sources are marked with `metadata.distilled_out_at`.
+/// 7. Compile with an optional stage-specific prompt suffix.
+/// 8. Update article content + create provenance edges.
+/// 9. Increment `consolidation_count` and set `next_consolidation_at` using
 ///    the expanding-interval schedule defined by [`next_pass_delay`].
 pub async fn handle_consolidate_article(
     pool: &PgPool,
@@ -149,10 +301,11 @@ pub async fn handle_consolidate_article(
         "consolidate_article: starting"
     );
 
-    // ── 2. Fetch article ────────────────────────────────────────────────────
+    // ── 2. Fetch article (+ consolidation_count for distillation stage) ─────
     let article_row = sqlx::query(
-        "SELECT title, content, modified_at \
-         FROM   covalence.nodes \
+        "SELECT title, content, modified_at,
+                COALESCE(consolidation_count, 0) AS consolidation_count
+         FROM   covalence.nodes
          WHERE  id = $1 AND status = 'active' AND node_type = 'article'",
     )
     .bind(article_id)
@@ -176,6 +329,17 @@ pub async fn handle_consolidate_article(
         .get::<Option<String>, _>("title")
         .unwrap_or_default();
     let article_modified_at: chrono::DateTime<Utc> = article_row.get("modified_at");
+    let consolidation_count: i32 = article_row.get("consolidation_count");
+
+    // ── 2b. Compute distillation stage (covalence#104) ───────────────────────
+    let stage = DistillationStage::from_count(consolidation_count);
+    tracing::debug!(
+        task_id            = %task.id,
+        article_id         = %article_id,
+        consolidation_count,
+        stage              = ?stage,
+        "consolidate_article: distillation stage determined"
+    );
 
     // ── 3. Orphan guard ─────────────────────────────────────────────────────
     // An article with zero linked sources has no material to synthesise.
@@ -236,18 +400,25 @@ pub async fn handle_consolidate_article(
     .context("consolidate_article: failed to query new sources")?;
 
     let has_new_sources = !new_source_ids.is_empty();
+
+    // ── 5. Decide whether to recompile ───────────────────────────────────────
+    // Stage 1 (Rich): only compile when new sources exist — unchanged behaviour.
+    // Stages 2–4: always compile to apply distillation (even without new sources).
+    let should_compile = has_new_sources || stage.always_recompile();
+
     let mut new_source_count = 0usize;
 
-    if has_new_sources {
+    if should_compile {
         tracing::info!(
-            task_id    = %task.id,
-            article_id = %article_id,
+            task_id       = %task.id,
+            article_id    = %article_id,
             pass,
-            new_count  = new_source_ids.len(),
-            "consolidate_article: new sources found, recompiling"
+            has_new       = has_new_sources,
+            stage         = ?stage,
+            "consolidate_article: recompiling article"
         );
 
-        // ── 5. Collect all linked sources + new sources ─────────────────────
+        // ── 5a. Collect all linked sources + new sources ─────────────────────
         let existing_source_ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT e.source_node_id
              FROM   covalence.edges e
@@ -264,36 +435,69 @@ pub async fn handle_consolidate_article(
 
         let mut all_source_ids = existing_source_ids;
         all_source_ids.extend_from_slice(&new_source_ids);
+        // Dedup (new sources should never already be linked, but be safe).
+        all_source_ids.sort_unstable();
+        all_source_ids.dedup();
 
-        // ── 5b. Source cap (covalence#85) ────────────────────────────────────
-        // "Lost in the middle" degradation: faithfulness drops when relevant
-        // content is buried in the centre of a long context window.  Capping
-        // at MAX_COMPILATION_SOURCES keeps all source material near the context
-        // edges where attention is strongest.  When more sources exist we keep
-        // the MAX_COMPILATION_SOURCES with the highest reliability score so the
-        // most trustworthy content is always included.
-        const MAX_COMPILATION_SOURCES: usize = 7;
+        // ── 5b. Apply stage-based source selection (covalence#104) ──────────
+        //
+        // Stage 1 (Rich): "lost-in-the-middle" source cap from covalence#85
+        //   — keep the 7 most reliable sources, no distilled_out marking.
+        //
+        // Stages 2–4: rank by trust_score × recency_factor, take top-N per
+        //   stage; mark the remainder with metadata.distilled_out_at.
         let original_source_count = all_source_ids.len();
-        if original_source_count > MAX_COMPILATION_SOURCES {
-            let capped: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT id FROM covalence.nodes \
-                 WHERE  id = ANY($1) \
-                 ORDER BY COALESCE(reliability, 0.5) DESC \
-                 LIMIT  $2",
-            )
-            .bind(&all_source_ids)
-            .bind(MAX_COMPILATION_SOURCES as i64)
-            .fetch_all(pool)
-            .await
-            .context("consolidate_article: failed to score sources for cap")?;
+
+        if let Some(cap) = stage.source_cap() {
+            // Stages 2–4: trust_score × recency ranking + distilled_out marking.
+            let selected = select_by_trust_recency(pool, &all_source_ids, cap).await?;
+
+            let selected_set: std::collections::HashSet<Uuid> = selected.iter().copied().collect();
+            let dropped: Vec<Uuid> = all_source_ids
+                .iter()
+                .filter(|id| !selected_set.contains(id))
+                .copied()
+                .collect();
+
             tracing::info!(
                 task_id    = %task.id,
                 article_id = %article_id,
                 original   = original_source_count,
-                capped_to  = capped.len(),
-                "consolidate_article: source cap applied (covalence#85)"
+                selected   = selected.len(),
+                dropped    = dropped.len(),
+                stage      = ?stage,
+                "consolidate_article: distillation source selection applied"
             );
-            all_source_ids = capped;
+
+            // Mark dropped sources non-destructively (covalence#104).
+            mark_distilled_out(pool, &dropped).await?;
+
+            all_source_ids = selected;
+        } else {
+            // Stage 1: legacy reliability-ranked cap (covalence#85).
+            const MAX_COMPILATION_SOURCES: usize = 7;
+            if original_source_count > MAX_COMPILATION_SOURCES {
+                let capped: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM covalence.nodes \
+                     WHERE  id = ANY($1) \
+                     ORDER BY COALESCE(reliability, 0.5) DESC \
+                     LIMIT  $2",
+                )
+                .bind(&all_source_ids)
+                .bind(MAX_COMPILATION_SOURCES as i64)
+                .fetch_all(pool)
+                .await
+                .context("consolidate_article: failed to score sources for cap")?;
+                tracing::info!(
+                    task_id    = %task.id,
+                    article_id = %article_id,
+                    original   = original_source_count,
+                    capped_to  = capped.len(),
+                    "consolidate_article: source cap applied (covalence#85)"
+                );
+                all_source_ids = capped;
+            }
+            // No distilled_out marking for stage 1.
         }
 
         // ── 6. Fetch all source content ──────────────────────────────────────
@@ -313,21 +517,10 @@ pub async fn handle_consolidate_article(
             })
             .collect();
 
-        // ── 7. Build LLM synthesis prompt (identical to reconsolidation) ─────
+        // ── 7. Build LLM synthesis prompt ────────────────────────────────────
         // Source content is wrapped in XML tags so the LLM treats it as
         // structured data rather than instructions (Fix #84 — prompt injection
         // defence for RAG pipelines).
-        //
-        // Prompt caching (covalence#85): Anthropic's cache_control header
-        // requires the API request to carry a structured system-message object
-        // with {"type": "ephemeral"} on the system turn.  The current
-        // LlmClient trait exposes only `complete(prompt: &str, max_tokens: u32)`
-        // — a single undifferentiated string — with no facility for per-message
-        // metadata or provider-specific headers.  Until the trait is extended to
-        // support system/user message separation and a `cache_control` field,
-        // prompt caching cannot be enabled here without coupling this module
-        // directly to the Anthropic HTTP client (undesirable).  Track progress
-        // in covalence#85 (next-2-weeks backlog item).
         let mut sources_block = String::new();
         for s in &sources {
             sources_block.push_str(&format!(
@@ -335,6 +528,12 @@ pub async fn handle_consolidate_article(
                 s.id, s.title, s.content
             ));
         }
+
+        // Distillation instruction appended for stages 2–4 (covalence#104).
+        let distillation_line = stage
+            .prompt_suffix()
+            .map(|s| format!("\nDistillation instruction: {s}\n"))
+            .unwrap_or_default();
 
         let prompt = format!(
             "You are a knowledge synthesizer. Read the following source documents and \
@@ -351,7 +550,7 @@ CRITICAL — Preserve with HIGH FIDELITY:\n\
 - Reasoning chains: when sources explain WHY something works, keep that explanation.\n\
 \n\
 DO NOT compress decisions into bare facts. Reasoning is knowledge.\n\
-\n\
+{distillation_line}\n\
 Respond ONLY with valid JSON (no markdown fences), exactly:\n\
 {{\n\
   \"title\": \"...\",\n\
@@ -505,6 +704,7 @@ SOURCE DOCUMENTS:\n\
         article_id    = %article_id,
         pass,
         next_pass,
+        stage         = ?stage,
         execute_after = %execute_after,
         delay_secs    = delay.num_seconds(),
         "consolidate_article: pass complete, next pass scheduled"
@@ -513,6 +713,7 @@ SOURCE DOCUMENTS:\n\
     Ok(json!({
         "article_id":       article_id,
         "pass":             pass,
+        "stage":            format!("{stage:?}"),
         "had_new_sources":  has_new_sources,
         "new_source_count": new_source_count,
         "new_count":        new_count,
