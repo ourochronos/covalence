@@ -82,6 +82,9 @@ pub enum EdgeType {
     CapturedIn, // source captured during session
     Involves,   // node references a named entity
 
+    // ── Argumentation / Attack (ASPIC+) ─────────────────────────
+    Undercuts, // challenges the inference rule or methodology (undercutting attack)
+
     // ── Legacy aliases (from 001 schema, retained for migration) ─
     CompiledFrom, // alias for ORIGINATES
     Elaborates,   // alias for EXTENDS
@@ -111,6 +114,7 @@ impl EdgeType {
             EdgeType::Generalizes => "GENERALIZES",
             EdgeType::CapturedIn => "CAPTURED_IN",
             EdgeType::Involves => "INVOLVES",
+            EdgeType::Undercuts => "UNDERCUTS",
             EdgeType::CompiledFrom => "COMPILED_FROM",
             EdgeType::Elaborates => "ELABORATES",
         }
@@ -203,9 +207,59 @@ impl FromStr for EdgeType {
             "GENERALIZES" => Ok(EdgeType::Generalizes),
             "CAPTURED_IN" => Ok(EdgeType::CapturedIn),
             "INVOLVES" => Ok(EdgeType::Involves),
+            "UNDERCUTS" => Ok(EdgeType::Undercuts),
             "COMPILED_FROM" => Ok(EdgeType::CompiledFrom),
             "ELABORATES" => Ok(EdgeType::Elaborates),
             other => Err(format!("unknown edge type: {other}")),
+        }
+    }
+}
+
+// =============================================================================
+// ContentionType — ASPIC+ attack categories (covalence#87)
+// =============================================================================
+
+/// The three ASPIC+ attack categories used to classify contentions.
+///
+/// * `Rebuttal`    — the source directly contradicts a claim (X is false).
+/// * `Undermining` — the source challenges the reliability of the article's
+///                   source (your source is untrustworthy).
+/// * `Undercutting`— the source challenges the inference rule or methodology
+///                   that connects evidence to the article's conclusion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentionType {
+    #[default]
+    Rebuttal,
+    Undermining,
+    Undercutting,
+}
+
+impl ContentionType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContentionType::Rebuttal => "rebuttal",
+            ContentionType::Undermining => "undermining",
+            ContentionType::Undercutting => "undercutting",
+        }
+    }
+}
+
+impl fmt::Display for ContentionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ContentionType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "rebuttal" => Ok(ContentionType::Rebuttal),
+            "undermining" => Ok(ContentionType::Undermining),
+            "undercutting" => Ok(ContentionType::Undercutting),
+            other => Err(format!("unknown contention type: {other}")),
         }
     }
 }

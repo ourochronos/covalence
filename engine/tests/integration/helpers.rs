@@ -453,7 +453,7 @@ impl TestFixture {
         .unwrap_or_else(|e| panic!("insert_originates_edge failed: {e}"));
     }
 
-    /// Insert a contention row and return its id.
+    /// Insert a contention row and return its id.  Defaults to `contention_type = 'rebuttal'`.
     pub async fn insert_contention(
         &self,
         node_id: Uuid,
@@ -461,19 +461,33 @@ impl TestFixture {
         severity: &str,
         materiality: f64,
     ) -> Uuid {
+        self.insert_contention_typed(node_id, source_node_id, severity, materiality, "rebuttal")
+            .await
+    }
+
+    /// Insert a contention row with an explicit contention_type and return its id.
+    pub async fn insert_contention_typed(
+        &self,
+        node_id: Uuid,
+        source_node_id: Uuid,
+        severity: &str,
+        materiality: f64,
+        contention_type: &str,
+    ) -> Uuid {
         sqlx::query_scalar(
             "INSERT INTO covalence.contentions \
-                 (node_id, source_node_id, type, description, severity, status, materiality) \
-             VALUES ($1, $2, 'contradiction', 'Test contention', $3, 'detected', $4) \
+                 (node_id, source_node_id, type, description, severity, status, materiality, contention_type) \
+             VALUES ($1, $2, 'contradiction', 'Test contention', $3, 'detected', $4, $5) \
              RETURNING id",
         )
         .bind(node_id)
         .bind(source_node_id)
         .bind(severity)
         .bind(materiality)
+        .bind(contention_type)
         .fetch_one(&self.pool)
         .await
-        .expect("insert_contention failed")
+        .expect("insert_contention_typed failed")
     }
 
     // ── QueueTask factory ─────────────────────────────────────────────────────

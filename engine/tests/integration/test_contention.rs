@@ -372,3 +372,143 @@ async fn resolve_contention_missing_contention_returns_error() {
 
     fix.cleanup().await;
 }
+
+// ─── covalence#87: UNDERCUTS edge type + contention_type ─────────────────────
+
+/// Contention rows created with `contention_type = 'undercutting'` must store
+/// and round-trip the value correctly through the `ContentionService`.
+#[tokio::test]
+#[serial]
+async fn contention_type_undercutting_stores_and_retrieves() {
+    let mut fix = TestFixture::new().await;
+
+    let article = fix
+        .insert_article(
+            "Methodology Article",
+            "We conclude X using regression analysis on dataset D.",
+        )
+        .await;
+    let source = fix
+        .insert_source(
+            "Method Critique",
+            "Regression analysis is inappropriate here because dataset D violates linearity assumptions.",
+        )
+        .await;
+
+    // Insert a contention with contention_type = 'undercutting'
+    let contention_id = fix
+        .insert_contention_typed(article, source, "high", 0.9, "undercutting")
+        .await;
+
+    // Read it back via raw SQL and verify the stored value
+    let stored_type: String =
+        sqlx::query_scalar("SELECT contention_type FROM covalence.contentions WHERE id = $1")
+            .bind(contention_id)
+            .fetch_one(&fix.pool)
+            .await
+            .expect("should fetch contention_type");
+
+    assert_eq!(
+        stored_type, "undercutting",
+        "contention_type should round-trip as 'undercutting'"
+    );
+
+    fix.cleanup().await;
+}
+
+/// `UNDERCUTS` edge type must be insertable into `covalence.edges` (no CHECK
+/// constraint blocks it since migration 010 dropped it; the Rust `EdgeType`
+/// enum is the authoritative validator).
+#[tokio::test]
+#[serial]
+async fn undercuts_edge_type_is_insertable() {
+    use covalence_engine::graph::{GraphRepository as _, SqlGraphRepository};
+    use covalence_engine::models::EdgeType;
+
+    let mut fix = TestFixture::new().await;
+
+    let source = fix
+        .insert_source("Undercutting Source", "This methodology is flawed.")
+        .await;
+    let article = fix
+        .insert_article("Target Article", "We concluded Y via method M.")
+        .await;
+
+    let graph = SqlGraphRepository::new(fix.pool.clone());
+    let edge = graph
+        .create_edge(
+            source,
+            article,
+            EdgeType::Undercuts,
+            0.75,
+            "test",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("UNDERCUTS edge creation should succeed");
+
+    assert_eq!(
+        edge.edge_type,
+        EdgeType::Undercuts,
+        "created edge should have EdgeType::Undercuts"
+    );
+
+    // Verify it is persisted to the SQL mirror
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM covalence.edges \
+         WHERE source_node_id = $1 AND target_node_id = $2 AND edge_type = 'UNDERCUTS'",
+    )
+    .bind(source)
+    .bind(article)
+    .fetch_one(&fix.pool)
+    .await
+    .unwrap_or(0);
+
+    assert_eq!(count, 1, "UNDERCUTS edge should exist in covalence.edges");
+
+    fix.cleanup().await;
+}
+
+/// All three contention_type values must satisfy the DB CHECK constraint.
+/// Verifies 'rebuttal', 'undermining', and 'undercutting' all insert cleanly.
+#[tokio::test]
+#[serial]
+async fn all_contention_types_pass_check_constraint() {
+    let mut fix = TestFixture::new().await;
+
+    let article = fix
+        .insert_article("Check Constraint Article", "Some article content.")
+        .await;
+    let source = fix
+        .insert_source("Check Constraint Source", "Some source content.")
+        .await;
+
+    for ct in &["rebuttal", "undermining", "undercutting"] {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO covalence.contentions \
+                 (node_id, source_node_id, status, contention_type) \
+             VALUES ($1, $2, 'detected', $3) \
+             RETURNING id",
+        )
+        .bind(article)
+        .bind(source)
+        .bind(ct)
+        .fetch_one(&fix.pool)
+        .await
+        .unwrap_or_else(|e| panic!("contention_type='{ct}' should pass CHECK constraint: {e}"));
+
+        let stored: String =
+            sqlx::query_scalar("SELECT contention_type FROM covalence.contentions WHERE id = $1")
+                .bind(id)
+                .fetch_one(&fix.pool)
+                .await
+                .expect("should fetch contention_type");
+
+        assert_eq!(
+            &stored, ct,
+            "stored contention_type should match inserted value"
+        );
+    }
+
+    fix.cleanup().await;
+}

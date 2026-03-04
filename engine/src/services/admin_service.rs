@@ -992,10 +992,11 @@ impl AdminService {
         .await?;
 
         // ── Query 3: contentions & queue health ───────────────────────────────
-        let contention_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM covalence.contentions WHERE status = 'detected'")
-                .fetch_one(&self.pool)
-                .await?;
+        let contention_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM covalence.contentions WHERE status = 'detected'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         let queue_row = sqlx::query(
             "SELECT

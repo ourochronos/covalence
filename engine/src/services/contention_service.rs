@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::models::ContentionType;
+
 #[derive(Debug, Serialize)]
 pub struct Contention {
     pub id: Uuid,
@@ -14,6 +16,7 @@ pub struct Contention {
     pub status: String,
     pub resolution: Option<String>,
     pub severity: Option<String>,
+    pub contention_type: ContentionType,
     pub detected_at: Option<DateTime<Utc>>,
     pub resolved_at: Option<DateTime<Utc>>,
 }
@@ -25,6 +28,12 @@ pub struct ResolveRequest {
 }
 
 fn contention_from_row(row: &sqlx::postgres::PgRow) -> Result<Contention, sqlx::Error> {
+    let contention_type_str: Option<String> = row.try_get("contention_type").ok();
+    let contention_type = contention_type_str
+        .as_deref()
+        .and_then(|s| s.parse::<ContentionType>().ok())
+        .unwrap_or_default();
+
     Ok(Contention {
         id: row.try_get("id")?,
         node_id: row.try_get("node_id")?,
@@ -35,6 +44,7 @@ fn contention_from_row(row: &sqlx::postgres::PgRow) -> Result<Contention, sqlx::
             .unwrap_or_default(),
         resolution: row.try_get("resolution")?,
         severity: row.try_get("severity")?,
+        contention_type,
         detected_at: row.try_get("detected_at")?,
         resolved_at: row.try_get("resolved_at")?,
     })
@@ -66,7 +76,7 @@ impl ContentionService {
     ) -> Result<Vec<Contention>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, node_id, source_node_id, description, status,
-                    resolution, severity, detected_at, resolved_at
+                    resolution, severity, contention_type, detected_at, resolved_at
              FROM covalence.contentions
              WHERE namespace = $1
                AND ($2::uuid IS NULL OR node_id = $2)
@@ -85,7 +95,7 @@ impl ContentionService {
     pub async fn get(&self, id: Uuid) -> Result<Option<Contention>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, node_id, source_node_id, description, status,
-                    resolution, severity, detected_at, resolved_at
+                    resolution, severity, contention_type, detected_at, resolved_at
              FROM covalence.contentions WHERE id = $1",
         )
         .bind(id)
@@ -98,6 +108,7 @@ impl ContentionService {
         }
     }
 
+    /// Create a new contention row.  `contention_type` defaults to `Rebuttal`.
     #[allow(dead_code)]
     pub async fn detect(
         &self,
@@ -105,18 +116,37 @@ impl ContentionService {
         source_node_id: Uuid,
         description: &str,
     ) -> Result<Contention, sqlx::Error> {
+        self.detect_typed(
+            node_id,
+            source_node_id,
+            description,
+            ContentionType::Rebuttal,
+        )
+        .await
+    }
+
+    /// Create a new contention row with an explicit [`ContentionType`].
+    #[allow(dead_code)]
+    pub async fn detect_typed(
+        &self,
+        node_id: Uuid,
+        source_node_id: Uuid,
+        description: &str,
+        contention_type: ContentionType,
+    ) -> Result<Contention, sqlx::Error> {
         let id = Uuid::new_v4();
         let row = sqlx::query(
             "INSERT INTO covalence.contentions \
-             (id, node_id, source_node_id, status, description, namespace, detected_at)
-             VALUES ($1, $2, $3, 'detected', $4, $5, now())
+             (id, node_id, source_node_id, status, description, contention_type, namespace, detected_at)
+             VALUES ($1, $2, $3, 'detected', $4, $5, $6, now())
              RETURNING id, node_id, source_node_id, description, status,
-                       resolution, severity, detected_at, resolved_at",
+                       resolution, severity, contention_type, detected_at, resolved_at",
         )
         .bind(id)
         .bind(node_id)
         .bind(source_node_id)
         .bind(description)
+        .bind(contention_type.as_str())
         .bind(&self.namespace)
         .fetch_one(&self.pool)
         .await?;
@@ -140,7 +170,7 @@ impl ContentionService {
              SET status = 'resolved', resolution = $2, resolved_at = now()
              WHERE id = $1
              RETURNING id, node_id, source_node_id, description, status,
-                       resolution, severity, detected_at, resolved_at",
+                       resolution, severity, contention_type, detected_at, resolved_at",
         )
         .bind(id)
         .bind(&resolution_text)

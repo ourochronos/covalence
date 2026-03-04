@@ -687,11 +687,11 @@ If NOT a contention:
             continue;
         }
 
-        // Normalise relationship value
-        let relationship = if rel_str == "contradicts" {
-            "contradicts"
+        // Normalise relationship value and map to ASPIC+ contention_type
+        let (relationship, contention_type) = if rel_str == "contradicts" {
+            ("contradicts", "rebuttal")
         } else {
-            "contends"
+            ("contends", "rebuttal")
         };
 
         // ── 6. Insert contentions row + queue resolve_contention ─────────────
@@ -702,8 +702,8 @@ If NOT a contention:
         };
         let contention_id: Uuid = sqlx::query_scalar(
             r#"INSERT INTO covalence.contentions
-                   (node_id, source_node_id, type, description, severity, status, materiality)
-               VALUES ($1, $2, $3, $4, $5, 'detected', $6)
+                   (node_id, source_node_id, type, description, severity, status, materiality, contention_type)
+               VALUES ($1, $2, $3, $4, $5, 'detected', $6, $7)
                RETURNING id"#,
         )
         .bind(article_id)
@@ -712,6 +712,7 @@ If NOT a contention:
         .bind(format!("Source {source_id} flagged as '{relationship}' against article {article_id}: {explanation}"))
         .bind(materiality)
         .bind(mat_score)
+        .bind(contention_type)
         .fetch_one(pool)
         .await
         .context("contention_check: failed to insert contention")?;

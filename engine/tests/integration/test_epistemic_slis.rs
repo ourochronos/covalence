@@ -27,11 +27,7 @@ async fn fetch_epistemic(app: &axum::Router) -> serde_json::Value {
         .body(Body::empty())
         .expect("epistemic request builder");
 
-    let resp = app
-        .clone()
-        .oneshot(req)
-        .await
-        .expect("epistemic oneshot");
+    let resp = app.clone().oneshot(req).await.expect("epistemic oneshot");
 
     assert_eq!(
         resp.status(),
@@ -120,7 +116,11 @@ async fn epistemic_empty_db_defaults_healthy() {
     let data = fetch_epistemic(&app).await;
 
     // Trivially-healthy coverage metrics.
-    for field in &["embedding_coverage", "knowledge_freshness", "graph_connectivity"] {
+    for field in &[
+        "embedding_coverage",
+        "knowledge_freshness",
+        "graph_connectivity",
+    ] {
         let v = data[field]["value"].as_f64().unwrap();
         assert!(
             (v - 1.0_f64).abs() < f64::EPSILON * 10.0,

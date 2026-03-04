@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS covalence.contentions (
     materiality     DOUBLE PRECISION,
     detected_at     TIMESTAMPTZ      DEFAULT now(),
     resolved_at     TIMESTAMPTZ,
-    namespace       TEXT             NOT NULL DEFAULT 'default'
+    namespace       TEXT             NOT NULL DEFAULT 'default',
+    contention_type TEXT             NOT NULL DEFAULT 'rebuttal'
+                                     CHECK (contention_type IN ('rebuttal', 'undermining', 'undercutting'))
 );
 
 -- -----------------------------------------------------------------------------
@@ -385,6 +387,12 @@ CREATE INDEX IF NOT EXISTS usage_traces_namespace_idx
 
 CREATE INDEX IF NOT EXISTS contentions_namespace_idx
     ON covalence.contentions (namespace);
+
+-- Migration 022: UNDERCUTS + contention_type (covalence#87)
+-- Idempotent: safe to run against existing test databases.
+ALTER TABLE covalence.contentions
+    ADD COLUMN IF NOT EXISTS contention_type TEXT NOT NULL DEFAULT 'rebuttal'
+        CHECK (contention_type IN ('rebuttal', 'undermining', 'undercutting'));
 
 -- =============================================================================
 -- PERMISSIONS
