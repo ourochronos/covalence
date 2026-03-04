@@ -2,8 +2,11 @@ pub mod article_state;
 pub mod edge_causal_metadata;
 
 pub use edge_causal_metadata::{
-    CausalEvidenceType, CausalLevel, EdgeCausalMetadata, EdgeCausalMetadataUpsert,
+    CausalEvidenceType, CausalLevel, EdgeCausalMetadata, EdgeCausalMetadataPatch,
 };
+// Backward-compat re-export: deprecated alias for EdgeCausalMetadataPatch (covalence#143)
+#[allow(deprecated)]
+pub use edge_causal_metadata::EdgeCausalMetadataUpsert;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

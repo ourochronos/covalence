@@ -600,6 +600,7 @@ CREATE TABLE IF NOT EXISTS covalence.edge_causal_metadata (
     hidden_conf_risk  FLOAT                                 NOT NULL DEFAULT 0.5
                         CHECK (hidden_conf_risk >= 0.0 AND hidden_conf_risk <= 1.0),
     temporal_lag_ms   INT                                   CHECK (temporal_lag_ms IS NULL OR temporal_lag_ms >= 0),
+    notes             TEXT,
     created_at        TIMESTAMPTZ                           NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ                           NOT NULL DEFAULT NOW(),
 
@@ -634,3 +635,228 @@ DROP TRIGGER IF EXISTS trg_ecm_updated_at ON covalence.edge_causal_metadata;
 CREATE TRIGGER trg_ecm_updated_at
     BEFORE UPDATE ON covalence.edge_causal_metadata
     FOR EACH ROW EXECUTE FUNCTION covalence._ecm_set_updated_at();
+
+-- =============================================================================
+-- Migration 035: search_intent_enum (mirrors migration 035)
+-- =============================================================================
+DO $$ BEGIN
+  CREATE TYPE covalence.search_intent_enum AS ENUM (
+    'factual',
+    'temporal',
+    'causal',
+    'entity'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- =============================================================================
+-- Function: graph_traverse (mirrors migration 035)
+-- =============================================================================
+-- Recursive CTE breadth-first search from a set of start nodes.
+--
+-- Parameters:
+--   p_start_nodes   — anchor node UUIDs to begin traversal from
+--   p_max_hops      — maximum hop depth (1–3; hard-capped in Rust)
+--   p_min_weight    — minimum causal_weight threshold (COALESCE NULL → 0.0)
+--   p_intent_filter — optional intent name ('factual'|'temporal'|'causal'|'entity');
+--                     NULL means traverse all edge types
+--
+-- Returns TABLE (node_id, edge_id, hop_depth, causal_weight, edge_type).
+
+CREATE OR REPLACE FUNCTION covalence.graph_traverse(
+    p_start_nodes   UUID[],
+    p_max_hops      INT     DEFAULT 1,
+    p_min_weight    FLOAT8  DEFAULT 0.0,
+    p_intent_filter TEXT    DEFAULT NULL
+)
+RETURNS TABLE (
+    node_id       UUID,
+    edge_id       UUID,
+    hop_depth     INT,
+    causal_weight FLOAT8,
+    edge_type     TEXT
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_namespace TEXT;
+BEGIN
+    -- Guard: empty array → no results
+    IF p_start_nodes IS NULL OR array_length(p_start_nodes, 1) IS NULL THEN
+        RETURN;
+    END IF;
+
+    -- Derive namespace from the first start node for edge scoping
+    SELECT n.namespace INTO v_namespace
+    FROM covalence.nodes n
+    WHERE n.id = p_start_nodes[1];
+
+    RETURN QUERY
+    WITH RECURSIVE bfs(
+        node_id,
+        edge_id,
+        hop_depth,
+        causal_weight,
+        edge_type,
+        visited
+    ) AS (
+        -- ── Base case: seed with all start nodes at depth 0 ────────────────
+        SELECT
+            n.id          AS node_id,
+            NULL::UUID    AS edge_id,
+            0             AS hop_depth,
+            NULL::FLOAT8  AS causal_weight,
+            NULL::TEXT    AS edge_type,
+            ARRAY[n.id]   AS visited
+        FROM covalence.nodes n
+        WHERE n.id = ANY(p_start_nodes)
+
+        UNION ALL
+
+        -- ── Recursive case: one hop from current frontier ──────────────────
+        SELECT
+            CASE WHEN e.source_node_id = bfs.node_id
+                 THEN e.target_node_id
+                 ELSE e.source_node_id END            AS node_id,
+            e.id                                      AS edge_id,
+            bfs.hop_depth + 1                         AS hop_depth,
+            COALESCE(e.causal_weight, 0.0)            AS causal_weight,
+            e.edge_type                               AS edge_type,
+            bfs.visited || (
+                CASE WHEN e.source_node_id = bfs.node_id
+                     THEN e.target_node_id
+                     ELSE e.source_node_id END
+            )                                         AS visited
+        FROM bfs
+        JOIN covalence.edges e ON (
+            e.source_node_id = bfs.node_id OR
+            e.target_node_id = bfs.node_id
+        )
+        WHERE bfs.hop_depth < p_max_hops
+          AND e.valid_to IS NULL
+          AND e.namespace = v_namespace
+          AND COALESCE(e.causal_weight, 0.0) >= p_min_weight
+          -- Intent-based edge filtering (maps intent name → allowed edge types)
+          AND (
+              p_intent_filter IS NULL
+              OR (p_intent_filter = 'factual'  AND e.edge_type IN ('CONFIRMS', 'ORIGINATES', 'COMPILED_FROM'))
+              OR (p_intent_filter = 'temporal' AND e.edge_type IN ('PRECEDES', 'FOLLOWS'))
+              OR (p_intent_filter = 'causal'   AND e.edge_type IN ('CAUSES', 'MOTIVATED_BY', 'IMPLEMENTS'))
+              OR (p_intent_filter = 'entity'   AND e.edge_type IN ('INVOLVES', 'CAPTURED_IN'))
+          )
+          -- Cycle detection: skip nodes already on this path
+          AND NOT (
+              CASE WHEN e.source_node_id = bfs.node_id
+                   THEN e.target_node_id
+                   ELSE e.source_node_id END
+          ) = ANY(bfs.visited)
+    )
+    -- Deduplicate by node_id: keep shortest-path (min hop_depth) entry
+    SELECT DISTINCT ON (bfs.node_id)
+        bfs.node_id,
+        bfs.edge_id,
+        bfs.hop_depth,
+        bfs.causal_weight,
+        bfs.edge_type
+    FROM bfs
+    -- Only active nodes in the same namespace
+    JOIN covalence.nodes n ON n.id = bfs.node_id
+                           AND n.status    = 'active'
+                           AND n.namespace = v_namespace
+    WHERE bfs.hop_depth > 0
+    ORDER BY bfs.node_id, bfs.hop_depth ASC;
+END;
+$$;
+
+-- =============================================================================
+-- Procedure: process_queue_cleanup (mirrors migration 035)
+-- =============================================================================
+-- Two-pass DELETE that removes stale failed slow_path_queue entries.
+--
+-- Pass A — failed embed tasks whose node now has an embedding.
+-- Pass B — failed tasks with a NULL node_id (unretriable).
+--
+-- Parameters:
+--   p_stale_hours_embed     — age threshold (hours) for Pass A (default 1.0)
+--   p_stale_hours_null_node — age threshold (hours) for Pass B (default 24.0)
+
+CREATE OR REPLACE PROCEDURE covalence.process_queue_cleanup(
+    p_stale_hours_embed      FLOAT8 DEFAULT 1.0,
+    p_stale_hours_null_node  FLOAT8 DEFAULT 24.0
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_embed_deleted     INT;
+    v_null_node_deleted INT;
+BEGIN
+    -- ── Pass A: stale failed embed tasks for nodes that now have embeddings ──
+    DELETE FROM covalence.slow_path_queue
+    WHERE task_type = 'embed'
+      AND status    = 'failed'
+      AND node_id IS NOT NULL
+      AND COALESCE(completed_at, started_at, created_at) <
+              now() - (p_stale_hours_embed * interval '1 hour')
+      AND EXISTS (
+          SELECT 1
+          FROM   covalence.node_embeddings ne
+          WHERE  ne.node_id = slow_path_queue.node_id
+      );
+
+    GET DIAGNOSTICS v_embed_deleted = ROW_COUNT;
+    RAISE NOTICE 'process_queue_cleanup: pass A deleted % stale embed jobs (node now embedded)',
+        v_embed_deleted;
+
+    -- ── Pass B: stale failed tasks with a NULL node_id (unretriable) ─────────
+    DELETE FROM covalence.slow_path_queue
+    WHERE status  = 'failed'
+      AND node_id IS NULL
+      AND COALESCE(completed_at, started_at, created_at) <
+              now() - (p_stale_hours_null_node * interval '1 hour');
+
+    GET DIAGNOSTICS v_null_node_deleted = ROW_COUNT;
+    RAISE NOTICE 'process_queue_cleanup: pass B deleted % stale null-node failed jobs',
+        v_null_node_deleted;
+END;
+$$;
+
+-- =============================================================================
+-- Function: upsert_causal_metadata (mirrors migration 035)
+-- =============================================================================
+CREATE OR REPLACE FUNCTION covalence.upsert_causal_metadata(
+    p_edge_id           UUID,
+    p_causal_level      covalence.causal_level_enum          DEFAULT NULL,
+    p_evidence_type     covalence.causal_evidence_type_enum  DEFAULT NULL,
+    p_causal_strength   FLOAT8                               DEFAULT NULL,
+    p_direction_conf    FLOAT8                               DEFAULT NULL,
+    p_hidden_conf_risk  FLOAT8                               DEFAULT NULL,
+    p_temporal_lag_ms   INT                                  DEFAULT NULL,
+    p_notes             TEXT                                 DEFAULT NULL
+)
+RETURNS SETOF covalence.edge_causal_metadata
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    INSERT INTO covalence.edge_causal_metadata
+        (edge_id, causal_level, causal_strength, evidence_type,
+         direction_conf, hidden_conf_risk, temporal_lag_ms, notes)
+    VALUES (
+        p_edge_id,
+        COALESCE(p_causal_level,    'association'::covalence.causal_level_enum),
+        COALESCE(p_causal_strength, 0.5),
+        COALESCE(p_evidence_type,   'structural_prior'::covalence.causal_evidence_type_enum),
+        COALESCE(p_direction_conf,   0.5),
+        COALESCE(p_hidden_conf_risk, 0.5),
+        p_temporal_lag_ms,
+        p_notes
+    )
+    ON CONFLICT (edge_id) DO UPDATE SET
+        causal_level     = COALESCE(p_causal_level,    edge_causal_metadata.causal_level),
+        causal_strength  = COALESCE(p_causal_strength, edge_causal_metadata.causal_strength),
+        evidence_type    = COALESCE(p_evidence_type,   edge_causal_metadata.evidence_type),
+        direction_conf   = COALESCE(p_direction_conf,  edge_causal_metadata.direction_conf),
+        hidden_conf_risk = COALESCE(p_hidden_conf_risk, edge_causal_metadata.hidden_conf_risk),
+        temporal_lag_ms  = COALESCE(p_temporal_lag_ms, edge_causal_metadata.temporal_lag_ms),
+        notes            = COALESCE(p_notes,            edge_causal_metadata.notes),
+        updated_at       = NOW()
+    RETURNING *;
+END;
+$$;

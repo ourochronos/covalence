@@ -2,16 +2,15 @@
 //!
 //! Three async operations:
 //! * [`get_by_edge_id`] — fetch the enrichment row for a given edge (if any).
-//! * [`upsert`]         — insert or update a causal metadata row.
+//! * [`upsert`]         — partial-update upsert via `covalence.upsert_causal_metadata`
+//!                        stored procedure (covalence#143, #145).
 //! * [`delete_by_edge_id`] — remove a row (normally handled by FK CASCADE, but
 //!   exposed so callers can strip metadata without deleting the underlying edge).
 
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::models::{
-    CausalEvidenceType, CausalLevel, EdgeCausalMetadata, EdgeCausalMetadataUpsert,
-};
+use crate::models::{EdgeCausalMetadata, EdgeCausalMetadataPatch};
 
 // =============================================================================
 // get_by_edge_id
@@ -25,7 +24,7 @@ pub async fn get_by_edge_id(
     sqlx::query_as::<_, EdgeCausalMetadata>(
         "SELECT edge_id, causal_level, causal_strength, evidence_type,
                 direction_conf, hidden_conf_risk, temporal_lag_ms,
-                created_at, updated_at
+                notes, created_at, updated_at
          FROM covalence.edge_causal_metadata
          WHERE edge_id = $1",
     )
@@ -38,45 +37,29 @@ pub async fn get_by_edge_id(
 // upsert
 // =============================================================================
 
-/// Insert a new causal metadata row or update all mutable fields if a row
-/// with the same `edge_id` already exists.  Returns the resulting row.
+/// Insert a new causal metadata row or partially update an existing one.
+///
+/// Delegates to the `covalence.upsert_causal_metadata` stored procedure
+/// (migration 035, covalence#143).  Fields present in `payload` are written;
+/// `None` fields preserve the current database value via `COALESCE`, fixing
+/// the silent-reset bug tracked as covalence#145.
+///
+/// Returns the resulting row.
 pub async fn upsert(
     pool: &PgPool,
-    payload: &EdgeCausalMetadataUpsert,
+    payload: &EdgeCausalMetadataPatch,
 ) -> Result<EdgeCausalMetadata, sqlx::Error> {
-    let causal_level = payload.causal_level.unwrap_or(CausalLevel::Association);
-    let causal_strength = payload.causal_strength.unwrap_or(0.5);
-    let evidence_type = payload
-        .evidence_type
-        .unwrap_or(CausalEvidenceType::StructuralPrior);
-    let direction_conf = payload.direction_conf.unwrap_or(0.5);
-    let hidden_conf_risk = payload.hidden_conf_risk.unwrap_or(0.5);
-    let temporal_lag_ms = payload.temporal_lag_ms;
-
     sqlx::query_as::<_, EdgeCausalMetadata>(
-        "INSERT INTO covalence.edge_causal_metadata
-             (edge_id, causal_level, causal_strength, evidence_type,
-              direction_conf, hidden_conf_risk, temporal_lag_ms)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (edge_id) DO UPDATE SET
-             causal_level     = EXCLUDED.causal_level,
-             causal_strength  = EXCLUDED.causal_strength,
-             evidence_type    = EXCLUDED.evidence_type,
-             direction_conf   = EXCLUDED.direction_conf,
-             hidden_conf_risk = EXCLUDED.hidden_conf_risk,
-             temporal_lag_ms  = EXCLUDED.temporal_lag_ms,
-             updated_at       = NOW()
-         RETURNING edge_id, causal_level, causal_strength, evidence_type,
-                   direction_conf, hidden_conf_risk, temporal_lag_ms,
-                   created_at, updated_at",
+        "SELECT * FROM covalence.upsert_causal_metadata($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(payload.edge_id)
-    .bind(causal_level)
-    .bind(causal_strength)
-    .bind(evidence_type)
-    .bind(direction_conf)
-    .bind(hidden_conf_risk)
-    .bind(temporal_lag_ms)
+    .bind(payload.causal_level)
+    .bind(payload.evidence_type)
+    .bind(payload.causal_strength)
+    .bind(payload.direction_conf)
+    .bind(payload.hidden_conf_risk)
+    .bind(payload.temporal_lag_ms)
+    .bind(payload.notes.as_deref())
     .fetch_one(pool)
     .await
 }
