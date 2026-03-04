@@ -83,6 +83,12 @@ pub struct MaintenanceRequest {
     /// When `true`, generate (or refresh) "Domain Overview" landmark articles for
     /// every top-level domain with ≥ 5 active articles (covalence#112).
     pub generate_domain_landmarks: Option<bool>,
+    /// When `true`, compute graph-connectivity structural scores for each top-level
+    /// domain and upsert them into `gap_registry` (covalence#120).
+    pub compute_structural_gaps: Option<bool>,
+    /// When `true`, scan active articles for unresolved entity references and
+    /// upsert horizon scores into `gap_registry` (covalence#120).
+    pub compute_horizon_gaps: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -468,6 +474,18 @@ impl AdminService {
                 result.upserted,
                 result.domains.join(", "),
             ));
+        }
+
+        if req.compute_structural_gaps.unwrap_or(false) {
+            let n = self.compute_structural_gaps().await?;
+            actions.push(format!(
+                "compute_structural_gaps: upserted {n} domain topics"
+            ));
+        }
+
+        if req.compute_horizon_gaps.unwrap_or(false) {
+            let n = self.compute_horizon_gaps().await?;
+            actions.push(format!("compute_horizon_gaps: upserted {n} domain topics"));
         }
 
         if actions.is_empty() {
@@ -1233,6 +1251,8 @@ pub struct GapEntry {
     pub avg_top_score: Option<f64>,
     pub last_queried_at: Option<DateTime<Utc>>,
     pub gap_score: Option<f64>,
+    pub structural_score: f64,
+    pub horizon_score: f64,
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1241,18 +1261,32 @@ pub struct GapEntry {
 impl AdminService {
     /// Aggregate `gap_log` (past 30 days) into `gap_registry`.
     ///
-    /// Algorithm:
+    /// Algorithm (Phase 2, covalence#120):
     /// 1. Group gap_log by `lower(trim(query))` + `namespace`.
     /// 2. Keep only groups with `query_count >= 3`.
-    /// 3. Compute `gap_score = 0.70*(1-avg_top_score) + 0.30*(normalized demand)`.
-    ///    - `avg_top_score` defaults to 0.0 when all results were empty (no score).
-    ///    - `normalized demand` = `query_count / max(query_count over all groups)`.
+    /// 3. Compute full gap_score formula:
+    ///    `gap_score = 0.30 * demand_score + 0.25 * (1.0 - quality_score)
+    ///               + 0.20 * structural_score + 0.15 * horizon_score`
+    ///    where `structural_score` and `horizon_score` are carried from existing rows.
     /// 4. UPSERT into `gap_registry` (keyed on `(topic, namespace)`).
     ///
     /// Returns the number of topics upserted.
     pub async fn compute_gap_registry(&self) -> AppResult<i64> {
-        // Aggregate gap_log → gap_registry for topics with >= 3 queries.
-        // gap_score = 0.70*(1-avg_top_score) + 0.30*(normalized demand)
+        // Pre-fetch max_qc so it can be referenced in both the INSERT expr and DO UPDATE.
+        let max_qc: f64 = sqlx::query_scalar(
+            r#"SELECT GREATEST(MAX(cnt), 1)::float
+               FROM (
+                   SELECT COUNT(*) AS cnt
+                   FROM covalence.gap_log
+                   WHERE created_at >= now() - interval '30 days'
+                   GROUP BY lower(trim(query)), namespace
+                   HAVING COUNT(*) >= 3
+               ) sub"#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(1.0_f64);
+
         sqlx::query(
             r#"
             WITH agg AS (
@@ -1266,22 +1300,6 @@ impl AdminService {
                 WHERE created_at >= now() - interval '30 days'
                 GROUP BY lower(trim(query)), namespace
                 HAVING COUNT(*) >= 3
-            ),
-            max_demand AS (
-                SELECT GREATEST(MAX(query_count), 1)::float AS max_qc FROM agg
-            ),
-            scored AS (
-                SELECT
-                    agg.topic,
-                    agg.namespace,
-                    agg.query_count,
-                    agg.avg_top_score,
-                    agg.last_queried_at,
-                    0.70 * (1.0 - agg.avg_top_score)
-                    + 0.30 * (agg.query_count::float / max_demand.max_qc)
-                        AS gap_score
-                FROM agg
-                CROSS JOIN max_demand
             )
             INSERT INTO covalence.gap_registry
                 (id, topic, namespace, query_count, avg_top_score,
@@ -1293,19 +1311,24 @@ impl AdminService {
                 query_count,
                 avg_top_score,
                 last_queried_at,
-                gap_score,
+                -- For brand-new rows structural/horizon are 0.0 (defaults)
+                0.30 * (query_count::float / $1) + 0.25 * (1.0 - avg_top_score),
                 'open',
                 now(),
                 now()
-            FROM scored
+            FROM agg
             ON CONFLICT (topic, namespace) DO UPDATE
                 SET query_count     = EXCLUDED.query_count,
                     avg_top_score   = EXCLUDED.avg_top_score,
                     last_queried_at = EXCLUDED.last_queried_at,
-                    gap_score       = EXCLUDED.gap_score,
+                    gap_score       = 0.30 * (EXCLUDED.query_count::float / $1)
+                                    + 0.25 * (1.0 - EXCLUDED.avg_top_score)
+                                    + 0.20 * COALESCE(gap_registry.structural_score, 0.0)
+                                    + 0.15 * COALESCE(gap_registry.horizon_score, 0.0),
                     updated_at      = now()
             "#,
         )
+        .bind(max_qc)
         .execute(&self.pool)
         .await
         .map(|r| r.rows_affected() as i64)
@@ -1316,7 +1339,8 @@ impl AdminService {
     pub async fn list_gaps(&self, namespace: Option<&str>) -> AppResult<Vec<GapEntry>> {
         let rows = sqlx::query(
             "SELECT id, topic, namespace, query_count, avg_top_score,
-                    last_queried_at, gap_score, status, created_at, updated_at
+                    last_queried_at, gap_score, structural_score, horizon_score,
+                    status, created_at, updated_at
              FROM covalence.gap_registry
              WHERE status = 'open'
                AND ($1::text IS NULL OR namespace = $1)
@@ -1338,6 +1362,8 @@ impl AdminService {
                     avg_top_score: r.try_get("avg_top_score")?,
                     last_queried_at: r.try_get("last_queried_at")?,
                     gap_score: r.try_get("gap_score")?,
+                    structural_score: r.try_get("structural_score").unwrap_or(0.0),
+                    horizon_score: r.try_get("horizon_score").unwrap_or(0.0),
                     status: r.try_get("status")?,
                     created_at: r.try_get("created_at")?,
                     updated_at: r.try_get("updated_at")?,
@@ -1345,5 +1371,218 @@ impl AdminService {
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()
             .map_err(AppError::Database)
+    }
+
+    /// Compute graph-connectivity structural scores for each top-level domain
+    /// and upsert them into `gap_registry` (covalence#120).
+    ///
+    /// For each distinct top-level `domain_path` element across active article nodes:
+    /// - `article_count`: how many articles are in this domain.
+    /// - `edge_density`: fraction of those articles with at least one SQL edge.
+    /// - `isolated_count`: articles with no edges.
+    ///
+    /// `structural_score = 1.0 - (edge_density * 0.5 + min(article_count / 10.0, 1.0) * 0.5)`
+    ///
+    /// High structural_score → sparse, under-connected domain → bigger gap.
+    /// Returns the number of rows upserted.
+    pub async fn compute_structural_gaps(&self) -> AppResult<i64> {
+        sqlx::query(
+            r#"
+            WITH domain_articles AS (
+                SELECT
+                    n.domain_path[1]  AS domain,
+                    n.id,
+                    EXISTS (
+                        SELECT 1
+                        FROM covalence.edges e
+                        WHERE e.source_node_id = n.id
+                           OR e.target_node_id = n.id
+                    ) AS has_edges
+                FROM covalence.nodes n
+                WHERE n.node_type   = 'article'
+                  AND n.status      = 'active'
+                  AND n.domain_path IS NOT NULL
+                  AND cardinality(n.domain_path) > 0
+            ),
+            domain_stats AS (
+                SELECT
+                    domain,
+                    COUNT(*)                             AS article_count,
+                    COUNT(*) FILTER (WHERE has_edges)    AS connected_count,
+                    COUNT(*) FILTER (WHERE NOT has_edges) AS isolated_count
+                FROM domain_articles
+                GROUP BY domain
+            ),
+            scored AS (
+                SELECT
+                    domain,
+                    article_count,
+                    isolated_count,
+                    CASE WHEN article_count > 0
+                         THEN connected_count::float / article_count::float
+                         ELSE 0.0
+                    END AS edge_density,
+                    1.0 - (
+                        CASE WHEN article_count > 0
+                             THEN connected_count::float / article_count::float
+                             ELSE 0.0
+                        END * 0.5
+                        + LEAST(article_count::float / 10.0, 1.0) * 0.5
+                    ) AS structural_score
+                FROM domain_stats
+                WHERE domain IS NOT NULL
+            )
+            INSERT INTO covalence.gap_registry
+                (id, topic, namespace, query_count, gap_score,
+                 structural_score, status, created_at, updated_at)
+            SELECT
+                gen_random_uuid(),
+                domain,
+                'default',
+                0,
+                structural_score * 0.20,
+                structural_score,
+                'open',
+                now(),
+                now()
+            FROM scored
+            ON CONFLICT (topic, namespace) DO UPDATE
+                SET structural_score = EXCLUDED.structural_score,
+                    updated_at       = now()
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() as i64)
+        .map_err(AppError::Database)
+    }
+
+    /// Scan active articles for unresolved named-entity references and
+    /// upsert horizon scores into `gap_registry` (covalence#120).
+    ///
+    /// Algorithm:
+    /// 1. Extract capitalized multi-word phrases (≥ 2 consecutive Title-Cased words)
+    ///    from each active article's content using PostgreSQL regex.
+    /// 2. A phrase is "resolved" if any active article title contains it
+    ///    (case-insensitive substring match).
+    /// 3. Articles whose unresolved-entity ratio > 0.3 are flagged.
+    /// 4. The horizon score for each top-level domain is:
+    ///    `horizon_score = flagged_count / total_articles_in_domain` (clamped to 1.0).
+    /// 5. Upsert into `gap_registry` with `horizon_score` set.
+    ///
+    /// Returns the number of rows upserted.
+    pub async fn compute_horizon_gaps(&self) -> AppResult<i64> {
+        sqlx::query(
+            r#"
+            WITH
+            -- Collect all active article titles, lowercased, for resolution lookup.
+            article_titles AS (
+                SELECT lower(COALESCE(title, '')) AS title_lower
+                FROM covalence.nodes
+                WHERE node_type = 'article' AND status = 'active'
+            ),
+            -- Extract all capitalized multi-word phrases from each article's content.
+            -- Pattern: two or more consecutive Title-Cased words (e.g. "Knowledge Graph").
+            article_entities AS (
+                SELECT
+                    n.id,
+                    n.domain_path[1]            AS top_domain,
+                    lower(entity_match[1])      AS entity_lower
+                FROM covalence.nodes n
+                CROSS JOIN LATERAL (
+                    SELECT regexp_matches(
+                        COALESCE(n.content, ''),
+                        '[A-Z][a-z]+\s+[A-Z][a-z]+',
+                        'g'
+                    ) AS entity_match
+                ) e
+                WHERE n.node_type   = 'article'
+                  AND n.status      = 'active'
+                  AND n.domain_path IS NOT NULL
+                  AND cardinality(n.domain_path) > 0
+            ),
+            -- For each entity occurrence, check if it is resolved in any article title.
+            entity_resolution AS (
+                SELECT
+                    ae.id,
+                    ae.top_domain,
+                    ae.entity_lower,
+                    EXISTS (
+                        SELECT 1
+                        FROM article_titles at2
+                        WHERE at2.title_lower LIKE '%' || ae.entity_lower || '%'
+                    ) AS is_resolved
+                FROM article_entities ae
+            ),
+            -- Per-article entity statistics.
+            article_stats AS (
+                SELECT
+                    id,
+                    top_domain,
+                    COUNT(*)                                AS total_entities,
+                    COUNT(*) FILTER (WHERE NOT is_resolved) AS unresolved_entities
+                FROM entity_resolution
+                GROUP BY id, top_domain
+            ),
+            -- Articles where unresolved-entity ratio exceeds 0.3.
+            high_unresolved AS (
+                SELECT id, top_domain
+                FROM article_stats
+                WHERE total_entities > 0
+                  AND unresolved_entities::float / total_entities::float > 0.3
+            ),
+            -- Total article counts per domain for normalization.
+            domain_totals AS (
+                SELECT
+                    domain_path[1]   AS top_domain,
+                    COUNT(*)         AS total_articles
+                FROM covalence.nodes
+                WHERE node_type   = 'article'
+                  AND status      = 'active'
+                  AND domain_path IS NOT NULL
+                  AND cardinality(domain_path) > 0
+                GROUP BY domain_path[1]
+            ),
+            -- Count of flagged articles per domain.
+            domain_flagged AS (
+                SELECT top_domain, COUNT(*) AS flagged_count
+                FROM high_unresolved
+                GROUP BY top_domain
+            ),
+            -- Final horizon score per domain.
+            scored AS (
+                SELECT
+                    df.top_domain,
+                    LEAST(
+                        1.0,
+                        df.flagged_count::float / GREATEST(dt.total_articles, 1)::float
+                    ) AS horizon_score
+                FROM domain_flagged df
+                LEFT JOIN domain_totals dt ON dt.top_domain = df.top_domain
+                WHERE df.top_domain IS NOT NULL
+            )
+            INSERT INTO covalence.gap_registry
+                (id, topic, namespace, query_count, gap_score,
+                 horizon_score, status, created_at, updated_at)
+            SELECT
+                gen_random_uuid(),
+                top_domain,
+                'default',
+                0,
+                horizon_score * 0.15,
+                horizon_score,
+                'open',
+                now(),
+                now()
+            FROM scored
+            ON CONFLICT (topic, namespace) DO UPDATE
+                SET horizon_score = EXCLUDED.horizon_score,
+                    updated_at    = now()
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() as i64)
+        .map_err(AppError::Database)
     }
 }

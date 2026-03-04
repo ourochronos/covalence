@@ -50,6 +50,7 @@ mod test_epistemic_slis;
 mod test_ewc_structural;
 mod test_faceted_classification;
 mod test_gap_registry;
+mod test_gap_registry_phase2;
 mod test_graph_health;
 mod test_graph_stats;
 mod test_kg_inference;

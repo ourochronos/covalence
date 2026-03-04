@@ -511,6 +511,8 @@ CREATE TABLE IF NOT EXISTS covalence.gap_registry (
     avg_top_score   FLOAT,
     last_queried_at TIMESTAMPTZ,
     gap_score       FLOAT,
+    structural_score FLOAT      NOT NULL DEFAULT 0.0,
+    horizon_score   FLOAT       NOT NULL DEFAULT 0.0,
     status          TEXT        DEFAULT 'open',
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now(),
@@ -520,6 +522,11 @@ CREATE TABLE IF NOT EXISTS covalence.gap_registry (
 CREATE INDEX IF NOT EXISTS gap_registry_gap_score_idx  ON covalence.gap_registry (gap_score DESC);
 CREATE INDEX IF NOT EXISTS gap_registry_status_idx     ON covalence.gap_registry (status);
 CREATE INDEX IF NOT EXISTS gap_registry_namespace_idx  ON covalence.gap_registry (namespace);
+
+-- Migration 032: Gap Registry Phase 2 — structural and horizon scores (covalence#120)
+ALTER TABLE covalence.gap_registry
+  ADD COLUMN IF NOT EXISTS structural_score FLOAT NOT NULL DEFAULT 0.0,
+  ADD COLUMN IF NOT EXISTS horizon_score FLOAT NOT NULL DEFAULT 0.0;
 
 -- Migration 031: Task state machine (covalence#114)
 CREATE TABLE IF NOT EXISTS covalence.tasks (
