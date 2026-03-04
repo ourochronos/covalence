@@ -58,3 +58,5 @@ tokio-util = { version = "0.7" }
 async-trait = "0.1"
 tower = { version = "0.5", features = ["util"] }
 http = "1"
+sha2 = "0.10.9"
+hex = "0.4.3"

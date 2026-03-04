@@ -57,6 +57,9 @@ pub struct SourceResponse {
     pub confidence: f32,
     pub reliability: f32,
     pub fingerprint: String,
+    /// Hex-encoded SHA-256 digest of `content` — computed at ingest time.
+    /// Used for tamper detection and federation trust verification (covalence#78).
+    pub content_hash: Option<String>,
     #[schema(value_type = Object)]
     pub metadata: serde_json::Value,
     pub version: i32,
@@ -196,7 +199,7 @@ impl SourceService {
     pub async fn get(&self, id: Uuid) -> AppResult<SourceResponse> {
         let row = sqlx::query(
             "SELECT id, title, content, source_type, status, \
-             confidence, reliability, fingerprint, metadata, version, \
+             confidence, reliability, fingerprint, content_hash, metadata, version, \
              created_at, modified_at \
              FROM covalence.nodes WHERE id = $1 AND node_type = 'source' AND namespace = $2",
         )
@@ -223,7 +226,7 @@ impl SourceService {
         // user data ever touches the query string itself.
         let mut builder = sqlx::QueryBuilder::new(
             "SELECT id, title, content, source_type, status, \
-             confidence, reliability, fingerprint, metadata, version, \
+             confidence, reliability, fingerprint, content_hash, metadata, version, \
              created_at, modified_at \
              FROM covalence.nodes WHERE node_type = 'source' AND namespace = ",
         );
@@ -392,6 +395,7 @@ fn source_from_row(row: &PgRow) -> SourceResponse {
         fingerprint: row
             .get::<Option<String>, _>("fingerprint")
             .unwrap_or_default(),
+        content_hash: row.get("content_hash"),
         metadata,
         version: row.get::<Option<i32>, _>("version").unwrap_or(1),
         created_at: row.get("created_at"),

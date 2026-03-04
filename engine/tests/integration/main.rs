@@ -38,6 +38,7 @@ mod test_compilation;
 mod test_compile;
 mod test_concerns;
 mod test_consolidation;
+mod test_content_hash;
 mod test_contention;
 mod test_dashboard;
 mod test_decay;

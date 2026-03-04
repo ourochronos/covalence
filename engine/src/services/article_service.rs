@@ -67,6 +67,9 @@ pub struct ArticleResponse {
     pub pinned: bool,
     pub usage_score: f32,
     pub contention_count: i64,
+    /// Hex-encoded SHA-256 digest of `content` — computed at create/update time.
+    /// Used for tamper detection and federation trust verification (covalence#78).
+    pub content_hash: Option<String>,
     #[schema(value_type = String)]
     pub created_at: chrono::DateTime<Utc>,
     #[schema(value_type = String)]
@@ -205,7 +208,7 @@ impl ArticleService {
         let row = sqlx::query(
             "SELECT n.id, n.title, n.content, n.status, n.confidence, \
              n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
-             n.created_at, n.modified_at, \
+             n.content_hash, n.created_at, n.modified_at, \
              (SELECT COUNT(*) FROM covalence.edges e \
               WHERE (e.source_node_id = n.id OR e.target_node_id = n.id) \
               AND e.edge_type IN ('CONTRADICTS', 'CONTENDS')) AS contention_count \
@@ -650,7 +653,7 @@ impl ArticleService {
             sqlx::query(
                 "SELECT n.id, n.title, n.content, n.status, n.confidence, \
                  n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
-                 n.created_at, n.modified_at, \
+                 n.content_hash, n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
                  WHERE n.node_type = 'article' AND n.status = $1 AND n.namespace = $2 AND n.id > $3 \
@@ -666,7 +669,7 @@ impl ArticleService {
             sqlx::query(
                 "SELECT n.id, n.title, n.content, n.status, n.confidence, \
                  n.epistemic_type, n.domain_path, n.metadata, n.version, n.pinned, n.usage_score, \
-                 n.created_at, n.modified_at, \
+                 n.content_hash, n.created_at, n.modified_at, \
                  0::bigint AS contention_count \
                  FROM covalence.nodes n \
                  WHERE n.node_type = 'article' AND n.status = $1 AND n.namespace = $2 \
@@ -701,6 +704,7 @@ fn article_from_row(row: &PgRow) -> ArticleResponse {
         pinned: row.get::<Option<bool>, _>("pinned").unwrap_or(false),
         usage_score: row.get::<Option<f64>, _>("usage_score").unwrap_or(0.0) as f32,
         contention_count: row.get::<Option<i64>, _>("contention_count").unwrap_or(0),
+        content_hash: row.get("content_hash"),
         created_at: row.get("created_at"),
         modified_at: row.get("modified_at"),
     }

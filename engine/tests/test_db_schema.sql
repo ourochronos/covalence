@@ -394,6 +394,16 @@ ALTER TABLE covalence.contentions
     ADD COLUMN IF NOT EXISTS contention_type TEXT NOT NULL DEFAULT 'rebuttal'
         CHECK (contention_type IN ('rebuttal', 'undermining', 'undercutting'));
 
+-- Migration 023: content_hash (SHA-256) for tamper detection (covalence#78)
+-- The column already appears in the CREATE TABLE above; this ensures existing
+-- test databases (created before 023) also have the column.
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS content_hash TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_nodes_content_hash
+    ON covalence.nodes (content_hash)
+    WHERE content_hash IS NOT NULL;
+
 -- =============================================================================
 -- PERMISSIONS
 -- =============================================================================
