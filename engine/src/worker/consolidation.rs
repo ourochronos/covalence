@@ -568,7 +568,7 @@ SOURCE DOCUMENTS:\n\
         );
 
         // ── 8. LLM completion (with timeout — Fix #84) ──────────────────────
-        // Wrap the LLM call in a 60-second timeout to prevent indefinite
+        // Wrap the LLM call in a 120-second timeout to prevent indefinite
         // blocking on slow or hung API endpoints.
         let t0 = Instant::now();
         let llm_result = tokio::time::timeout(
@@ -580,9 +580,9 @@ SOURCE DOCUMENTS:\n\
             tracing::warn!(
                 task_id    = %task.id,
                 article_id = %article_id,
-                "consolidate_article: LLM completion timed out after 60s"
+                "consolidate_article: LLM completion timed out after 120s"
             );
-            Err(anyhow::anyhow!("LLM completion timed out after 60s"))
+            Err(anyhow::anyhow!("LLM completion timed out after 120s"))
         });
         let _llm_latency_ms = t0.elapsed().as_millis() as i32;
 
