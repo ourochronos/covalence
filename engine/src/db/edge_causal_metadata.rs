@@ -50,12 +50,15 @@ pub async fn upsert(
     payload: &EdgeCausalMetadataPatch,
 ) -> Result<EdgeCausalMetadata, sqlx::Error> {
     sqlx::query_as::<_, EdgeCausalMetadata>(
-        "SELECT * FROM covalence.upsert_causal_metadata($1, $2, $3, $4, $5)",
+        "SELECT * FROM covalence.upsert_causal_metadata($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(payload.edge_id)
     .bind(payload.causal_level)
     .bind(payload.evidence_type)
     .bind(payload.causal_strength)
+    .bind(payload.direction_conf)
+    .bind(payload.hidden_conf_risk)
+    .bind(payload.temporal_lag_ms)
     .bind(payload.notes.as_deref())
     .fetch_one(pool)
     .await

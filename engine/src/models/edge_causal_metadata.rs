@@ -125,6 +125,12 @@ pub struct EdgeCausalMetadataPatch {
     pub causal_strength: Option<f64>,
     /// Override the default `structural_prior` evidence type.
     pub evidence_type: Option<CausalEvidenceType>,
+    /// Confidence that the causal direction is correct [0.0, 1.0].
+    pub direction_conf: Option<f64>,
+    /// Estimated risk from unobserved confounders [0.0, 1.0].
+    pub hidden_conf_risk: Option<f64>,
+    /// Optional temporal delay between cause and effect (milliseconds).
+    pub temporal_lag_ms: Option<i32>,
     /// Optional free-text annotation.
     pub notes: Option<String>,
 }

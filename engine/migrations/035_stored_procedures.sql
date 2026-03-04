@@ -173,42 +173,55 @@ $$;
 --     existing field unchanged, fixing the silent-reset bug (covalence#145).
 --
 -- Parameters:
---   p_edge_id        — edge to enrich (PK / FK)
---   p_causal_level   — Pearl hierarchy level (NULL → preserve existing / default)
---   p_evidence_type  — evidence classification (NULL → preserve existing / default)
+--   p_edge_id         — edge to enrich (PK / FK)
+--   p_causal_level    — Pearl hierarchy level (NULL → preserve existing / default)
+--   p_evidence_type   — evidence classification (NULL → preserve existing / default)
 --   p_causal_strength — [0.0, 1.0] strength estimate (NULL → preserve existing / default)
---   p_notes          — free-text annotation (NULL → preserve existing)
+--   p_direction_conf  — direction confidence [0.0, 1.0] (NULL → preserve existing / default)
+--   p_hidden_conf_risk — confounder risk [0.0, 1.0] (NULL → preserve existing / default)
+--   p_temporal_lag_ms — temporal delay ms (NULL → preserve existing)
+--   p_notes           — free-text annotation (NULL → preserve existing)
 --
 -- Returns the resulting row (after INSERT or UPDATE).
 
 CREATE OR REPLACE FUNCTION covalence.upsert_causal_metadata(
-    p_edge_id         UUID,
-    p_causal_level    covalence.causal_level_enum          DEFAULT NULL,
-    p_evidence_type   covalence.causal_evidence_type_enum  DEFAULT NULL,
-    p_causal_strength FLOAT8                               DEFAULT NULL,
-    p_notes           TEXT                                 DEFAULT NULL
+    p_edge_id           UUID,
+    p_causal_level      covalence.causal_level_enum          DEFAULT NULL,
+    p_evidence_type     covalence.causal_evidence_type_enum  DEFAULT NULL,
+    p_causal_strength   FLOAT8                               DEFAULT NULL,
+    p_direction_conf    FLOAT8                               DEFAULT NULL,
+    p_hidden_conf_risk  FLOAT8                               DEFAULT NULL,
+    p_temporal_lag_ms   INT                                  DEFAULT NULL,
+    p_notes             TEXT                                 DEFAULT NULL
 )
 RETURNS SETOF covalence.edge_causal_metadata
 LANGUAGE plpgsql AS $$
 BEGIN
     RETURN QUERY
     INSERT INTO covalence.edge_causal_metadata
-        (edge_id, causal_level, causal_strength, evidence_type, notes)
+        (edge_id, causal_level, causal_strength, evidence_type,
+         direction_conf, hidden_conf_risk, temporal_lag_ms, notes)
     VALUES (
         p_edge_id,
         COALESCE(p_causal_level,    'association'::covalence.causal_level_enum),
         COALESCE(p_causal_strength, 0.5),
         COALESCE(p_evidence_type,   'structural_prior'::covalence.causal_evidence_type_enum),
+        COALESCE(p_direction_conf,   0.5),
+        COALESCE(p_hidden_conf_risk, 0.5),
+        p_temporal_lag_ms,
         p_notes
     )
     ON CONFLICT (edge_id) DO UPDATE SET
         -- COALESCE: use new value only when caller explicitly provided it;
         -- otherwise preserve the existing row value (fixes covalence#145).
-        causal_level    = COALESCE(p_causal_level,    edge_causal_metadata.causal_level),
-        causal_strength = COALESCE(p_causal_strength, edge_causal_metadata.causal_strength),
-        evidence_type   = COALESCE(p_evidence_type,   edge_causal_metadata.evidence_type),
-        notes           = COALESCE(p_notes,            edge_causal_metadata.notes),
-        updated_at      = NOW()
+        causal_level     = COALESCE(p_causal_level,    edge_causal_metadata.causal_level),
+        causal_strength  = COALESCE(p_causal_strength, edge_causal_metadata.causal_strength),
+        evidence_type    = COALESCE(p_evidence_type,   edge_causal_metadata.evidence_type),
+        direction_conf   = COALESCE(p_direction_conf,  edge_causal_metadata.direction_conf),
+        hidden_conf_risk = COALESCE(p_hidden_conf_risk, edge_causal_metadata.hidden_conf_risk),
+        temporal_lag_ms  = COALESCE(p_temporal_lag_ms, edge_causal_metadata.temporal_lag_ms),
+        notes            = COALESCE(p_notes,            edge_causal_metadata.notes),
+        updated_at       = NOW()
     RETURNING *;
 END;
 $$;

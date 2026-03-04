@@ -600,6 +600,7 @@ CREATE TABLE IF NOT EXISTS covalence.edge_causal_metadata (
     hidden_conf_risk  FLOAT                                 NOT NULL DEFAULT 0.5
                         CHECK (hidden_conf_risk >= 0.0 AND hidden_conf_risk <= 1.0),
     temporal_lag_ms   INT                                   CHECK (temporal_lag_ms IS NULL OR temporal_lag_ms >= 0),
+    notes             TEXT,
     created_at        TIMESTAMPTZ                           NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ                           NOT NULL DEFAULT NOW(),
 
@@ -634,3 +635,46 @@ DROP TRIGGER IF EXISTS trg_ecm_updated_at ON covalence.edge_causal_metadata;
 CREATE TRIGGER trg_ecm_updated_at
     BEFORE UPDATE ON covalence.edge_causal_metadata
     FOR EACH ROW EXECUTE FUNCTION covalence._ecm_set_updated_at();
+
+-- =============================================================================
+-- Function: upsert_causal_metadata (mirrors migration 035)
+-- =============================================================================
+CREATE OR REPLACE FUNCTION covalence.upsert_causal_metadata(
+    p_edge_id           UUID,
+    p_causal_level      covalence.causal_level_enum          DEFAULT NULL,
+    p_evidence_type     covalence.causal_evidence_type_enum  DEFAULT NULL,
+    p_causal_strength   FLOAT8                               DEFAULT NULL,
+    p_direction_conf    FLOAT8                               DEFAULT NULL,
+    p_hidden_conf_risk  FLOAT8                               DEFAULT NULL,
+    p_temporal_lag_ms   INT                                  DEFAULT NULL,
+    p_notes             TEXT                                 DEFAULT NULL
+)
+RETURNS SETOF covalence.edge_causal_metadata
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    INSERT INTO covalence.edge_causal_metadata
+        (edge_id, causal_level, causal_strength, evidence_type,
+         direction_conf, hidden_conf_risk, temporal_lag_ms, notes)
+    VALUES (
+        p_edge_id,
+        COALESCE(p_causal_level,    'association'::covalence.causal_level_enum),
+        COALESCE(p_causal_strength, 0.5),
+        COALESCE(p_evidence_type,   'structural_prior'::covalence.causal_evidence_type_enum),
+        COALESCE(p_direction_conf,   0.5),
+        COALESCE(p_hidden_conf_risk, 0.5),
+        p_temporal_lag_ms,
+        p_notes
+    )
+    ON CONFLICT (edge_id) DO UPDATE SET
+        causal_level     = COALESCE(p_causal_level,    edge_causal_metadata.causal_level),
+        causal_strength  = COALESCE(p_causal_strength, edge_causal_metadata.causal_strength),
+        evidence_type    = COALESCE(p_evidence_type,   edge_causal_metadata.evidence_type),
+        direction_conf   = COALESCE(p_direction_conf,  edge_causal_metadata.direction_conf),
+        hidden_conf_risk = COALESCE(p_hidden_conf_risk, edge_causal_metadata.hidden_conf_risk),
+        temporal_lag_ms  = COALESCE(p_temporal_lag_ms, edge_causal_metadata.temporal_lag_ms),
+        notes            = COALESCE(p_notes,            edge_causal_metadata.notes),
+        updated_at       = NOW()
+    RETURNING *;
+END;
+$$;
