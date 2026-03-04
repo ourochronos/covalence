@@ -39,6 +39,10 @@ pub struct UpdateArticleRequest {
     pub facet_function: Option<Vec<String>>,
     /// Scope facet — abstraction level. (covalence#92)
     pub facet_scope: Option<Vec<String>>,
+    /// OCC guard (covalence#98): when provided, the update is rejected with
+    /// HTTP 409 if the article's current `version` does not match.  Omit to
+    /// skip the version check (backwards-compatible default).
+    pub expected_version: Option<i32>,
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
@@ -313,16 +317,48 @@ impl ArticleService {
         if let Some(ref content) = req.content {
             let hash = hex::encode(Sha256::digest(content.as_bytes()));
             let tokens = (content.split_whitespace().count() as f64 / 0.75) as i32;
-            sqlx::query(
-                "UPDATE covalence.nodes SET content = $2, content_hash = $3, size_tokens = $4, \
-                 version = version + 1, modified_at = now() WHERE id = $1",
-            )
-            .bind(id)
-            .bind(content)
-            .bind(&hash)
-            .bind(tokens)
-            .execute(&self.pool)
-            .await?;
+
+            // OCC guard (covalence#98): when the caller supplies expected_version
+            // we add it to the WHERE clause so a concurrent write that already
+            // bumped the version causes rows_affected == 0 → 409 Conflict.
+            let rows_affected = if let Some(expected) = req.expected_version {
+                sqlx::query(
+                    "UPDATE covalence.nodes \
+                     SET content = $2, content_hash = $3, size_tokens = $4, \
+                         version = version + 1, modified_at = now() \
+                     WHERE id = $1 AND version = $5",
+                )
+                .bind(id)
+                .bind(content)
+                .bind(&hash)
+                .bind(tokens)
+                .bind(expected)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+            } else {
+                sqlx::query(
+                    "UPDATE covalence.nodes \
+                     SET content = $2, content_hash = $3, size_tokens = $4, \
+                         version = version + 1, modified_at = now() \
+                     WHERE id = $1",
+                )
+                .bind(id)
+                .bind(content)
+                .bind(&hash)
+                .bind(tokens)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+            };
+
+            if rows_affected == 0 {
+                return Err(AppError::Conflict(format!(
+                    "article {id}: version conflict — expected version {}, \
+                     article has been concurrently modified",
+                    req.expected_version.unwrap(),
+                )));
+            }
         }
         if let Some(ref title) = req.title {
             sqlx::query("UPDATE covalence.nodes SET title = $2, modified_at = now() WHERE id = $1")

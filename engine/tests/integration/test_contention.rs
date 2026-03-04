@@ -471,19 +471,30 @@ async fn undercuts_edge_type_is_insertable() {
 
 /// All three contention_type values must satisfy the DB CHECK constraint.
 /// Verifies 'rebuttal', 'undermining', and 'undercutting' all insert cleanly.
+///
+/// Each type uses a distinct (article, source) pair to satisfy the UNIQUE
+/// constraint on (node_id, source_node_id) added in migration 025 (#98).
 #[tokio::test]
 #[serial]
 async fn all_contention_types_pass_check_constraint() {
     let mut fix = TestFixture::new().await;
 
-    let article = fix
-        .insert_article("Check Constraint Article", "Some article content.")
-        .await;
-    let source = fix
-        .insert_source("Check Constraint Source", "Some source content.")
-        .await;
-
     for ct in &["rebuttal", "undermining", "undercutting"] {
+        // Use a fresh pair per contention_type to avoid the UNIQUE constraint
+        // on (node_id, source_node_id) added in covalence#98 / migration 025.
+        let article = fix
+            .insert_article(
+                &format!("Check Constraint Article ({ct})"),
+                "Some article content.",
+            )
+            .await;
+        let source = fix
+            .insert_source(
+                &format!("Check Constraint Source ({ct})"),
+                "Some source content.",
+            )
+            .await;
+
         let id: Uuid = sqlx::query_scalar(
             "INSERT INTO covalence.contentions \
                  (node_id, source_node_id, status, contention_type) \

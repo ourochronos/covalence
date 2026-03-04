@@ -203,6 +203,7 @@ async fn test_article_update_changes_content_hash() {
         pinned: None,
         facet_function: None,
         facet_scope: None,
+        expected_version: None,
     };
     let updated = svc
         .update(created.id, update_req)

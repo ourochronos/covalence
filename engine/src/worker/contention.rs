@@ -700,10 +700,15 @@ If NOT a contention:
             "medium" => 0.5,
             _ => 0.2,
         };
-        let contention_id: Uuid = sqlx::query_scalar(
+        // ON CONFLICT DO NOTHING (covalence#98): the UNIQUE constraint on
+        // (node_id, source_node_id) deduplicates concurrent inserts.
+        // fetch_optional returns None when the pair already exists; in that
+        // case we skip queuing a duplicate resolver task.
+        let maybe_id: Option<Uuid> = sqlx::query_scalar(
             r#"INSERT INTO covalence.contentions
                    (node_id, source_node_id, type, description, severity, status, materiality, contention_type)
                VALUES ($1, $2, $3, $4, $5, 'detected', $6, $7)
+               ON CONFLICT (node_id, source_node_id) DO NOTHING
                RETURNING id"#,
         )
         .bind(article_id)
@@ -713,9 +718,21 @@ If NOT a contention:
         .bind(materiality)
         .bind(mat_score)
         .bind(contention_type)
-        .fetch_one(pool)
+        .fetch_optional(pool)
         .await
         .context("contention_check: failed to insert contention")?;
+
+        let contention_id = match maybe_id {
+            Some(cid) => cid,
+            None => {
+                tracing::debug!(
+                    source_id  = %source_id,
+                    article_id = %article_id,
+                    "contention_check: dedup — (node_id, source_node_id) pair already exists, skipping"
+                );
+                continue;
+            }
+        };
 
         contentions_created += 1;
 

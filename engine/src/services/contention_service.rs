@@ -126,6 +126,11 @@ impl ContentionService {
     }
 
     /// Create a new contention row with an explicit [`ContentionType`].
+    ///
+    /// Uses `ON CONFLICT (node_id, source_node_id) DO NOTHING` (covalence#98)
+    /// so that duplicate contention pairs are silently de-duplicated at the DB
+    /// level.  When a conflict is detected the existing row is fetched and
+    /// returned instead of the newly inserted one.
     #[allow(dead_code)]
     pub async fn detect_typed(
         &self,
@@ -135,11 +140,15 @@ impl ContentionService {
         contention_type: ContentionType,
     ) -> Result<Contention, sqlx::Error> {
         let id = Uuid::new_v4();
-        let row = sqlx::query(
+
+        // ON CONFLICT DO NOTHING returns no row when the (node_id, source_node_id)
+        // pair already exists.  We use fetch_optional and fall back to SELECT.
+        let maybe_row = sqlx::query(
             "INSERT INTO covalence.contentions \
-             (id, node_id, source_node_id, status, description, contention_type, namespace, detected_at)
-             VALUES ($1, $2, $3, 'detected', $4, $5, $6, now())
-             RETURNING id, node_id, source_node_id, description, status,
+             (id, node_id, source_node_id, status, description, contention_type, namespace, detected_at) \
+             VALUES ($1, $2, $3, 'detected', $4, $5, $6, now()) \
+             ON CONFLICT (node_id, source_node_id) DO NOTHING \
+             RETURNING id, node_id, source_node_id, description, status, \
                        resolution, severity, contention_type, detected_at, resolved_at",
         )
         .bind(id)
@@ -148,8 +157,27 @@ impl ContentionService {
         .bind(description)
         .bind(contention_type.as_str())
         .bind(&self.namespace)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = maybe_row {
+            // Fresh insert succeeded — return it directly.
+            return contention_from_row(&row);
+        }
+
+        // Conflict — fetch the existing row for this (node_id, source_node_id) pair.
+        let row = sqlx::query(
+            "SELECT id, node_id, source_node_id, description, status, \
+                    resolution, severity, contention_type, detected_at, resolved_at \
+             FROM covalence.contentions \
+             WHERE node_id = $1 AND source_node_id = $2 \
+             LIMIT 1",
+        )
+        .bind(node_id)
+        .bind(source_node_id)
         .fetch_one(&self.pool)
         .await?;
+
         contention_from_row(&row)
     }
 

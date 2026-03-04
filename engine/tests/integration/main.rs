@@ -50,6 +50,7 @@ mod test_graph_stats;
 mod test_memory_recall;
 mod test_merge;
 mod test_namespace;
+mod test_occ;
 mod test_openapi;
 mod test_property;
 mod test_reconsolidation;

@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS covalence.nodes (
     fingerprint     TEXT,
     size_tokens     INTEGER,
     pinned          BOOLEAN          DEFAULT false,
-    version         INTEGER          DEFAULT 1,
+    version         INTEGER          NOT NULL DEFAULT 1,
     created_at      TIMESTAMPTZ      DEFAULT now(),
     modified_at     TIMESTAMPTZ      DEFAULT now(),
     accessed_at     TIMESTAMPTZ      DEFAULT now(),
@@ -157,7 +157,8 @@ CREATE TABLE IF NOT EXISTS covalence.contentions (
     resolved_at     TIMESTAMPTZ,
     namespace       TEXT             NOT NULL DEFAULT 'default',
     contention_type TEXT             NOT NULL DEFAULT 'rebuttal'
-                                     CHECK (contention_type IN ('rebuttal', 'undermining', 'undercutting'))
+                                     CHECK (contention_type IN ('rebuttal', 'undermining', 'undercutting')),
+    CONSTRAINT contentions_article_source_uniq UNIQUE (node_id, source_node_id)
 );
 
 -- -----------------------------------------------------------------------------
@@ -418,6 +419,22 @@ ALTER TABLE covalence.nodes
 CREATE INDEX IF NOT EXISTS idx_nodes_content_hash
     ON covalence.nodes (content_hash)
     WHERE content_hash IS NOT NULL;
+
+-- Migration 025: OCC Phase 0 (covalence#98)
+-- Harden version column + deduplicate contentions at DB level.
+
+-- 1. Back-fill any NULL version values, then enforce NOT NULL.
+UPDATE covalence.nodes SET version = 1 WHERE version IS NULL;
+ALTER TABLE covalence.nodes ALTER COLUMN version SET NOT NULL;
+ALTER TABLE covalence.nodes ALTER COLUMN version SET DEFAULT 1;
+
+-- 2. UNIQUE constraint on (node_id, source_node_id) for contentions.
+--    Drop first for idempotency, then re-add.
+ALTER TABLE covalence.contentions
+    DROP CONSTRAINT IF EXISTS contentions_article_source_uniq;
+ALTER TABLE covalence.contentions
+    ADD CONSTRAINT contentions_article_source_uniq
+        UNIQUE (node_id, source_node_id);
 
 -- =============================================================================
 -- PERMISSIONS
