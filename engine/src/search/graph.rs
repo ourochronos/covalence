@@ -16,6 +16,20 @@
 //! `priority_edges()` now delegates to the shared `intent_edge_types()` mapping
 //! in `graph::memory`, eliminating duplication between the DB adaptor and the
 //! in-memory graph layer.
+//!
+//! ## Causal metadata filters (covalence#116)
+//!
+//! When `min_causal_strength`, `causal_level`, or `evidence_types` are set on
+//! the query, the graph traversal LEFT-JOINs `edge_causal_metadata` and applies
+//! the filters.  Edges whose enrichment row is absent (NULL from the LEFT JOIN)
+//! are excluded when any of these filters is active.
+//!
+//! For `intent = causal`, the edge score is replaced with the Pearl composite:
+//! ```text
+//! causal_score = COALESCE(ecm.causal_strength, e.causal_weight)
+//!              × COALESCE(ecm.direction_conf, 0.5)
+//!              × (1.0 − COALESCE(ecm.hidden_conf_risk, 0.5))
+//! ```
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,7 +39,7 @@ use uuid::Uuid;
 
 use super::dimension::{DimensionAdaptor, DimensionQuery, DimensionResult};
 use crate::graph::intent_edge_types;
-use crate::models::SearchIntent;
+use crate::models::{CausalEvidenceType, CausalLevel, SearchIntent};
 
 /// Per-hop score-decay base.
 const HOP_DECAY: f64 = 0.7;
@@ -61,12 +75,110 @@ impl GraphAdaptor {
         }
     }
 
+    /// Build optional SQL clauses for causal-metadata filters (covalence#116).
+    ///
+    /// Returns `(join_clause, where_clauses)`:
+    /// * `join_clause` — a `LEFT JOIN` that should follow the `FROM covalence.edges e` clause.
+    /// * `where_clauses` — zero or more `AND …` predicates.
+    ///
+    /// When any filter is active the join is included; when no filters are set
+    /// both strings are empty (backward-compatible fast path).
+    fn causal_meta_clauses(
+        min_causal_strength: Option<f64>,
+        causal_level: Option<CausalLevel>,
+        evidence_types: Option<&Vec<CausalEvidenceType>>,
+        is_causal_intent: bool,
+    ) -> (String, String) {
+        let any_filter = min_causal_strength.is_some()
+            || causal_level.is_some()
+            || evidence_types.map(|v| !v.is_empty()).unwrap_or(false);
+
+        // Always join when causal intent so we can compute the composite score
+        // even without explicit filters.
+        let need_join = any_filter || is_causal_intent;
+
+        if !need_join {
+            return (String::new(), String::new());
+        }
+
+        let join = "LEFT JOIN covalence.edge_causal_metadata ecm ON e.id = ecm.edge_id".to_string();
+
+        let mut where_parts: Vec<String> = Vec::new();
+
+        if let Some(min_cs) = min_causal_strength {
+            // NULL ecm row → no metadata → exclude when filter is active.
+            where_parts.push(format!(
+                "AND ecm.causal_strength IS NOT NULL AND ecm.causal_strength >= {min_cs}"
+            ));
+        }
+
+        if let Some(ref level) = causal_level {
+            let level_str = match level {
+                CausalLevel::Association => "association",
+                CausalLevel::Intervention => "intervention",
+                CausalLevel::Counterfactual => "counterfactual",
+            };
+            where_parts.push(format!(
+                "AND ecm.causal_level IS NOT NULL AND ecm.causal_level = '{level_str}'"
+            ));
+        }
+
+        if let Some(types) = evidence_types {
+            if !types.is_empty() {
+                let list = types
+                    .iter()
+                    .map(|t| {
+                        let s = match t {
+                            CausalEvidenceType::StructuralPrior => "structural_prior",
+                            CausalEvidenceType::ExpertAssertion => "expert_assertion",
+                            CausalEvidenceType::Statistical => "statistical",
+                            CausalEvidenceType::Experimental => "experimental",
+                            CausalEvidenceType::GrangerTemporal => "granger_temporal",
+                            CausalEvidenceType::LlmExtracted => "llm_extracted",
+                            CausalEvidenceType::DomainRule => "domain_rule",
+                        };
+                        format!("'{s}'")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                where_parts.push(format!(
+                    "AND ecm.evidence_type IS NOT NULL AND ecm.evidence_type IN ({list})"
+                ));
+            }
+        }
+
+        (join, where_parts.join("\n                          "))
+    }
+
+    /// Compute the score expression for a given intent.
+    ///
+    /// For `causal` intent: Pearl composite score using `edge_causal_metadata`
+    /// columns.  Falls back gracefully to the edge's own `causal_weight` when
+    /// the enrichment row is absent.
+    ///
+    /// For all other intents: the standard `weight * confidence` product.
+    fn score_expr(is_causal_intent: bool, has_priority: bool) -> String {
+        let base = if is_causal_intent {
+            // Pearl composite: causal_strength × direction_conf × (1 − hidden_conf_risk)
+            "(COALESCE(ecm.causal_strength, e.causal_weight) \
+               * COALESCE(ecm.direction_conf, 0.5) \
+               * (1.0 - COALESCE(ecm.hidden_conf_risk, 0.5)))::float8"
+                .to_string()
+        } else {
+            "(e.weight * e.confidence)::float8".to_string()
+        };
+
+        if has_priority {
+            format!("({base} * CASE WHEN e.edge_type = ANY($3) THEN 2.0 ELSE 1.0 END)::float8")
+        } else {
+            base
+        }
+    }
+
     /// Fetch all active neighbors of `frontier` nodes with their raw edge scores.
     ///
     /// Returns `(neighbor_id, raw_score)` pairs (before hop-decay is applied).
     /// Priority edge types are boosted 2× when `priority` is non-empty.
-    /// When `min_causal_weight` is `Some(w)`, only edges with
-    /// `causal_weight >= w` are traversed (covalence#75).
     /// The caller is responsible for filtering already-visited nodes.
     async fn fetch_frontier_neighbors(
         pool: &PgPool,
@@ -74,6 +186,10 @@ impl GraphAdaptor {
         priority: &[String],
         namespace: &str,
         min_causal_weight: Option<f32>,
+        min_causal_strength: Option<f64>,
+        causal_level: Option<CausalLevel>,
+        evidence_types: Option<&Vec<CausalEvidenceType>>,
+        is_causal_intent: bool,
     ) -> anyhow::Result<Vec<(Uuid, f64)>> {
         if frontier.is_empty() {
             return Ok(vec![]);
@@ -89,19 +205,32 @@ impl GraphAdaptor {
             None => String::new(),
         };
 
-        let rows = if priority.is_empty() {
-            // No intent filter — all edge types (filtered by causal_weight if set).
+        // Build causal metadata JOIN and WHERE clauses (covalence#116).
+        let (ecm_join, ecm_where) = Self::causal_meta_clauses(
+            min_causal_strength,
+            causal_level,
+            evidence_types,
+            is_causal_intent,
+        );
+
+        let has_priority = !priority.is_empty();
+        let score_expr = Self::score_expr(is_causal_intent, has_priority);
+
+        let rows = if !has_priority {
+            // No intent filter — all edge types.
             sqlx::query_as::<_, (Uuid, f64)>(&format!(
                 "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
                         SELECT
                             CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
                                  ELSE e.source_node_id END                           AS neighbor_id,
-                            (e.weight * e.confidence)::float8                        AS score
+                            {score_expr}                                              AS score
                         FROM covalence.edges e
+                        {ecm_join}
                         WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
                           AND e.namespace = $2
                           AND e.valid_to IS NULL
                           {causal_filter}
+                          {ecm_where}
                     ) sub
                     JOIN covalence.nodes n ON n.id = sub.neighbor_id
                     WHERE n.status = 'active' AND n.namespace = $2
@@ -113,25 +242,24 @@ impl GraphAdaptor {
             .await?
         } else {
             // Intent-filtered: boost priority edge types by 2×.
-            sqlx::query_as::<_, (Uuid, f64)>(
-                &format!(
-                    "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
+            sqlx::query_as::<_, (Uuid, f64)>(&format!(
+                "SELECT DISTINCT ON (neighbor_id) neighbor_id, score FROM (
                         SELECT
                             CASE WHEN e.source_node_id = ANY($1) THEN e.target_node_id
                                  ELSE e.source_node_id END                           AS neighbor_id,
-                            (e.weight * e.confidence
-                             * CASE WHEN e.edge_type = ANY($3) THEN 2.0 ELSE 1.0 END)::float8 AS score
+                            {score_expr}                                              AS score
                         FROM covalence.edges e
+                        {ecm_join}
                         WHERE (e.source_node_id = ANY($1) OR e.target_node_id = ANY($1))
                           AND e.namespace = $2
                           AND e.valid_to IS NULL
                           {causal_filter}
+                          {ecm_where}
                     ) sub
                     JOIN covalence.nodes n ON n.id = sub.neighbor_id
                     WHERE n.status = 'active' AND n.namespace = $2
                     ORDER BY neighbor_id, score DESC"
-                ),
-            )
+            ))
             .bind(frontier)
             .bind(namespace)
             .bind(priority)
@@ -181,6 +309,7 @@ impl DimensionAdaptor for GraphAdaptor {
         let priority = Self::priority_edges(query.intent.as_ref());
         let max_hops = query.max_hops.unwrap_or(1).clamp(1, MAX_HOPS_LIMIT);
         let min_causal_weight = query.min_causal_weight;
+        let is_causal_intent = matches!(query.intent, Some(SearchIntent::Causal));
 
         // ── BFS state ──────────────────────────────────────────────────────────
         // `visited` starts with all anchor nodes so the BFS never returns them.
@@ -203,6 +332,10 @@ impl DimensionAdaptor for GraphAdaptor {
                 &priority,
                 &query.namespace,
                 min_causal_weight,
+                query.min_causal_strength,
+                query.causal_level,
+                query.evidence_types.as_ref(),
+                is_causal_intent,
             )
             .await?;
 

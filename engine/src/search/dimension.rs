@@ -3,7 +3,7 @@
 //! Each adaptor represents one retrieval dimension (vector, lexical, graph).
 //! Adaptors produce scored results that are fused by the search service.
 
-use crate::models::SearchIntent;
+use crate::models::{CausalEvidenceType, CausalLevel, SearchIntent};
 use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -47,6 +47,16 @@ pub struct DimensionQuery {
     ///
     /// Default: `None` (all edges traversed — backward compatible).
     pub min_causal_weight: Option<f32>,
+    /// Filter graph traversal to edges whose `edge_causal_metadata.causal_strength`
+    /// is at least this value (covalence#116).  When the enrichment row is absent
+    /// and this filter is set, the edge is excluded.
+    pub min_causal_strength: Option<f64>,
+    /// Restrict traversal to edges at a specific Pearl hierarchy level (covalence#116).
+    /// When the enrichment row is absent and this filter is set, the edge is excluded.
+    pub causal_level: Option<CausalLevel>,
+    /// Restrict traversal to edges whose evidence type is in this list (covalence#116).
+    /// When the enrichment row is absent and this filter is set, the edge is excluded.
+    pub evidence_types: Option<Vec<CausalEvidenceType>>,
     /// Namespace filter — only nodes whose `namespace` column matches this
     /// value are returned.  Defaults to `"default"`.
     pub namespace: String,

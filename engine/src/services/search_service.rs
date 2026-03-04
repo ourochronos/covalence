@@ -39,7 +39,7 @@ use crate::worker::llm::LlmClient;
 
 use crate::graph::algorithms::{pagerank, personalized_pagerank};
 use crate::graph::{TopologicalConfidence, compute_topological_confidence};
-use crate::models::SearchIntent;
+use crate::models::{CausalEvidenceType, CausalLevel, SearchIntent};
 use crate::search::dimension::{DimensionAdaptor, DimensionQuery};
 use crate::search::graph::GraphAdaptor;
 use crate::search::lexical::LexicalAdaptor;
@@ -181,6 +181,19 @@ pub struct SearchRequest {
     /// Default: `None` (all edges traversed — backward compatible).
     #[serde(default)]
     pub min_causal_weight: Option<f64>,
+    /// Filter graph traversal to edges whose `edge_causal_metadata.causal_strength`
+    /// is at least this value (covalence#116).  Edges without a metadata row are
+    /// excluded when this filter is active.
+    #[serde(default)]
+    pub min_causal_strength: Option<f64>,
+    /// Restrict graph traversal to edges at this Pearl hierarchy level (covalence#116).
+    /// Edges without a metadata row are excluded when this filter is active.
+    #[serde(default)]
+    pub causal_level: Option<CausalLevel>,
+    /// Restrict graph traversal to edges whose evidence type appears in this list (covalence#116).
+    /// Edges without a metadata row are excluded when this filter is active.
+    #[serde(default)]
+    pub evidence_types: Option<Vec<CausalEvidenceType>>,
     /// Facet filter — functional dimension (covalence#92 Phase 1).
     /// When set, only nodes where `facet_function @> facet_function` are returned.
     /// Nodes with NULL `facet_function` are excluded when this filter is active.
@@ -502,6 +515,9 @@ impl SearchService {
             node_types: req.node_types,
             max_hops: Some(effective_max_hops),
             min_causal_weight: req.min_causal_weight.map(|w| w.clamp(0.0, 1.0) as f32),
+            min_causal_strength: req.min_causal_strength,
+            causal_level: req.causal_level,
+            evidence_types: req.evidence_types,
             namespace: self.namespace.clone(),
         };
 
@@ -1021,6 +1037,9 @@ impl SearchService {
             node_types: Some(vec!["article".into()]),
             max_hops: Some(effective_max_hops),
             min_causal_weight: req.min_causal_weight.map(|w| w.clamp(0.0, 1.0) as f32),
+            min_causal_strength: req.min_causal_strength,
+            causal_level: req.causal_level,
+            evidence_types: req.evidence_types.clone(),
             namespace: self.namespace.clone(),
         };
 
@@ -1435,6 +1454,9 @@ impl SearchService {
             min_score: req.min_score,
             spreading_activation: None, // synthesis does not use spreading
             min_causal_weight: req.min_causal_weight,
+            min_causal_strength: req.min_causal_strength,
+            causal_level: req.causal_level,
+            evidence_types: req.evidence_types,
             facet_function: req.facet_function,
             facet_scope: req.facet_scope,
             explain: req.explain,
@@ -1584,6 +1606,9 @@ impl SearchService {
             node_types: req.node_types,
             max_hops: Some(effective_max_hops),
             min_causal_weight: req.min_causal_weight.map(|w| w.clamp(0.0, 1.0) as f32),
+            min_causal_strength: req.min_causal_strength,
+            causal_level: req.causal_level,
+            evidence_types: req.evidence_types,
             namespace: self.namespace.clone(),
         };
 
