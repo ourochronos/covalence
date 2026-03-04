@@ -1,9 +1,13 @@
 services:
   # ---------------------------------------------------------------------------
   # PostgreSQL 17 — pgvector + Apache AGE extensions baked in
-  # Extensions are created automatically on first boot via init-extensions.sql
-  # Data is persisted in the `covalence-data` named volume.
-  # Exposed on host port 5434 so it can still be reached from outside compose.
+  #
+  # • Always starts with `docker compose up -d` (or `scripts/dev-up.sh`)
+  # • Credentials are read from .env (see .env.example).  Defaults work
+  #   out-of-the-box for local development.
+  # • Data is persisted in the `covalence-data` named volume.
+  # • Exposed on **127.0.0.1:5434** only — not reachable from the network.
+  # • Healthcheck: pg_isready polls every 5 s; 10 retries before unhealthy.
   # ---------------------------------------------------------------------------
   postgres:
     build:
@@ -13,30 +17,46 @@ services:
     ports:
       - "127.0.0.1:5434:5432"
     environment:
-      POSTGRES_DB: covalence
-      POSTGRES_USER: covalence
+      POSTGRES_DB: ${POSTGRES_DB:-covalence}
+      POSTGRES_USER: ${POSTGRES_USER:-covalence}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-covalence}
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - covalence-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U covalence"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-covalence}"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 10s
+    restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Covalence Engine — Rust HTTP API
-  # The entrypoint script (run-migrations.sh) waits for Postgres, applies all
-  # sql/*.sql migrations in order, then exec's the engine binary.
+  # Covalence Engine — Rust HTTP API  (profile: full)
+  #
+  # This service is OPTIONAL for local development.  In the standard dev
+  # workflow the engine is compiled natively and managed by the macOS
+  # LaunchAgent `ai.ourochronos.covalence-engine` (see DEPLOY.md).
+  # The LaunchAgent auto-deploys on every commit via the post-commit hook.
+  #
+  # To run the full containerised stack instead:
+  #   docker compose --profile full up -d
+  #
+  # To run only the database (for native engine dev — the common case):
+  #   docker compose up -d postgres
+  #   # or simply:
+  #   scripts/dev-up.sh
   # ---------------------------------------------------------------------------
   engine:
+    profiles: [full]
     build:
       context: .
       dockerfile: docker/engine.Dockerfile
     container_name: covalence-engine
     ports:
-      - "8430:8430"
+      - "127.0.0.1:8430:8430"
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,20 +64,29 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://covalence:covalence@postgres:5432/covalence}
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_NAME: covalence
-      DB_USER: covalence
-      DB_PASSWORD: ${DB_PASSWORD:-covalence}
+      DB_NAME: ${POSTGRES_DB:-covalence}
+      DB_USER: ${POSTGRES_USER:-covalence}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-covalence}
       BIND_ADDR: "0.0.0.0:8430"
       RUST_LOG: "covalence_engine=info,tower_http=info"
-      # Optional: set to require API key auth on all endpoints (except /health).
-      # Leave unset (or empty) for dev mode — no auth required.
-      # COVALENCE_API_KEY: "your-secret-key-here"
+      # Optional: uncomment to require API key auth (all endpoints except /health)
+      # COVALENCE_API_KEY: ${COVALENCE_API_KEY:-}
     env_file:
       - path: .env
         required: false
     volumes:
       - ./sql:/app/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8430/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     restart: unless-stopped
 
 volumes:
+  # ---------------------------------------------------------------------------
+  # covalence-data — persistent PostgreSQL data directory.
+  # Survives `docker compose down`; destroyed only by `docker compose down -v`.
+  # ---------------------------------------------------------------------------
   covalence-data:
