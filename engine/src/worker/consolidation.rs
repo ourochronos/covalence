@@ -572,7 +572,7 @@ SOURCE DOCUMENTS:\n\
         // blocking on slow or hung API endpoints.
         let t0 = Instant::now();
         let llm_result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(120),
             llm.complete(&prompt, 4096),
         )
         .await

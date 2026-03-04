@@ -47,6 +47,13 @@ const MAX_ATTEMPTS: i64 = 3;
 /// How long we wait between poll cycles.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Maximum number of concurrently in-flight LLM tasks.
+///
+/// Capping the JoinSet prevents 50-100+ simultaneous gpt-4.1-mini calls that
+/// cascade into OpenAI rate-limit errors and cause every task to exhaust its
+/// 3 retry attempts (covalence#141).
+const MAX_CONCURRENT_LLM_TASKS: usize = 6;
+
 /// Number of poll cycles between consolidation heartbeat scans (~60 s).
 const CONSOLIDATION_HEARTBEAT_INTERVAL: u64 = 30;
 
@@ -131,22 +138,31 @@ pub async fn run_with_token(pool: PgPool, llm: Arc<dyn LlmClient>, token: Cancel
             }
         }
 
-        // Claim one pending task and spawn its execution into the JoinSet.
-        match claim_task(&pool).await {
-            Ok(Some(task)) => {
-                tracing::debug!(
-                    task_id   = %task.id,
-                    task_type = %task.task_type,
-                    "worker: claimed task, spawning"
-                );
-                let pool_c = pool.clone();
-                let llm_c = Arc::clone(&llm);
-                join_set.spawn(async move {
-                    execute_and_finalize(pool_c, llm_c, task).await;
-                });
+        // Claim one pending task and spawn its execution into the JoinSet,
+        // but only when we are below the concurrency cap (covalence#141).
+        if join_set.len() >= MAX_CONCURRENT_LLM_TASKS {
+            tracing::debug!(
+                in_flight = join_set.len(),
+                cap = MAX_CONCURRENT_LLM_TASKS,
+                "worker: concurrency cap reached — skipping claim this cycle"
+            );
+        } else {
+            match claim_task(&pool).await {
+                Ok(Some(task)) => {
+                    tracing::debug!(
+                        task_id   = %task.id,
+                        task_type = %task.task_type,
+                        "worker: claimed task, spawning"
+                    );
+                    let pool_c = pool.clone();
+                    let llm_c = Arc::clone(&llm);
+                    join_set.spawn(async move {
+                        execute_and_finalize(pool_c, llm_c, task).await;
+                    });
+                }
+                Ok(None) => {} // no work available right now
+                Err(e) => tracing::error!("worker poll error: {e:#}"),
             }
-            Ok(None) => {} // no work available right now
-            Err(e) => tracing::error!("worker poll error: {e:#}"),
         }
 
         // Sleep until the next poll cycle, or exit immediately on cancellation.
