@@ -19,6 +19,7 @@ use crate::services::provenance_trace_service::{ProvenanceTraceService, TraceReq
 use crate::services::task_service::{
     CreateTaskRequest, ListTasksParams, TaskService, UpdateTaskRequest,
 };
+use crate::services::whatif_service::{WhatifRetractRequest, WhatifService};
 use crate::services::{
     admin_service::*, article_service::*, contention_service::*, edge_service::*,
     memory_service::*, search_service::*, session_service::*, source_service::*,
@@ -113,6 +114,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/divergence/report", get(admin_divergence_report))
         // Gap registry (covalence#100)
         .route("/admin/gaps", get(admin_gaps))
+        // Whatif retract preview (covalence#119)
+        .route("/admin/whatif/retract", post(admin_whatif_retract))
 }
 
 // ── Graph reload helper ─────────────────────────────────────────
@@ -1071,6 +1074,20 @@ async fn admin_gaps(
         Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+/// `POST /admin/whatif/retract` — non-destructive source retraction preview (covalence#119).
+///
+/// Computes the impact of retracting a source without permanently modifying any
+/// rows (HypoPG pattern: queries run inside a transaction that is always rolled
+/// back).  Returns per-article survivability and aggregate counts.
+async fn admin_whatif_retract(
+    State(state): State<AppState>,
+    Json(req): Json<WhatifRetractRequest>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = WhatifService::new(state.pool);
+    let report = svc.retract_preview(req).await?;
+    Ok(Json(serde_json::json!({ "data": report })))
 }
 
 async fn admin_knowledge_audit(
