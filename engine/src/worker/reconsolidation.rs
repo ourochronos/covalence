@@ -163,6 +163,37 @@ pub async fn handle_reconsolidate(
     let mut all_source_ids = existing_source_ids.clone();
     all_source_ids.extend_from_slice(&truly_new);
 
+    // ── 3b. Source cap (covalence#85) ────────────────────────────────────────
+    // "Lost in the middle" degradation: faithfulness drops when relevant
+    // content is buried in the centre of a long context window.  Capping at
+    // MAX_COMPILATION_SOURCES keeps all source material near the context edges
+    // where attention is strongest.  When more sources exist we keep the
+    // MAX_COMPILATION_SOURCES with the highest reliability score so the most
+    // trustworthy content is always included.
+    const MAX_COMPILATION_SOURCES: usize = 7;
+    let original_source_count = all_source_ids.len();
+    if original_source_count > MAX_COMPILATION_SOURCES {
+        let capped: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM covalence.nodes \
+             WHERE  id = ANY($1) \
+             ORDER BY COALESCE(reliability, 0.5) DESC \
+             LIMIT  $2",
+        )
+        .bind(&all_source_ids)
+        .bind(MAX_COMPILATION_SOURCES as i64)
+        .fetch_all(pool)
+        .await
+        .context("reconsolidate: failed to score sources for cap")?;
+        tracing::info!(
+            task_id    = %task.id,
+            article_id = %article_id,
+            original   = original_source_count,
+            capped_to  = capped.len(),
+            "reconsolidate: source cap applied (covalence#85)"
+        );
+        all_source_ids = capped;
+    }
+
     tracing::info!(
         task_id        = %task.id,
         article_id     = %article_id,

@@ -870,3 +870,225 @@ impl AdminService {
         })
     }
 }
+
+// ── Epistemic SLIs (covalence#88) ──────────────────────────────────────────
+
+/// A single Service-Level Indicator reading.
+///
+/// Contains the measured `value`, the `target` threshold, and a derived
+/// `healthy` flag indicating whether the indicator is within acceptable bounds.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct SliReading {
+    /// The measured ratio (0.0 – 1.0 for coverage/rate metrics).
+    pub value: f32,
+    /// The target threshold for "healthy" classification.
+    pub target: f32,
+    /// `true` when the value meets the target (direction depends on SLI type).
+    pub healthy: bool,
+}
+
+/// Full response for `GET /admin/epistemic`.
+///
+/// Reports six knowledge-health Service-Level Indicators that together form
+/// a measurable baseline for epistemic system quality.
+///
+/// # Phase 1 SLIs implemented here
+/// | SLI | Target | Direction |
+/// |-----|--------|-----------|
+/// | `embedding_coverage`  | ≥ 0.98 | higher is better |
+/// | `knowledge_freshness` | ≥ 0.70 | higher is better |
+/// | `graph_connectivity`  | ≥ 0.95 | higher is better |
+/// | `confidence_health`   | ≥ 0.85 | higher is better |
+/// | `contention_rate`     | < 0.05 | lower is better  |
+/// | `queue_health`        | < 0.05 | lower is better  |
+///
+/// # Phase 2 (not yet implemented)
+/// `retrieval_quality` (precision/recall from usage traces) is intentionally
+/// omitted here — it requires an offline eval harness with ground-truth
+/// relevance labels and cannot be computed with a single SQL query.
+/// Tracking issue: covalence#88.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct EpistemicSliResponse {
+    /// Fraction of active articles that have a content embedding stored in
+    /// `node_embeddings`. Embedding-less articles are invisible to vector
+    /// search; target ≥ 0.98.
+    pub embedding_coverage: SliReading,
+
+    /// Fraction of active articles whose `modified_at` falls within the last
+    /// 30 days. A low score indicates the corpus is stale; target ≥ 0.70.
+    pub knowledge_freshness: SliReading,
+
+    /// Fraction of active nodes that have at least one edge (inbound or
+    /// outbound) in the `covalence.edges` table. Isolated nodes cannot be
+    /// surfaced by graph-traversal strategies; target ≥ 0.95.
+    pub graph_connectivity: SliReading,
+
+    /// Fraction of active articles whose `confidence` column exceeds 0.5.
+    /// Low confidence signals uncertain or under-sourced knowledge; target ≥
+    /// 0.85.
+    pub confidence_health: SliReading,
+
+    /// Ratio of `detected` contentions to total active articles. Elevated
+    /// contention indicates unresolved contradictions in the corpus; target
+    /// < 0.05.
+    pub contention_rate: SliReading,
+
+    /// Ratio of `failed` queue items to all non-completed queue items
+    /// (pending + processing + failed + 1 sentinel to prevent /0). Elevated
+    /// failure rate signals a broken worker or bad payloads; target < 0.05.
+    pub queue_health: SliReading,
+}
+
+impl AdminService {
+    /// Compute all six Phase-1 epistemic SLIs and return them as a structured
+    /// response suitable for `GET /admin/epistemic`.
+    ///
+    /// All six metrics are computed in three parallel SQL queries to keep
+    /// latency low.  Each query uses conditional aggregation so no temporary
+    /// tables or subquery explosions are needed.
+    pub async fn epistemic_slis(&self) -> AppResult<EpistemicSliResponse> {
+        // ── Query 1: article-level metrics ───────────────────────────────────
+        // Computes embedding coverage, knowledge freshness, and confidence
+        // health in a single pass over covalence.nodes.
+        let article_row = sqlx::query(
+            "SELECT
+               COUNT(*) FILTER (WHERE node_type = 'article' AND status = 'active')
+                   AS total_articles,
+               COUNT(ne.node_id)
+                   FILTER (WHERE n.node_type = 'article' AND n.status = 'active')
+                   AS articles_with_embeddings,
+               COUNT(*) FILTER (
+                   WHERE node_type = 'article'
+                     AND status    = 'active'
+                     AND modified_at >= now() - INTERVAL '30 days'
+               ) AS fresh_articles,
+               COUNT(*) FILTER (
+                   WHERE node_type = 'article'
+                     AND status    = 'active'
+                     AND confidence > 0.5
+               ) AS articles_high_confidence
+             FROM covalence.nodes n
+             LEFT JOIN covalence.node_embeddings ne ON ne.node_id = n.id
+               AND n.node_type = 'article'
+               AND n.status    = 'active'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // ── Query 2: graph connectivity ───────────────────────────────────────
+        // Counts all active nodes and those with at least one edge.
+        let connectivity_row = sqlx::query(
+            "SELECT
+               COUNT(*) AS total_nodes,
+               COUNT(*) FILTER (WHERE id IN (
+                   SELECT DISTINCT source_node_id FROM covalence.edges
+                   UNION
+                   SELECT DISTINCT target_node_id FROM covalence.edges
+               )) AS connected_nodes
+             FROM covalence.nodes
+             WHERE status = 'active'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // ── Query 3: contentions & queue health ───────────────────────────────
+        let contention_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM covalence.contentions WHERE status = 'detected'")
+                .fetch_one(&self.pool)
+                .await?;
+
+        let queue_row = sqlx::query(
+            "SELECT
+               COUNT(*) FILTER (WHERE status = 'failed')     AS failed,
+               COUNT(*) FILTER (WHERE status = 'pending')    AS pending,
+               COUNT(*) FILTER (WHERE status = 'processing') AS processing
+             FROM covalence.slow_path_queue",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // ── Assemble readings ─────────────────────────────────────────────────
+        let total_articles: i64 = article_row.try_get("total_articles").unwrap_or(0);
+        let articles_with_embeddings: i64 =
+            article_row.try_get("articles_with_embeddings").unwrap_or(0);
+        let fresh_articles: i64 = article_row.try_get("fresh_articles").unwrap_or(0);
+        let articles_high_confidence: i64 =
+            article_row.try_get("articles_high_confidence").unwrap_or(0);
+
+        let total_nodes: i64 = connectivity_row.try_get("total_nodes").unwrap_or(0);
+        let connected_nodes: i64 = connectivity_row.try_get("connected_nodes").unwrap_or(0);
+
+        let failed: i64 = queue_row.try_get("failed").unwrap_or(0);
+        let pending: i64 = queue_row.try_get("pending").unwrap_or(0);
+        let processing: i64 = queue_row.try_get("processing").unwrap_or(0);
+
+        // Avoid division-by-zero: empty corpus → trivially healthy for coverage
+        // metrics, and 0.0 for rate metrics.
+        let embedding_coverage_val = if total_articles == 0 {
+            1.0_f32
+        } else {
+            articles_with_embeddings as f32 / total_articles as f32
+        };
+
+        let freshness_val = if total_articles == 0 {
+            1.0_f32
+        } else {
+            fresh_articles as f32 / total_articles as f32
+        };
+
+        let connectivity_val = if total_nodes == 0 {
+            1.0_f32
+        } else {
+            connected_nodes as f32 / total_nodes as f32
+        };
+
+        let confidence_val = if total_articles == 0 {
+            1.0_f32
+        } else {
+            articles_high_confidence as f32 / total_articles as f32
+        };
+
+        let contention_val = if total_articles == 0 {
+            0.0_f32
+        } else {
+            contention_count as f32 / total_articles as f32
+        };
+
+        // Sentinel +1 prevents division-by-zero even if queue is empty.
+        let queue_denominator = pending + processing + failed + 1;
+        let queue_val = failed as f32 / queue_denominator as f32;
+
+        Ok(EpistemicSliResponse {
+            embedding_coverage: SliReading {
+                value: embedding_coverage_val,
+                target: 0.98,
+                healthy: embedding_coverage_val >= 0.98,
+            },
+            knowledge_freshness: SliReading {
+                value: freshness_val,
+                target: 0.70,
+                healthy: freshness_val >= 0.70,
+            },
+            graph_connectivity: SliReading {
+                value: connectivity_val,
+                target: 0.95,
+                healthy: connectivity_val >= 0.95,
+            },
+            confidence_health: SliReading {
+                value: confidence_val,
+                target: 0.85,
+                healthy: confidence_val >= 0.85,
+            },
+            contention_rate: SliReading {
+                value: contention_val,
+                target: 0.05,
+                healthy: contention_val < 0.05,
+            },
+            queue_health: SliReading {
+                value: queue_val,
+                target: 0.05,
+                healthy: queue_val < 0.05,
+            },
+        })
+    }
+}

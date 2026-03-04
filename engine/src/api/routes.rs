@@ -95,6 +95,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/graph/centrality", get(admin_graph_centrality))
         .route("/admin/graph/intent-stats", get(admin_graph_intent_stats))
         .route("/admin/knowledge/audit", get(admin_knowledge_audit))
+        // Epistemic SLIs (covalence#88)
+        .route("/admin/epistemic", get(admin_epistemic))
         // Divergence detection (covalence#58)
         .route("/admin/divergence/scan", get(admin_divergence_scan))
         .route("/admin/divergence/report", get(admin_divergence_report))
@@ -434,6 +436,23 @@ async fn admin_graph_centrality(State(state): State<AppState>) -> impl IntoRespo
         "data": entries.into_iter().map(|(id, score)| serde_json::json!({ "node_id": id, "score": score })).collect::<Vec<_>>()
     });
     Json(result)
+}
+
+/// `GET /admin/epistemic` — six Phase-1 epistemic SLIs (covalence#88).
+///
+/// Returns a JSON object with six knowledge-health indicators.  Each indicator
+/// contains `value` (measured ratio), `target` (threshold), and `healthy`
+/// (bool).  See [`AdminService::epistemic_slis`] for the full specification.
+///
+/// Note: `retrieval_quality` (precision/recall from usage traces) is deferred
+/// to Phase 2 — it requires an offline eval harness with ground-truth labels
+/// and cannot be computed with a single real-time SQL query.
+async fn admin_epistemic(State(state): State<AppState>) -> impl IntoResponse {
+    let svc = AdminService::new(state.pool);
+    match svc.epistemic_slis().await {
+        Ok(resp) => Json(serde_json::json!({"data": resp})).into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 /// `GET /admin/graph/intent-stats` — edge count breakdown by intent category.
