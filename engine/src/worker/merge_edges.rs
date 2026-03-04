@@ -519,6 +519,132 @@ pub async fn handle_infer_edges(
         }
     }
 
+    // ── 2c. Auto-facet annotation from keywords (covalence#103 Phase 2) ──────
+    // If the node does not yet have facet_function or facet_scope set, try to
+    // infer them from the extracted keywords (stored in metadata["keywords"]).
+    // Uses a lightweight PMEST-inspired lookup table (opt-in, non-destructive).
+    {
+        let facet_row: Option<(Option<Vec<String>>, Option<Vec<String>>, serde_json::Value)> =
+            sqlx::query_as(
+                "SELECT facet_function, facet_scope, COALESCE(metadata, '{}'::jsonb) \
+                 FROM covalence.nodes WHERE id = $1",
+            )
+            .bind(node_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+
+        if let Some((existing_ff, existing_fs, metadata)) = facet_row {
+            // Only auto-annotate if at least one facet dimension is not already set.
+            let needs_ff = existing_ff.is_none();
+            let needs_fs = existing_fs.is_none();
+
+            if needs_ff || needs_fs {
+                // Extract keywords from metadata["keywords"] array.
+                let keywords: Vec<String> = metadata
+                    .get("keywords")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.to_lowercase())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if !keywords.is_empty() {
+                    // PMEST-inspired lookup table: keyword → facet dimension.
+                    // facet_function: what does this knowledge DO?
+                    const FF_TERMS: &[&str] = &[
+                        "process",
+                        "method",
+                        "algorithm",
+                        "function",
+                        "operation",
+                        "retrieval",
+                        "storage",
+                        "evaluation",
+                        "analysis",
+                        "inference",
+                        "procedure",
+                        "workflow",
+                        "design",
+                        "generation",
+                    ];
+                    // facet_scope: at what abstraction level?
+                    const FS_TERMS: &[&str] = &[
+                        "location",
+                        "region",
+                        "domain",
+                        "scope",
+                        "theoretical",
+                        "practical",
+                        "operational",
+                        "historical",
+                        "context",
+                        "environment",
+                        "field",
+                        "framework",
+                        "architecture",
+                    ];
+
+                    let inferred_ff: Vec<String> = FF_TERMS
+                        .iter()
+                        .filter(|term| keywords.iter().any(|kw| kw.contains(*term)))
+                        .map(|s| s.to_string())
+                        .collect();
+
+                    let inferred_fs: Vec<String> = FS_TERMS
+                        .iter()
+                        .filter(|term| keywords.iter().any(|kw| kw.contains(*term)))
+                        .map(|s| s.to_string())
+                        .collect();
+
+                    let new_ff: Option<Vec<String>> = if needs_ff && !inferred_ff.is_empty() {
+                        Some(inferred_ff)
+                    } else {
+                        None
+                    };
+                    let new_fs: Option<Vec<String>> = if needs_fs && !inferred_fs.is_empty() {
+                        Some(inferred_fs)
+                    } else {
+                        None
+                    };
+
+                    if new_ff.is_some() || new_fs.is_some() {
+                        // Only set columns that were inferred (don't overwrite existing).
+                        let update_result = sqlx::query(
+                            "UPDATE covalence.nodes \
+                             SET facet_function = CASE WHEN facet_function IS NULL THEN $2 ELSE facet_function END, \
+                                 facet_scope    = CASE WHEN facet_scope    IS NULL THEN $3 ELSE facet_scope    END \
+                             WHERE id = $1",
+                        )
+                        .bind(node_id)
+                        .bind(&new_ff)
+                        .bind(&new_fs)
+                        .execute(pool)
+                        .await;
+
+                        match update_result {
+                            Ok(_) => tracing::debug!(
+                                node_id = %node_id,
+                                ff      = ?new_ff,
+                                fs      = ?new_fs,
+                                "infer_edges: auto-facet annotation applied"
+                            ),
+                            Err(e) => tracing::warn!(
+                                node_id = %node_id,
+                                error   = %e,
+                                "infer_edges: auto-facet annotation failed (non-fatal)"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── 3. Check that an embedding exists ────────────────────────────────────
     let emb_exists =
         sqlx::query("SELECT 1 FROM covalence.node_embeddings WHERE node_id = $1 LIMIT 1")

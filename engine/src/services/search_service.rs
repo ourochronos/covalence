@@ -582,6 +582,10 @@ impl SearchService {
             None
         };
 
+        // Capture facet filter slices for the boost computation in build_results.
+        let req_ff = req.facet_function.as_deref();
+        let req_fs = req.facet_scope.as_deref();
+
         let mut results = build_results(
             &node_scores,
             &node_map,
@@ -594,6 +598,8 @@ impl SearchService {
             &graph_hops_map,
             &req.query,
             topo_map.as_ref(),
+            req_ff,
+            req_fs,
         );
         results.sort_by(|a, b| {
             b.score
@@ -1089,6 +1095,10 @@ impl SearchService {
                 None
             };
 
+        // Capture facet filter slices for the boost computation in build_results.
+        let req_ff = req.facet_function.as_deref();
+        let req_fs = req.facet_scope.as_deref();
+
         // Build article results and score them.
         // Post-filter to articles only: the dimension adaptors do not apply
         // the node_types restriction in DimensionQuery, so non-article nodes
@@ -1105,6 +1115,8 @@ impl SearchService {
             &graph_hops_map,
             &req.query,
             article_topo_map.as_ref(),
+            req_ff,
+            req_fs,
         );
         article_results.retain(|r| r.node_type == "article");
         article_results.sort_by(|a, b| {
@@ -1701,6 +1713,8 @@ impl SearchService {
                 &graph_hops_map,
                 &query_str,
                 topo_map.as_ref(),
+                None, // debug endpoint: no facet boost (no req available here)
+                None,
             );
             results.sort_by(|a, b| {
                 b.score
@@ -2016,6 +2030,39 @@ where
     rank_map
 }
 
+/// Compute the facet alignment boost multiplier (covalence#103 Phase 2).
+///
+/// Returns `1.1` when at least one facet dimension is requested **and** the
+/// node's facets are a superset of every requested value (PostgreSQL `@>`
+/// containment semantics).  Returns `1.0` (no-op) otherwise, including when
+/// no facets are present on the request.
+fn facet_boost(
+    req_ff: Option<&[String]>,
+    req_fs: Option<&[String]>,
+    node_ff: &Option<Vec<String>>,
+    node_fs: &Option<Vec<String>>,
+) -> f64 {
+    // Graceful no-op: no facet dimensions on the request.
+    if req_ff.is_none() && req_fs.is_none() {
+        return 1.0;
+    }
+    // facet_function alignment: node must contain ALL requested values.
+    let ff_ok = match req_ff {
+        Some(req) if !req.is_empty() => node_ff
+            .as_ref()
+            .is_some_and(|nf| req.iter().all(|v| nf.iter().any(|fv| fv == v))),
+        _ => true, // not filtered, or empty filter — always aligned
+    };
+    // facet_scope alignment: same @> semantics.
+    let fs_ok = match req_fs {
+        Some(req) if !req.is_empty() => node_fs
+            .as_ref()
+            .is_some_and(|ns| req.iter().all(|v| ns.iter().any(|fv| fv == v))),
+        _ => true,
+    };
+    if ff_ok && fs_ok { 1.1 } else { 1.0 }
+}
+
 /// Assemble [`SearchResult`] values from dimension score maps and node metadata.
 ///
 /// ## Fusion: Reciprocal Rank Fusion (covalence#73)
@@ -2033,6 +2080,10 @@ where
 ///
 /// `graph_hops_map`: maps node ID → hop distance discovered via graph traversal.
 /// Nodes absent from this map receive `graph_hops: None`.
+///
+/// `req_facet_function` / `req_facet_scope`: facet filter values from the
+/// originating [`SearchRequest`].  When set, matching nodes receive a 1.1×
+/// score boost (covalence#103 Phase 2).  Pass `None` for no boost.
 #[allow(clippy::too_many_arguments)]
 fn build_results(
     node_scores: &HashMap<Uuid, DimScores>,
@@ -2046,6 +2097,8 @@ fn build_results(
     graph_hops_map: &HashMap<Uuid, u32>,
     query: &str,
     topo_scores: Option<&HashMap<Uuid, TopologicalConfidence>>,
+    req_facet_function: Option<&[String]>,
+    req_facet_scope: Option<&[String]>,
 ) -> Vec<SearchResult> {
     // ── Pre-compute per-dimension rank maps for RRF (covalence#73) ────────────
     let vec_rank_map = dim_rank_map(node_scores, |s| s.0);
@@ -2158,6 +2211,16 @@ fn build_results(
         } else {
             final_score
         };
+
+        // Facet alignment boost (covalence#103 Phase 2): 1.1× for nodes whose
+        // facets satisfy the @> containment condition against the request facets.
+        let final_score = final_score
+            * facet_boost(
+                req_facet_function,
+                req_facet_scope,
+                facet_function,
+                facet_scope,
+            );
 
         results.push(SearchResult {
             node_id: *node_id,

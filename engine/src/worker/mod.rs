@@ -971,12 +971,15 @@ pub async fn handle_compile(
         source_ids
     };
 
-    // ── 2. Fetch source content ─────────────────────────────────────────────
-    let rows = sqlx::query("SELECT id, title, content FROM covalence.nodes WHERE id = ANY($1)")
-        .bind(&source_ids)
-        .fetch_all(pool)
-        .await
-        .context("compile: failed to fetch source nodes")?;
+    // ── 2. Fetch source content + facets ────────────────────────────────────
+    let rows = sqlx::query(
+        "SELECT id, title, content, facet_function, facet_scope \
+         FROM covalence.nodes WHERE id = ANY($1)",
+    )
+    .bind(&source_ids)
+    .fetch_all(pool)
+    .await
+    .context("compile: failed to fetch source nodes")?;
 
     if rows.is_empty() {
         anyhow::bail!("compile: no source nodes found for {:?}", source_ids);
@@ -986,6 +989,8 @@ pub async fn handle_compile(
         id: Uuid,
         title: String,
         content: String,
+        facet_function: Option<Vec<String>>,
+        facet_scope: Option<Vec<String>>,
     }
 
     let sources: Vec<SourceDoc> = rows
@@ -994,8 +999,34 @@ pub async fn handle_compile(
             id: r.get("id"),
             title: r.get::<Option<String>, _>("title").unwrap_or_default(),
             content: r.get::<Option<String>, _>("content").unwrap_or_default(),
+            facet_function: r.get("facet_function"),
+            facet_scope: r.get("facet_scope"),
         })
         .collect();
+
+    // ── 2b. Union source facets for the compiled article ────────────────────
+    // Merge facet_function and facet_scope from all contributing sources.
+    // Result is deduped and sorted for determinism (covalence#103 Phase 2).
+    let compiled_facet_function: Option<Vec<String>> = {
+        let mut set: Vec<String> = sources
+            .iter()
+            .filter_map(|s| s.facet_function.as_ref())
+            .flat_map(|v| v.iter().cloned())
+            .collect();
+        set.sort_unstable();
+        set.dedup();
+        if set.is_empty() { None } else { Some(set) }
+    };
+    let compiled_facet_scope: Option<Vec<String>> = {
+        let mut set: Vec<String> = sources
+            .iter()
+            .filter_map(|s| s.facet_scope.as_ref())
+            .flat_map(|v| v.iter().cloned())
+            .collect();
+        set.sort_unstable();
+        set.dedup();
+        if set.is_empty() { None } else { Some(set) }
+    };
 
     // ── 3. Build prompt ─────────────────────────────────────────────────────
     // Prompt caching (covalence#85): Anthropic's cache_control header requires
@@ -1224,13 +1255,18 @@ SOURCE DOCUMENTS:\n\
             );
             sqlx::query(
                 "UPDATE covalence.nodes \
-                 SET title = $1, content = $2, metadata = $3, modified_at = now() \
+                 SET title = $1, content = $2, metadata = $3, \
+                     facet_function = COALESCE($5, facet_function), \
+                     facet_scope    = COALESCE($6, facet_scope), \
+                     modified_at = now() \
                  WHERE id = $4",
             )
             .bind(&article_title)
             .bind(&article_content)
             .bind(&meta)
             .bind(existing_id)
+            .bind(&compiled_facet_function)
+            .bind(&compiled_facet_scope)
             .execute(&mut *tx)
             .await
             .context("compile: failed to update existing article")?;
@@ -1239,13 +1275,17 @@ SOURCE DOCUMENTS:\n\
             let new_id = Uuid::new_v4();
             sqlx::query(
                 "INSERT INTO covalence.nodes \
-                     (id, node_type, status, title, content, metadata, created_at, modified_at) \
-                 VALUES ($1, 'article', 'active', $2, $3, $4, now(), now())",
+                     (id, node_type, status, title, content, metadata, \
+                      facet_function, facet_scope, \
+                      created_at, modified_at) \
+                 VALUES ($1, 'article', 'active', $2, $3, $4, $5, $6, now(), now())",
             )
             .bind(new_id)
             .bind(&article_title)
             .bind(&article_content)
             .bind(&meta)
+            .bind(&compiled_facet_function)
+            .bind(&compiled_facet_scope)
             .execute(&mut *tx)
             .await
             .context("compile: failed to insert article node")?;
