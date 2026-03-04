@@ -1,3 +1,5 @@
+pub mod article_state;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;

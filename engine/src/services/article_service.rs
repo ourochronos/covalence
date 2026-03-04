@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::errors::*;
 use crate::graph::{GraphRepository, SqlGraphRepository};
+use crate::models::article_state::{Active, Archived, TypedArticle};
 use crate::models::*;
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
@@ -391,6 +392,39 @@ impl ArticleService {
         }
 
         Ok(())
+    }
+
+    /// **Type-safe archive** — the typestate analogue of [`Self::delete`].
+    ///
+    /// Fetches the article, enforces at compile time that only an `Active`
+    /// article can be passed to the archive path, persists the state change,
+    /// and returns a `TypedArticle<Archived>`.
+    ///
+    /// # Errors
+    /// * [`AppError::NotFound`] — article does not exist.
+    /// * [`AppError::Conflict`] — article is already archived (status ≠ "active").
+    ///
+    /// # Example
+    /// ```ignore
+    /// let archived: TypedArticle<Archived> = service.typed_archive(id).await?;
+    /// assert_eq!(archived.data.status, "archived");
+    /// ```
+    pub async fn typed_archive(&self, id: Uuid) -> AppResult<TypedArticle<Archived>> {
+        let data = self.get(id).await?;
+
+        // Construct the compile-time typed handle.  Returns None when the
+        // article is not active, converting a would-be logic error into an
+        // explicit Conflict result rather than silently no-oping.
+        let active = TypedArticle::<Active>::from_response(data)
+            .ok_or_else(|| AppError::Conflict(format!("article {id} is not active")))?;
+
+        // Perform the type-safe state transition (purely in-memory).
+        let archived: TypedArticle<Archived> = active.archive();
+
+        // Persist the state change to the database.
+        self.delete(id).await?;
+
+        Ok(archived)
     }
 
     /// Split an article into two parts (SPEC §5.4).
