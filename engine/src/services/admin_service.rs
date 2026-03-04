@@ -169,7 +169,7 @@ impl AdminService {
                COUNT(*) FILTER (WHERE status = 'pending') AS pending, \
                COUNT(*) FILTER (WHERE status = 'processing') AS processing, \
                COUNT(*) FILTER (WHERE status = 'failed') AS failed, \
-               COUNT(*) FILTER (WHERE status = 'completed' AND completed_at > now() - interval '24 hours') AS completed_24h \
+               COUNT(*) FILTER (WHERE status = 'complete' AND completed_at > now() - interval '24 hours') AS completed_24h \
              FROM covalence.slow_path_queue"
         ).fetch_one(&self.pool).await?;
 
