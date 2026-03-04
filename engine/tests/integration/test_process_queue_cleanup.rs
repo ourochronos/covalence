@@ -166,7 +166,7 @@ async fn test_process_queue_pass_a_deletes_orphaned_embed_failures() {
     let pass_a_action = result
         .actions_taken
         .iter()
-        .find(|a| a.contains("stale failed embed jobs"))
+        .find(|a| a.contains("stale embed"))
         .cloned();
     assert!(
         pass_a_action.is_some(),
