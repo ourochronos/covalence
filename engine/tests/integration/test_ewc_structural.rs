@@ -100,6 +100,26 @@ async fn set_structural_importance(pool: &sqlx::PgPool, id: Uuid, value: f64) {
         .unwrap_or_else(|e| panic!("set_structural_importance({id}) failed: {e}"));
 }
 
+/// Archive every active article whose ID is **not** in `keep_ids`.
+///
+/// Call this after inserting the test's own fixture articles and before
+/// triggering eviction.  It removes any DB pollution left by earlier tests
+/// or by concurrently-running non-serial tests, so that the eviction logic
+/// sees exactly the articles that belong to this test.
+async fn archive_preexisting_articles(pool: &sqlx::PgPool, keep_ids: &[Uuid]) {
+    sqlx::query(
+        "UPDATE covalence.nodes \
+         SET status = 'archived' \
+         WHERE node_type = 'article' \
+           AND status   = 'active' \
+           AND id != ALL($1::uuid[])",
+    )
+    .bind(keep_ids)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("archive_preexisting_articles failed: {e}"));
+}
+
 /// Returns true iff the article exists and is active.
 async fn article_is_active(pool: &sqlx::PgPool, id: Uuid) -> bool {
     sqlx::query_scalar::<_, bool>(
@@ -127,6 +147,11 @@ async fn test_structural_importance_computation() {
     let a = insert_article(&pool, "hub-article-A", 0.5).await;
     let b = insert_article(&pool, "leaf-article-B", 0.5).await;
     let c = insert_article(&pool, "leaf-article-C", 0.5).await;
+
+    // Remove any articles left by earlier tests or by concurrently-running
+    // tests so that structural importance scores are computed only over our
+    // known topology.
+    archive_preexisting_articles(&pool, &[a, b, c]).await;
 
     // Create edges: B→A and C→A  (A has in_degree=2).
     insert_confirms_edge(&pool, b, a).await;
@@ -179,6 +204,11 @@ async fn test_high_structural_importance_eviction_guard() {
     // LOW gets structural_importance = 0.0 (eligible).
     set_structural_importance(&pool, high, 0.9).await;
     set_structural_importance(&pool, low, 0.0).await;
+
+    // Archive any articles that do not belong to this test so that the
+    // eviction count (active_articles - max) is exactly 1 regardless of
+    // what other tests may have left in the DB.
+    archive_preexisting_articles(&pool, &[high, low]).await;
 
     // Force capacity limit to trigger eviction: set max to 1 but we have 2.
     // The maintenance handler reads COVALENCE_MAX_ARTICLES at call time.
@@ -243,6 +273,11 @@ async fn test_evict_score_ordering() {
     set_structural_importance(&pool, a, 0.8).await;
     set_structural_importance(&pool, b, 0.1).await;
     set_structural_importance(&pool, c, 0.0).await;
+
+    // Archive any articles that were left by prior tests or inserted by
+    // concurrently-running tests, so the eviction logic sees exactly {a, b, c}
+    // and the MAX_ARTICLES=2 threshold triggers exactly one eviction of c.
+    archive_preexisting_articles(&pool, &[a, b, c]).await;
 
     // Force eviction with max=2 (we have 3 active articles).
     // SAFETY: integration tests run single-threaded (serial).
