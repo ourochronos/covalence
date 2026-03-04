@@ -26,6 +26,9 @@ pub mod tree_index;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+
 use crate::graph::{GraphRepository as _, SqlGraphRepository};
 use crate::models::{EdgeType, NodeType};
 
@@ -55,10 +58,9 @@ pub struct QueueTask {
     pub result: Option<Value>,
 }
 
-/// Start the background worker loop.
-/// Call this once at startup; it runs forever until the process exits.
-pub async fn run(pool: PgPool) {
-    let llm: Arc<dyn LlmClient> = match std::env::var("OPENAI_API_KEY") {
+/// Build the LLM client from environment variables.
+fn build_llm_client() -> Arc<dyn LlmClient> {
+    match std::env::var("OPENAI_API_KEY") {
         Ok(key) if !key.is_empty() => {
             let mut client = openai::OpenAiClient::new(key);
             if let Ok(url) = std::env::var("OPENAI_BASE_URL") {
@@ -79,15 +81,45 @@ pub async fn run(pool: PgPool) {
             );
             Arc::new(StubLlmClient)
         }
-    };
+    }
+}
+
+/// Start the background worker loop.
+/// Call this once at startup; it runs until the process exits.
+pub async fn run(pool: PgPool) {
+    let llm = build_llm_client();
+    let token = CancellationToken::new();
+    run_with_token(pool, llm, token).await;
+}
+
+/// Start the background worker loop with an explicit [`CancellationToken`].
+///
+/// When the token is cancelled, the worker stops claiming new tasks and drains
+/// any in-flight tasks in its [`JoinSet`] before returning.  This ensures no
+/// task is left in the `processing` state after shutdown.
+///
+/// # Graceful drain
+/// 1. The outer poll loop races `POLL_INTERVAL` sleep against `token.cancelled()`.
+/// 2. On cancellation, the loop exits — no new tasks are claimed.
+/// 3. Any tasks already spawned into the [`JoinSet`] are allowed to run to
+///    completion before this function returns.
+pub async fn run_with_token(pool: PgPool, llm: Arc<dyn LlmClient>, token: CancellationToken) {
     tracing::info!(
         "slow-path worker started (poll_interval={}s)",
         POLL_INTERVAL.as_secs()
     );
 
+    let mut join_set: JoinSet<()> = JoinSet::new();
     let mut heartbeat_tick: u64 = 0;
 
     loop {
+        // Reap any tasks that finished since the last iteration.
+        while let Some(res) = join_set.try_join_next() {
+            if let Err(e) = res {
+                tracing::error!("worker: spawned task panicked: {e}");
+            }
+        }
+
         heartbeat_tick += 1;
 
         // Periodically enqueue consolidation tasks for due articles.
@@ -97,12 +129,213 @@ pub async fn run(pool: PgPool) {
             }
         }
 
-        match poll_and_execute(&pool, &llm).await {
-            Ok(n) if n > 0 => tracing::debug!("worker processed {n} task(s)"),
-            Ok(_) => {}
+        // Claim one pending task and spawn its execution into the JoinSet.
+        match claim_task(&pool).await {
+            Ok(Some(task)) => {
+                tracing::debug!(
+                    task_id   = %task.id,
+                    task_type = %task.task_type,
+                    "worker: claimed task, spawning"
+                );
+                let pool_c = pool.clone();
+                let llm_c = Arc::clone(&llm);
+                join_set.spawn(async move {
+                    execute_and_finalize(pool_c, llm_c, task).await;
+                });
+            }
+            Ok(None) => {} // no work available right now
             Err(e) => tracing::error!("worker poll error: {e:#}"),
         }
-        tokio::time::sleep(POLL_INTERVAL).await;
+
+        // Sleep until the next poll cycle, or exit immediately on cancellation.
+        tokio::select! {
+            _ = tokio::time::sleep(POLL_INTERVAL) => {}
+            _ = token.cancelled() => {
+                tracing::info!(
+                    in_flight = join_set.len(),
+                    "worker: cancellation requested — stopping new task intake"
+                );
+                break;
+            }
+        }
+    }
+
+    // Graceful drain: wait for all in-flight tasks to complete before returning.
+    if !join_set.is_empty() {
+        tracing::info!(count = join_set.len(), "worker: draining in-flight tasks");
+        while let Some(res) = join_set.join_next().await {
+            if let Err(e) = res {
+                tracing::error!("worker: in-flight task panicked: {e:#}");
+            }
+        }
+        tracing::info!("worker: graceful drain complete");
+    }
+}
+
+/// Claim one pending task from `slow_path_queue` using `SKIP LOCKED`.
+///
+/// Returns `Ok(None)` when no task is currently available.
+async fn claim_task(pool: &PgPool) -> anyhow::Result<Option<QueueTask>> {
+    let maybe_row = sqlx::query(
+        r#"
+        UPDATE covalence.slow_path_queue
+        SET    status     = 'processing',
+               started_at = now()
+        WHERE  id = (
+            SELECT id
+            FROM   covalence.slow_path_queue
+            WHERE  status = 'pending'
+              AND  (execute_after IS NULL OR execute_after <= now())
+            ORDER  BY priority DESC, created_at ASC
+            LIMIT  1
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING
+            id,
+            task_type,
+            node_id,
+            payload,
+            result
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .context("failed to claim task from slow_path_queue")?;
+
+    Ok(maybe_row.map(|r| {
+        use sqlx::Row;
+        QueueTask {
+            id: r.get("id"),
+            task_type: r.get("task_type"),
+            node_id: r.get("node_id"),
+            payload: r.get("payload"),
+            result: r.get("result"),
+        }
+    }))
+}
+
+/// Execute a claimed task and update its `slow_path_queue` status.
+///
+/// Owns the task (already marked `processing` by [`claim_task`]) and is
+/// responsible for marking it `complete`, `failed`, or re-queueing for retry.
+/// DB-finalisation errors are logged but not propagated so the JoinSet slot
+/// is always released cleanly.
+async fn execute_and_finalize(pool: PgPool, llm: Arc<dyn LlmClient>, task: QueueTask) {
+    let attempts: i64 = task
+        .result
+        .as_ref()
+        .and_then(|v| v.get("attempts"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        + 1;
+
+    tracing::info!(
+        task_id   = %task.id,
+        task_type = %task.task_type,
+        node_id   = ?task.node_id,
+        attempts,
+        "worker: task started"
+    );
+
+    let exec_result = execute_task(&pool, &llm, &task).await;
+
+    match exec_result {
+        Ok(output) => {
+            let result_json = json!({ "attempts": attempts, "output": output });
+            if let Err(e) = sqlx::query(
+                r#"UPDATE covalence.slow_path_queue
+                   SET  status       = 'complete',
+                        completed_at = now(),
+                        result       = $1
+                   WHERE id = $2"#,
+            )
+            .bind(&result_json)
+            .bind(task.id)
+            .execute(&pool)
+            .await
+            {
+                tracing::error!(
+                    task_id = %task.id,
+                    "worker: failed to mark task complete: {e:#}"
+                );
+            } else {
+                tracing::info!(
+                    task_id   = %task.id,
+                    task_type = %task.task_type,
+                    "worker: task complete"
+                );
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("{e:#}");
+            tracing::warn!(
+                task_id   = %task.id,
+                task_type = %task.task_type,
+                attempts,
+                error     = %error_msg,
+                "worker: task failed"
+            );
+
+            if attempts >= MAX_ATTEMPTS {
+                let result_json = json!({
+                    "attempts": attempts,
+                    "error":    error_msg,
+                    "final":    true,
+                });
+                if let Err(e) = sqlx::query(
+                    r#"UPDATE covalence.slow_path_queue
+                       SET  status       = 'failed',
+                            completed_at = now(),
+                            result       = $1
+                       WHERE id = $2"#,
+                )
+                .bind(&result_json)
+                .bind(task.id)
+                .execute(&pool)
+                .await
+                {
+                    tracing::error!(
+                        task_id = %task.id,
+                        "worker: failed to mark task failed: {e:#}"
+                    );
+                } else {
+                    tracing::error!(
+                        task_id   = %task.id,
+                        task_type = %task.task_type,
+                        "worker: task permanently failed after {MAX_ATTEMPTS} attempts"
+                    );
+                }
+            } else {
+                let result_json = json!({
+                    "attempts":   attempts,
+                    "last_error": error_msg,
+                });
+                if let Err(e) = sqlx::query(
+                    r#"UPDATE covalence.slow_path_queue
+                       SET  status     = 'pending',
+                            started_at = null,
+                            result     = $1
+                       WHERE id = $2"#,
+                )
+                .bind(&result_json)
+                .bind(task.id)
+                .execute(&pool)
+                .await
+                {
+                    tracing::error!(
+                        task_id = %task.id,
+                        "worker: failed to requeue task: {e:#}"
+                    );
+                } else {
+                    tracing::info!(
+                        task_id   = %task.id,
+                        task_type = %task.task_type,
+                        attempts,
+                        "worker: task requeued for retry"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -159,164 +392,6 @@ async fn enqueue_due_consolidations(pool: &PgPool) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Poll for one pending task, execute it, and return how many tasks were processed.
-async fn poll_and_execute(pool: &PgPool, llm: &Arc<dyn LlmClient>) -> anyhow::Result<usize> {
-    // Claim the highest-priority pending task atomically using SKIP LOCKED
-    // so multiple worker instances can run safely.
-    let maybe_row = sqlx::query(
-        r#"
-        UPDATE covalence.slow_path_queue
-        SET    status     = 'processing',
-               started_at = now()
-        WHERE  id = (
-            SELECT id
-            FROM   covalence.slow_path_queue
-            WHERE  status = 'pending'
-              AND  (execute_after IS NULL OR execute_after <= now())
-            ORDER  BY priority DESC, created_at ASC
-            LIMIT  1
-            FOR UPDATE SKIP LOCKED
-        )
-        RETURNING
-            id,
-            task_type,
-            node_id,
-            payload,
-            result
-        "#,
-    )
-    .fetch_optional(pool)
-    .await
-    .context("failed to claim task from slow_path_queue")?;
-
-    let maybe_task = maybe_row.map(|r| {
-        use sqlx::Row;
-        QueueTask {
-            id: r.get("id"),
-            task_type: r.get("task_type"),
-            node_id: r.get("node_id"),
-            payload: r.get("payload"),
-            result: r.get("result"),
-        }
-    });
-
-    let task = match maybe_task {
-        Some(t) => t,
-        None => return Ok(0),
-    };
-
-    // Determine current attempt count from result JSONB
-    let attempts: i64 = task
-        .result
-        .as_ref()
-        .and_then(|v| v.get("attempts"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0)
-        + 1;
-
-    tracing::info!(
-        task_id  = %task.id,
-        task_type = %task.task_type,
-        node_id  = ?task.node_id,
-        attempts,
-        "worker: task started"
-    );
-
-    // Execute the task
-    let exec_result = execute_task(pool, llm, &task).await;
-
-    match exec_result {
-        Ok(output) => {
-            let result_json = json!({
-                "attempts": attempts,
-                "output": output,
-            });
-            sqlx::query(
-                r#"UPDATE covalence.slow_path_queue
-                SET  status       = 'complete',
-                     completed_at = now(),
-                     result       = $1
-                WHERE id = $2"#,
-            )
-            .bind(&result_json)
-            .bind(task.id)
-            .execute(pool)
-            .await
-            .context("failed to mark task complete")?;
-
-            tracing::info!(
-                task_id   = %task.id,
-                task_type = %task.task_type,
-                "worker: task complete"
-            );
-        }
-        Err(e) => {
-            let error_msg = format!("{e:#}");
-            tracing::warn!(
-                task_id   = %task.id,
-                task_type = %task.task_type,
-                attempts,
-                error     = %error_msg,
-                "worker: task failed"
-            );
-
-            if attempts >= MAX_ATTEMPTS {
-                // Permanently fail
-                let result_json = json!({
-                    "attempts": attempts,
-                    "error": error_msg,
-                    "final": true,
-                });
-                sqlx::query(
-                    r#"UPDATE covalence.slow_path_queue
-                    SET  status       = 'failed',
-                         completed_at = now(),
-                         result       = $1
-                    WHERE id = $2"#,
-                )
-                .bind(&result_json)
-                .bind(task.id)
-                .execute(pool)
-                .await
-                .context("failed to mark task failed")?;
-
-                tracing::error!(
-                    task_id   = %task.id,
-                    task_type = %task.task_type,
-                    "worker: task permanently failed after {MAX_ATTEMPTS} attempts"
-                );
-            } else {
-                // Requeue for retry by resetting to pending
-                let result_json = json!({
-                    "attempts": attempts,
-                    "last_error": error_msg,
-                });
-                sqlx::query(
-                    r#"UPDATE covalence.slow_path_queue
-                    SET  status     = 'pending',
-                         started_at = null,
-                         result     = $1
-                    WHERE id = $2"#,
-                )
-                .bind(&result_json)
-                .bind(task.id)
-                .execute(pool)
-                .await
-                .context("failed to requeue task")?;
-
-                tracing::info!(
-                    task_id   = %task.id,
-                    task_type = %task.task_type,
-                    attempts,
-                    "worker: task requeued for retry"
-                );
-            }
-        }
-    }
-
-    Ok(1)
 }
 
 /// Dispatch to the appropriate handler for each task type.
@@ -1085,68 +1160,106 @@ SOURCE DOCUMENTS:\n\
         None
     };
 
-    // ── 6. Insert or update article node ────────────────────────────────────
+    // ── 6. Insert or update article node (transactional) ────────────────────
+    // Steps 6, 6b, and the mutation log are wrapped in a single transaction so
+    // a mid-operation cancellation cannot leave the article row in a partial state.
     let meta = json!({
         "epistemic_type": epistemic_type,
         "degraded":       degraded,
     });
 
-    let article_id: Uuid = if let Some(existing_id) = existing_article_id {
-        tracing::info!(
-            existing_id = %existing_id,
-            "compile: dedup hit — updating existing article"
-        );
+    let article_id: Uuid = {
+        let mut tx = pool
+            .begin()
+            .await
+            .context("compile: failed to begin transaction")?;
+
+        let id = if let Some(existing_id) = existing_article_id {
+            tracing::info!(
+                existing_id = %existing_id,
+                "compile: dedup hit — updating existing article"
+            );
+            sqlx::query(
+                "UPDATE covalence.nodes \
+                 SET title = $1, content = $2, metadata = $3, modified_at = now() \
+                 WHERE id = $4",
+            )
+            .bind(&article_title)
+            .bind(&article_content)
+            .bind(&meta)
+            .bind(existing_id)
+            .execute(&mut *tx)
+            .await
+            .context("compile: failed to update existing article")?;
+            existing_id
+        } else {
+            let new_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO covalence.nodes \
+                     (id, node_type, status, title, content, metadata, created_at, modified_at) \
+                 VALUES ($1, 'article', 'active', $2, $3, $4, now(), now())",
+            )
+            .bind(new_id)
+            .bind(&article_title)
+            .bind(&article_content)
+            .bind(&meta)
+            .execute(&mut *tx)
+            .await
+            .context("compile: failed to insert article node")?;
+            new_id
+        };
+
+        // ── 6b. Schedule first consolidation pass ────────────────────────────
+        // Set next_consolidation_at = now() + SCHEDULE_PASS_1_HOURS so the
+        // heartbeat can trigger pass 1.  Reset consolidation_count to 0.
+        let first_pass_delay =
+            chrono::Duration::hours(crate::worker::consolidation::SCHEDULE_PASS_1_HOURS);
+        let first_consolidation_at = chrono::Utc::now() + first_pass_delay;
         sqlx::query(
             "UPDATE covalence.nodes \
-             SET title = $1, content = $2, metadata = $3, modified_at = now() \
-             WHERE id = $4",
+             SET next_consolidation_at = $1, \
+                 consolidation_count   = 0 \
+             WHERE id = $2",
         )
-        .bind(&article_title)
-        .bind(&article_content)
-        .bind(&meta)
-        .bind(existing_id)
-        .execute(pool)
+        .bind(first_consolidation_at)
+        .bind(id)
+        .execute(&mut *tx)
         .await
-        .context("compile: failed to update existing article")?;
-        existing_id
-    } else {
-        let new_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO covalence.nodes \
-                 (id, node_type, status, title, content, metadata, created_at, modified_at) \
-             VALUES ($1, 'article', 'active', $2, $3, $4, now(), now())",
-        )
-        .bind(new_id)
-        .bind(&article_title)
-        .bind(&article_content)
-        .bind(&meta)
-        .execute(pool)
-        .await
-        .context("compile: failed to insert article node")?;
-        new_id
-    };
+        .context("compile: failed to schedule consolidation")?;
 
-    // ── 6b. Schedule first consolidation pass ────────────────────────────────
-    // Set next_consolidation_at = now() + SCHEDULE_PASS_1_HOURS so the heartbeat
-    // can trigger pass 1.  Reset consolidation_count to 0 whether this is a
-    // new article or a dedup-update.
-    let first_pass_delay =
-        chrono::Duration::hours(crate::worker::consolidation::SCHEDULE_PASS_1_HOURS);
-    let first_consolidation_at = chrono::Utc::now() + first_pass_delay;
-    sqlx::query(
-        "UPDATE covalence.nodes \
-         SET next_consolidation_at = $1, \
-             consolidation_count   = 0 \
-         WHERE id = $2",
-    )
-    .bind(first_consolidation_at)
-    .bind(article_id)
-    .execute(pool)
-    .await
-    .context("compile: failed to schedule consolidation")?;
+        // ── Mutation log (within transaction) ────────────────────────────────
+        let mutation_entry = serde_json::json!([{
+            "type": "created",
+            "summary": format!("Compiled from {} source(s)", sources.len()),
+            "recorded_at": chrono::Utc::now().to_rfc3339(),
+        }]);
+        sqlx::query(
+            r#"UPDATE covalence.nodes
+                  SET metadata = jsonb_set(
+                                     coalesce(metadata, '{}'::jsonb),
+                                     '{mutation_log}',
+                                     coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb,
+                                     true
+                                 ),
+                      modified_at = now()
+                WHERE id = $2"#,
+        )
+        .bind(&mutation_entry)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .context("compile: failed to record mutation in metadata")?;
+
+        tx.commit()
+            .await
+            .context("compile: failed to commit article transaction")?;
+
+        id
+    };
 
     // ── 7. Create AGE vertex + insert provenance edges via GraphRepository ───
     // All writes go through GraphRepository so both AGE and SQL are updated.
+    // These are outside the transaction; failures are non-fatal (logged as warnings).
     let graph = SqlGraphRepository::new(pool.clone());
 
     // Ensure the new article has an AGE vertex before creating edges.
@@ -1195,30 +1308,7 @@ SOURCE DOCUMENTS:\n\
         }
     }
 
-    // ── 8. Record mutation in node metadata ────────────────────────────────
-    let _mutation_entry = serde_json::json!([{
-        "type": "created",
-        "summary": format!("Compiled from {} source(s)", sources.len()),
-        "recorded_at": chrono::Utc::now().to_rfc3339(),
-    }]);
-    sqlx::query(
-        r#"UPDATE covalence.nodes
-              SET metadata = jsonb_set(
-                                 coalesce(metadata, '{}'::jsonb),
-                                 '{mutation_log}',
-                                 coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb,
-                                 true
-                             ),
-                  modified_at = now()
-            WHERE id = $2"#,
-    )
-    .bind(&_mutation_entry)
-    .bind(article_id)
-    .execute(pool)
-    .await
-    .context("compile: failed to record mutation in metadata")?;
-
-    // ── 9. Queue follow-up tasks ────────────────────────────────────────────
+    // ── 8. Queue follow-up tasks ────────────────────────────────────────────
     enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;
     for src in &sources {
         enqueue_task(pool, "contention_check", Some(src.id), json!({}), 3).await?;

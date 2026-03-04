@@ -33,6 +33,7 @@ mod search_benchmark;
 mod search_tests;
 mod test_age_edge_sync;
 mod test_auto_link;
+mod test_cancellation;
 mod test_compilation;
 mod test_compile;
 mod test_concerns;

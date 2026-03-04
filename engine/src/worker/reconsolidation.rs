@@ -312,23 +312,67 @@ SOURCE DOCUMENTS:\n\
             }
         };
 
-    // ── 7. Update article in-place ───────────────────────────────────────────
-    sqlx::query(
-        "UPDATE covalence.nodes
-         SET    title                  = $1,
-                content                = $2,
-                modified_at            = now(),
-                last_reconsolidated_at = now()
-         WHERE  id = $3",
-    )
-    .bind(&new_title)
-    .bind(&new_content)
-    .bind(article_id)
-    .execute(pool)
-    .await
-    .context("reconsolidate: failed to update article")?;
+    // ── 7 + 9. Update article content and mutation log (transactional) ────────
+    // Both writes are wrapped in a single transaction so that a mid-operation
+    // cancellation cannot leave the article partially updated.
+    {
+        let mut tx = pool
+            .begin()
+            .await
+            .context("reconsolidate: failed to begin transaction")?;
+
+        sqlx::query(
+            "UPDATE covalence.nodes
+             SET    title                  = $1,
+                    content                = $2,
+                    modified_at            = now(),
+                    last_reconsolidated_at = now()
+             WHERE  id = $3",
+        )
+        .bind(&new_title)
+        .bind(&new_content)
+        .bind(article_id)
+        .execute(&mut *tx)
+        .await
+        .context("reconsolidate: failed to update article")?;
+
+        let mutation_entry = json!([{
+            "type": "reconsolidated",
+            "summary": format!(
+                "Reconsolidated with {} new source(s): {}",
+                truly_new.len(),
+                truly_new
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            "recorded_at": chrono::Utc::now().to_rfc3339(),
+        }]);
+        sqlx::query(
+            r#"UPDATE covalence.nodes
+                  SET metadata = jsonb_set(
+                                     coalesce(metadata, '{}'::jsonb),
+                                     '{mutation_log}',
+                                     coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb,
+                                     true
+                                 ),
+                      modified_at = now()
+                WHERE id = $2"#,
+        )
+        .bind(&mutation_entry)
+        .bind(article_id)
+        .execute(&mut *tx)
+        .await
+        .context("reconsolidate: failed to record mutation log")?;
+
+        tx.commit()
+            .await
+            .context("reconsolidate: failed to commit transaction")?;
+    }
 
     // ── 8. Create provenance edges for newly-linked orphan sources ───────────
+    // Outside the transaction — non-fatal (failures are logged as warnings).
     let graph = SqlGraphRepository::new(pool.clone());
 
     // Ensure an AGE vertex exists for the article (idempotent, non-fatal).
@@ -375,37 +419,6 @@ SOURCE DOCUMENTS:\n\
             );
         }
     }
-
-    // ── 9. Record mutation log entry ────────────────────────────────────────
-    let mutation_entry = json!([{
-        "type": "reconsolidated",
-        "summary": format!(
-            "Reconsolidated with {} new source(s): {}",
-            truly_new.len(),
-            truly_new
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        "recorded_at": chrono::Utc::now().to_rfc3339(),
-    }]);
-    sqlx::query(
-        r#"UPDATE covalence.nodes
-              SET metadata = jsonb_set(
-                                 coalesce(metadata, '{}'::jsonb),
-                                 '{mutation_log}',
-                                 coalesce(metadata->'mutation_log', '[]'::jsonb) || $1::jsonb,
-                                 true
-                             ),
-                  modified_at = now()
-            WHERE id = $2"#,
-    )
-    .bind(&mutation_entry)
-    .bind(article_id)
-    .execute(pool)
-    .await
-    .context("reconsolidate: failed to record mutation log")?;
 
     // ── 10. Queue embed for the updated article ─────────────────────────────
     super::enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;

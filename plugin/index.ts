@@ -189,6 +189,8 @@ const covalencePlugin = {
           "Unified knowledge retrieval — search articles and optionally raw sources. " +
           "CRITICAL: Call this BEFORE answering questions about any topic that may have been " +
           "discussed, documented, or learned previously. This ensures responses are grounded in accumulated knowledge. " +
+          "Supports intent-aware graph traversal, multiple search modes (standard/hierarchical/synthesis), " +
+          "and search strategies (balanced/precise/exploratory/graph). " +
           "Results are ranked by: relevance × 0.5 + confidence × 0.35 + freshness × 0.15.",
         parameters: Type.Object({
           query: Type.String({ description: "Natural-language search query" }),
@@ -203,6 +205,51 @@ const covalencePlugin = {
           session_id: Type.Optional(
             Type.String({ description: "Optional session ID for usage trace attribution" }),
           ),
+          intent: Type.Optional(
+            Type.String({
+              description:
+                "Search intent for graph traversal edge prioritization. " +
+                "Values: factual (confirms/originates edges), temporal (valid_from/supersedes edges), " +
+                "causal (causal edges), entity (involves/captured_in edges). " +
+                "Omit for default behavior.",
+            }),
+          ),
+          mode: Type.Optional(
+            Type.String({
+              description:
+                "Search mode. Values: standard (flat search, default), " +
+                "hierarchical (articles first, then expand linked sources via provenance), " +
+                "synthesis (LLM-synthesized answer with inline citations from raw sources).",
+            }),
+          ),
+          strategy: Type.Optional(
+            Type.String({
+              description:
+                "Search strategy adjusts dimension weights. Values: balanced (default, vector=0.55 lexical=0.20 graph=0.10 structural=0.15), " +
+                "precise (lexical-heavy for factual lookups, lexical=0.45), " +
+                "exploratory (vector-heavy for conceptual queries, vector=0.65), " +
+                "graph (graph-heavy for structural/relational queries, graph=0.40 + 2 hops default).",
+            }),
+          ),
+          recency_bias: Type.Optional(
+            Type.Number({
+              description:
+                "Recency bias factor (0.0-1.0). At 0.0 (default), freshness gets 10% weight. " +
+                "At 1.0, freshness gets 40% weight (strongly favor recent content).",
+            }),
+          ),
+          domain_path: Type.Optional(
+            Type.Array(Type.String(), {
+              description:
+                "Domain path filter. Only nodes whose domain_path shares at least one element are returned.",
+            }),
+          ),
+          max_hops: Type.Optional(
+            Type.Number({
+              description:
+                "Maximum graph traversal hops (1-3, default 1). Higher values discover structurally distant but related nodes.",
+            }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const result = await searchKnowledge(cfg, {
@@ -210,6 +257,12 @@ const covalencePlugin = {
             limit: typeof params.limit === "number" ? params.limit : undefined,
             include_sources: typeof params.include_sources === "boolean" ? params.include_sources : undefined,
             session_id: params.session_id ? String(params.session_id) : undefined,
+            intent: typeof params.intent === "string" ? params.intent : undefined,
+            mode: typeof params.mode === "string" ? params.mode : undefined,
+            strategy: typeof params.strategy === "string" ? params.strategy : undefined,
+            recency_bias: typeof params.recency_bias === "number" ? params.recency_bias : undefined,
+            domain_path: Array.isArray(params.domain_path) ? params.domain_path as string[] : undefined,
+            max_hops: typeof params.max_hops === "number" ? params.max_hops : undefined,
           });
           if (!result.success) throw new Error(result.error || "knowledge_search failed");
           return ok(result.data);

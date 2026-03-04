@@ -197,6 +197,12 @@ export function searchKnowledge(
     include_sources?: boolean;
     session_id?: string;
     weights?: Record<string, number>;
+    intent?: string;
+    mode?: string;
+    strategy?: string;
+    recency_bias?: number;
+    domain_path?: string[];
+    max_hops?: number;
   },
 ): Promise<CovalenceResult> {
   return covalenceFetch(cfg, "POST", "/search", params);
