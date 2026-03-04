@@ -125,9 +125,12 @@ async fn structural_gaps_computed() {
 
 // ─── Test 5 ───────────────────────────────────────────────────────────────────
 
-/// After inserting an article containing capitalized multi-word phrases that
+/// After inserting articles containing capitalized multi-word phrases that
 /// don't appear in any article title, `compute_horizon_gaps=true` must produce
-/// a `horizon_score > 0` for the article's domain.
+/// a `horizon_score > 0` for the articles' domain.
+///
+/// Updated for covalence#121: the NER regex now requires ≥ 3 capitalized words,
+/// and an entity must appear in ≥ 2 distinct articles to be counted.
 #[tokio::test]
 #[serial]
 async fn horizon_gaps_computed() {
@@ -136,24 +139,30 @@ async fn horizon_gaps_computed() {
     let app = routes::router().with_state(state);
 
     let domain = format!("horizon-test-{}", Uuid::new_v4());
-    let unique_entity = format!("Zymurgy Xylophone {}", &Uuid::new_v4().to_string()[..8]);
+    // Use a THREE-word capitalized entity to satisfy the updated NER regex (#121).
+    let unique_entity = format!(
+        "Zymurgy Xylophone Krypton {}",
+        &Uuid::new_v4().to_string()[..8]
+    );
 
-    // Insert an article whose content contains a unique capitalized phrase
-    // that will NOT appear in any other article title.
-    sqlx::query(
-        "INSERT INTO covalence.nodes \
-         (id, node_type, status, title, content, domain_path) \
-         VALUES (gen_random_uuid(), 'article', 'active', $1, $2, ARRAY[$3])",
-    )
-    .bind(format!("{domain} horizon article"))
-    .bind(format!(
-        "This article discusses {} which is a concept not covered elsewhere.",
-        unique_entity
-    ))
-    .bind(&domain)
-    .execute(&pool)
-    .await
-    .expect("insert article with entities");
+    // Insert TWO articles so the entity meets the ≥ 2-article occurrence filter (#121).
+    // Both reference the same unique entity that will NOT appear in any article title.
+    for i in 0..2u32 {
+        sqlx::query(
+            "INSERT INTO covalence.nodes \
+             (id, node_type, status, title, content, domain_path) \
+             VALUES (gen_random_uuid(), 'article', 'active', $1, $2, ARRAY[$3])",
+        )
+        .bind(format!("{domain} horizon article {i}"))
+        .bind(format!(
+            "This article discusses {} which is a concept not covered elsewhere.",
+            unique_entity
+        ))
+        .bind(&domain)
+        .execute(&pool)
+        .await
+        .expect("insert article with entities");
+    }
 
     // Run horizon gap computation.
     let resp = post_maintenance(&app, serde_json::json!({ "compute_horizon_gaps": true })).await;

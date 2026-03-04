@@ -1458,17 +1458,22 @@ impl AdminService {
     }
 
     /// Scan active articles for unresolved named-entity references and
-    /// upsert horizon scores into `gap_registry` (covalence#120).
+    /// upsert horizon scores into `gap_registry` (covalence#120, calibrated #121).
     ///
     /// Algorithm:
-    /// 1. Extract capitalized multi-word phrases (≥ 2 consecutive Title-Cased words)
+    /// 1. Extract capitalized multi-word phrases (≥ 3 consecutive Title-Cased words)
     ///    from each active article's content using PostgreSQL regex.
-    /// 2. A phrase is "resolved" if any active article title contains it
+    ///    Requiring 3+ words (up from 2) eliminates common false-positive bigrams such
+    ///    as section headers and emphasis phrases that flooded the list and caused
+    ///    every domain to report `horizon_score = 1.0`.
+    /// 2. Keep only phrases that appear in ≥ 2 distinct article content strings.
+    ///    Single-article occurrences are noise and are discarded.
+    /// 3. A phrase is "resolved" if any active article title contains it
     ///    (case-insensitive substring match).
-    /// 3. Articles whose unresolved-entity ratio > 0.3 are flagged.
-    /// 4. The horizon score for each top-level domain is:
+    /// 4. Articles whose unresolved-entity ratio > 0.3 are flagged.
+    /// 5. The horizon score for each top-level domain is:
     ///    `horizon_score = flagged_count / total_articles_in_domain` (clamped to 1.0).
-    /// 5. Upsert into `gap_registry` with `horizon_score` set.
+    /// 6. Upsert into `gap_registry` with `horizon_score` set.
     ///
     /// Returns the number of rows upserted.
     pub async fn compute_horizon_gaps(&self) -> AppResult<i64> {
@@ -1481,8 +1486,11 @@ impl AdminService {
                 FROM covalence.nodes
                 WHERE node_type = 'article' AND status = 'active'
             ),
-            -- Extract all capitalized multi-word phrases from each article's content.
-            -- Pattern: two or more consecutive Title-Cased words (e.g. "Knowledge Graph").
+            -- Extract all capitalized 3+ word phrases from each article's content.
+            -- Pattern: THREE or more consecutive Title-Cased words
+            -- (e.g. "Knowledge Graph Engine"). Requiring ≥ 3 words reduces false
+            -- positives from 2-word section headers, emphasis, and common bigrams
+            -- that previously caused horizon_score = 1.0 across every domain (#121).
             article_entities AS (
                 SELECT
                     n.id,
@@ -1492,7 +1500,7 @@ impl AdminService {
                 CROSS JOIN LATERAL (
                     SELECT regexp_matches(
                         COALESCE(n.content, ''),
-                        '[A-Z][a-z]+\s+[A-Z][a-z]+',
+                        '[A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+',
                         'g'
                     ) AS entity_match
                 ) e
@@ -1501,18 +1509,34 @@ impl AdminService {
                   AND n.domain_path IS NOT NULL
                   AND cardinality(n.domain_path) > 0
             ),
+            -- Minimum-occurrence filter: discard phrases seen in only one article.
+            -- A phrase must appear in ≥ 2 distinct articles to be treated as a
+            -- genuine entity reference rather than a one-off proper noun or header.
+            multi_article_entities AS (
+                SELECT entity_lower
+                FROM article_entities
+                GROUP BY entity_lower
+                HAVING COUNT(DISTINCT id) >= 2
+            ),
+            -- Restrict to entities that pass the occurrence threshold.
+            filtered_entities AS (
+                SELECT ae.id, ae.top_domain, ae.entity_lower
+                FROM article_entities ae
+                INNER JOIN multi_article_entities mae
+                        ON mae.entity_lower = ae.entity_lower
+            ),
             -- For each entity occurrence, check if it is resolved in any article title.
             entity_resolution AS (
                 SELECT
-                    ae.id,
-                    ae.top_domain,
-                    ae.entity_lower,
+                    fe.id,
+                    fe.top_domain,
+                    fe.entity_lower,
                     EXISTS (
                         SELECT 1
                         FROM article_titles at2
-                        WHERE at2.title_lower LIKE '%' || ae.entity_lower || '%'
+                        WHERE at2.title_lower LIKE '%' || fe.entity_lower || '%'
                     ) AS is_resolved
-                FROM article_entities ae
+                FROM filtered_entities fe
             ),
             -- Per-article entity statistics.
             article_stats AS (
