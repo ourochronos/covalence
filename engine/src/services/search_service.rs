@@ -705,9 +705,7 @@ impl SearchService {
                     }
                 }
             } else if let Err(e) = neighbor_rows {
-                tracing::debug!(
-                    "spreading_activation: edge query failed (non-fatal): {e:#}"
-                );
+                tracing::debug!("spreading_activation: edge query failed (non-fatal): {e:#}");
             }
         }
 

@@ -145,14 +145,11 @@ async fn spreading_activation_surfaces_connected_nodes() {
 
     // Article B must appear via spreading activation (it is A's first-degree
     // CONFIRMS neighbour, but hop-2 from S — beyond max_hops=1).
-    let res_b = results
-        .iter()
-        .find(|r| r.node_id == article_b)
-        .expect(
-            "article B must appear when spreading_activation=true; \
+    let res_b = results.iter().find(|r| r.node_id == article_b).expect(
+        "article B must appear when spreading_activation=true; \
              it is a first-degree CONFIRMS neighbour of article A, \
              which is in the top-5 results",
-        );
+    );
 
     // Spreading score must be positive and ≤ the 0.15 cap.
     assert!(
