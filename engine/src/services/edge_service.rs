@@ -38,6 +38,13 @@ impl EdgeService {
     }
 
     /// Create a typed edge between two nodes.
+    ///
+    /// Enforces inference rules on write:
+    /// * **CONTRADICTS symmetry** (covalence#99): when A CONTRADICTS B is written,
+    ///   the inverse B CONTRADICTS A is automatically created if it does not already
+    ///   exist.  Both the primary insert and the inverse insert use
+    ///   `ON CONFLICT … DO NOTHING` so that the operation is idempotent: writing
+    ///   an edge that already exists returns the existing edge rather than an error.
     pub async fn create(&self, req: CreateEdgeRequest) -> AppResult<Edge> {
         let edge_type: EdgeType = req
             .label
@@ -48,17 +55,127 @@ impl EdgeService {
         let confidence = req.confidence.unwrap_or(1.0);
         let props = serde_json::json!({"notes": req.notes});
 
-        self.graph
-            .create_edge(
+        // ── Primary edge insert ───────────────────────────────────────────────
+        // For CONTRADICTS edges we use an upsert helper so that symmetry
+        // enforcement (which may have already created this direction) does not
+        // produce a unique-constraint error.  All other edge types go through
+        // the standard repository path.
+        let edge = if edge_type == EdgeType::Contradicts {
+            self.upsert_contradicts_edge(
                 req.from_node_id,
                 req.to_node_id,
-                edge_type,
                 confidence,
                 method,
-                props,
+                &props,
             )
+            .await?
+        } else {
+            self.graph
+                .create_edge(
+                    req.from_node_id,
+                    req.to_node_id,
+                    edge_type,
+                    confidence,
+                    method,
+                    props,
+                )
+                .await
+                .map_err(AppError::Graph)?
+        };
+
+        // ── Inference rule: CONTRADICTS symmetry ─────────────────────────────
+        // Dung (1995): the "attack" relation must be symmetric.  When A→B
+        // CONTRADICTS is written, auto-create B→A CONTRADICTS if absent.
+        if edge_type == EdgeType::Contradicts {
+            sqlx::query(
+                "INSERT INTO covalence.edges \
+                 (id, source_node_id, target_node_id, edge_type, \
+                  weight, confidence, metadata, created_by, valid_from) \
+                 VALUES (gen_random_uuid(), $1, $2, 'CONTRADICTS', $3, $4, $5, $6, now()) \
+                 ON CONFLICT (source_node_id, target_node_id, edge_type) DO NOTHING",
+            )
+            .bind(req.to_node_id) // B → becomes source of inverse
+            .bind(req.from_node_id) // A → becomes target of inverse
+            .bind(edge.weight)
+            .bind(edge.confidence)
+            .bind(serde_json::json!({
+                "inferred_by":    "contradicts_symmetry",
+                "source_edge_id": edge.id.to_string(),
+            }))
+            .bind("kg_inference")
+            .execute(&self.pool)
             .await
-            .map_err(AppError::Graph)
+            .map_err(AppError::Database)?;
+        }
+
+        Ok(edge)
+    }
+
+    /// Insert a CONTRADICTS edge if it does not already exist, or return the
+    /// existing active edge.  Uses `ON CONFLICT … DO NOTHING` followed by a
+    /// SELECT so the operation is idempotent regardless of which side of a
+    /// symmetric pair is written first.
+    async fn upsert_contradicts_edge(
+        &self,
+        from_id: Uuid,
+        to_id: Uuid,
+        confidence: f32,
+        created_by: &str,
+        props: &serde_json::Value,
+    ) -> AppResult<Edge> {
+        // Attempt insert; silently skip if the edge already exists.
+        sqlx::query(
+            "INSERT INTO covalence.edges \
+             (id, source_node_id, target_node_id, edge_type, \
+              weight, confidence, metadata, created_by, valid_from) \
+             VALUES (gen_random_uuid(), $1, $2, 'CONTRADICTS', 1.0, $3, $4, $5, now()) \
+             ON CONFLICT (source_node_id, target_node_id, edge_type) DO NOTHING",
+        )
+        .bind(from_id)
+        .bind(to_id)
+        .bind(confidence)
+        .bind(props)
+        .bind(created_by)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        // Fetch the canonical row (inserted or pre-existing).
+        let row = sqlx::query(
+            "SELECT id, age_id, source_node_id, target_node_id, edge_type, \
+                    weight, confidence, metadata, created_at, created_by, \
+                    valid_from, valid_to \
+             FROM covalence.edges \
+             WHERE source_node_id = $1 AND target_node_id = $2 \
+               AND edge_type = 'CONTRADICTS' \
+               AND valid_to IS NULL \
+             LIMIT 1",
+        )
+        .bind(from_id)
+        .bind(to_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        use sqlx::Row as _;
+        Ok(Edge {
+            id: row.try_get("id").map_err(AppError::Database)?,
+            age_id: row.try_get("age_id").map_err(AppError::Database)?,
+            source_node_id: row.try_get("source_node_id").map_err(AppError::Database)?,
+            target_node_id: row.try_get("target_node_id").map_err(AppError::Database)?,
+            edge_type: EdgeType::Contradicts,
+            weight: row
+                .try_get::<f64, _>("weight")
+                .map_err(AppError::Database)? as f32,
+            confidence: row
+                .try_get::<f64, _>("confidence")
+                .map_err(AppError::Database)? as f32,
+            metadata: row.try_get("metadata").map_err(AppError::Database)?,
+            created_at: row.try_get("created_at").map_err(AppError::Database)?,
+            created_by: row.try_get("created_by").map_err(AppError::Database)?,
+            valid_from: row.try_get("valid_from").map_err(AppError::Database)?,
+            valid_to: row.try_get("valid_to").map_err(AppError::Database)?,
+        })
     }
 
     /// Delete an edge.

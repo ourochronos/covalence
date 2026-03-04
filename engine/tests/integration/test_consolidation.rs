@@ -641,6 +641,7 @@ async fn test_maintenance_scan_queues_due_articles() {
             recompute_graph_embeddings: None,
             graph_embeddings_method: None,
             scan_due_consolidations: Some(true),
+            refresh_inference: None,
         })
         .await
         .expect("maintenance should succeed");

@@ -66,6 +66,9 @@ pub struct MaintenanceRequest {
     /// This mirrors the worker heartbeat but can be triggered on-demand via
     /// the maintenance API.
     pub scan_due_consolidations: Option<bool>,
+    /// When `true`, refresh the `covalence.contends_derived` materialized view
+    /// (covalence#99).  Equivalent to calling `POST /admin/refresh-inference`.
+    pub refresh_inference: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -431,6 +434,11 @@ impl AdminService {
             ));
         }
 
+        if req.refresh_inference.unwrap_or(false) {
+            self.refresh_inference_view().await?;
+            actions.push("refreshed contends_derived materialized view".into());
+        }
+
         if actions.is_empty() {
             actions.push("no operations requested".into());
         }
@@ -438,6 +446,18 @@ impl AdminService {
         Ok(MaintenanceResponse {
             actions_taken: actions,
         })
+    }
+
+    /// Refresh the `covalence.contends_derived` materialized view.
+    ///
+    /// Uses `CONCURRENTLY` so existing readers are not blocked during refresh.
+    /// Callable via `POST /admin/refresh-inference` or through
+    /// `admin_maintenance` with `refresh_inference: true`.
+    pub async fn refresh_inference_view(&self) -> AppResult<()> {
+        sqlx::query("REFRESH MATERIALIZED VIEW CONCURRENTLY covalence.contends_derived")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Synchronise AGE graph edges with the SQL `covalence.edges` mirror.

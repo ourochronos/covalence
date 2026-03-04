@@ -436,6 +436,34 @@ ALTER TABLE covalence.contentions
     ADD CONSTRAINT contentions_article_source_uniq
         UNIQUE (node_id, source_node_id);
 
+-- Migration 026: KG inference rules (covalence#99)
+-- contends_derived materialized view: A CONFIRMS B ∧ B CONTRADICTS C → (A, C)
+CREATE MATERIALIZED VIEW IF NOT EXISTS covalence.contends_derived AS
+SELECT
+    e1.source_node_id  AS node_a_id,
+    e2.target_node_id  AS node_c_id,
+    e1.id              AS source_edge_1_id,
+    e2.id              AS source_edge_2_id
+FROM  covalence.edges e1
+JOIN  covalence.edges e2
+      ON  e1.target_node_id = e2.source_node_id
+WHERE e1.edge_type = 'CONFIRMS'
+  AND e2.edge_type = 'CONTRADICTS'
+  AND e1.valid_to  IS NULL
+  AND e2.valid_to  IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS contends_derived_edges_uniq
+    ON covalence.contends_derived (source_edge_1_id, source_edge_2_id);
+
+CREATE INDEX IF NOT EXISTS contends_derived_node_a_idx
+    ON covalence.contends_derived (node_a_id);
+
+CREATE INDEX IF NOT EXISTS contends_derived_node_c_idx
+    ON covalence.contends_derived (node_c_id);
+
+CREATE INDEX IF NOT EXISTS contends_derived_node_a_c_idx
+    ON covalence.contends_derived (node_a_id, node_c_id);
+
 -- =============================================================================
 -- PERMISSIONS
 -- =============================================================================

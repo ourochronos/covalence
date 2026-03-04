@@ -47,6 +47,7 @@ mod test_epistemic_slis;
 mod test_faceted_classification;
 mod test_graph_health;
 mod test_graph_stats;
+mod test_kg_inference;
 mod test_memory_recall;
 mod test_merge;
 mod test_namespace;

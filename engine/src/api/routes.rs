@@ -95,6 +95,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/graph/centrality", get(admin_graph_centrality))
         .route("/admin/graph/intent-stats", get(admin_graph_intent_stats))
         .route("/admin/knowledge/audit", get(admin_knowledge_audit))
+        // KG inference refresh (covalence#99)
+        .route("/admin/refresh-inference", post(admin_refresh_inference))
         // Epistemic SLIs (covalence#88)
         .route("/admin/epistemic", get(admin_epistemic))
         // Divergence detection (covalence#58)
@@ -436,6 +438,23 @@ async fn admin_graph_centrality(State(state): State<AppState>) -> impl IntoRespo
         "data": entries.into_iter().map(|(id, score)| serde_json::json!({ "node_id": id, "score": score })).collect::<Vec<_>>()
     });
     Json(result)
+}
+
+/// `POST /admin/refresh-inference` — refresh the `contends_derived` materialized view
+/// (covalence#99).
+///
+/// Triggers `REFRESH MATERIALIZED VIEW CONCURRENTLY covalence.contends_derived` which
+/// re-materializes all (A CONFIRMS B ∧ B CONTRADICTS C → A CONTENDS C) tuples from
+/// the current edge set.
+async fn admin_refresh_inference(State(state): State<AppState>) -> impl IntoResponse {
+    let svc = AdminService::new(state.pool);
+    match svc.refresh_inference_view().await {
+        Ok(()) => Json(serde_json::json!({
+            "data": { "refreshed": "contends_derived" }
+        }))
+        .into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 /// `GET /admin/epistemic` — six Phase-1 epistemic SLIs (covalence#88).
