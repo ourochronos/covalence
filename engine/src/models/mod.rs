@@ -218,7 +218,7 @@ impl EdgeType {
     /// Use this to build `IN (…)` clauses for provenance walks without
     /// hardcoding edge-type strings across multiple SQL queries.
     pub fn provenance_sql_labels() -> &'static str {
-        "'ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','DERIVED_FROM','MERGED_FROM'"
+        "'ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','DERIVED_FROM'"
     }
 
     /// SQL fragment for the primary claim-provenance edge labels.
