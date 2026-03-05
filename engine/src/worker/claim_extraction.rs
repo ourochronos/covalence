@@ -1,12 +1,12 @@
-use sqlx::{PgPool, Row};
-use uuid::Uuid;
-use serde_json::{json, Value};
-use std::sync::Arc;
 use anyhow::{Context, Result};
+use serde_json::{Value, json};
+use sqlx::{PgPool, Row};
+use std::sync::Arc;
 use std::time::Instant;
+use uuid::Uuid;
 
-use crate::worker::{QueueTask, llm::LlmClient, parse_llm_json, log_inference};
 use crate::graph::GraphRepository as _;
+use crate::worker::{QueueTask, llm::LlmClient, log_inference, parse_llm_json};
 
 /// Extract atomic claims from a source node and store them as claim nodes.
 ///
@@ -37,7 +37,7 @@ pub async fn handle_extract_claims(
 
     // Fetch source content
     let row = sqlx::query(
-        "SELECT content, title, node_type FROM covalence.nodes WHERE id = $1 AND status = 'active'"
+        "SELECT content, title, node_type FROM covalence.nodes WHERE id = $1 AND status = 'active'",
     )
     .bind(source_id)
     .fetch_optional(pool)
@@ -91,9 +91,8 @@ Think step by step. Extract all meaningful claims."#
     );
 
     // LLM extraction with timing
-    let chat_model = std::env::var("COVALENCE_CHAT_MODEL")
-        .unwrap_or_else(|_| "gpt-4o-mini".into());
-    
+    let chat_model = std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+
     let t0 = Instant::now();
     let raw_response = llm.complete(&prompt, 4096).await?;
     let llm_latency_ms = t0.elapsed().as_millis() as i32;
@@ -118,7 +117,8 @@ Think step by step. Extract all meaningful claims."#
             "No claims extracted from source",
             &chat_model,
             llm_latency_ms,
-        ).await;
+        )
+        .await;
 
         return Ok(json!({
             "source_id": source_id,
@@ -194,13 +194,13 @@ Think step by step. Extract all meaningful claims."#
                 existing_claim_id = %existing_id,
                 "extract_claims: duplicate claim found, creating SAME_AS edge"
             );
-            
+
             claims_deduped += 1;
             existing_id
         } else {
             // Novel claim - create new claim node
             let new_claim_id = Uuid::new_v4();
-            
+
             let metadata = json!({
                 "context": context,
                 "extracted_from": source_id,
@@ -251,18 +251,21 @@ Think step by step. Extract all meaningful claims."#
         // Create SUPPORTS edge from source → claim
         // Uses graph repository pattern for consistency
         let graph_repo = crate::graph::SqlGraphRepository::new(pool.clone());
-        
-        if let Err(e) = graph_repo.create_edge(
-            source_id,
-            claim_id,
-            crate::models::EdgeType::SupportsClaim,
-            confidence as f32,
-            "claim_extraction",
-            json!({
-                "extraction_confidence": confidence,
-                "temporal": temporal,
-            }),
-        ).await {
+
+        if let Err(e) = graph_repo
+            .create_edge(
+                source_id,
+                claim_id,
+                crate::models::EdgeType::SupportsClaim,
+                confidence as f32,
+                "claim_extraction",
+                json!({
+                    "extraction_confidence": confidence,
+                    "temporal": temporal,
+                }),
+            )
+            .await
+        {
             tracing::warn!(
                 source_id = %source_id,
                 claim_id = %claim_id,
@@ -276,15 +279,24 @@ Think step by step. Extract all meaningful claims."#
         pool,
         "extract_claims",
         &[source_id],
-        &format!("source={}, content_len={}, claims_extracted={}", 
-                 source_id, content.len(), claims_array.len()),
+        &format!(
+            "source={}, content_len={}, claims_extracted={}",
+            source_id,
+            content.len(),
+            claims_array.len()
+        ),
         "success",
         Some(1.0),
-        &format!("Extracted {} claims ({} new, {} deduped)", 
-                 claims_array.len(), claims_created, claims_deduped),
+        &format!(
+            "Extracted {} claims ({} new, {} deduped)",
+            claims_array.len(),
+            claims_created,
+            claims_deduped
+        ),
         &chat_model,
         llm_latency_ms,
-    ).await;
+    )
+    .await;
 
     tracing::info!(
         source_id = %source_id,
