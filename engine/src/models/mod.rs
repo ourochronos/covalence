@@ -237,6 +237,18 @@ impl EdgeType {
     /// | contradicts | 0.50 |
     /// | relates_to | 0.15 |
     /// | (default/other) | 0.5 |
+    ///
+    /// Claim edge types:
+    ///
+    /// | relationship | causal_weight |
+    /// |---|---|
+    /// | extracted_from | 1.0 |
+    /// | supersedes_claim | 0.95 |
+    /// | same_as | 0.90 |
+    /// | contains | 0.80 |
+    /// | supports_claim | 0.70 |
+    /// | contradicts_claim | 0.50 |
+    /// | mentions | 0.15 |
     pub fn causal_weight(&self) -> f32 {
         match self {
             EdgeType::Originates | EdgeType::CompiledFrom => 1.0,
@@ -247,6 +259,7 @@ impl EdgeType {
             EdgeType::RelatesTo | EdgeType::Mentions => 0.15,
             EdgeType::ExtractedFrom => 1.0,
             EdgeType::SupersedesClaim => 0.95,
+            // high weight enables confidence propagation across equivalent claims — intentionally not causal
             EdgeType::SameAs => 0.90,
             EdgeType::Contains => 0.80,
             EdgeType::SupportsClaim => 0.70,
