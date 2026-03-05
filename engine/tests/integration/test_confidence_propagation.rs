@@ -15,7 +15,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use covalence_engine::confidence::{
-    constants::{CONF_FLOOR, CONTENDS_DEFAULT_WEIGHT, CONTRADICTS_DEFAULT_WEIGHT},
+    constants::{CONF_FLOOR, TEST_CONTENDS_DEFAULT_WEIGHT, TEST_CONTRADICTS_DEFAULT_WEIGHT},
     recompute_article_confidence,
 };
 
@@ -294,7 +294,7 @@ async fn test_contends_less_damaging_than_contradicts() {
         article_contradicts,
         attacker_c,
         "contradicts",
-        CONTRADICTS_DEFAULT_WEIGHT as f32,
+        TEST_CONTRADICTS_DEFAULT_WEIGHT as f32,
         1.0,
     )
     .await;
@@ -319,7 +319,7 @@ async fn test_contends_less_damaging_than_contradicts() {
         article_contends,
         attacker_d,
         "contends",
-        CONTENDS_DEFAULT_WEIGHT as f32,
+        TEST_CONTENDS_DEFAULT_WEIGHT as f32,
         1.0,
     )
     .await;
