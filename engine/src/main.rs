@@ -75,6 +75,9 @@ async fn main() -> anyhow::Result<()> {
             if let Ok(model) = std::env::var("COVALENCE_EMBED_MODEL") {
                 client = client.with_embed_model(model);
             }
+            if let Ok(model) = std::env::var("COVALENCE_CHAT_MODEL") {
+                client = client.with_chat_model(model);
+            }
             tracing::info!("search using OpenAI embeddings for query auto-embed");
             std::sync::Arc::new(client)
         }
