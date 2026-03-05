@@ -1253,6 +1253,7 @@ SOURCE DOCUMENTS:\n\
              FROM covalence.node_embeddings ne \
              JOIN covalence.nodes n ON n.id = ne.node_id \
              WHERE n.node_type = 'article' AND n.status = 'active' \
+               AND (n.metadata->>'split_from') IS NULL \
                AND (ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims})) < 0.15 \
              ORDER BY (ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims})) ASC \
              LIMIT 1"

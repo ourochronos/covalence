@@ -501,7 +501,14 @@ impl ArticleService {
         let part_a_content = &content[..split_point];
         let part_b_content = &content[split_point..].trim_start();
 
-        // Create two new articles
+        // Create two new articles.
+        // NOTE: do NOT copy original.metadata — it contains a stale tree_index
+        // with character offsets relative to the original article.  Passing that
+        // tree_index to Part A/B causes embed_sections to slice the wrong char
+        // ranges, producing bad embeddings that trigger false-positive dedup hits
+        // in handle_compile (covalence#186).  Each split child starts fresh with
+        // only split-provenance metadata so the tree_embed worker rebuilds the
+        // index from the child's actual content.
         let part_a = self
             .create(CreateArticleRequest {
                 content: part_a_content.to_string(),
@@ -509,7 +516,7 @@ impl ArticleService {
                 domain_path: Some(original.domain_path.clone()),
                 epistemic_type: original.epistemic_type.clone(),
                 source_ids: None,
-                metadata: Some(original.metadata.clone()),
+                metadata: Some(serde_json::json!({"split_from": id})),
                 facet_function: original.facet_function.clone(),
                 facet_scope: original.facet_scope.clone(),
             })
@@ -522,7 +529,7 @@ impl ArticleService {
                 domain_path: Some(original.domain_path.clone()),
                 epistemic_type: original.epistemic_type.clone(),
                 source_ids: None,
-                metadata: Some(original.metadata.clone()),
+                metadata: Some(serde_json::json!({"split_from": id})),
                 facet_function: original.facet_function.clone(),
                 facet_scope: original.facet_scope.clone(),
             })
