@@ -5,6 +5,7 @@ pub mod concerns_service;
 pub mod contention_service;
 pub mod edge_service;
 pub mod memory_service;
+pub(crate) mod node_helpers;
 pub mod provenance_trace_service;
 pub mod search_service;
 pub mod session_service;
