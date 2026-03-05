@@ -650,22 +650,25 @@ async fn tier3_ann_candidates(
 
     // Build the ANN query with the literal embedding dimensions baked in,
     // since halfvec casts require a compile-time dimension parameter in pgvector.
+    // The vec_literal value itself is passed as a bound $3 parameter to avoid
+    // SQL injection (Coding Standard §2).
     let query = format!(
         "SELECT ne.node_id, \
-                (1.0 - (ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims})))::float8 \
+                (1.0 - (ne.embedding::halfvec({dims}) <=> $3::halfvec({dims})))::float8 \
                     AS similarity \
          FROM   covalence.node_embeddings ne \
          JOIN   covalence.nodes n ON n.id = ne.node_id \
          WHERE  n.node_type = 'article' \
            AND  n.status    = 'active' \
            AND  ne.node_id != $1 \
-         ORDER  BY ne.embedding::halfvec({dims}) <=> '{vec_literal}'::halfvec({dims}) \
+         ORDER  BY ne.embedding::halfvec({dims}) <=> $3::halfvec({dims}) \
          LIMIT  $2",
     );
 
     let rows = sqlx::query(&query)
         .bind(subject.id)
         .bind(limit as i64)
+        .bind(vec_literal.as_str())
         .fetch_all(pool)
         .await
         .context("Tier 3 ANN query failed")?;
