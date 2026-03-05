@@ -341,8 +341,7 @@ pub async fn handle_infer_article_edges(
         };
 
         // ── Tier 4: LLM directionality (selective) ────────────────────────────
-        if config.llm_enabled && combined_score >= config.llm_threshold && edge_type == "RELATES_TO"
-        {
+        if config.llm_enabled && combined_score >= config.llm_threshold {
             match llm_infer_directionality(pool, llm, subject_id, candidate.id).await {
                 Ok((llm_edge_type, llm_conf)) => {
                     edge_type = llm_edge_type;
@@ -695,7 +694,7 @@ async fn tier3_ann_candidates(
 /// between two articles.
 ///
 /// Returns `(edge_type, confidence)` where `edge_type` is one of
-/// `EXTENDS`, `CONFIRMS`, `CONTRADICTS`, or `RELATES_TO`.
+/// `EXTENDS`, `CONFIRMS`, `CONTRADICTS`, `CONTENDS`, or `RELATES_TO`.
 /// Confidence is clamped to `[0.5, 0.95]`.
 async fn llm_infer_directionality(
     pool: &PgPool,
@@ -705,9 +704,11 @@ async fn llm_infer_directionality(
 ) -> anyhow::Result<(String, f32)> {
     use sqlx::Row as _;
 
-    // Fetch short excerpts for both articles (first 500 chars each).
+    // Fetch excerpts for both articles.  Skip the first 150 chars (injected
+    // boilerplate on split articles per covalence#186) and take up to 2000
+    // chars of real content.
     let rows = sqlx::query(
-        "SELECT id, title, LEFT(content, 500) AS excerpt \
+        "SELECT id, title, SUBSTRING(content, 150, 2000) AS excerpt \
          FROM   covalence.nodes \
          WHERE  id = ANY($1)",
     )
@@ -740,13 +741,14 @@ async fn llm_infer_directionality(
          Article A:\nTitle: {subject_title}\nExcerpt: {subject_excerpt}\n\n\
          Article B:\nTitle: {candidate_title}\nExcerpt: {candidate_excerpt}\n\n\
          Return ONLY valid JSON (no markdown fences):\n\
-         {{\"relationship\": \"EXTENDS|CONFIRMS|CONTRADICTS|RELATES_TO\", \
+         {{\"relationship\": \"EXTENDS|CONFIRMS|CONTRADICTS|CONTENDS|RELATES_TO\", \
            \"confidence\": 0.0..1.0, \
            \"reasoning\": \"...\"}}\n\
          Where:\n\
          - EXTENDS: A elaborates/specializes B or vice-versa\n\
          - CONFIRMS: A and B corroborate each other\n\
-         - CONTRADICTS: A and B make conflicting claims\n\
+         - CONTRADICTS: A and B make incompatible, mutually exclusive claims\n\
+         - CONTENDS: one source contends (disputes without fully contradicting) a claim in the other\n\
          - RELATES_TO: topically related but no stronger relationship"
     );
 
@@ -777,7 +779,7 @@ async fn llm_infer_directionality(
         .unwrap_or("RELATES_TO");
 
     let edge_type = match rel {
-        "EXTENDS" | "CONFIRMS" | "CONTRADICTS" => rel.to_string(),
+        "EXTENDS" | "CONFIRMS" | "CONTRADICTS" | "CONTENDS" => rel.to_string(),
         _ => "RELATES_TO".to_string(),
     };
 
