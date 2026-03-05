@@ -1,4 +1,5 @@
 mod api;
+mod confidence;
 mod embeddings;
 mod errors;
 mod graph;

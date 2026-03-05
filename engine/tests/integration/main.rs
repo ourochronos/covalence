@@ -40,6 +40,7 @@ mod test_causal_semantics;
 mod test_compilation;
 mod test_compile;
 mod test_concerns;
+mod test_confidence_propagation;
 mod test_consolidation;
 mod test_content_hash;
 mod test_contention;

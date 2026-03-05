@@ -275,6 +275,66 @@ impl AdminService {
                 result.rows_affected()
             ));
 
+            // Batch-recompute confidence for articles that have never had confidence
+            // computed (covalence#137).  The query selects active articles that have
+            // at least one article_sources row but whose confidence_breakdown is NULL,
+            // meaning the pipeline has never run for them — NOT that they are stale.
+            // True staleness detection (comparing provenance change time to last
+            // compute time) is future work tracked in covalence#137.
+            let stale_ids: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT DISTINCT a.id
+                 FROM covalence.nodes a
+                 WHERE a.node_type = 'article'
+                   AND a.status    = 'active'
+                   AND a.confidence_breakdown IS NULL
+                   AND EXISTS (
+                       SELECT 1
+                       FROM covalence.article_sources s
+                       WHERE s.article_id = a.id
+                   )
+                 LIMIT 50",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+            let mut confidence_ok: usize = 0;
+            let mut confidence_err: usize = 0;
+            // Acquire a single connection once and reuse it across all articles
+            // rather than hitting the pool for every iteration (fix #6).
+            match self.pool.acquire().await {
+                Ok(mut conn) => {
+                    for article_id in &stale_ids {
+                        match crate::confidence::recompute_article_confidence(
+                            *article_id,
+                            &mut *conn,
+                        )
+                        .await
+                        {
+                            Ok(_) => confidence_ok += 1,
+                            Err(e) => {
+                                tracing::warn!(
+                                    article_id = %article_id,
+                                    "process_queue: confidence recompute failed: {e:#}"
+                                );
+                                confidence_err += 1;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "process_queue: could not acquire conn for confidence recompute: {e:#}"
+                    );
+                    confidence_err += stale_ids.len();
+                }
+            }
+            if confidence_ok > 0 || confidence_err > 0 {
+                actions.push(format!(
+                    "confidence recompute: {confidence_ok} ok, {confidence_err} errors"
+                ));
+            }
+
             // Pass A + B — delegate to stored procedure (migration 035, covalence#143).
             // Fixes the two-pass DELETE with typed bind params (no format! interpolation).
             // Pass A: stale failed embed tasks for nodes that now have embeddings (>= 1 h).

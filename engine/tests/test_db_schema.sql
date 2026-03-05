@@ -860,3 +860,50 @@ BEGIN
     RETURNING *;
 END;
 $$;
+
+-- =============================================================================
+-- Migration 037: Confidence Propagation Phase 1 (covalence#137)
+-- =============================================================================
+
+-- article_sources: provenance bridge for DS-fusion pipeline.
+CREATE TABLE IF NOT EXISTS covalence.article_sources (
+    article_id           UUID          NOT NULL
+                           REFERENCES covalence.nodes(id) ON DELETE CASCADE,
+    source_id            UUID          NOT NULL
+                           REFERENCES covalence.nodes(id) ON DELETE CASCADE,
+    relationship         TEXT          NOT NULL
+                           CONSTRAINT article_sources_relationship_check
+                           CHECK (relationship IN (
+                               'originates', 'compiled_from',
+                               'confirms', 'supersedes',
+                               'contradicts', 'contends'
+                           )),
+    causal_weight        REAL          NOT NULL DEFAULT 1.0
+                           CONSTRAINT article_sources_causal_weight_range
+                           CHECK (causal_weight >= 0.0 AND causal_weight <= 1.0),
+    confidence           REAL          NOT NULL DEFAULT 1.0
+                           CONSTRAINT article_sources_confidence_range
+                           CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    contribution_weight  REAL
+                           CONSTRAINT article_sources_contribution_weight_range
+                           CHECK (contribution_weight IS NULL
+                                  OR (contribution_weight >= 0.0
+                                      AND contribution_weight <= 1.0)),
+    superseded_at        TIMESTAMPTZ,
+    added_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (article_id, source_id, relationship)
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_sources_article_relationship
+    ON covalence.article_sources (article_id, relationship)
+    WHERE relationship IN ('originates', 'contradicts', 'contends', 'supersedes')
+      AND superseded_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_article_sources_source_relationship
+    ON covalence.article_sources (source_id, relationship)
+    WHERE relationship IN ('supersedes', 'contradicts', 'contends')
+      AND superseded_at IS NULL;
+
+-- confidence_breakdown column on articles (stored in nodes).
+ALTER TABLE covalence.nodes
+    ADD COLUMN IF NOT EXISTS confidence_breakdown JSONB;
