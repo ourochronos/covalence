@@ -141,30 +141,22 @@ pub trait GraphRepository: Send + Sync {
     /// Call this when archiving nodes (not hard-deleting them).
     ///
     /// **No-op in `SqlGraphRepository`** — edges are preserved as history.
-    #[deprecated(
-        note = "Stub method retained for trait stability. Will be removed in Phase 2."
-    )]
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn archive_vertex(&self, node_id: Uuid) -> GraphResult<()>;
 
     /// List all edge references (deprecated stub).
     /// **Returns empty vec in `SqlGraphRepository`** — no separate graph backend exists.
-    #[deprecated(
-        note = "Stub method retained for trait stability. Will be removed in Phase 2."
-    )]
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn list_age_edge_refs(&self) -> GraphResult<Vec<(i64, Option<Uuid>)>>;
 
     /// Delete edge by internal ID (deprecated stub).
     /// **No-op in `SqlGraphRepository`** — no separate graph backend exists.
-    #[deprecated(
-        note = "Stub method retained for trait stability. Will be removed in Phase 2."
-    )]
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn delete_age_edge_by_internal_id(&self, age_internal_id: i64) -> GraphResult<()>;
 
     /// Create edge for SQL (deprecated stub).
     /// **Returns `Ok(None)` in `SqlGraphRepository`** — no separate graph backend exists.
-    #[deprecated(
-        note = "Stub method retained for trait stability. Will be removed in Phase 2."
-    )]
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn create_age_edge_for_sql(
         &self,
         edge_id: Uuid,

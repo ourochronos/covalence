@@ -1,0 +1,624 @@
+{
+  "Covalence": [
+    "covalence",
+    "Covalence v1",
+    "Covalence v2",
+    "Covalence engine",
+    "Covalence Claims Architecture",
+    "Covalence Claims Architecture v2",
+    "covalence#171",
+    "covalence#137",
+    "covalence#143",
+    "covalence#160",
+    "covalence#161",
+    "covalence#169",
+    "covalence#173",
+    "covalence#036",
+    "covalence#116",
+    "covalence#084",
+    "covalence#090",
+    "covalence#092",
+    "covalence#093",
+    "computational epistemology engine",
+    "Covalence KB",
+    "Covalence knowledge substrate"
+  ],
+  "Plasmon": [
+    "plasmon",
+    "Plasmon v2",
+    "Plasmon v2 model",
+    "Plasmon model",
+    "the Intermediary",
+    "Plasmon intermediary"
+  ],
+  "OpenClaw": [
+    "openclaw",
+    "Open Claw",
+    "OpenClaw Gateway",
+    "OpenClaw CLI",
+    "OpenClaw plugin",
+    "OpenClaw agent"
+  ],
+  "Valence": [
+    "valence",
+    "Valence v2",
+    "Valence server",
+    "valence-server",
+    "Valence KB",
+    "Valence knowledge substrate"
+  ],
+  "Valence Network": [
+    "valence network",
+    "Valence P2P",
+    "Valence Network protocol",
+    "Valence federation",
+    "Valence P2P protocol"
+  ],
+  "Ourochronos": [
+    "ourochronos",
+    "ourochronos/covalence",
+    "ourochronos/tracking",
+    "ourochronos org"
+  ],
+  "AnyBURL": [
+    "Anyburl",
+    "any-burl",
+    "AnyBURL rule learner",
+    "AnyBURL miner"
+  ],
+  "RotatE": [
+    "Rotate",
+    "rotate",
+    "RotatE embedding",
+    "rotate embedding"
+  ],
+  "ComplEx": [
+    "Complex",
+    "COMPLEX",
+    "complex embedding",
+    "ComplEx embedding"
+  ],
+  "TransE": [
+    "trans-E",
+    "TransE embedding",
+    "translational embedding",
+    "TransE model"
+  ],
+  "DistMult": [
+    "distmult",
+    "Dist-Mult",
+    "DistMult embedding"
+  ],
+  "ConvE": [
+    "conv-E",
+    "convE",
+    "ConvE embedding"
+  ],
+  "RESCAL": [
+    "Rescal",
+    "rescal",
+    "RESCAL embedding"
+  ],
+  "CFKGR": [
+    "Counterfactual KG Reasoning",
+    "Counterfactual Knowledge Graph Reasoning",
+    "cfkgr"
+  ],
+  "COULDD": [
+    "COULDD model",
+    "couldd"
+  ],
+  "ChatGPT": [
+    "chat GPT",
+    "Chat GPT",
+    "GPT-3.5",
+    "ChatGPT-3.5",
+    "GPT-3.5-Turbo",
+    "GPT3.5"
+  ],
+  "GPT-4": [
+    "GPT4",
+    "gpt-4",
+    "GPT-4o",
+    "GPT4o",
+    "GPT 4",
+    "GPT-4 Turbo",
+    "GPT-4-Turbo",
+    "gpt4"
+  ],
+  "Claude": [
+    "claude",
+    "Claude AI",
+    "Claude Code",
+    "Claude Sonnet",
+    "Claude Haiku",
+    "Claude Opus",
+    "claude-3",
+    "Claude 3",
+    "claude-3-sonnet",
+    "claude-3-opus"
+  ],
+  "Gemini": [
+    "gemini",
+    "Gemini 2.5 Pro",
+    "Gemini 3.1 Pro",
+    "Gemini Pro",
+    "Gemini Pro Preview",
+    "Gemini 3.1 Pro Preview",
+    "Gemini 2.5"
+  ],
+  "R-GCN": [
+    "RGCN",
+    "Relational GCN",
+    "Relational Graph Convolutional Network",
+    "relational-gcn",
+    "R GCN"
+  ],
+  "HAN": [
+    "Heterogeneous Attention Network",
+    "heterogeneous attention network",
+    "HAN model"
+  ],
+  "HGT": [
+    "Heterogeneous Graph Transformer",
+    "heterogeneous graph transformer",
+    "HGT model"
+  ],
+  "GNN": [
+    "Graph Neural Network",
+    "graph neural networks",
+    "GNNs",
+    "graph neural net",
+    "Graph Neural Networks"
+  ],
+  "GCN": [
+    "Graph Convolutional Network",
+    "graph convolutional network",
+    "Graph Convolutional Networks",
+    "GCN model"
+  ],
+  "GAT": [
+    "Graph Attention Network",
+    "graph attention network",
+    "Graph Attention Networks",
+    "GAT model"
+  ],
+  "GraphSAGE": [
+    "Graph SAGE",
+    "graphsage",
+    "Graph-SAGE",
+    "GraphSage"
+  ],
+  "LightGCN": [
+    "Light GCN",
+    "lightgcn",
+    "LightGCN model",
+    "light GCN"
+  ],
+  "NGCF": [
+    "Neural Graph Collaborative Filtering",
+    "ngcf"
+  ],
+  "SEAL": [
+    "SEAL link prediction",
+    "SEAL model",
+    "SEAL GNN"
+  ],
+  "KGAT": [
+    "Knowledge Graph Attention Network",
+    "kgat"
+  ],
+  "DeepPath": [
+    "deep path",
+    "Deep Path",
+    "DeepPath reasoning",
+    "deep path reasoning"
+  ],
+  "MINERVA": [
+    "minerva",
+    "MINERVA policy",
+    "MINERVA path reasoning"
+  ],
+  "AMIE": [
+    "AMIE rule mining",
+    "AMIE3",
+    "amie"
+  ],
+  "PyG": [
+    "PyTorch Geometric",
+    "pytorch-geometric",
+    "pytorch geometric",
+    "torch_geometric"
+  ],
+  "AnoT": [
+    "AnoT model",
+    "AnoT TKG anomaly"
+  ],
+  "AT2QA": [
+    "AT2QA system",
+    "autonomous temporal KG exploration"
+  ],
+  "Qwen": [
+    "Qwen2.5",
+    "Qwen3",
+    "Qwen 2.5",
+    "Qwen2.5-1.5B",
+    "Qwen-1.5B",
+    "Qwen2.5-3B"
+  ],
+  "DeBERTa": [
+    "DeBERTa-v3",
+    "deberta",
+    "DeBERTa v3",
+    "DeBERTa-large"
+  ],
+  "RDF": [
+    "rdf",
+    "Resource Description Framework",
+    "RDF triples",
+    "RDF graph"
+  ],
+  "RDF-star": [
+    "RDF*",
+    "rdf-star",
+    "RDF star",
+    "RDF-star W3C"
+  ],
+  "SPARQL": [
+    "sparql",
+    "SPARQL query language",
+    "SPARQL 1.1",
+    "SPARQL endpoint"
+  ],
+  "OWL": [
+    "owl",
+    "Web Ontology Language",
+    "OWL 2",
+    "OWL ontology"
+  ],
+  "Datalog": [
+    "datalog",
+    "Datalog rules",
+    "Datalog reasoning"
+  ],
+  "Wikidata": [
+    "wikidata",
+    "Wikidata KG",
+    "Wikidata knowledge base"
+  ],
+  "Freebase": [
+    "freebase",
+    "FB",
+    "Freebase KG"
+  ],
+  "WordNet": [
+    "WN",
+    "Word Net",
+    "wordnet"
+  ],
+  "WN18RR": [
+    "WN18RR benchmark",
+    "WN18",
+    "WordNet 18RR"
+  ],
+  "FB15k-237": [
+    "FB15k237",
+    "FB15k-237 benchmark",
+    "Freebase 15k",
+    "FB15k"
+  ],
+  "YAGO": [
+    "YAGO3",
+    "yago",
+    "YAGO KG"
+  ],
+  "DBpedia": [
+    "dbpedia",
+    "DB pedia",
+    "DBPedia"
+  ],
+  "ConceptNet": [
+    "Concept Net",
+    "conceptnet",
+    "ConceptNet 5"
+  ],
+  "NELL": [
+    "Never-Ending Language Learner",
+    "Never-Ending Language Learning",
+    "NELL KG"
+  ],
+  "ICEWS": [
+    "Integrated Crisis Early Warning System",
+    "ICEWS dataset"
+  ],
+  "GDELT": [
+    "Global Database of Events Language and Tone",
+    "GDELT dataset"
+  ],
+  "Knowledge Vault": [
+    "Google Knowledge Vault",
+    "knowledge vault"
+  ],
+  "Temporal Knowledge Graphs": [
+    "TKGs",
+    "TKG",
+    "temporal KG",
+    "temporal knowledge graph",
+    "TKG completion",
+    "temporal knowledge base",
+    "Temporal KGs"
+  ],
+  "Dempster-Shafer": [
+    "DS fusion",
+    "DS theory",
+    "Dempster-Shafer theory",
+    "D-S theory",
+    "Dempster Shafer",
+    "DS-fusion",
+    "evidence theory",
+    "Shafer's theory of evidence"
+  ],
+  "DF-QuAD": [
+    "Discontinuity-Free Quantitative Argumentation Debate",
+    "DF QuAD",
+    "df-quad",
+    "DF-QuAD framework"
+  ],
+  "AGM Belief Revision": [
+    "AGM",
+    "AGM revision",
+    "AGM theory",
+    "AGM postulates",
+    "AGM framework",
+    "Alchourrón-Gärdenfors-Makinson",
+    "belief revision"
+  ],
+  "Free Energy Principle": [
+    "FEP",
+    "free energy principle",
+    "variational free energy",
+    "Friston FEP",
+    "Active Inference FEP",
+    "Karl Friston FEP",
+    "Active Inference"
+  ],
+  "CRDT": [
+    "CRDTs",
+    "Conflict-free Replicated Data Type",
+    "conflict-free replicated data types",
+    "conflict-free replicated data type"
+  ],
+  "Stigmergy": [
+    "stigmergic",
+    "stigmergic coordination",
+    "environment-mediated coordination"
+  ],
+  "Complementary Learning Systems": [
+    "CLS",
+    "CLS theory",
+    "complementary learning",
+    "complementary learning systems theory"
+  ],
+  "Subjective Logic": [
+    "Jøsang subjective logic",
+    "Josang subjective logic",
+    "Jøsang SL",
+    "subjective logic framework",
+    "opinion representation"
+  ],
+  "OCF": [
+    "Ordinal Conditional Functions",
+    "ordinal conditional functions",
+    "Spohn's OCFs",
+    "Spohn OCF",
+    "ranking theory",
+    "Spohn ranking theory"
+  ],
+  "Probabilistic Soft Logic": [
+    "PSL",
+    "PSL framework",
+    "probabilistic soft logic",
+    "hinge-loss MRF"
+  ],
+  "PageRank": [
+    "page rank",
+    "pagerank algorithm",
+    "PageRank algorithm",
+    "random surfer model"
+  ],
+  "TrustRank": [
+    "trust rank",
+    "TrustRank algorithm"
+  ],
+  "EigenTrust": [
+    "eigen trust",
+    "EigenTrust algorithm",
+    "EigenTrust reputation"
+  ],
+  "Belief Propagation": [
+    "message passing",
+    "loopy belief propagation",
+    "BP",
+    "sum-product algorithm"
+  ],
+  "Reciprocal Rank Fusion": [
+    "RRF",
+    "rrf",
+    "reciprocal rank fusion"
+  ],
+  "Natural Language Inference": [
+    "NLI",
+    "textual entailment",
+    "natural language inference",
+    "NLI model"
+  ],
+  "PostgreSQL": [
+    "Postgres",
+    "postgres",
+    "PG",
+    "postgresql",
+    "PostgreSQL 16",
+    "pg16"
+  ],
+  "pgvector": [
+    "pg_vector",
+    "pgvector extension",
+    "pg vector",
+    "pgvector (Postgres)"
+  ],
+  "HNSW": [
+    "hierarchical navigable small world",
+    "HNSW index",
+    "HNSW algorithm",
+    "Hierarchical NSW"
+  ],
+  "Apache AGE": [
+    "AGE",
+    "age extension",
+    "Apache Age",
+    "pg_age",
+    "AGE (Apache Graph Extension)"
+  ],
+  "Rust": [
+    "rust lang",
+    "Rust language",
+    "rustlang",
+    "Rust programming language"
+  ],
+  "OpenAI": [
+    "openai",
+    "OpenAI API",
+    "OpenAI platform"
+  ],
+  "LoRA": [
+    "Low-Rank Adaptation",
+    "LoRA fine-tuning",
+    "low-rank adaptation",
+    "LoRA adapter"
+  ],
+  "ROCm": [
+    "rocm",
+    "AMD ROCm",
+    "ROCm toolkit"
+  ],
+  "Zero-Knowledge Proofs": [
+    "ZKP",
+    "ZK proofs",
+    "zk-SNARKs",
+    "ZKP framework",
+    "zero knowledge proof",
+    "zero-knowledge proof",
+    "zkProofs"
+  ],
+  "zkTLS": [
+    "ZK-TLS",
+    "zero-knowledge TLS",
+    "zk transport layer security"
+  ],
+  "WebAssembly": [
+    "WASM",
+    "wasm",
+    "web assembly"
+  ],
+  "BIRCH": [
+    "CF-tree",
+    "BIRCH clustering",
+    "BIRCH algorithm"
+  ],
+  "Neo4j": [
+    "neo4j",
+    "Neo4j graph database"
+  ],
+  "Apache Lucene": [
+    "Lucene",
+    "lucene",
+    "Lucene full-text"
+  ],
+  "Matrix Protocol": [
+    "Matrix",
+    "matrix.org",
+    "Matrix federation"
+  ],
+  "ActivityPub": [
+    "activity pub",
+    "Fediverse ActivityPub",
+    "ActivityPub protocol",
+    "Mastodon ActivityPub"
+  ],
+  "libp2p": [
+    "lib p2p",
+    "libp2p protocol",
+    "lib-p2p"
+  ],
+  "mTLS": [
+    "mutual TLS",
+    "mutual transport layer security",
+    "Mutual TLS"
+  ],
+  "Kademlia": [
+    "S/Kademlia",
+    "kademlia DHT",
+    "Kademlia DHT",
+    "S-Kademlia"
+  ],
+  "Signal Protocol": [
+    "Double Ratchet",
+    "double ratchet algorithm",
+    "Signal Double Ratchet",
+    "Olm",
+    "Megolm"
+  ],
+  "IPFS": [
+    "InterPlanetary File System",
+    "ipfs"
+  ],
+  "BitTorrent": [
+    "Bittorrent",
+    "bittorrent",
+    "BitTorrent protocol"
+  ],
+  "Tezos": [
+    "tezos",
+    "tezos blockchain",
+    "Tezos governance"
+  ],
+  "Ethereum": [
+    "ETH",
+    "eth",
+    "ethereum",
+    "ethereum blockchain",
+    "Ethereum network"
+  ],
+  "Bazel": [
+    "bazel",
+    "bazel build",
+    "Google Bazel",
+    "Bazel/Buck"
+  ],
+  "Buck2": [
+    "Buck",
+    "buck2",
+    "Buck2 build",
+    "Meta Buck2"
+  ],
+  "Salsa": [
+    "rustc/Salsa",
+    "salsa framework",
+    "Rust/Salsa",
+    "Salsa demand-driven",
+    "salsa"
+  ],
+  "Obsidian": [
+    "obsidian.md",
+    "Obsidian PKM",
+    "obsidian"
+  ],
+  "Roam Research": [
+    "Roam",
+    "roam research",
+    "roam"
+  ],
+  "Logseq": [
+    "logseq"
+  ]
+}

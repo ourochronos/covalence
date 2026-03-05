@@ -25,7 +25,7 @@ pub enum NodeType {
     Source,
     Session,
     Entity,
-    Claim,  // claims pipeline (#169)
+    Claim, // claims pipeline (#169)
 }
 
 impl NodeType {
