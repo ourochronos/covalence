@@ -9,6 +9,7 @@ use crate::errors::*;
 use crate::graph::{GraphRepository, SqlGraphRepository};
 use crate::models::article_state::{Active, Archived, TypedArticle};
 use crate::models::*;
+use crate::services::node_helpers;
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct CreateArticleRequest {
@@ -139,8 +140,8 @@ impl ArticleService {
     pub async fn create(&self, req: CreateArticleRequest) -> AppResult<ArticleResponse> {
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let content_hash = hex::encode(Sha256::digest(req.content.as_bytes()));
-        let size_tokens = (req.content.split_whitespace().count() as f64 / 0.75) as i32;
+        let content_hash = node_helpers::compute_content_hash(&req.content);
+        let size_tokens = node_helpers::estimate_size_tokens(&req.content);
         let domain_path = req.domain_path.unwrap_or_default();
         let epistemic_type = req.epistemic_type.unwrap_or_else(|| "semantic".into());
         let metadata = req.metadata.unwrap_or(serde_json::json!({}));
@@ -203,21 +204,13 @@ impl ArticleService {
         }
 
         // Queue embedding with contextual preamble (covalence#73).
-        let preamble = format!(
-            "[Context: {}. Source type: article. Domain: {}.]",
-            req.title.as_deref().unwrap_or(""),
-            domain_path.join("/"),
-        );
-        let embed_payload = serde_json::json!({ "embed_preamble": preamble });
-        sqlx::query(
-            "INSERT INTO covalence.slow_path_queue \
-             (id, task_type, node_id, payload, priority, status) \
-             VALUES ($1, 'embed', $2, $3, 3, 'pending')",
+        node_helpers::enqueue_embed_with_preamble(
+            &self.pool,
+            id,
+            req.title.as_deref(),
+            "article",
+            &domain_path,
         )
-        .bind(Uuid::new_v4())
-        .bind(id)
-        .bind(&embed_payload)
-        .execute(&self.pool)
         .await?;
 
         self.get(id).await
@@ -796,26 +789,25 @@ impl ArticleService {
 }
 
 fn article_from_row(row: &PgRow) -> ArticleResponse {
+    let core = node_helpers::node_core_from_row(row);
     ArticleResponse {
-        id: row.get("id"),
+        id: core.id,
         node_type: "article".into(),
-        title: row.get("title"),
-        content: row.get("content"),
+        title: core.title,
+        content: core.content,
         stale: None,
-        status: row.get("status"),
-        confidence: row.get::<Option<f64>, _>("confidence").unwrap_or(0.5) as f32,
-        epistemic_type: row.get("epistemic_type"),
-        domain_path: row
-            .get::<Option<Vec<String>>, _>("domain_path")
-            .unwrap_or_default(),
-        metadata: row.get::<serde_json::Value, _>("metadata"),
-        version: row.get::<Option<i32>, _>("version").unwrap_or(1),
-        pinned: row.get::<Option<bool>, _>("pinned").unwrap_or(false),
-        usage_score: row.get::<Option<f64>, _>("usage_score").unwrap_or(0.0) as f32,
+        status: core.status,
+        confidence: core.confidence,
+        epistemic_type: core.epistemic_type,
+        domain_path: core.domain_path,
+        metadata: core.metadata,
+        version: core.version,
+        pinned: core.pinned,
+        usage_score: core.usage_score,
         contention_count: row.get::<Option<i64>, _>("contention_count").unwrap_or(0),
-        content_hash: row.get("content_hash"),
-        created_at: row.get("created_at"),
-        modified_at: row.get("modified_at"),
+        content_hash: core.content_hash,
+        created_at: core.created_at,
+        modified_at: core.modified_at,
         facet_function: row.get("facet_function"),
         facet_scope: row.get("facet_scope"),
     }

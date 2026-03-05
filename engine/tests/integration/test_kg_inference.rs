@@ -97,8 +97,8 @@ async fn test_contradicts_symmetry_auto_inverse() {
 
     assert_eq!(
         inferred_by.as_deref(),
-        Some("contradicts_symmetry"),
-        "inverse edge metadata must carry inferred_by = contradicts_symmetry"
+        Some("symmetric_edge"),
+        "inverse edge metadata must carry inferred_by = symmetric_edge (generalized label, covalence#173 wave 5)"
     );
 
     fix.cleanup().await;

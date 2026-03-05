@@ -198,6 +198,16 @@ impl EdgeType {
         )
     }
 
+    /// Returns `true` when an edge of this type requires an automatic inverse
+    /// to enforce symmetry (covalence#173 wave 5).
+    ///
+    /// Symmetric edge types:
+    /// * [`EdgeType::Contradicts`] — Dung (1995) attack relation must be symmetric.
+    /// * [`EdgeType::ContradictsClaim`] — claim-level contradiction is likewise symmetric.
+    pub fn is_symmetric(&self) -> bool {
+        matches!(self, EdgeType::Contradicts | EdgeType::ContradictsClaim)
+    }
+
     /// Claim edges — introduced by the claims pipeline (#169).
     #[allow(dead_code)]
     pub fn is_claim_edge(&self) -> bool {
