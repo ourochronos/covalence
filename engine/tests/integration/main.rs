@@ -57,6 +57,7 @@ mod test_gap_registry_horizon;
 mod test_gap_registry_phase2;
 mod test_graph_health;
 mod test_graph_stats;
+mod test_infer_article_edges;
 mod test_kg_inference;
 mod test_lexical_ilike;
 mod test_memory_recall;
