@@ -13,6 +13,7 @@
 //! Attempt count is tracked in the `result` JSONB column as
 //! `{"attempts": N, ...}` since the table has no dedicated attempts column.
 
+pub mod claim_extraction;
 pub mod consolidation;
 pub mod contention;
 pub mod critique;
@@ -443,6 +444,7 @@ pub async fn execute_task(
         "infer_article_edges" => {
             infer_article_edges::handle_infer_article_edges(pool, llm, task).await
         }
+        "extract_claims" => claim_extraction::handle_extract_claims(pool, llm, task).await,
         "recompute_graph_embeddings" => {
             let method = task
                 .payload
