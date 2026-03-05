@@ -1,4 +1,4 @@
--- Migration 041: Claims Layer — Generation tracking and temporal claims (covalence#169)
+-- Migration 042: Claims Layer — Generation tracking and temporal claims (covalence#169)
 --
 -- This migration adds support for the claims layer blue-green migration by:
 --   1. Adding a `generation` column to track schema/content evolution
@@ -16,9 +16,7 @@
 --   - Blue-green cutover via generation column enables atomic rollback
 --
 -- Safe to re-run: uses IF NOT EXISTS and IF EXISTS for idempotency.
--- No table locks: CONCURRENTLY on index creation.
-
-BEGIN;
+-- Indexes created within SQLx transaction (non-concurrent).
 
 -- Add generation tracking for blue-green migration
 ALTER TABLE covalence.nodes 
@@ -34,18 +32,15 @@ ALTER TABLE covalence.nodes
 COMMENT ON COLUMN covalence.nodes.valid_until IS 
     'Optional temporal validity end timestamp for claims. NULL = no expiration. Used for time-bounded facts. From covalence#185: valid_until + source lifecycle coupling, no confidence decay.';
 
-COMMIT;
-
--- Add indexes (outside transaction for CONCURRENTLY)
 -- Composite index for generation-based queries during migration and cutover
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_nodes_generation_type_status 
+CREATE INDEX IF NOT EXISTS idx_nodes_generation_type_status 
     ON covalence.nodes (generation, node_type, status);
 
 COMMENT ON INDEX covalence.idx_nodes_generation_type_status IS 
     'Supports generation-aware queries during claims layer migration (e.g., "all gen 2 articles in draft status").';
 
 -- Index for temporal claim queries and validity filtering
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_nodes_valid_until 
+CREATE INDEX IF NOT EXISTS idx_nodes_valid_until 
     ON covalence.nodes (valid_until) 
     WHERE valid_until IS NOT NULL;
 
@@ -53,7 +48,7 @@ COMMENT ON INDEX covalence.idx_nodes_valid_until IS
     'Supports temporal claim queries (find claims expiring soon, filter expired claims). Partial index: only rows with non-null valid_until.';
 
 -- Composite index for active temporal claims
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_nodes_temporal_active 
+CREATE INDEX IF NOT EXISTS idx_nodes_temporal_active 
     ON covalence.nodes (node_type, status, valid_until) 
     WHERE node_type = 'claim' AND valid_until IS NOT NULL;
 
