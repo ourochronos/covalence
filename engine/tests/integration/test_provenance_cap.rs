@@ -59,10 +59,11 @@ async fn insert_slotted_embedding(fix: &mut TestFixture, node_id: Uuid, slot: us
     );
     sqlx::query(&format!(
         "INSERT INTO covalence.node_embeddings (node_id, embedding, model)
-         VALUES ($1, '{literal}'::halfvec({dim}), 'test-slotted')
+         VALUES ($1, $2::halfvec({dim}), 'test-slotted')
          ON CONFLICT (node_id) DO UPDATE SET embedding = EXCLUDED.embedding"
     ))
     .bind(node_id)
+    .bind(&literal)
     .execute(&fix.pool)
     .await
     .expect("insert_slotted_embedding failed");
@@ -82,10 +83,11 @@ async fn insert_mock_embedding_for_content(fix: &TestFixture, node_id: Uuid, con
     );
     sqlx::query(&format!(
         "INSERT INTO covalence.node_embeddings (node_id, embedding, model)
-         VALUES ($1, '{literal}'::halfvec({dim}), 'test-mock')
+         VALUES ($1, $2::halfvec({dim}), 'test-mock')
          ON CONFLICT (node_id) DO UPDATE SET embedding = EXCLUDED.embedding"
     ))
     .bind(node_id)
+    .bind(&literal)
     .execute(&fix.pool)
     .await
     .expect("insert_mock_embedding_for_content failed");
