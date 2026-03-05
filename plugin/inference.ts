@@ -10,6 +10,7 @@
  * configured model providers.
  */
 
+import * as crypto from "crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { IncomingMessage, ServerResponse } from "http";
 
@@ -42,6 +43,7 @@ interface EmbeddingRequest {
 export function registerInferenceEndpoints(
   api: OpenClawPluginApi,
   config: {
+    inferenceToken?: string;
     inferenceModel?: string;
     chatModel: string;
     embeddingModel: string;
@@ -54,7 +56,20 @@ export function registerInferenceEndpoints(
   // -------------------------------------------------------------------------
   api.registerHttpRoute({
     path: "/covalence/v1/chat/completions",
+    auth: "plugin",
     handler: async (req: IncomingMessage, res: ServerResponse) => {
+      // Validate bearer token if configured
+      if (config.inferenceToken) {
+        const authHeader = (req.headers["authorization"] as string | undefined) ?? "";
+        const expected = Buffer.from(`Bearer ${config.inferenceToken}`);
+        const actual = Buffer.from(authHeader);
+        if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Unauthorized" }));
+          return;
+        }
+      }
+
       if (req.method !== "POST") {
         res.writeHead(405, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Method not allowed" }));
@@ -128,7 +143,20 @@ export function registerInferenceEndpoints(
   // -------------------------------------------------------------------------
   api.registerHttpRoute({
     path: "/covalence/v1/embeddings",
+    auth: "plugin",
     handler: async (req: IncomingMessage, res: ServerResponse) => {
+      // Validate bearer token if configured
+      if (config.inferenceToken) {
+        const authHeader = (req.headers["authorization"] as string | undefined) ?? "";
+        const expected = Buffer.from(`Bearer ${config.inferenceToken}`);
+        const actual = Buffer.from(authHeader);
+        if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Unauthorized" }));
+          return;
+        }
+      }
+
       if (req.method !== "POST") {
         res.writeHead(405, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Method not allowed" }));

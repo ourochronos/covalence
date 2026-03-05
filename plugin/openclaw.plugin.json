@@ -59,6 +59,12 @@
       "label": "Inference Proxy",
       "help": "Expose OpenAI-compatible /covalence/v1/chat/completions and /embeddings endpoints for Covalence engine"
     },
+    "inferenceToken": {
+      "label": "Inference Token",
+      "sensitive": true,
+      "placeholder": "or use ${COVALENCE_INFERENCE_TOKEN}",
+      "help": "Bearer token required to call the inference proxy endpoints (leave empty to disable auth)"
+    },
     "inferenceModel": {
       "label": "Inference Model",
       "placeholder": "github-copilot/gpt-4.1-mini",
@@ -118,6 +124,9 @@
       "inferenceEnabled": {
         "type": "boolean",
         "default": true
+      },
+      "inferenceToken": {
+        "type": "string"
       },
       "inferenceModel": {
         "type": "string"
