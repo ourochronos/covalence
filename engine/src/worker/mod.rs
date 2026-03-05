@@ -45,7 +45,7 @@ use uuid::Uuid;
 use llm::{LlmClient, StubLlmClient};
 
 /// Maximum number of attempts before a task is marked `failed`.
-const MAX_ATTEMPTS: i64 = 3;
+const MAX_ATTEMPTS: i64 = 5;
 
 /// How long we wait between poll cycles.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -327,19 +327,25 @@ async fn execute_and_finalize(pool: PgPool, llm: Arc<dyn LlmClient>, task: Queue
                     );
                 }
             } else {
+                // Compute capped exponential backoff: 60s, 120s, 240s, 480s, 960s (max 1 hour)
+                let backoff_secs = std::cmp::min(60 * (1i64 << (attempts - 1)), 3600);
+                let retry_after = chrono::Utc::now() + chrono::Duration::seconds(backoff_secs);
+
                 let result_json = json!({
                     "attempts":   attempts,
                     "last_error": error_msg,
                 });
                 if let Err(e) = sqlx::query(
                     r#"UPDATE covalence.slow_path_queue
-                       SET  status     = 'pending',
-                            started_at = null,
-                            result     = $1
+                       SET  status      = 'pending',
+                            started_at  = null,
+                            result      = $1,
+                            execute_after = $3
                        WHERE id = $2"#,
                 )
                 .bind(&result_json)
                 .bind(task.id)
+                .bind(retry_after)
                 .execute(&pool)
                 .await
                 {
@@ -348,12 +354,26 @@ async fn execute_and_finalize(pool: PgPool, llm: Arc<dyn LlmClient>, task: Queue
                         "worker: failed to requeue task: {e:#}"
                     );
                 } else {
-                    tracing::info!(
-                        task_id   = %task.id,
-                        task_type = %task.task_type,
-                        attempts,
-                        "worker: task requeued for retry"
-                    );
+                    // Log at WARN level if backoff exceeds 15 minutes
+                    if backoff_secs >= 900 {
+                        tracing::warn!(
+                            task_id      = %task.id,
+                            task_type    = %task.task_type,
+                            attempts,
+                            backoff_secs,
+                            retry_after  = %retry_after.to_rfc3339(),
+                            "worker: task requeued for retry with high backoff"
+                        );
+                    } else {
+                        tracing::info!(
+                            task_id      = %task.id,
+                            task_type    = %task.task_type,
+                            attempts,
+                            backoff_secs,
+                            retry_after  = %retry_after.to_rfc3339(),
+                            "worker: task requeued for retry with backoff"
+                        );
+                    }
                 }
             }
         }
