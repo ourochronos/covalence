@@ -23,6 +23,7 @@ pub mod llm;
 pub mod merge_edges;
 pub mod navigation;
 pub mod openai;
+pub mod provenance_cap;
 pub mod reconsolidation;
 pub mod tree_index;
 
@@ -445,6 +446,7 @@ pub async fn execute_task(
                 .unwrap_or("both");
             recompute_graph_embeddings(pool, method).await
         }
+        "auto_split" => provenance_cap::handle_auto_split(pool, llm, task).await,
         other => anyhow::bail!("unknown task_type: {other}"),
     }
 }
@@ -1507,6 +1509,65 @@ SOURCE DOCUMENTS:\n\
     // compile lock.  Priority 3 — higher than critique (2) so edges are
     // available quickly but lower than embed (5) so embedding lands first.
     enqueue_task(pool, "infer_article_edges", Some(article_id), json!({}), 3).await?;
+
+    // ── Auto-split trigger (covalence#161) ──────────────────────────────────
+    // Count ORIGINATES edges accumulated on this article across all compile
+    // calls.  If the count exceeds PROVENANCE_SPLIT_THRESHOLD, enqueue an
+    // auto_split task (idempotent: skips if one is already pending/running).
+    {
+        let split_threshold = provenance_cap::provenance_split_threshold() as i64;
+        let originates_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM covalence.edges
+             WHERE  target_node_id = $1
+               AND  edge_type      = 'ORIGINATES'",
+        )
+        .bind(article_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+        if originates_count > split_threshold {
+            let already_queued: bool = sqlx::query_scalar(
+                "SELECT EXISTS(
+                     SELECT 1 FROM covalence.slow_path_queue
+                     WHERE  task_type              = 'auto_split'
+                       AND  status                 IN ('pending', 'processing')
+                       AND  payload->>'article_id' = $1
+                 )",
+            )
+            .bind(article_id.to_string())
+            .fetch_one(pool)
+            .await
+            .unwrap_or(false);
+
+            if !already_queued {
+                if let Err(e) = enqueue_task(
+                    pool,
+                    "auto_split",
+                    None,
+                    json!({
+                        "article_id": article_id.to_string(),
+                        "reason": "originates_overflow",
+                        "originates_count_at_trigger": originates_count,
+                    }),
+                    1,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        article_id = %article_id,
+                        "compile: failed to enqueue auto_split (non-fatal): {e:#}"
+                    );
+                } else {
+                    tracing::info!(
+                        article_id        = %article_id,
+                        originates_count,
+                        "compile: provenance overflow — auto_split enqueued (covalence#161)"
+                    );
+                }
+            }
+        }
+    }
 
     tracing::info!(
         article_id  = %article_id,

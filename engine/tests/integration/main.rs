@@ -68,6 +68,7 @@ mod test_occ;
 mod test_openapi;
 mod test_process_queue_cleanup;
 mod test_property;
+mod test_provenance_cap;
 mod test_reconsolidation;
 mod test_search_explain;
 mod test_search_freshness;
