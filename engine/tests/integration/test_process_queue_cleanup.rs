@@ -64,12 +64,13 @@ async fn insert_queue_row(
 /// setting `completed_at` ensures the row appears old regardless of the other
 /// columns.
 async fn backdate_queue_row(fix: &TestFixture, task_id: Uuid, interval: &str) {
-    sqlx::query(&format!(
+    sqlx::query(
         "UPDATE covalence.slow_path_queue \
-         SET completed_at = now() - interval '{interval}' \
-         WHERE id = $1"
-    ))
+         SET completed_at = now() - $2::interval \
+         WHERE id = $1",
+    )
     .bind(task_id)
+    .bind(interval)
     .execute(&fix.pool)
     .await
     .unwrap_or_else(|e| panic!("backdate_queue_row({task_id}, {interval}) failed: {e}"));
@@ -78,12 +79,13 @@ async fn backdate_queue_row(fix: &TestFixture, task_id: Uuid, interval: &str) {
 /// Set `started_at` on a queue row to a past time (simulates a stale
 /// processing job) without touching `completed_at`.
 async fn backdate_started_at(fix: &TestFixture, task_id: Uuid, interval: &str) {
-    sqlx::query(&format!(
+    sqlx::query(
         "UPDATE covalence.slow_path_queue \
-         SET started_at = now() - interval '{interval}' \
-         WHERE id = $1"
-    ))
+         SET started_at = now() - $2::interval \
+         WHERE id = $1",
+    )
     .bind(task_id)
+    .bind(interval)
     .execute(&fix.pool)
     .await
     .unwrap_or_else(|e| panic!("backdate_started_at({task_id}, {interval}) failed: {e}"));
