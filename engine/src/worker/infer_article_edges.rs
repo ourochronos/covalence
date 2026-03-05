@@ -323,9 +323,9 @@ pub async fn handle_infer_article_edges(
 
         // Determine confidence.
         let mut confidence: f32 = if tier1_ok {
-            0.9_f32.max(combined_score)
+            0.9_f32.max(combined_score).min(0.95)
         } else if tier2_ok {
-            0.8_f32.max(combined_score)
+            0.8_f32.max(combined_score).min(0.95)
         } else {
             // Tier 3 only.
             (0.7 + candidate.tier3_sim).min(0.95)
