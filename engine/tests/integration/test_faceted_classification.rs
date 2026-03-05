@@ -42,6 +42,7 @@ fn ingest_req(
         capture_method: None,
         facet_function,
         facet_scope,
+        idempotency_key: None,
     }
 }
 
@@ -299,6 +300,7 @@ async fn test_facet_boost_raises_aligned_score() {
             capture_method: None,
             facet_function: Some(vec!["retrieval".into()]),
             facet_scope: Some(vec!["practical".into()]),
+            idempotency_key: None,
         })
         .await
         .expect("ingest A should succeed");
@@ -317,6 +319,7 @@ async fn test_facet_boost_raises_aligned_score() {
             capture_method: None,
             facet_function: None, // no facets
             facet_scope: None,
+            idempotency_key: None,
         })
         .await
         .expect("ingest B should succeed");
@@ -546,6 +549,7 @@ async fn test_no_facet_request_no_boost_applied() {
             capture_method: None,
             facet_function: Some(vec!["retrieval".into()]),
             facet_scope: Some(vec!["practical".into()]),
+            idempotency_key: None,
         })
         .await
         .expect("ingest with facets");
@@ -563,6 +567,7 @@ async fn test_no_facet_request_no_boost_applied() {
             capture_method: None,
             facet_function: None,
             facet_scope: None,
+            idempotency_key: None,
         })
         .await
         .expect("ingest without facets");

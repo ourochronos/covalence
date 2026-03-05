@@ -44,6 +44,7 @@ async fn test_source_ingest_populates_content_hash() {
         capture_method: None,
         facet_function: None,
         facet_scope: None,
+        idempotency_key: None,
     };
 
     let resp = svc.ingest(req).await.expect("ingest must succeed");
@@ -95,6 +96,7 @@ async fn test_source_get_exposes_content_hash() {
         capture_method: None,
         facet_function: None,
         facet_scope: None,
+        idempotency_key: None,
     };
 
     let ingested = svc.ingest(req).await.expect("ingest must succeed");

@@ -318,6 +318,11 @@ CREATE INDEX IF NOT EXISTS node_sections_hnsw_idx
 CREATE INDEX IF NOT EXISTS nodes_metadata_gin_idx
     ON covalence.nodes USING gin (metadata);
 
+-- covalence#196: partial GIN index with jsonb_path_ops for source metadata containment queries.
+CREATE INDEX IF NOT EXISTS idx_nodes_metadata_gin
+    ON covalence.nodes USING gin (metadata jsonb_path_ops)
+    WHERE node_type = 'source';
+
 CREATE INDEX IF NOT EXISTS nodes_content_tsv_gin_idx
     ON covalence.nodes USING gin (content_tsv);
 
