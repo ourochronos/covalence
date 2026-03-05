@@ -14,23 +14,35 @@ use super::{
     supersedes_decay::supersedes_decay,
 };
 
-/// Recompute the confidence score for a single article.
+// ── Data struct ───────────────────────────────────────────────────────────────
+
+/// Raw inputs for the three-phase confidence pipeline.
 ///
-/// Reads provenance links from `covalence.article_sources` and applies:
-/// * **Phase 1A** — Dempster-Shafer fusion over ORIGINATES sources.
-/// * **Phase 1B** — DF-QuAD penalty from CONTRADICTS / CONTENDS sources.
-/// * **Phase 1C** — SUPERSEDES decay from sources that supersede this article.
+/// Fetched from `article_sources` by [`fetch_article_confidence_inputs`].
+/// Passed to the pure [`compute_confidence`] function, which has no DB dependency.
+pub struct ConfidenceInputs {
+    /// Effective reliabilities of ORIGINATES/COMPILED_FROM sources (Phase 1A).
+    /// Each value is `reliability × causal_weight × conf_link`, clamped to [0, 1].
+    pub supporting: Vec<f64>,
+    /// (trust_score, causal_weight) pairs for CONTRADICTS/CONTENDS sources (Phase 1B).
+    pub attackers: Vec<(f64, f64)>,
+    /// (trust_score, causal_weight) pairs for SUPERSEDES sources (Phase 1C).
+    pub supersedes: Vec<(f64, f64)>,
+}
+
+// ── DB fetch ──────────────────────────────────────────────────────────────────
+
+/// Fetch the raw confidence inputs for one article from `article_sources`.
 ///
-/// The final score is clamped to `[CONF_FLOOR, 1.0]` and written to
-/// `covalence.nodes.confidence`.  A structured [`ConfidenceResult`] is
-/// returned so callers can log or forward the breakdown.
+/// Executes the three read queries (ORIGINATES, CONTRADICTS/CONTENDS, SUPERSEDES)
+/// and returns a [`ConfidenceInputs`] struct ready for [`compute_confidence`].
 ///
 /// # Errors
-/// Returns any database error encountered during the read or write queries.
-pub async fn recompute_article_confidence(
+/// Returns any database error encountered during the queries.
+pub async fn fetch_article_confidence_inputs(
     article_id: Uuid,
     conn: &mut PgConnection,
-) -> anyhow::Result<ConfidenceResult> {
+) -> anyhow::Result<ConfidenceInputs> {
     // ── Phase 1A: Dempster-Shafer multi-source fusion ─────────────────────────
     //
     // effective_reliability(S) = sources.reliability × article_sources.causal_weight
@@ -51,28 +63,18 @@ pub async fn recompute_article_confidence(
     .fetch_all(&mut *conn)
     .await?;
 
-    let mut source_ids: Vec<Uuid> = Vec::with_capacity(orig_rows.len());
-    let mut source_eff_reliabilities: Vec<f64> = Vec::with_capacity(orig_rows.len());
-    let mut flags: Vec<String> = Vec::new();
+    let mut supporting: Vec<f64> = Vec::with_capacity(orig_rows.len());
 
     for row in &orig_rows {
         use sqlx::Row;
-        let sid: Uuid = row.try_get("source_id")?;
         // reliability is DOUBLE PRECISION on nodes; causal_weight / conf_link are REAL on article_sources.
         // causal_weight and conf_link are NOT NULL; COALESCE in SQL is belt-and-suspenders.
         let rel: f64 = row.try_get("reliability").unwrap_or(0.5);
         let cw: f64 = row.try_get::<f32, _>("causal_weight")? as f64;
         let cl: f64 = row.try_get::<f32, _>("conf_link")? as f64;
         let eff = (rel * cw * cl).clamp(0.0, 1.0);
-        source_ids.push(sid);
-        source_eff_reliabilities.push(eff);
+        supporting.push(eff);
     }
-
-    if source_ids.is_empty() {
-        flags.push("no_sources".into());
-    }
-
-    let conf_ds = ds_fusion(&source_eff_reliabilities);
 
     // ── Phase 1B: DF-QuAD contradiction penalty ───────────────────────────────
     //
@@ -103,18 +105,6 @@ pub async fn recompute_article_confidence(
         attackers.push((trust, w));
     }
 
-    let conf_after_penalty = dfquad_penalty(conf_ds, &attackers);
-
-    // Pre-compute total_attack for the breakdown JSON.
-    let total_attack = if attackers.is_empty() {
-        0.0_f64
-    } else {
-        let cp = attackers.iter().fold(1.0_f64, |acc, &(t, w)| {
-            acc * (1.0 - (t * w).clamp(0.0, 1.0))
-        });
-        1.0 - cp
-    };
-
     // ── Phase 1C: SUPERSEDES decay ────────────────────────────────────────────
     //
     // supersede_factor(B→A) = trust_score(B) × causal_weight (default=1.0)
@@ -132,7 +122,7 @@ pub async fn recompute_article_confidence(
     .fetch_all(&mut *conn)
     .await?;
 
-    let mut supersedes_pairs: Vec<(f64, f64)> = Vec::with_capacity(supersedes_rows.len());
+    let mut supersedes: Vec<(f64, f64)> = Vec::with_capacity(supersedes_rows.len());
 
     for row in &supersedes_rows {
         use sqlx::Row;
@@ -140,15 +130,55 @@ pub async fn recompute_article_confidence(
         // causal_weight is NOT NULL; COALESCE in SQL is belt-and-suspenders.
         // Read as f32 (REAL column) then widen to f64.
         let cw: f64 = row.try_get::<f32, _>("causal_weight")? as f64;
-        supersedes_pairs.push((trust, cw));
+        supersedes.push((trust, cw));
     }
 
-    let conf_after_decay = supersedes_decay(conf_after_penalty, &supersedes_pairs);
+    Ok(ConfidenceInputs {
+        supporting,
+        attackers,
+        supersedes,
+    })
+}
 
-    let total_supersede = if supersedes_pairs.is_empty() {
+// ── Pure computation ──────────────────────────────────────────────────────────
+
+/// Run the three-phase confidence pipeline over pre-fetched inputs.
+///
+/// Applies Phase 1A (DS fusion), Phase 1B (DF-QuAD penalty), and Phase 1C
+/// (SUPERSEDES decay) in sequence, then clamps the result to
+/// `[CONF_FLOOR, 1.0]`.
+///
+/// Returns `(final_score, breakdown_json, flags)`.  No DB calls.  No async.
+pub fn compute_confidence(inputs: &ConfidenceInputs) -> (f64, serde_json::Value, Vec<String>) {
+    let mut flags: Vec<String> = Vec::new();
+
+    if inputs.supporting.is_empty() {
+        flags.push("no_sources".into());
+    }
+
+    // Phase 1A
+    let conf_ds = ds_fusion(&inputs.supporting);
+
+    // Phase 1B
+    let conf_after_penalty = dfquad_penalty(conf_ds, &inputs.attackers);
+
+    // Pre-compute total_attack for the breakdown JSON.
+    let total_attack = if inputs.attackers.is_empty() {
         0.0_f64
     } else {
-        let cp = supersedes_pairs.iter().fold(1.0_f64, |acc, &(t, w)| {
+        let cp = inputs.attackers.iter().fold(1.0_f64, |acc, &(t, w)| {
+            acc * (1.0 - (t * w).clamp(0.0, 1.0))
+        });
+        1.0 - cp
+    };
+
+    // Phase 1C
+    let conf_after_decay = supersedes_decay(conf_after_penalty, &inputs.supersedes);
+
+    let total_supersede = if inputs.supersedes.is_empty() {
+        0.0_f64
+    } else {
+        let cp = inputs.supersedes.iter().fold(1.0_f64, |acc, &(t, w)| {
             acc * (1.0 - (t * w).clamp(0.0, 1.0))
         });
         1.0 - cp
@@ -175,17 +205,17 @@ pub async fn recompute_article_confidence(
     // ── Build confidence_breakdown JSON ──────────────────────────────────────
     let breakdown = serde_json::json!({
         "ds_fusion": {
-            "source_count": source_eff_reliabilities.len(),
-            "source_reliabilities": source_eff_reliabilities,
+            "source_count": inputs.supporting.len(),
+            "source_reliabilities": inputs.supporting,
             "raw_score": conf_ds,
         },
         "contradicts_penalty": {
-            "attacker_count": attackers.len(),
+            "attacker_count": inputs.attackers.len(),
             "total_attack": total_attack,
             "score_after": conf_after_penalty,
         },
         "supersedes_decay": {
-            "superseder_count": supersedes_pairs.len(),
+            "superseder_count": inputs.supersedes.len(),
             "total_supersede": total_supersede,
             "score_after": conf_after_decay,
         },
@@ -194,6 +224,41 @@ pub async fn recompute_article_confidence(
         "flags": flags,
         "computed_at": computed_at.to_rfc3339(),
     });
+
+    (final_score, breakdown, flags)
+}
+
+// ── Composed entry-point ──────────────────────────────────────────────────────
+
+/// Recompute the confidence score for a single article.
+///
+/// Reads provenance links from `covalence.article_sources` and applies:
+/// * **Phase 1A** — Dempster-Shafer fusion over ORIGINATES sources.
+/// * **Phase 1B** — DF-QuAD penalty from CONTRADICTS / CONTENDS sources.
+/// * **Phase 1C** — SUPERSEDES decay from sources that supersede this article.
+///
+/// The final score is clamped to `[CONF_FLOOR, 1.0]` and written to
+/// `covalence.nodes.confidence`.  A structured [`ConfidenceResult`] is
+/// returned so callers can log or forward the breakdown.
+///
+/// # Errors
+/// Returns any database error encountered during the read or write queries.
+pub async fn recompute_article_confidence(
+    article_id: Uuid,
+    conn: &mut PgConnection,
+) -> anyhow::Result<ConfidenceResult> {
+    // Capture source_ids for the back-fill loop before inputs is consumed.
+    // We need to re-run the originates query to get source IDs — or we can
+    // keep source_ids alongside supporting in fetch.  Since fetch doesn't
+    // expose them, we run a lightweight re-fetch here (same as before).
+    //
+    // NOTE: to avoid a second round-trip we fetch inputs, then separately
+    // collect source_ids from a targeted query below.  The SQL is identical
+    // to what was here before the refactor; the only new thing is that the
+    // three-phase math now lives in compute_confidence.
+    let inputs = fetch_article_confidence_inputs(article_id, conn).await?;
+    let (final_score, breakdown, flags) = compute_confidence(&inputs);
+    let computed_at = Utc::now();
 
     // ── Persist: write trust_score + breakdown to the article node ─────────
     sqlx::query(
@@ -210,7 +275,34 @@ pub async fn recompute_article_confidence(
     .await?;
 
     // ── Persist: back-fill contribution_weight on ORIGINATES rows ─────────
-    for (sid, &eff_rel) in source_ids.iter().zip(source_eff_reliabilities.iter()) {
+    //
+    // We need (source_id, eff_reliability) pairs, which fetch_article_confidence_inputs
+    // does not expose (it only keeps the numeric slice).  Re-run the narrow query
+    // to get source IDs; this is the same SQL as before and is cheap (indexed).
+    let orig_rows = sqlx::query(
+        "SELECT
+             s.source_id,
+             COALESCE(n.reliability, 0.5)  AS reliability,
+             COALESCE(s.causal_weight, 1.0) AS causal_weight,
+             COALESCE(s.confidence, 1.0)    AS conf_link
+         FROM covalence.article_sources s
+         JOIN covalence.nodes n ON n.id = s.source_id
+         WHERE s.article_id  = $1
+           AND s.relationship IN ('originates', 'compiled_from')
+           AND s.superseded_at IS NULL",
+    )
+    .bind(article_id)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    for row in &orig_rows {
+        use sqlx::Row;
+        let sid: Uuid = row.try_get("source_id")?;
+        let rel: f64 = row.try_get("reliability").unwrap_or(0.5);
+        let cw: f64 = row.try_get::<f32, _>("causal_weight")? as f64;
+        let cl: f64 = row.try_get::<f32, _>("conf_link")? as f64;
+        let eff = (rel * cw * cl).clamp(0.0, 1.0);
+
         sqlx::query(
             "UPDATE covalence.article_sources
              SET contribution_weight = $1
@@ -218,7 +310,7 @@ pub async fn recompute_article_confidence(
                AND source_id   = $3
                AND relationship IN ('originates', 'compiled_from')",
         )
-        .bind(eff_rel as f32)
+        .bind(eff as f32)
         .bind(article_id)
         .bind(sid)
         .execute(&mut *conn)
@@ -232,4 +324,124 @@ pub async fn recompute_article_confidence(
         flags,
         computed_at,
     })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pure regression test: verifies that `compute_confidence` produces scores
+    /// and flags consistent with the DS / DF-QuAD / supersedes-decay formulas.
+    ///
+    /// Hand-calculated expected values:
+    ///
+    /// Phase 1A (DS fusion):
+    ///   supporting = [0.8, 0.6]
+    ///   conf_ds = 1 − (1−0.8)(1−0.6) = 1 − 0.2×0.4 = 1 − 0.08 = 0.92
+    ///
+    /// Phase 1B (DF-QuAD):
+    ///   attackers = [(0.5, 1.0)]
+    ///   total_attack = 1 − (1 − 0.5×1.0) = 0.5
+    ///   conf_after_penalty = 0.92 × (1 − 0.5) = 0.92 × 0.5 = 0.46
+    ///
+    /// Phase 1C (supersedes decay):
+    ///   supersedes = [(0.4, 0.5)]
+    ///   factor = 0.4×0.5 = 0.2 → total_supersede = 0.2
+    ///   conf_after_decay = 0.46 × (1 − 0.2) = 0.46 × 0.8 = 0.368
+    ///
+    /// Final: 0.368 > CONF_FLOOR (0.02), so no floor_clamped flag.
+    #[test]
+    fn test_compute_confidence_matches_recompute() {
+        let inputs = ConfidenceInputs {
+            supporting: vec![0.8, 0.6],
+            attackers: vec![(0.5, 1.0)],
+            supersedes: vec![(0.4, 0.5)],
+        };
+
+        let (final_score, breakdown, flags) = compute_confidence(&inputs);
+
+        // Final score
+        let expected = 0.368_f64;
+        assert!(
+            (final_score - expected).abs() < 1e-9,
+            "final_score={final_score}, expected≈{expected}"
+        );
+
+        // No floor clamp should have been triggered
+        assert!(
+            !flags.contains(&"floor_clamped".to_string()),
+            "unexpected floor_clamped flag: {flags:?}"
+        );
+        assert!(
+            !flags.contains(&"no_sources".to_string()),
+            "unexpected no_sources flag: {flags:?}"
+        );
+
+        // Breakdown sanity checks
+        let raw_score = breakdown["ds_fusion"]["raw_score"].as_f64().unwrap();
+        assert!((raw_score - 0.92).abs() < 1e-9, "ds raw_score={raw_score}");
+
+        let score_after_penalty = breakdown["contradicts_penalty"]["score_after"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            (score_after_penalty - 0.46).abs() < 1e-9,
+            "score_after_penalty={score_after_penalty}"
+        );
+
+        let score_after_decay = breakdown["supersedes_decay"]["score_after"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            (score_after_decay - 0.368).abs() < 1e-9,
+            "score_after_decay={score_after_decay}"
+        );
+    }
+
+    /// Verify no_sources flag when supporting is empty.
+    #[test]
+    fn test_compute_confidence_no_sources_flag() {
+        let inputs = ConfidenceInputs {
+            supporting: vec![],
+            attackers: vec![],
+            supersedes: vec![],
+        };
+        let (final_score, _breakdown, flags) = compute_confidence(&inputs);
+        assert!(
+            flags.contains(&"no_sources".to_string()),
+            "expected no_sources flag"
+        );
+        // DS fusion of empty → 0.0, which is < CONF_FLOOR → floor_clamped
+        assert!(
+            flags.contains(&"floor_clamped".to_string()),
+            "expected floor_clamped flag for zero confidence"
+        );
+        assert!(
+            (final_score - CONF_FLOOR).abs() < 1e-12,
+            "expected CONF_FLOOR={CONF_FLOOR}, got {final_score}"
+        );
+    }
+
+    /// Verify floor_clamped flag when the result would fall below CONF_FLOOR.
+    #[test]
+    fn test_compute_confidence_floor_clamp() {
+        // A single very-low supporting source plus a strong attacker drives
+        // conf_after_penalty very close to zero.
+        let inputs = ConfidenceInputs {
+            supporting: vec![0.01],
+            attackers: vec![(0.99, 1.0)],
+            supersedes: vec![],
+        };
+        let (final_score, _breakdown, flags) = compute_confidence(&inputs);
+        assert!(
+            flags.contains(&"floor_clamped".to_string()),
+            "expected floor_clamped, got {flags:?}"
+        );
+        assert!(
+            (final_score - CONF_FLOOR).abs() < 1e-12,
+            "expected CONF_FLOOR={CONF_FLOOR}, got {final_score}"
+        );
+    }
 }
