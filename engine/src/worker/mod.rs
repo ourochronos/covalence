@@ -768,16 +768,24 @@ async fn handle_contention_check(pool: &PgPool, task: &QueueTask) -> anyhow::Res
     }))
 }
 
-/// Strip markdown code fences from an LLM response, returning the inner text.
-fn strip_fences(text: &str) -> String {
-    let text = text.trim();
-    if text.starts_with("```") {
+/// Strip markdown code fences from an LLM response and parse it as JSON.
+///
+/// Returns `Some(value)` on success, `None` if the response cannot be parsed
+/// as JSON after stripping fences.  The fallback concatenation / midpoint logic
+/// at each callsite is responsible for handling the `None` case.
+pub(crate) fn parse_llm_json(raw: &str) -> Option<serde_json::Value> {
+    let text = raw.trim();
+    let json_str = if text.starts_with("```") {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() >= 3 {
-            return lines[1..lines.len() - 1].join("\n");
+            lines[1..lines.len() - 1].join("\n")
+        } else {
+            text.to_string()
         }
-    }
-    text.to_string()
+    } else {
+        text.to_string()
+    };
+    serde_json::from_str(&json_str).ok()
 }
 
 /// Enqueue a slow-path task with an optional node_id and JSON payload.
@@ -1126,12 +1134,12 @@ SOURCE DOCUMENTS:\n\
     let llm_latency_ms = t0.elapsed().as_millis() as i32;
 
     let (llm_json, degraded) = match llm_result {
-        Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
-            Ok(v) => (v, false),
-            Err(e) => {
+        Ok(raw) => match parse_llm_json(&raw) {
+            Some(v) => (v, false),
+            None => {
                 tracing::warn!(
                     task_id = %task.id,
-                    "compile: JSON parse error ({e}), falling back to concatenation"
+                    "compile: JSON parse failed, falling back to concatenation"
                 );
                 (Value::Null, true)
             }
@@ -1659,8 +1667,8 @@ Return ONLY valid JSON (no markdown fences):\n\
         );
 
         match llm.complete(&prompt, 512).await {
-            Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
-                Ok(v) => {
+            Ok(raw) => match parse_llm_json(&raw) {
+                Some(v) => {
                     let idx = v
                         .get("split_index")
                         .and_then(|x| x.as_u64())
@@ -1673,10 +1681,10 @@ Return ONLY valid JSON (no markdown fences):\n\
                     );
                     idx
                 }
-                Err(e) => {
+                None => {
                     tracing::warn!(
                         node_id = %node_id,
-                        "split: LLM JSON parse error ({e}), using midpoint"
+                        "split: LLM JSON parse failed, using midpoint"
                     );
                     midpoint
                 }
@@ -1780,12 +1788,13 @@ Return ONLY valid JSON (no markdown fences):\n\
     }
 
     // ── 7. Copy provenance edges from original to both new articles ────────
-    let prov_rows = sqlx::query(
+    let prov_rows = sqlx::query(&format!(
         "SELECT source_node_id, edge_type \
-         FROM covalence.edges \
-         WHERE target_node_id = $1 \
-           AND edge_type IN ('ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES')",
-    )
+             FROM covalence.edges \
+             WHERE target_node_id = $1 \
+               AND edge_type IN ({})",
+        EdgeType::provenance_sql_labels()
+    ))
     .bind(node_id)
     .fetch_all(pool)
     .await
