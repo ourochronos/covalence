@@ -257,3 +257,64 @@ async fn split_idempotency_guard() {
 
     fix.cleanup().await;
 }
+
+// ─── regression: Part B metadata must not inherit original tree_index ─────────
+
+/// When `article_service::split` creates Part B, the child article's metadata
+/// must NOT contain the original article's `tree_index` (which has wrong
+/// character offsets).  `handle_split` (worker path) already uses a fresh
+/// `{"split_from": <id>}` metadata; this test guards the service path.
+#[tokio::test]
+#[serial]
+async fn split_part_b_metadata_has_no_stale_tree_index() {
+    let mut fix = TestFixture::new().await;
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new());
+
+    // Build an article whose metadata contains a tree_index (as produced by
+    // build_tree_index after compilation).
+    let orig_content = "Alpha ".repeat(50) + &"Beta ".repeat(50);
+    let stale_tree = serde_json::json!({
+        "tree_index": [
+            { "title": "Alpha section", "start_char": 0,   "end_char": 300 },
+            { "title": "Beta section",  "start_char": 300, "end_char": 600 }
+        ],
+        "tree_indexed_at": "2026-01-01T00:00:00Z"
+    });
+    let article_id = fix
+        .insert_article_with_meta("Tree-Indexed Article", &orig_content, &stale_tree)
+        .await;
+    fix.track_task_type("embed");
+    fix.track_task_type("tree_embed");
+
+    let task = TestFixture::make_task("split", Some(article_id), json!({}));
+    let result = handle_split(&fix.pool, &llm, &task)
+        .await
+        .expect("handle_split should succeed");
+
+    let part_b_id = Uuid::parse_str(result["part_b_id"].as_str().unwrap()).unwrap();
+    fix.track(part_b_id);
+
+    // Fetch Part B's metadata from DB.
+    let meta: serde_json::Value = sqlx::query_scalar(
+        "SELECT COALESCE(metadata, '{}'::jsonb) FROM covalence.nodes WHERE id = $1",
+    )
+    .bind(part_b_id)
+    .fetch_one(&fix.pool)
+    .await
+    .expect("fetch part_b metadata");
+
+    assert!(
+        meta.get("tree_index").is_none() || meta["tree_index"].is_null(),
+        "Part B must not inherit a stale tree_index from the original article; \
+         got metadata: {meta}"
+    );
+    assert_eq!(
+        meta.get("split_from")
+            .and_then(|v| v.as_str())
+            .map(|s| uuid::Uuid::parse_str(s).is_ok()),
+        Some(true),
+        "Part B metadata must record split_from pointing to the original article"
+    );
+
+    fix.cleanup().await;
+}
