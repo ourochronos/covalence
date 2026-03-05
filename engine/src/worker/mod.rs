@@ -1410,6 +1410,63 @@ SOURCE DOCUMENTS:\n\
         }
     }
 
+    // ── 7b. Mirror provenance edges into article_sources + recompute confidence ─
+    // Insert one row per source into covalence.article_sources so that the
+    // Phase-1 confidence pipeline (covalence#137) can query them.
+    // Uses ON CONFLICT DO NOTHING for idempotent re-runs.
+    for src in &sources {
+        let rel_str = rel_map
+            .get(&src.id)
+            .map(|s| s.as_str())
+            .unwrap_or("originates");
+        let causal_w: f32 = match rel_str {
+            "supersedes" => 0.95,
+            "confirms" => 0.60,
+            "contradicts" => 0.50,
+            "contends" => 0.30,
+            _ => 1.0, // originates
+        };
+        if let Err(e) = sqlx::query(
+            "INSERT INTO covalence.article_sources \
+             (article_id, source_id, relationship, causal_weight, confidence) \
+             VALUES ($1, $2, $3, $4, 1.0) \
+             ON CONFLICT (article_id, source_id, relationship) DO NOTHING",
+        )
+        .bind(article_id)
+        .bind(src.id)
+        .bind(rel_str)
+        .bind(causal_w)
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(
+                article_id = %article_id,
+                source_id  = %src.id,
+                "compile: failed to mirror edge into article_sources (non-fatal): {e}"
+            );
+        }
+    }
+
+    // Trigger confidence recompute now that provenance links are written.
+    match pool.acquire().await {
+        Ok(mut conn) => {
+            if let Err(e) =
+                crate::confidence::recompute_article_confidence(article_id, &mut conn).await
+            {
+                tracing::warn!(
+                    article_id = %article_id,
+                    "compile: confidence recompute failed (non-fatal): {e:#}"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                article_id = %article_id,
+                "compile: could not acquire conn for confidence recompute: {e:#}"
+            );
+        }
+    }
+
     // ── 8. Queue follow-up tasks ────────────────────────────────────────────
     enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;
     for src in &sources {
