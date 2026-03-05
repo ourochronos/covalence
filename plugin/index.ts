@@ -31,6 +31,9 @@ import {
   forgetMemory,
   createSession,
   closeSession,
+  appendMessages,
+  flushSession,
+  finalizeSession,
   getAdminStats,
   runMaintenance,
 } from "./client.js";
@@ -978,15 +981,62 @@ const covalencePlugin = {
       });
     }
 
+    // Session ingestion: append messages after agent turn
+    api.on("agent_end", async (event: any, ctx?: any) => {
+      const sessionId = currentSessionId || ctx?.sessionKey || ctx?.sessionId;
+      if (!cfg.sessionIngestion || !sessionId) return;
+      if (!event.success || !event.messages || event.messages.length === 0) return;
+
+      try {
+        // Extract user and assistant messages from the turn
+        const messages: Array<{
+          role: string;
+          content: string;
+          speaker?: string;
+          chunk_index?: number;
+        }> = [];
+
+        for (const msg of event.messages as Array<{ role: string; content: unknown }>) {
+          if (msg.role !== "user" && msg.role !== "assistant") continue;
+
+          let content = "";
+          if (typeof msg.content === "string") {
+            content = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            const textBlocks: string[] = [];
+            for (const block of msg.content) {
+              if (block?.type === "text" && typeof block.text === "string") {
+                textBlocks.push(block.text);
+              }
+            }
+            content = textBlocks.join("\n");
+          }
+
+          if (content) {
+            messages.push({ role: msg.role, content });
+          }
+        }
+
+        if (messages.length > 0) {
+          await appendMessages(cfg, sessionId, messages);
+          log.info(
+            `memory-covalence: appended ${messages.length} messages to session ${sessionId}`,
+          );
+        }
+      } catch (err) {
+        log.warn(`memory-covalence: agent_end message append failed: ${String(err)}`);
+      }
+    });
+
     // Before compaction: flush and optionally compile the session
     api.on("before_compaction", async (_event: any, ctx?: any) => {
       const sessionId = currentSessionId || ctx?.sessionKey || ctx?.sessionId;
       if (!cfg.sessionIngestion || !sessionId) return;
 
       try {
-        // Close the session (triggers server-side flush)
-        await closeSession(cfg, sessionId);
-        log.info(`memory-covalence: closed session ${sessionId} (pre-compaction)`);
+        // Flush the session (converts buffered messages to a source)
+        await flushSession(cfg, sessionId);
+        log.info(`memory-covalence: flushed session ${sessionId} (pre-compaction)`);
 
         // If compile-on-flush is enabled, trigger an article compile from the session source
         if (cfg.autoCompileOnFlush) {
@@ -996,6 +1046,21 @@ const covalencePlugin = {
         }
       } catch (err) {
         log.warn(`memory-covalence: before_compaction flush failed: ${String(err)}`);
+      }
+    });
+
+    // Session end: finalize the session (flush remaining messages and close)
+    api.on("session_end", async (_event: any, ctx?: any) => {
+      const sessionId = currentSessionId || ctx?.sessionKey || ctx?.sessionId;
+      if (!cfg.sessionIngestion || !sessionId) return;
+
+      try {
+        // Finalize flushes any remaining messages and closes the session
+        const compile = cfg.autoCompileOnFlush ?? false;
+        await finalizeSession(cfg, sessionId, compile);
+        log.info(`memory-covalence: finalized session ${sessionId} (session_end)`);
+      } catch (err) {
+        log.warn(`memory-covalence: session_end finalize failed: ${String(err)}`);
       }
     });
 

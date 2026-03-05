@@ -307,6 +307,30 @@ export function closeSession(cfg: CovalenceConfig, sessionId: string): Promise<C
   return covalenceFetch(cfg, "POST", `/sessions/${encodeURIComponent(sessionId)}/close`);
 }
 
+export function appendMessages(
+  cfg: CovalenceConfig,
+  sessionId: string,
+  messages: Array<{ role: string; content: string; speaker?: string; chunk_index?: number }>,
+): Promise<CovalenceResult> {
+  return covalenceFetch(cfg, "POST", `/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    messages,
+  });
+}
+
+export function flushSession(cfg: CovalenceConfig, sessionId: string): Promise<CovalenceResult> {
+  return covalenceFetch(cfg, "POST", `/sessions/${encodeURIComponent(sessionId)}/flush`);
+}
+
+export function finalizeSession(
+  cfg: CovalenceConfig,
+  sessionId: string,
+  compile?: boolean,
+): Promise<CovalenceResult> {
+  return covalenceFetch(cfg, "POST", `/sessions/${encodeURIComponent(sessionId)}/finalize`, {
+    compile: compile ?? false,
+  });
+}
+
 // =========================================================================
 // Admin API
 // =========================================================================
