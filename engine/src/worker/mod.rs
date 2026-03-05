@@ -25,6 +25,7 @@ pub mod navigation;
 pub mod openai;
 pub mod provenance_cap;
 pub mod reconsolidation;
+pub mod source_selection;
 pub mod tree_index;
 
 use std::sync::Arc;
@@ -135,7 +136,7 @@ pub async fn run_with_token(pool: PgPool, llm: Arc<dyn LlmClient>, token: Cancel
 
         // Periodically enqueue consolidation tasks for due articles.
         if heartbeat_tick % CONSOLIDATION_HEARTBEAT_INTERVAL == 0 {
-            if let Err(e) = enqueue_due_consolidations(&pool).await {
+            if let Err(e) = enqueue_due_article_consolidations(&pool).await {
                 tracing::error!("consolidation heartbeat error: {e:#}");
             }
         }
@@ -359,10 +360,14 @@ async fn execute_and_finalize(pool: PgPool, llm: Arc<dyn LlmClient>, task: Queue
     }
 }
 
-/// Enqueue `consolidate_article` tasks for every active article whose
+/// Enqueue `consolidate_article` tasks for every active **article** node whose
 /// `next_consolidation_at` has arrived and that has no pending/processing
 /// consolidation task already.
-async fn enqueue_due_consolidations(pool: &PgPool) -> anyhow::Result<()> {
+///
+/// The query explicitly filters `node_type = 'article'` so that future
+/// `node_type = 'claim'` nodes are never swept into this heartbeat by accident
+/// (covalence#173).
+async fn enqueue_due_article_consolidations(pool: &PgPool) -> anyhow::Result<()> {
     use sqlx::Row as _;
 
     let rows = sqlx::query(
@@ -982,17 +987,10 @@ pub async fn handle_compile(
     const MAX_COMPILATION_SOURCES: usize = 7;
     let original_source_count = source_ids.len();
     let source_ids = if original_source_count > MAX_COMPILATION_SOURCES {
-        let capped: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM covalence.nodes \
-             WHERE  id = ANY($1) \
-             ORDER BY COALESCE(reliability, 0.5) DESC \
-             LIMIT  $2",
-        )
-        .bind(&source_ids)
-        .bind(MAX_COMPILATION_SOURCES as i64)
-        .fetch_all(pool)
-        .await
-        .context("compile: failed to score sources for cap")?;
+        let capped =
+            source_selection::select_by_reliability(pool, &source_ids, MAX_COMPILATION_SOURCES)
+                .await
+                .context("compile: failed to score sources for cap")?;
         tracing::info!(
             task_id   = %task.id,
             original  = original_source_count,
@@ -1486,14 +1484,64 @@ SOURCE DOCUMENTS:\n\
     }
 
     // ── 8. Queue follow-up tasks ────────────────────────────────────────────
+    let source_ids_for_tasks: Vec<Uuid> = sources.iter().map(|s| s.id).collect();
+    schedule_post_article_compile_tasks(
+        pool,
+        article_id,
+        &source_ids_for_tasks,
+        article_content.len(),
+    )
+    .await?;
+
+    tracing::info!(
+        article_id  = %article_id,
+        title       = %article_title,
+        content_len = article_content.len(),
+        degraded,
+        "compile: done"
+    );
+
+    Ok(json!({
+        "article_id":     article_id,
+        "title":          article_title,
+        "content_len":    article_content.len(),
+        "epistemic_type": epistemic_type,
+        "degraded":       degraded,
+        "source_count":   sources.len(),
+    }))
+}
+
+/// Enqueue the standard set of follow-up tasks after an article node has been
+/// compiled or updated by [`handle_compile`].
+///
+/// Extracted from the inline block at the end of `handle_compile` so that the
+/// claims compilation handler (covalence#173) can use a *different* post-task
+/// sequence without accidentally inheriting this one.  Naming it
+/// `_article_compile_tasks` makes the scope explicit.
+///
+/// Tasks queued (in order):
+/// 1. `embed` — generate/refresh the article's vector embedding.
+/// 2. `contention_check` — check each source for contradictions.
+/// 3. `split` — only when `content_len > 14 000` chars (structural split).
+/// 4. `critique_article` — deferred 1 h (Reflexion loop, covalence#105).
+/// 5. `infer_article_edges` — article-to-article semantic edges (covalence#160).
+/// 6. `auto_split` — provenance-overflow guard (covalence#161), enqueued only
+///    when the ORIGINATES edge count exceeds the configured threshold and no
+///    such task is already pending/processing.
+async fn schedule_post_article_compile_tasks(
+    pool: &PgPool,
+    article_id: Uuid,
+    source_ids: &[Uuid],
+    content_len: usize,
+) -> anyhow::Result<()> {
     enqueue_task(pool, "embed", Some(article_id), json!({}), 5).await?;
-    for src in &sources {
-        enqueue_task(pool, "contention_check", Some(src.id), json!({}), 3).await?;
+    for &src_id in source_ids {
+        enqueue_task(pool, "contention_check", Some(src_id), json!({}), 3).await?;
     }
-    if article_content.len() > 14_000 {
+    if content_len > 14_000 {
         tracing::info!(
             article_id  = %article_id,
-            content_len = article_content.len(),
+            content_len,
             "compile: content large, queuing split task"
         );
         enqueue_task(pool, "split", Some(article_id), json!({}), 4).await?;
@@ -1518,10 +1566,10 @@ SOURCE DOCUMENTS:\n\
     // available quickly but lower than embed (5) so embedding lands first.
     enqueue_task(pool, "infer_article_edges", Some(article_id), json!({}), 3).await?;
 
-    // ── Auto-split trigger (covalence#161) ──────────────────────────────────
-    // Count ORIGINATES edges accumulated on this article across all compile
-    // calls.  If the count exceeds PROVENANCE_SPLIT_THRESHOLD, enqueue an
-    // auto_split task (idempotent: skips if one is already pending/running).
+    // Auto-split trigger (covalence#161): count ORIGINATES edges accumulated
+    // on this article across all compile calls.  If the count exceeds
+    // PROVENANCE_SPLIT_THRESHOLD, enqueue an auto_split task (idempotent:
+    // skips if one is already pending/running).
     {
         let split_threshold = provenance_cap::provenance_split_threshold() as i64;
         let originates_count: i64 = sqlx::query_scalar(
@@ -1577,22 +1625,7 @@ SOURCE DOCUMENTS:\n\
         }
     }
 
-    tracing::info!(
-        article_id  = %article_id,
-        title       = %article_title,
-        content_len = article_content.len(),
-        degraded,
-        "compile: done"
-    );
-
-    Ok(json!({
-        "article_id":     article_id,
-        "title":          article_title,
-        "content_len":    article_content.len(),
-        "epistemic_type": epistemic_type,
-        "degraded":       degraded,
-        "source_count":   sources.len(),
-    }))
+    Ok(())
 }
 
 /// `split`: Split an oversized article node into two smaller nodes.
