@@ -896,11 +896,13 @@ CREATE TABLE IF NOT EXISTS covalence.article_sources (
 
 CREATE INDEX IF NOT EXISTS idx_article_sources_article_relationship
     ON covalence.article_sources (article_id, relationship)
-    WHERE relationship IN ('originates', 'contradicts', 'contends', 'supersedes');
+    WHERE relationship IN ('originates', 'contradicts', 'contends', 'supersedes')
+      AND superseded_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_article_sources_source_relationship
     ON covalence.article_sources (source_id, relationship)
-    WHERE relationship IN ('supersedes', 'contradicts', 'contends');
+    WHERE relationship IN ('supersedes', 'contradicts', 'contends')
+      AND superseded_at IS NULL;
 
 -- confidence_breakdown column on articles (stored in nodes).
 ALTER TABLE covalence.nodes

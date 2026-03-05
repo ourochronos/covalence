@@ -275,11 +275,12 @@ impl AdminService {
                 result.rows_affected()
             ));
 
-            // Batch-recompute confidence for all stale articles (covalence#137).
-            // An article is stale when its article_sources provenance has changed
-            // since its confidence_breakdown was last computed.  For Phase 1 we
-            // recompute all active articles that have at least one article_sources
-            // row but whose confidence_breakdown is NULL (never computed yet).
+            // Batch-recompute confidence for articles that have never had confidence
+            // computed (covalence#137).  The query selects active articles that have
+            // at least one article_sources row but whose confidence_breakdown is NULL,
+            // meaning the pipeline has never run for them — NOT that they are stale.
+            // True staleness detection (comparing provenance change time to last
+            // compute time) is future work tracked in covalence#137.
             let stale_ids: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT DISTINCT a.id
                  FROM covalence.nodes a
@@ -299,12 +300,14 @@ impl AdminService {
 
             let mut confidence_ok: usize = 0;
             let mut confidence_err: usize = 0;
-            for article_id in &stale_ids {
-                match self.pool.acquire().await {
-                    Ok(mut conn) => {
+            // Acquire a single connection once and reuse it across all articles
+            // rather than hitting the pool for every iteration (fix #6).
+            match self.pool.acquire().await {
+                Ok(mut conn) => {
+                    for article_id in &stale_ids {
                         match crate::confidence::recompute_article_confidence(
                             *article_id,
-                            &mut conn,
+                            &mut *conn,
                         )
                         .await
                         {
@@ -318,12 +321,12 @@ impl AdminService {
                             }
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            "process_queue: could not acquire conn for confidence recompute: {e:#}"
-                        );
-                        confidence_err += 1;
-                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "process_queue: could not acquire conn for confidence recompute: {e:#}"
+                    );
+                    confidence_err += stale_ids.len();
                 }
             }
             if confidence_ok > 0 || confidence_err > 0 {

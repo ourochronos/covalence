@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS covalence.article_sources (
                                'contradicts', 'contends'
                            )),
 
-    -- Per-link weight inherited from the backing edge (defaults match EdgeType::causal_weight()).
+    -- Per-link weight inherited from the backing edge.
+    -- Writers MUST always supply an explicit value; the DEFAULT 1.0 does not
+    -- match EdgeType::causal_weight() for most relationship types and exists
+    -- only as a schema-level safety net.
     causal_weight        REAL          NOT NULL DEFAULT 1.0
                            CONSTRAINT article_sources_causal_weight_range
                            CHECK (causal_weight >= 0.0 AND causal_weight <= 1.0),
@@ -64,11 +67,13 @@ COMMENT ON TABLE covalence.article_sources IS
 
 CREATE INDEX IF NOT EXISTS idx_article_sources_article_relationship
     ON covalence.article_sources (article_id, relationship)
-    WHERE relationship IN ('originates', 'contradicts', 'contends', 'supersedes');
+    WHERE relationship IN ('originates', 'contradicts', 'contends', 'supersedes')
+      AND superseded_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_article_sources_source_relationship
     ON covalence.article_sources (source_id, relationship)
-    WHERE relationship IN ('supersedes', 'contradicts', 'contends');
+    WHERE relationship IN ('supersedes', 'contradicts', 'contends')
+      AND superseded_at IS NULL;
 
 -- =============================================================================
 -- 3.  Add confidence_breakdown to article nodes (covalence.nodes)

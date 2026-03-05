@@ -10,10 +10,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::{
-    ConfidenceResult,
-    constants::{CONF_FLOOR, CONTENDS_DEFAULT_WEIGHT, CONTRADICTS_DEFAULT_WEIGHT},
-    dfquad_penalty::dfquad_penalty,
-    ds_fusion::ds_fusion,
+    ConfidenceResult, constants::CONF_FLOOR, dfquad_penalty::dfquad_penalty, ds_fusion::ds_fusion,
     supersedes_decay::supersedes_decay,
 };
 
@@ -62,9 +59,14 @@ pub async fn recompute_article_confidence(
         use sqlx::Row;
         let sid: Uuid = row.try_get("source_id")?;
         // reliability is DOUBLE PRECISION on nodes; causal_weight / conf_link are REAL on article_sources.
+        // causal_weight and conf_link are NOT NULL; COALESCE in SQL is belt-and-suspenders.
         let rel: f64 = row.try_get("reliability").unwrap_or(0.5);
-        let cw: f64 = row.try_get::<f32, _>("causal_weight").unwrap_or(1.0) as f64;
-        let cl: f64 = row.try_get::<f32, _>("conf_link").unwrap_or(1.0) as f64;
+        let cw: f64 = row
+            .try_get::<f32, _>("causal_weight")
+            .expect("causal_weight is NOT NULL") as f64;
+        let cl: f64 = row
+            .try_get::<f32, _>("conf_link")
+            .expect("confidence is NOT NULL") as f64;
         let eff = (rel * cw * cl).clamp(0.0, 1.0);
         source_ids.push(sid);
         source_eff_reliabilities.push(eff);
@@ -100,20 +102,10 @@ pub async fn recompute_article_confidence(
     for row in &attack_rows {
         use sqlx::Row;
         let trust: f64 = row.try_get("trust_score").unwrap_or(0.5);
-        let rel_str: String = row.try_get("relationship").unwrap_or_default();
-        let default_w = if rel_str == "contradicts" {
-            CONTRADICTS_DEFAULT_WEIGHT
-        } else {
-            CONTENDS_DEFAULT_WEIGHT
-        };
-        // Prefer causal_weight override when present and non-null.
-        // Column is REAL (f32) in Postgres; cast to f64 after extraction.
+        // causal_weight is NOT NULL; read directly as f32 and widen to f64.
         let w: f64 = row
-            .try_get::<Option<f32>, _>("causal_weight")
-            .ok()
-            .flatten()
-            .map(|v| v as f64)
-            .unwrap_or(default_w);
+            .try_get::<f32, _>("causal_weight")
+            .expect("causal_weight is NOT NULL") as f64;
         attackers.push((trust, w));
     }
 
@@ -151,8 +143,11 @@ pub async fn recompute_article_confidence(
     for row in &supersedes_rows {
         use sqlx::Row;
         let trust: f64 = row.try_get("trust_score").unwrap_or(0.5);
-        // causal_weight column is REAL (f32); read as f32 then widen.
-        let cw: f64 = row.try_get::<f32, _>("causal_weight").unwrap_or(1.0) as f64;
+        // causal_weight is NOT NULL; COALESCE in SQL is belt-and-suspenders.
+        // Read as f32 (REAL column) then widen to f64.
+        let cw: f64 = row
+            .try_get::<f32, _>("causal_weight")
+            .expect("causal_weight is NOT NULL") as f64;
         supersedes_pairs.push((trust, cw));
     }
 

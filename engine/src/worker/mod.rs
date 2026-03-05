@@ -1413,24 +1413,28 @@ SOURCE DOCUMENTS:\n\
     // ── 7b. Mirror provenance edges into article_sources + recompute confidence ─
     // Insert one row per source into covalence.article_sources so that the
     // Phase-1 confidence pipeline (covalence#137) can query them.
-    // Uses ON CONFLICT DO NOTHING for idempotent re-runs.
+    // Uses ON CONFLICT DO UPDATE so re-compiling an article refreshes weights
+    // rather than leaving stale causal_weight / confidence values.
     for src in &sources {
         let rel_str = rel_map
             .get(&src.id)
             .map(|s| s.as_str())
             .unwrap_or("originates");
-        let causal_w: f32 = match rel_str {
-            "supersedes" => 0.95,
-            "confirms" => 0.60,
-            "contradicts" => 0.50,
-            "contends" => 0.30,
-            _ => 1.0, // originates
-        };
+        // Derive causal_weight from EdgeType::causal_weight() so insertion
+        // weights stay in sync with the recompute pipeline (fix #1).
+        let causal_w: f32 = rel_str
+            .to_uppercase()
+            .parse::<crate::models::EdgeType>()
+            .map(|et| et.causal_weight())
+            .unwrap_or(1.0); // originates / unknown → 1.0
         if let Err(e) = sqlx::query(
             "INSERT INTO covalence.article_sources \
              (article_id, source_id, relationship, causal_weight, confidence) \
              VALUES ($1, $2, $3, $4, 1.0) \
-             ON CONFLICT (article_id, source_id, relationship) DO NOTHING",
+             ON CONFLICT (article_id, source_id, relationship) DO UPDATE \
+             SET causal_weight  = EXCLUDED.causal_weight, \
+                 confidence     = EXCLUDED.confidence, \
+                 superseded_at  = EXCLUDED.superseded_at",
         )
         .bind(article_id)
         .bind(src.id)
