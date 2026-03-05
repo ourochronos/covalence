@@ -200,8 +200,8 @@ CREATE INDEX IF NOT EXISTS idx_slow_path_queue_execute_after
     WHERE execute_after IS NOT NULL;
 
 -- Idempotently refresh the task_type CHECK constraint so that new task types
--- (e.g. 'reconsolidate', 'consolidate_article') are accepted even on databases
--- created before this update.
+-- (e.g. 'reconsolidate', 'consolidate_article', 'infer_article_edges') are
+-- accepted even on databases created before this update.
 ALTER TABLE covalence.slow_path_queue
     DROP CONSTRAINT IF EXISTS slow_path_queue_task_type_check;
 ALTER TABLE covalence.slow_path_queue
@@ -211,8 +211,13 @@ ALTER TABLE covalence.slow_path_queue
         'split', 'merge', 'embed', 'contention_check',
         'tree_index', 'tree_embed', 'recompile',
         'decay_check', 'divergence_scan', 'recompute_graph_embeddings',
-        'reconsolidate', 'consolidate_article', 'critique_article'
+        'reconsolidate', 'consolidate_article', 'critique_article',
+        'infer_article_edges'
     ));
+
+-- Index for infer_article_edges edge firewall + type-filtered traversal (038).
+CREATE INDEX IF NOT EXISTS idx_edges_type_src_tgt
+    ON covalence.edges (edge_type, source_node_id, target_node_id);
 
 -- -----------------------------------------------------------------------------
 -- inference_log

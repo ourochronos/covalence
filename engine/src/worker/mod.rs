@@ -18,6 +18,7 @@ pub mod contention;
 pub mod critique;
 pub mod decay;
 pub mod divergence;
+pub mod infer_article_edges;
 pub mod llm;
 pub mod merge_edges;
 pub mod navigation;
@@ -433,6 +434,9 @@ pub async fn execute_task(
         "reconsolidate" => reconsolidation::handle_reconsolidate(pool, llm, task).await,
         "consolidate_article" => consolidation::handle_consolidate_article(pool, llm, task).await,
         "critique_article" => critique::handle_critique_article(pool, llm, task).await,
+        "infer_article_edges" => {
+            infer_article_edges::handle_infer_article_edges(pool, llm, task).await
+        }
         "recompute_graph_embeddings" => {
             let method = task
                 .payload
@@ -1497,6 +1501,12 @@ SOURCE DOCUMENTS:\n\
         Some(critique_after),
     )
     .await?;
+
+    // Queue article-to-article semantic edge inference (covalence#160).
+    // Enqueued *after* the compile transaction commits so it never holds a
+    // compile lock.  Priority 3 — higher than critique (2) so edges are
+    // available quickly but lower than embed (5) so embedding lands first.
+    enqueue_task(pool, "infer_article_edges", Some(article_id), json!({}), 3).await?;
 
     tracing::info!(
         article_id  = %article_id,
