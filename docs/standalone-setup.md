@@ -88,7 +88,7 @@ and the engine will call OpenAI on its own.
 ## 3. Docker Setup
 
 The provided `docker-compose.yml` runs everything: a PostgreSQL 17 image (with `pgvector`
-and Apache AGE pre-installed) and the Covalence engine.
+pre-installed) and the Covalence engine.
 
 ### Standalone `.env`
 

@@ -24,7 +24,7 @@ pub enum NodeType {
     Article,
     Source,
     Session,
-    Entity, // v1 — label exists in AGE but not used in v0
+    Entity,
     Claim,  // claims pipeline (#169)
 }
 
@@ -36,18 +36,6 @@ impl NodeType {
             NodeType::Session => "session",
             NodeType::Entity => "entity",
             NodeType::Claim => "claim",
-        }
-    }
-
-    /// AGE vertex label name.
-    #[allow(dead_code)]
-    pub fn age_label(&self) -> &'static str {
-        match self {
-            NodeType::Article => "Article",
-            NodeType::Source => "Source",
-            NodeType::Session => "Session",
-            NodeType::Entity => "Entity",
-            NodeType::Claim => "Claim",
         }
     }
 }
@@ -496,7 +484,6 @@ pub enum EpistemicType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: Uuid,
-    pub age_id: Option<i64>,
     pub node_type: NodeType,
     pub title: Option<String>,
     pub content: Option<String>,
@@ -526,7 +513,6 @@ pub struct Node {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub id: Uuid,
-    pub age_id: Option<i64>,
     pub source_node_id: Uuid,
     pub target_node_id: Uuid,
     pub edge_type: EdgeType,

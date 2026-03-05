@@ -1372,19 +1372,19 @@ SOURCE DOCUMENTS:\n\
         id
     };
 
-    // ── 7. Create AGE vertex + insert provenance edges via GraphRepository ───
-    // All writes go through GraphRepository so both AGE and SQL are updated.
+    // ── 7. Create vertex + insert provenance edges via GraphRepository ──────
+    // All writes go through GraphRepository for consistency.
     // These are outside the transaction; failures are non-fatal (logged as warnings).
     let graph = SqlGraphRepository::new(pool.clone());
 
-    // Ensure the new article has an AGE vertex before creating edges.
+    // Ensure the new article has a vertex representation before creating edges.
     if let Err(e) = graph
         .create_vertex(article_id, NodeType::Article, serde_json::json!({}))
         .await
     {
         tracing::warn!(
             article_id = %article_id,
-            "compile: failed to create AGE vertex (edges will still be written to SQL): {e}"
+            "compile: failed to create vertex (edges will still be written to SQL): {e}"
         );
     }
 
@@ -1767,7 +1767,7 @@ Return ONLY valid JSON (no markdown fences):\n\
         .with_context(|| format!("split: failed to insert new article {new_id}"))?;
     }
 
-    // ── 4. Archive original + clean up AGE vertex ───────────────────────────
+    // ── 4. Archive original + clean up vertex ───────────────────────────────
     sqlx::query(
         "UPDATE covalence.nodes \
          SET status = 'archived', modified_at = now() WHERE id = $1",
@@ -1779,7 +1779,7 @@ Return ONLY valid JSON (no markdown fences):\n\
 
     let graph = SqlGraphRepository::new(pool.clone());
 
-    // Remove the archived node from the live AGE graph (SQL edges are kept).
+    // Remove the archived node from the live graph (SQL edges are kept).
     if let Err(e) = graph.archive_vertex(node_id).await {
         tracing::warn!(
             node_id = %node_id,
@@ -1787,7 +1787,7 @@ Return ONLY valid JSON (no markdown fences):\n\
         );
     }
 
-    // ── 5. Create AGE vertices for new articles ─────────────────────────────
+    // ── 5. Create vertices for new articles ─────────────────────────────────
     for new_id in [id_a, id_b] {
         if let Err(e) = graph
             .create_vertex(new_id, NodeType::Article, serde_json::json!({}))
@@ -1795,7 +1795,7 @@ Return ONLY valid JSON (no markdown fences):\n\
         {
             tracing::warn!(
                 new_id = %new_id,
-                "split: failed to create AGE vertex (non-fatal): {e}"
+                "split: failed to create vertex (non-fatal): {e}"
             );
         }
     }

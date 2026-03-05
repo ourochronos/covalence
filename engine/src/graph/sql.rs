@@ -1,10 +1,9 @@
 //! SqlGraphRepository — pure-SQL implementation of GraphRepository (Phase 1).
 //!
 //! All graph operations run directly against `covalence.edges` and
-//! `covalence.nodes`.  Apache AGE is not loaded, not referenced, and not
-//! required by any code path in this module.
+//! `covalence.nodes`.  No vendor-specific extensions are required.
 //!
-//! AGE-specific trait methods (`archive_vertex`, `list_age_edge_refs`,
+//! Stub methods (`archive_vertex`, `list_age_edge_refs`,
 //! `delete_age_edge_by_internal_id`, `create_age_edge_for_sql`) are kept as
 //! no-ops / empty returns for rollback safety and trait compatibility.
 //! They will be removed when the trait is cleaned up in Phase 2.
@@ -57,7 +56,7 @@ impl GraphRepository for SqlGraphRepository {
 
     // ── Edge operations ───────────────────────────────────────────────────────
 
-    /// Create a typed edge — SQL INSERT only.  `age_id` is left NULL.
+    /// Create a typed edge — SQL INSERT only.
     /// `valid_from` defaults to the DB `now()` (same as `created_at`); `valid_to` is NULL
     /// (edge is immediately active).
     ///
@@ -96,7 +95,6 @@ impl GraphRepository for SqlGraphRepository {
 
         Ok(Edge {
             id: edge_id,
-            age_id: None,
             source_node_id: from_id,
             target_node_id: to_id,
             edge_type,
@@ -156,7 +154,7 @@ impl GraphRepository for SqlGraphRepository {
         include_superseded: bool,
     ) -> GraphResult<Vec<Edge>> {
         let mut sql = String::from(
-            "SELECT id, age_id, source_node_id, target_node_id, edge_type, \
+            "SELECT id, source_node_id, target_node_id, edge_type, \
              weight, confidence, metadata, created_at, created_by, valid_from, valid_to \
              FROM covalence.edges WHERE ",
         );
@@ -247,7 +245,7 @@ impl GraphRepository for SqlGraphRepository {
                   AND e.valid_to IS NULL
             )
             SELECT DISTINCT ON (t.node_id) t.node_id, t.depth,
-                   e.id AS edge_id, e.age_id AS edge_age_id,
+                   e.id AS edge_id,
                    e.source_node_id, e.target_node_id, e.edge_type,
                    e.weight, e.confidence AS edge_confidence,
                    e.metadata AS edge_metadata, e.created_at AS edge_created_at,
@@ -401,23 +399,22 @@ impl GraphRepository for SqlGraphRepository {
 
     // ── AGE-specific stubs (deprecated, no-op in SQL impl) ───────────────────
 
-    /// No-op: no separate AGE graph to clean.  SQL edges are preserved as
-    /// history.  Call this when archiving nodes.
+    /// No-op: edges are preserved as history. Call this when archiving nodes.
     async fn archive_vertex(&self, _node_id: Uuid) -> GraphResult<()> {
         Ok(())
     }
 
-    /// No-op: no AGE edges exist.  Returns an empty vec.
+    /// No-op: no separate graph backend exists. Returns an empty vec.
     async fn list_age_edge_refs(&self) -> GraphResult<Vec<(i64, Option<Uuid>)>> {
         Ok(vec![])
     }
 
-    /// No-op: no AGE edges to delete.
+    /// No-op: no separate graph backend exists.
     async fn delete_age_edge_by_internal_id(&self, _age_internal_id: i64) -> GraphResult<()> {
         Ok(())
     }
 
-    /// No-op: no AGE graph.  Returns `Ok(None)`.
+    /// No-op: no separate graph backend exists. Returns `Ok(None)`.
     async fn create_age_edge_for_sql(
         &self,
         _edge_id: Uuid,
@@ -436,7 +433,7 @@ impl SqlGraphRepository {
     /// Fetch a full Node from the relational table.
     async fn fetch_node(&self, node_id: Uuid) -> GraphResult<Node> {
         let row = sqlx::query(
-            "SELECT id, age_id, node_type, title, content, status, \
+            "SELECT id, node_type, title, content, status, \
              confidence, \
              epistemic_type, domain_path, metadata, \
              source_type, reliability, content_hash, fingerprint, size_tokens, \
@@ -488,7 +485,6 @@ fn node_from_row(row: &PgRow) -> GraphResult<Node> {
 
     Ok(Node {
         id: row.try_get("id")?,
-        age_id: row.try_get("age_id")?,
         node_type,
         title: row.try_get("title")?,
         content: row.try_get("content")?,
@@ -554,10 +550,6 @@ fn edge_from_row(row: &PgRow) -> GraphResult<Edge> {
 
     Ok(Edge {
         id: row.try_get("id").or_else(|_| row.try_get("edge_id"))?,
-        age_id: row
-            .try_get("age_id")
-            .or_else(|_| row.try_get("edge_age_id"))
-            .ok(),
         source_node_id: row.try_get("source_node_id")?,
         target_node_id: row.try_get("target_node_id")?,
         edge_type,

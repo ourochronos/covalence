@@ -161,7 +161,7 @@ After ingest, two slow-path background tasks are automatically enqueued: `embed`
 
 ### `DELETE /sources/{id}` — Delete a source
 
-**Description:** Permanently hard-deletes a source and its embedding. Also removes the corresponding AGE graph vertex (cascading to incident edges). This is **irreversible**.
+**Description:** Permanently hard-deletes a source and its embedding. Also removes the corresponding graph vertex (cascading to incident edges). This is **irreversible**.
 
 **Path parameters:**
 
@@ -187,7 +187,7 @@ Articles are compiled knowledge nodes — synthesized from one or more sources. 
 
 ### `POST /articles` — Create an article
 
-**Description:** Directly create a new article (agent-authored). Creates an AGE vertex and enqueues an `embed` slow-path task. If `source_ids` are provided, `ORIGINATES` edges are created from each source to the new article.
+**Description:** Directly create a new article (agent-authored). Creates a vertex and enqueues an `embed` slow-path task. If `source_ids` are provided, `ORIGINATES` edges are created from each source to the new article.
 
 **Request body:**
 
@@ -625,7 +625,7 @@ If no `embedding` is provided, the engine auto-embeds `query` using the configur
 
 ## 4. Edges / Graph
 
-Edges represent typed relationships between nodes. The graph is stored in both PostgreSQL (`covalence.edges`) and Apache AGE for Cypher-based traversals.
+Edges represent typed relationships between nodes. The graph is stored in PostgreSQL (`covalence.edges`) and traversed using recursive CTEs for neighborhood queries.
 
 ### Edge type vocabulary
 
@@ -710,7 +710,7 @@ Edges represent typed relationships between nodes. The graph is stored in both P
 
 ### `DELETE /edges/{id}` — Delete an edge
 
-**Description:** Removes an edge from both PostgreSQL and Apache AGE.
+**Description:** Removes an edge from PostgreSQL.
 
 **Path parameters:**
 
