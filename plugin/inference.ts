@@ -10,6 +10,7 @@
  * configured model providers.
  */
 
+import * as crypto from "crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { IncomingMessage, ServerResponse } from "http";
 
@@ -60,7 +61,9 @@ export function registerInferenceEndpoints(
       // Validate bearer token if configured
       if (config.inferenceToken) {
         const authHeader = (req.headers["authorization"] as string | undefined) ?? "";
-        if (authHeader !== `Bearer ${config.inferenceToken}`) {
+        const expected = Buffer.from(`Bearer ${config.inferenceToken}`);
+        const actual = Buffer.from(authHeader);
+        if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
@@ -145,7 +148,9 @@ export function registerInferenceEndpoints(
       // Validate bearer token if configured
       if (config.inferenceToken) {
         const authHeader = (req.headers["authorization"] as string | undefined) ?? "";
-        if (authHeader !== `Bearer ${config.inferenceToken}`) {
+        const expected = Buffer.from(`Bearer ${config.inferenceToken}`);
+        const actual = Buffer.from(authHeader);
+        if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
