@@ -1,8 +1,8 @@
 //! Integration tests for covalence#196 — metadata filter on source_list
 //! and idempotency key on source_ingest.
 
-use serial_test::serial;
 use serde_json::json;
+use serial_test::serial;
 
 use covalence_engine::services::source_service::{IngestRequest, ListParams, SourceService};
 
@@ -71,7 +71,11 @@ async fn test_metadata_filter_basic() {
         .await
         .expect("list with multi-key metadata filter");
 
-    assert_eq!(results.len(), 1, "should find 1 source for sess-aaa chunk 1");
+    assert_eq!(
+        results.len(),
+        1,
+        "should find 1 source for sess-aaa chunk 1"
+    );
     assert_eq!(results[0].id, src3.id);
 
     fix.cleanup().await;
@@ -119,7 +123,10 @@ async fn test_idempotency_key_dedup() {
     req2.idempotency_key = Some("session:x:chunk:0".to_string());
     let second = svc.ingest(req2).await.expect("second ingest (dedup)");
 
-    assert_eq!(first.id, second.id, "should return same source on duplicate key");
+    assert_eq!(
+        first.id, second.id,
+        "should return same source on duplicate key"
+    );
     assert_eq!(
         second.content, "session chunk content A",
         "content should be from the first ingest"
@@ -184,10 +191,19 @@ async fn test_fingerprint_dedup_still_works() {
     let fix = TestFixture::new().await;
     let svc = SourceService::new(fix.pool.clone());
 
-    let first = svc.ingest(make_ingest("fingerprint test content")).await.expect("first");
-    let second = svc.ingest(make_ingest("fingerprint test content")).await.expect("second");
+    let first = svc
+        .ingest(make_ingest("fingerprint test content"))
+        .await
+        .expect("first");
+    let second = svc
+        .ingest(make_ingest("fingerprint test content"))
+        .await
+        .expect("second");
 
-    assert_eq!(first.id, second.id, "fingerprint dedup should still work without idempotency key");
+    assert_eq!(
+        first.id, second.id,
+        "fingerprint dedup should still work without idempotency key"
+    );
 
     fix.cleanup().await;
 }
