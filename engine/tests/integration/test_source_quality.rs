@@ -28,6 +28,7 @@ fn make_observation_request(capture_method: Option<&str>) -> IngestRequest {
         capture_method: capture_method.map(str::to_owned),
         facet_function: None,
         facet_scope: None,
+        idempotency_key: None,
     }
 }
 
@@ -125,6 +126,7 @@ async fn test_capture_method_stored_in_metadata() {
             capture_method: Some("manual".to_string()),
             facet_function: None,
             facet_scope: None,
+            idempotency_key: None,
         })
         .await
         .expect("ingest should succeed");

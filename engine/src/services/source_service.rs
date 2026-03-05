@@ -38,6 +38,11 @@ pub struct IngestRequest {
     /// Scope facet — abstraction level.
     /// e.g. `["practical"]`, `["theoretical", "operational"]` (covalence#92 Phase 1).
     pub facet_scope: Option<Vec<String>>,
+    /// Optional idempotency key (covalence#196). If a source with matching
+    /// `metadata.idempotency_key` exists in the same namespace, the existing
+    /// source is returned without creating a new one.  Checked BEFORE
+    /// fingerprint dedup.
+    pub idempotency_key: Option<String>,
 }
 
 /// Paginated list params.
@@ -48,6 +53,13 @@ pub struct ListParams {
     pub source_type: Option<String>,
     pub status: Option<String>,
     pub q: Option<String>,
+    /// Optional metadata filter — JSON object.  Sources whose `metadata`
+    /// column contains all specified key-value pairs are returned (JSONB `@>`
+    /// containment).  Requires the GIN index from migration 043.
+    ///
+    /// Passed as a JSON-encoded string in the query parameter:
+    /// `?metadata={"session_id":"abc123"}`
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// Response envelope for a source.
@@ -119,6 +131,23 @@ impl SourceService {
         // 1. Compute fingerprint
         let fingerprint = hex::encode(Sha256::digest(req.content.as_bytes()));
 
+        // 1a. Idempotency key dedup (covalence#196) — checked BEFORE fingerprint dedup.
+        if let Some(ref key) = req.idempotency_key {
+            let existing = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM covalence.nodes \
+                 WHERE metadata->>'idempotency_key' = $1 \
+                 AND node_type = 'source' AND namespace = $2",
+            )
+            .bind(key)
+            .bind(&self.namespace)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some(id) = existing {
+                return self.get(id).await;
+            }
+        }
+
         // 2. Check for existing source with same fingerprint (idempotent, scoped to namespace)
         let existing = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM covalence.nodes \
@@ -143,6 +172,10 @@ impl SourceService {
         // Persist capture_method into metadata so callers can read it back.
         if let Some(ref cm) = req.capture_method {
             metadata["capture_method"] = serde_json::json!(cm);
+        }
+        // Persist idempotency_key into metadata (covalence#196).
+        if let Some(ref key) = req.idempotency_key {
+            metadata["idempotency_key"] = serde_json::json!(key);
         }
         let source_type = req.source_type.unwrap_or_else(|| "document".into());
         let content_hash = hex::encode(Sha256::digest(req.content.as_bytes()));
@@ -259,6 +292,12 @@ impl SourceService {
             builder.push(" AND content_tsv @@ websearch_to_tsquery('english', ");
             builder.push_bind(q);
             builder.push(")");
+        }
+        // Metadata JSONB containment filter (covalence#196).
+        // Uses the GIN index from migration 043.
+        if let Some(ref meta_filter) = params.metadata {
+            builder.push(" AND metadata @> ");
+            builder.push_bind(meta_filter);
         }
         if let Some(cursor) = params.cursor {
             builder.push(" AND id > ");

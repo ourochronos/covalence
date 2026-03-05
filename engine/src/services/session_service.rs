@@ -312,6 +312,7 @@ impl SessionService {
             capture_method: Some("system".to_string()),
             facet_function: None,
             facet_scope: None,
+            idempotency_key: None,
         };
 
         let source = source_svc.ingest(ingest_req).await?;

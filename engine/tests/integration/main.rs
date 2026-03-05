@@ -76,6 +76,7 @@ mod test_search_precision;
 mod test_search_temporal;
 mod test_security;
 mod test_session_ingestion;
+mod test_source_metadata_filter;
 mod test_source_quality;
 mod test_split;
 mod test_spreading_activation;

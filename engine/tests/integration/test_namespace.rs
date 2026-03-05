@@ -28,6 +28,7 @@ async fn insert_ns_source(fix: &mut TestFixture, ns: &str, title: &str, content:
         capture_method: None,
         facet_function: None,
         facet_scope: None,
+        idempotency_key: None,
     };
     let svc = SourceService::new(fix.pool.clone()).with_namespace(ns.to_string());
     let resp = svc.ingest(req).await.expect("ingest should succeed");
