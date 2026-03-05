@@ -226,7 +226,7 @@ pub async fn recompute_article_confidence(
     }
 
     Ok(ConfidenceResult {
-        article_id,
+        node_id: article_id,
         final_score,
         breakdown,
         flags,

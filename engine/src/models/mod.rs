@@ -25,6 +25,7 @@ pub enum NodeType {
     Source,
     Session,
     Entity, // v1 — label exists in AGE but not used in v0
+    Claim,  // claims pipeline (#169)
 }
 
 impl NodeType {
@@ -34,6 +35,7 @@ impl NodeType {
             NodeType::Source => "source",
             NodeType::Session => "session",
             NodeType::Entity => "entity",
+            NodeType::Claim => "claim",
         }
     }
 
@@ -45,6 +47,7 @@ impl NodeType {
             NodeType::Source => "Source",
             NodeType::Session => "Session",
             NodeType::Entity => "Entity",
+            NodeType::Claim => "Claim",
         }
     }
 }
@@ -101,6 +104,15 @@ pub enum EdgeType {
     // ── Legacy aliases (from 001 schema, retained for migration) ─
     CompiledFrom, // alias for ORIGINATES
     Elaborates,   // alias for EXTENDS
+
+    // ── Claims pipeline (#169) ───────────────────────────────────
+    ExtractedFrom,    // claim was extracted from a source node
+    SupportsClaim,    // source/article supports a claim
+    Contains,         // node contains a claim
+    Mentions,         // node mentions a claim (weak association)
+    ContradictsClaim, // claim contradicts another claim
+    SupersedesClaim,  // claim supersedes an older claim
+    SameAs,           // two claims refer to the same assertion
 }
 
 impl EdgeType {
@@ -131,6 +143,13 @@ impl EdgeType {
             EdgeType::Critiques => "CRITIQUES",
             EdgeType::CompiledFrom => "COMPILED_FROM",
             EdgeType::Elaborates => "ELABORATES",
+            EdgeType::ExtractedFrom => "EXTRACTED_FROM",
+            EdgeType::SupportsClaim => "SUPPORTS_CLAIM",
+            EdgeType::Contains => "CONTAINS",
+            EdgeType::Mentions => "MENTIONS",
+            EdgeType::ContradictsClaim => "CONTRADICTS_CLAIM",
+            EdgeType::SupersedesClaim => "SUPERSEDES_CLAIM",
+            EdgeType::SameAs => "SAME_AS",
         }
     }
 
@@ -179,6 +198,30 @@ impl EdgeType {
         )
     }
 
+    /// Claim edges — introduced by the claims pipeline (#169).
+    #[allow(dead_code)]
+    pub fn is_claim_edge(&self) -> bool {
+        matches!(
+            self,
+            EdgeType::ExtractedFrom
+                | EdgeType::SupportsClaim
+                | EdgeType::Contains
+                | EdgeType::Mentions
+                | EdgeType::ContradictsClaim
+                | EdgeType::SupersedesClaim
+                | EdgeType::SameAs
+        )
+    }
+
+    /// SQL fragment for the primary claim-provenance edge labels.
+    ///
+    /// Parallel to any `provenance_sql_labels()` helper; use this to build
+    /// `IN (…)` clauses for claim provenance walks without hardcoding strings.
+    #[allow(dead_code)]
+    pub fn claim_provenance_sql_labels() -> &'static str {
+        "'EXTRACTED_FROM','SUPPORTS_CLAIM'"
+    }
+
     /// Causal weight for this edge type (covalence#75).
     ///
     /// Reflects how strongly this edge type implies a causal relationship
@@ -194,6 +237,18 @@ impl EdgeType {
     /// | contradicts | 0.50 |
     /// | relates_to | 0.15 |
     /// | (default/other) | 0.5 |
+    ///
+    /// Claim edge types:
+    ///
+    /// | relationship | causal_weight |
+    /// |---|---|
+    /// | extracted_from | 1.0 |
+    /// | supersedes_claim | 0.95 |
+    /// | same_as | 0.90 |
+    /// | contains | 0.80 |
+    /// | supports_claim | 0.70 |
+    /// | contradicts_claim | 0.50 |
+    /// | mentions | 0.15 |
     pub fn causal_weight(&self) -> f32 {
         match self {
             EdgeType::Originates | EdgeType::CompiledFrom => 1.0,
@@ -201,7 +256,14 @@ impl EdgeType {
             EdgeType::Extends | EdgeType::Elaborates => 0.70,
             EdgeType::Confirms => 0.60,
             EdgeType::Contradicts => 0.50,
-            EdgeType::RelatesTo => 0.15,
+            EdgeType::RelatesTo | EdgeType::Mentions => 0.15,
+            EdgeType::ExtractedFrom => 1.0,
+            EdgeType::SupersedesClaim => 0.95,
+            // high weight enables confidence propagation across equivalent claims — intentionally not causal
+            EdgeType::SameAs => 0.90,
+            EdgeType::Contains => 0.80,
+            EdgeType::SupportsClaim => 0.70,
+            EdgeType::ContradictsClaim => 0.50,
             _ => 0.5,
         }
     }
@@ -252,6 +314,13 @@ impl FromStr for EdgeType {
             "CRITIQUES" => Ok(EdgeType::Critiques),
             "COMPILED_FROM" => Ok(EdgeType::CompiledFrom),
             "ELABORATES" => Ok(EdgeType::Elaborates),
+            "EXTRACTED_FROM" => Ok(EdgeType::ExtractedFrom),
+            "SUPPORTS_CLAIM" => Ok(EdgeType::SupportsClaim),
+            "CONTAINS" => Ok(EdgeType::Contains),
+            "MENTIONS" => Ok(EdgeType::Mentions),
+            "CONTRADICTS_CLAIM" => Ok(EdgeType::ContradictsClaim),
+            "SUPERSEDES_CLAIM" => Ok(EdgeType::SupersedesClaim),
+            "SAME_AS" => Ok(EdgeType::SameAs),
             other => Err(format!("unknown edge type: {other}")),
         }
     }

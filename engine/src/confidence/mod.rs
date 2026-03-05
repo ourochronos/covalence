@@ -21,8 +21,8 @@ use uuid::Uuid;
 /// Structured result returned by [`recompute_article_confidence`].
 #[derive(Debug, Clone)]
 pub struct ConfidenceResult {
-    /// The article whose confidence was recomputed.
-    pub article_id: Uuid,
+    /// The node (article or claim) whose confidence was recomputed.
+    pub node_id: Uuid,
     /// Final clamped score in `[CONF_FLOOR, 1.0]` written to the article.
     pub final_score: f64,
     /// Full JSON breakdown persisted to `covalence.nodes.confidence_breakdown`.
