@@ -175,36 +175,6 @@ pub fn next_pass_delay(completed_pass: i32) -> chrono::Duration {
     }
 }
 
-/// Select up to `cap` source IDs from `candidate_ids`, ranked by
-/// `trust_score × exp(-0.1 × days_old)` (covalence#104 recency formula).
-///
-/// `reliability` is used as the trust_score proxy (same column as the
-/// covalence#85 source cap).  Days are computed from `created_at`.
-async fn select_by_trust_recency(
-    pool: &PgPool,
-    candidate_ids: &[Uuid],
-    cap: usize,
-) -> anyhow::Result<Vec<Uuid>> {
-    if candidate_ids.is_empty() {
-        return Ok(vec![]);
-    }
-    sqlx::query_scalar(
-        "SELECT id
-         FROM   covalence.nodes
-         WHERE  id = ANY($1)
-         ORDER BY
-             COALESCE(reliability, 0.5)
-             * EXP(-0.1 * EXTRACT(EPOCH FROM (now() - COALESCE(created_at, now()))) / 86400.0)
-             DESC
-         LIMIT $2",
-    )
-    .bind(candidate_ids)
-    .bind(cap as i64)
-    .fetch_all(pool)
-    .await
-    .context("select_by_trust_recency: failed to rank sources")
-}
-
 /// Mark sources that fell outside the distillation cap with
 /// `metadata.distilled_out_at = <now>` (non-destructive; edges are kept).
 async fn mark_distilled_out(pool: &PgPool, source_ids: &[Uuid]) -> anyhow::Result<()> {
@@ -440,7 +410,9 @@ pub async fn handle_consolidate_article(
 
         if let Some(cap) = stage.source_cap() {
             // Stages 2–4: trust_score × recency ranking + distilled_out marking.
-            let selected = select_by_trust_recency(pool, &all_source_ids, cap).await?;
+            let selected =
+                super::source_selection::select_by_trust_recency(pool, &all_source_ids, cap)
+                    .await?;
 
             let selected_set: std::collections::HashSet<Uuid> = selected.iter().copied().collect();
             let dropped: Vec<Uuid> = all_source_ids
@@ -467,15 +439,11 @@ pub async fn handle_consolidate_article(
             // Stage 1: legacy reliability-ranked cap (covalence#85).
             const MAX_COMPILATION_SOURCES: usize = 7;
             if original_source_count > MAX_COMPILATION_SOURCES {
-                let capped: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM covalence.nodes \
-                     WHERE  id = ANY($1) \
-                     ORDER BY COALESCE(reliability, 0.5) DESC \
-                     LIMIT  $2",
+                let capped = super::source_selection::select_by_reliability(
+                    pool,
+                    &all_source_ids,
+                    MAX_COMPILATION_SOURCES,
                 )
-                .bind(&all_source_ids)
-                .bind(MAX_COMPILATION_SOURCES as i64)
-                .fetch_all(pool)
                 .await
                 .context("consolidate_article: failed to score sources for cap")?;
                 tracing::info!(
