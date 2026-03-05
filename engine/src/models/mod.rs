@@ -213,9 +213,17 @@ impl EdgeType {
         )
     }
 
+    /// SQL fragment for the primary article-provenance edge labels.
+    ///
+    /// Use this to build `IN (…)` clauses for provenance walks without
+    /// hardcoding edge-type strings across multiple SQL queries.
+    pub fn provenance_sql_labels() -> &'static str {
+        "'ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','DERIVED_FROM'"
+    }
+
     /// SQL fragment for the primary claim-provenance edge labels.
     ///
-    /// Parallel to any `provenance_sql_labels()` helper; use this to build
+    /// Parallel to `provenance_sql_labels()`; use this to build
     /// `IN (…)` clauses for claim provenance walks without hardcoding strings.
     #[allow(dead_code)]
     pub fn claim_provenance_sql_labels() -> &'static str {

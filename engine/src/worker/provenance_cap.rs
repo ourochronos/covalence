@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::worker::{QueueTask, enqueue_task, llm::LlmClient, log_inference, strip_fences};
+use crate::worker::{QueueTask, enqueue_task, llm::LlmClient, log_inference, parse_llm_json};
 
 // ─── Runtime-overridable constants ───────────────────────────────────────────
 
@@ -423,8 +423,8 @@ SOURCE DOCUMENTS:\n\
 
     let llm_result = llm.complete(&prompt, 4096).await;
     let (article_title, article_content, epistemic_type) = match llm_result {
-        Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
-            Ok(v) => {
+        Ok(raw) => match parse_llm_json(&raw) {
+            Some(v) => {
                 let title = v
                     .get("title")
                     .and_then(|x| x.as_str())
@@ -442,11 +442,11 @@ SOURCE DOCUMENTS:\n\
                     .to_string();
                 (title, content, etype)
             }
-            Err(e) => {
+            None => {
                 tracing::warn!(
                     parent_id  = %parent_id,
                     part_label = %part_label,
-                    "compile_child_article: LLM JSON parse error ({e}), falling back to concat"
+                    "compile_child_article: LLM JSON parse failed, falling back to concat"
                 );
                 let concat = sources
                     .iter()

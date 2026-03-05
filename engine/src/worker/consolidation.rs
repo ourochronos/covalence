@@ -141,18 +141,6 @@ impl DistillationStage {
 
 // ─── internal helpers ─────────────────────────────────────────────────────────
 
-/// Strip markdown code fences from an LLM response.
-fn strip_fences(text: &str) -> String {
-    let text = text.trim();
-    if text.starts_with("```") {
-        let lines: Vec<&str> = text.lines().collect();
-        if lines.len() >= 3 {
-            return lines[1..lines.len() - 1].join("\n");
-        }
-    }
-    text.to_string()
-}
-
 struct SourceDoc {
     id: Uuid,
     title: String,
@@ -347,15 +335,16 @@ pub async fn handle_consolidate_article(
     // We return early *without* updating consolidation_count or schedule so
     // the task remains logically due — if sources are linked later the next
     // heartbeat will pick it up.
-    let linked_source_count: i64 = sqlx::query_scalar(
+    let linked_source_count: i64 = sqlx::query_scalar(&format!(
         "SELECT COUNT(*)
-         FROM   covalence.edges e
-         JOIN   covalence.nodes n ON n.id = e.source_node_id
-         WHERE  e.target_node_id = $1
-           AND  e.edge_type IN ('ORIGINATES', 'COMPILED_FROM', 'CONFIRMS')
-           AND  n.node_type = 'source'
-           AND  n.status    = 'active'",
-    )
+             FROM   covalence.edges e
+             JOIN   covalence.nodes n ON n.id = e.source_node_id
+             WHERE  e.target_node_id = $1
+               AND  e.edge_type IN ({})
+               AND  n.node_type = 'source'
+               AND  n.status    = 'active'",
+        crate::models::EdgeType::provenance_sql_labels()
+    ))
     .bind(article_id)
     .fetch_one(pool)
     .await
@@ -419,15 +408,16 @@ pub async fn handle_consolidate_article(
         );
 
         // ── 5a. Collect all linked sources + new sources ─────────────────────
-        let existing_source_ids: Vec<Uuid> = sqlx::query_scalar(
+        let existing_source_ids: Vec<Uuid> = sqlx::query_scalar(&format!(
             "SELECT e.source_node_id
-             FROM   covalence.edges e
-             JOIN   covalence.nodes n ON n.id = e.source_node_id
-             WHERE  e.target_node_id = $1
-               AND  e.edge_type IN ('ORIGINATES', 'COMPILED_FROM', 'CONFIRMS')
-               AND  n.node_type = 'source'
-               AND  n.status    = 'active'",
-        )
+                 FROM   covalence.edges e
+                 JOIN   covalence.nodes n ON n.id = e.source_node_id
+                 WHERE  e.target_node_id = $1
+                   AND  e.edge_type IN ({})
+                   AND  n.node_type = 'source'
+                   AND  n.status    = 'active'",
+            crate::models::EdgeType::provenance_sql_labels()
+        ))
         .bind(article_id)
         .fetch_all(pool)
         .await
@@ -587,8 +577,8 @@ SOURCE DOCUMENTS:\n\
         let _llm_latency_ms = t0.elapsed().as_millis() as i32;
 
         let (new_title, new_content): (String, String) = match llm_result {
-            Ok(raw) => match serde_json::from_str::<Value>(&strip_fences(&raw)) {
-                Ok(v) => {
+            Ok(raw) => match super::parse_llm_json(&raw) {
+                Some(v) => {
                     let title = v
                         .get("title")
                         .and_then(|v| v.as_str())
@@ -601,11 +591,11 @@ SOURCE DOCUMENTS:\n\
                         .to_string();
                     (title, content)
                 }
-                Err(e) => {
+                None => {
                     tracing::warn!(
                         task_id    = %task.id,
                         article_id = %article_id,
-                        "consolidate_article: JSON parse error ({e}), falling back to concatenation"
+                        "consolidate_article: JSON parse failed, falling back to concatenation"
                     );
                     (article_title.clone(), concatenate_sources(&sources))
                 }

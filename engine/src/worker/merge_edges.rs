@@ -39,22 +39,6 @@ fn safe_truncate(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Strip markdown code fences from an LLM response and parse it as JSON.
-fn parse_json_response(text: &str) -> anyhow::Result<Value> {
-    let text = text.trim();
-    let json_str = if text.starts_with("```") {
-        let lines: Vec<&str> = text.lines().collect();
-        if lines.len() >= 3 {
-            lines[1..lines.len() - 1].join("\n")
-        } else {
-            text.to_string()
-        }
-    } else {
-        text.to_string()
-    };
-    serde_json::from_str(&json_str).context("failed to parse JSON from LLM response")
-}
-
 /// Queue a follow-up task for a node at default priority.
 async fn queue_task(pool: &PgPool, task_type: &str, node_id: Uuid) -> anyhow::Result<()> {
     sqlx::query(
@@ -159,8 +143,8 @@ pub async fn handle_merge(
     let chat_model = std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let t0 = Instant::now();
     let (merged_title, merged_content, degraded) = match llm.complete(&prompt, 4096).await {
-        Ok(resp) => match parse_json_response(&resp) {
-            Ok(v) => {
+        Ok(resp) => match super::parse_llm_json(&resp) {
+            Some(v) => {
                 let title = v
                     .get("title")
                     .and_then(|t| t.as_str())
@@ -173,10 +157,9 @@ pub async fn handle_merge(
                     .to_string();
                 (title, content, false)
             }
-            Err(e) => {
+            None => {
                 tracing::warn!(
                     task_id = %task.id,
-                    error   = %e,
                     "merge: LLM JSON parse failed — using concatenation fallback"
                 );
                 (
@@ -308,12 +291,13 @@ pub async fn handle_merge(
     // ── 8. Union provenance — copy inbound edges from both originals ──────────
     // Fetch the candidate rows from SQL, then write each via GraphRepository
     // so both AGE and SQL are kept in sync.
-    let prov_rows = sqlx::query(
+    let prov_rows = sqlx::query(&format!(
         "SELECT DISTINCT source_node_id, edge_type, weight \
-         FROM   covalence.edges \
-         WHERE  target_node_id IN ($1, $2) \
-           AND  edge_type IN ('ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','CONTRADICTS','CONTENDS')",
-    )
+             FROM   covalence.edges \
+             WHERE  target_node_id IN ($1, $2) \
+               AND  edge_type IN ({})",
+        EdgeType::provenance_sql_labels()
+    ))
     .bind(id_a)
     .bind(id_b)
     .fetch_all(pool)
@@ -468,8 +452,8 @@ pub async fn handle_infer_edges(
             );
 
             match llm.complete(&kw_prompt, 256).await {
-                Ok(resp) => match parse_json_response(&resp) {
-                    Ok(kw_val) => {
+                Ok(resp) => match super::parse_llm_json(&resp) {
+                    Some(kw_val) => {
                         let has_keywords = kw_val.get("keywords").is_some();
                         let has_tags = kw_val.get("tags").is_some();
                         if has_keywords || has_tags {
@@ -500,10 +484,9 @@ pub async fn handle_infer_edges(
                             }
                         }
                     }
-                    Err(e) => {
+                    None => {
                         tracing::warn!(
                             node_id = %node_id,
-                            error   = %e,
                             "infer_edges: keyword extraction JSON parse failed — continuing"
                         );
                     }
@@ -751,8 +734,8 @@ pub async fn handle_infer_edges(
             std::env::var("COVALENCE_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
         let t0 = Instant::now();
         let (relationship, confidence, reasoning) = match llm.complete(&prompt, 512).await {
-            Ok(resp) => match parse_json_response(&resp) {
-                Ok(v) => {
+            Ok(resp) => match super::parse_llm_json(&resp) {
+                Some(v) => {
                     let rel = v
                         .get("relationship")
                         .and_then(|r| r.as_str())
@@ -771,11 +754,10 @@ pub async fn handle_infer_edges(
                         .to_string();
                     (rel, conf, reason)
                 }
-                Err(e) => {
+                None => {
                     tracing::warn!(
                         node_id      = %node_id,
                         candidate_id = %candidate_id,
-                        error        = %e,
                         "infer_edges: JSON parse failed — skipping candidate"
                     );
                     edges_skipped += 1;
