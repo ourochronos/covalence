@@ -14,6 +14,7 @@ pub mod recompute;
 pub mod supersedes_decay;
 
 pub use recompute::recompute_article_confidence;
+pub use recompute::{ConfidenceInputs, compute_confidence, fetch_article_confidence_inputs};
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
