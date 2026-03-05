@@ -629,6 +629,10 @@ CREATE INDEX IF NOT EXISTS idx_ecm_evidence_type
 CREATE INDEX IF NOT EXISTS idx_ecm_level_strength
     ON covalence.edge_causal_metadata (causal_level, causal_strength DESC);
 
+-- Idempotent backfill: add 'notes' column for test DBs created before migration 035.
+ALTER TABLE IF EXISTS covalence.edge_causal_metadata
+    ADD COLUMN IF NOT EXISTS notes TEXT DEFAULT NULL;
+
 CREATE OR REPLACE FUNCTION covalence._ecm_set_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
