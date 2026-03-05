@@ -212,7 +212,8 @@ ALTER TABLE covalence.slow_path_queue
         'tree_index', 'tree_embed', 'recompile',
         'decay_check', 'divergence_scan', 'recompute_graph_embeddings',
         'reconsolidate', 'consolidate_article', 'critique_article',
-        'infer_article_edges'
+        'infer_article_edges',   -- covalence#160
+        'auto_split'             -- covalence#161
     ));
 
 -- Index for infer_article_edges edge firewall + type-filtered traversal (038).
