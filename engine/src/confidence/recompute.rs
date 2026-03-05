@@ -133,7 +133,11 @@ pub async fn fetch_article_confidence_inputs(
         supersedes.push((trust, cw));
     }
 
-    Ok(ConfidenceInputs { supporting, attackers, supersedes })
+    Ok(ConfidenceInputs {
+        supporting,
+        attackers,
+        supersedes,
+    })
 }
 
 // ── Pure computation ──────────────────────────────────────────────────────────
