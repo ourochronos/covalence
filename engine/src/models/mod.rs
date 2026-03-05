@@ -218,7 +218,7 @@ impl EdgeType {
     /// Use this to build `IN (…)` clauses for provenance walks without
     /// hardcoding edge-type strings across multiple SQL queries.
     pub fn provenance_sql_labels() -> &'static str {
-        "'ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','DERIVED_FROM'"
+        "'ORIGINATES','COMPILED_FROM','CONFIRMS','SUPERSEDES','DERIVES_FROM'"
     }
 
     /// SQL fragment for the primary claim-provenance edge labels.
@@ -610,6 +610,48 @@ impl DimensionWeights {
             self.vector /= sum;
             self.lexical /= sum;
             self.graph /= sum;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EdgeType;
+    use std::str::FromStr;
+
+    /// Every label returned by `provenance_sql_labels()` and
+    /// `claim_provenance_sql_labels()` must round-trip through
+    /// `EdgeType::from_str()` without error (covalence#176).
+    #[test]
+    fn test_provenance_sql_labels_roundtrip() {
+        let raw = EdgeType::provenance_sql_labels();
+        let labels: Vec<&str> = raw
+            .split(',')
+            .map(|s| s.trim().trim_matches('\''))
+            .collect();
+
+        for label in &labels {
+            EdgeType::from_str(label).unwrap_or_else(|_| {
+                panic!(
+                    "provenance_sql_labels() contains '{}' which does not round-trip through EdgeType::from_str()",
+                    label
+                )
+            });
+        }
+
+        let claim_raw = EdgeType::claim_provenance_sql_labels();
+        let claim_labels: Vec<&str> = claim_raw
+            .split(',')
+            .map(|s| s.trim().trim_matches('\''))
+            .collect();
+
+        for label in &claim_labels {
+            EdgeType::from_str(label).unwrap_or_else(|_| {
+                panic!(
+                    "claim_provenance_sql_labels() contains '{}' which does not round-trip through EdgeType::from_str()",
+                    label
+                )
+            });
         }
     }
 }
