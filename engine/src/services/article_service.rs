@@ -174,13 +174,13 @@ impl ArticleService {
         .execute(&self.pool)
         .await?;
 
-        // Create AGE vertex
+        // Create vertex
         if let Err(e) = self
             .graph
             .create_vertex(id, NodeType::Article, serde_json::json!({}))
             .await
         {
-            tracing::warn!(error = %e, "failed to create AGE vertex for article {id}");
+            tracing::warn!(error = %e, "failed to create vertex for article {id}");
         }
 
         // Create ORIGINATES edges if source_ids provided
@@ -445,7 +445,7 @@ impl ArticleService {
             return Err(AppError::NotFound(format!("article {id}")));
         }
 
-        // Remove from the live AGE graph — SQL edges are retained as history.
+        // Remove from the live graph — SQL edges are retained as history.
         if let Err(e) = self.graph.archive_vertex(id).await {
             tracing::warn!(
                 article_id = %id,

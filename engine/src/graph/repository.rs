@@ -1,7 +1,7 @@
-//! GraphRepository trait — the AGE abstraction layer (SPEC §4.4).
+//! GraphRepository trait — SQL persistence + petgraph in-memory compute (SPEC §4.4).
 //!
-//! All graph queries are isolated behind this trait. No AGE-specific syntax,
-//! agtype handling, or Cypher strings leak past the repository implementation.
+//! All graph queries are isolated behind this trait. No vendor-specific syntax
+//! leaks past the repository implementation.
 //! This enables migration to SQL/PGQ when it lands in PG19+.
 
 use async_trait::async_trait;
@@ -25,10 +25,6 @@ pub enum GraphError {
 
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
-
-    #[error("AGE error: {0}")]
-    #[allow(dead_code)]
-    Age(String),
 }
 
 pub type GraphResult<T> = Result<T, GraphError>;
@@ -41,8 +37,7 @@ pub type GraphResult<T> = Result<T, GraphError>;
 pub trait GraphRepository: Send + Sync {
     // ── Vertex operations ───────────────────────────────────────
 
-    /// Create a vertex in the graph. Returns the AGE-internal vertex ID.
-    /// Also sets `nodes.age_id` in the relational table.
+    /// Create a vertex in the graph. Returns 0 (no internal ID in SQL-only impl).
     async fn create_vertex(
         &self,
         node_id: Uuid,
@@ -56,7 +51,7 @@ pub trait GraphRepository: Send + Sync {
     // ── Edge operations ─────────────────────────────────────────
 
     /// Create a typed edge between two nodes.
-    /// Writes to both AGE graph AND `covalence.edges` mirror in one transaction.
+    /// Writes to `covalence.edges` with `valid_from = now()` and `valid_to = NULL`.
     async fn create_edge(
         &self,
         from_id: Uuid,
@@ -67,7 +62,7 @@ pub trait GraphRepository: Send + Sync {
         properties: serde_json::Value,
     ) -> GraphResult<Edge>;
 
-    /// Delete an edge from both AGE and the SQL mirror.
+    /// Delete an edge from the SQL table.
     async fn delete_edge(&self, edge_id: Uuid) -> GraphResult<()>;
 
     /// Supersede an edge by setting `valid_to = now()` instead of deleting it.
@@ -123,64 +118,45 @@ pub trait GraphRepository: Send + Sync {
 
     // ── Bulk / utility ──────────────────────────────────────────
 
-    /// Count edges in the AGE graph (for migration validation).
+    /// Count edges in the SQL table.
     async fn count_edges(&self) -> GraphResult<i64>;
 
-    /// Count vertices in the AGE graph.
+    /// Count vertices in the SQL table.
     #[allow(dead_code)]
     async fn count_vertices(&self) -> GraphResult<i64>;
 
-    /// Verify AGE graph and SQL edges mirror are in sync.
-    /// Returns (age_count, sql_count).
+    /// Verify SQL edges table is consistent.
+    /// Returns (sql_count, sql_count).
     #[allow(dead_code)]
     async fn verify_sync(&self) -> GraphResult<(i64, i64)>;
 
     // ── Archive / sync helpers ──────────────────────────────────────────
     //
-    // NOTE: The four methods below are AGE-specific and deprecated as of Phase 1.
-    // They are retained here for trait stability (rollback safety) and will be
-    // removed when the trait is cleaned up in Phase 2.
+    // NOTE: The four methods below are deprecated stub methods retained for
+    // trait stability (rollback safety). They will be removed in Phase 2.
 
-    /// Remove a vertex and its incident edges from AGE only.
-    /// The SQL `covalence.edges` mirror is intentionally preserved — historical
+    /// Remove a vertex and its incident edges from the graph.
+    /// The SQL `covalence.edges` table is intentionally preserved — historical
     /// provenance data must outlive the live graph representation.
     /// Call this when archiving nodes (not hard-deleting them).
     ///
-    /// **No-op in `SqlGraphRepository`** — there is no separate AGE graph.
-    #[deprecated(
-        note = "AGE removed; this is a no-op in SqlGraphRepository. Will be cleaned in Phase 2."
-    )]
+    /// **No-op in `SqlGraphRepository`** — edges are preserved as history.
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn archive_vertex(&self, node_id: Uuid) -> GraphResult<()>;
 
-    /// List all edges present in the AGE graph as `(age_internal_id, sql_edge_uuid)`.
-    /// Edges that were written directly to AGE without a SQL counterpart will
-    /// have `None` for the UUID (these are "orphaned" AGE edges).
-    ///
-    /// **Returns empty vec in `SqlGraphRepository`** — no AGE edges exist.
-    #[deprecated(
-        note = "AGE removed; always returns empty in SqlGraphRepository. Will be cleaned in Phase 2."
-    )]
+    /// List all edge references (deprecated stub).
+    /// **Returns empty vec in `SqlGraphRepository`** — no separate graph backend exists.
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn list_age_edge_refs(&self) -> GraphResult<Vec<(i64, Option<Uuid>)>>;
 
-    /// Delete a single edge from the AGE graph by its internal AGE ID.
-    /// Does NOT touch `covalence.edges`. Used by the sync endpoint to prune
-    /// orphaned AGE edges.
-    ///
-    /// **No-op in `SqlGraphRepository`** — no AGE edges exist.
-    #[deprecated(
-        note = "AGE removed; this is a no-op in SqlGraphRepository. Will be cleaned in Phase 2."
-    )]
+    /// Delete edge by internal ID (deprecated stub).
+    /// **No-op in `SqlGraphRepository`** — no separate graph backend exists.
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn delete_age_edge_by_internal_id(&self, age_internal_id: i64) -> GraphResult<()>;
 
-    /// For a SQL edge that has no AGE counterpart (`age_id IS NULL`), create the
-    /// edge in AGE and return the new AGE internal ID.  Used by the sync
-    /// endpoint to repair gaps.  Returns `None` if either node vertex is absent
-    /// in AGE (the SQL edge is retained for history regardless).
-    ///
-    /// **Returns `Ok(None)` in `SqlGraphRepository`** — no AGE graph exists.
-    #[deprecated(
-        note = "AGE removed; always returns Ok(None) in SqlGraphRepository. Will be cleaned in Phase 2."
-    )]
+    /// Create edge for SQL (deprecated stub).
+    /// **Returns `Ok(None)` in `SqlGraphRepository`** — no separate graph backend exists.
+    #[deprecated(note = "Stub method retained for trait stability. Will be removed in Phase 2.")]
     async fn create_age_edge_for_sql(
         &self,
         edge_id: Uuid,

@@ -127,7 +127,7 @@ impl EdgeService {
 
         // Fetch the canonical row (inserted or pre-existing).
         let select_sql = format!(
-            "SELECT id, age_id, source_node_id, target_node_id, edge_type, \
+            "SELECT id, source_node_id, target_node_id, edge_type, \
                     weight, confidence, causal_weight, metadata, created_at, created_by, \
                     valid_from, valid_to \
              FROM covalence.edges \
@@ -145,7 +145,6 @@ impl EdgeService {
 
         let edge = Edge {
             id: row.try_get("id").map_err(AppError::Database)?,
-            age_id: row.try_get("age_id").map_err(AppError::Database)?,
             source_node_id: row.try_get("source_node_id").map_err(AppError::Database)?,
             target_node_id: row.try_get("target_node_id").map_err(AppError::Database)?,
             edge_type,

@@ -1,6 +1,6 @@
 # Covalence
 
-**A knowledge engine for AI agents** — PostgreSQL-backed persistent memory with pgvector semantic search, Apache AGE graph traversal, and a full epistemic model (confidence scoring, contention detection, provenance tracking). Covalence stores what agents learn as a living knowledge graph: raw **sources** are compiled into curated **articles**, relationships are typed **edges**, and every claim carries lineage back to its origin. Successor to Valence.
+**A knowledge engine for AI agents** — PostgreSQL-backed persistent memory with pgvector semantic search, graph traversal via recursive CTEs, and a full epistemic model (confidence scoring, contention detection, provenance tracking). Covalence stores what agents learn as a living knowledge graph: raw **sources** are compiled into curated **articles**, relationships are typed **edges**, and every claim carries lineage back to its origin. Successor to Valence.
 
 ---
 
@@ -21,10 +21,10 @@
 │  sources · articles · search · memory · admin   │
 │  slow-path queue → compile / embed / infer      │
 └──────────────────────┬──────────────────────────┘
-                       │  sqlx / pgvector / AGE
+                       │  sqlx / pgvector
 ┌──────────────────────▼──────────────────────────┐
 │            PostgreSQL 17  (custom image)         │
-│   pgvector (HNSW halfvec)  ·  Apache AGE graph  │
+│   pgvector (HNSW halfvec)  ·  graph in SQL      │
 │   full-text search  ·  JSONB metadata            │
 └─────────────────────────────────────────────────┘
 ```
@@ -42,7 +42,7 @@ docker compose up -d
 curl http://localhost:8430/health
 ```
 
-`docker compose up` builds and starts **both** the PostgreSQL 17 database (with pgvector + Apache AGE) and the Covalence engine.  Migrations in `sql/` are applied automatically on first boot before the engine accepts traffic.
+`docker compose up` builds and starts **both** the PostgreSQL 17 database (with pgvector) and the Covalence engine.  Migrations in `sql/` are applied automatically on first boot before the engine accepts traffic.
 
 > **Optional LLM support** — create a `.env` from the example and add your
 > OpenAI key to enable embeddings and article compilation:
@@ -60,7 +60,7 @@ curl http://localhost:8430/health
 docker compose up -d postgres
 ```
 
-The custom image (`./docker/Dockerfile`) bundles PostgreSQL 17, pgvector, and Apache AGE. Data is persisted in the `covalence-data` volume. The DB is exposed on **port 5434** (`localhost:5434/covalence`, user/pass: `covalence`).
+The custom image (`./docker/Dockerfile`) bundles PostgreSQL 17 and pgvector. Data is persisted in the `covalence-data` volume. The DB is exposed on **port 5434** (`localhost:5434/covalence`, user/pass: `covalence`).
 
 #### 2 — Apply migrations
 
@@ -363,7 +363,7 @@ Tombstones preserve audit continuity on delete. The async slow-path queue handle
 | PostgreSQL schema (nodes, edges, contentions, embeddings, sessions, queue) | ✅ |
 | Rust/Actix engine with full REST API | ✅ |
 | pgvector HNSW embeddings (`halfvec(1536)`) | ✅ |
-| Apache AGE graph backend + neighborhood traversal | ✅ |
+| SQL-based graph backend + neighborhood traversal | ✅ |
 | Hybrid search (vector + FTS + graph, RRF fusion) | ✅ |
 | Slow-path async queue | ✅ |
 | OpenClaw plugin (auto-recall, capture, session ingestion, inference proxy) | ✅ |

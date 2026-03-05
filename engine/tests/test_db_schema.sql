@@ -16,7 +16,6 @@ CREATE SCHEMA IF NOT EXISTS covalence;
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS covalence.nodes (
     id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
-    age_id          BIGINT,
     node_type       TEXT             NOT NULL
                                      CONSTRAINT nodes_node_type_check
                                      CHECK (node_type IN ('article', 'source', 'entity')),
@@ -87,7 +86,6 @@ CREATE INDEX IF NOT EXISTS idx_nodes_next_consolidation_at
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS covalence.edges (
     id              UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
-    age_id          BIGINT,
     source_node_id  UUID             REFERENCES covalence.nodes(id),
     target_node_id  UUID             REFERENCES covalence.nodes(id),
     edge_type       TEXT             NOT NULL,

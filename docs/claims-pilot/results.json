@@ -1,0 +1,1548 @@
+[
+  {
+    "source_id": "db32a320-de74-4c91-b915-494285d01d07",
+    "source_title": "Claim Extraction Pilot Report \u2014 2026-03-04",
+    "claims": [
+      {
+        "text": "The Covalence Claims Architecture v2 divides the knowledge system into two independently maintained domains: the Epistemological Domain (sources and node sections) and the Semantic Domain (claims and articles).",
+        "confidence": 0.95,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "In Covalence Claims Architecture v2, claims are stored in the existing `nodes` table with `node_type = 'claim'`, requiring no new database tables.",
+        "confidence": 0.95,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence claims use a SHA-256 content_hash of the canonical claim text as the primary deduplication key.",
+        "confidence": 0.95,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence's claim deduplication applies a cosine similarity threshold of 0.95 for exact duplicates, and a 0.85\u20130.94 band for near-duplicates requiring LLM review.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "Entity-gated deduplication in Covalence only compares claims for deduplication when they share the same primary entity.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The Covalence Claims Layer Spec uses `node_type = 'claim'` in the existing `nodes` table rather than creating new tables, preserving existing embedding, FTS, and graph traversal infrastructure.",
+        "confidence": 0.95,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The Covalence Claims Layer Spec depends on covalence#137 (confidence propagation at article level), which ships first; claims refine confidence to the claim level later.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The blue-green migration strategy for Covalence claims keeps existing article functionality during claims layer activation to avoid a big-bang cutover.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence v2 is designed as a 'computational epistemology engine' that answers four questions simultaneously: belief quantification, gap awareness, active acquisition, and principled forgetting.",
+        "confidence": 0.9,
+        "entity": "Covalence v2",
+        "temporal": true
+      },
+      {
+        "text": "The Covalence v2 architecture is grounded in five theoretical frameworks: Free Energy Principle (objective function), AGM Belief Revision (update logic), Stigmergy (coordination model), Pearl's Causal Hierarchy (depth layer), and Complementary Learning Systems (memory architecture).",
+        "confidence": 0.95,
+        "entity": "Covalence v2",
+        "temporal": true
+      },
+      {
+        "text": "An adversarial review of the Covalence v2 architecture specification identified six mathematical and engineering weaknesses in the original document, which were subsequently addressed in a revised version.",
+        "confidence": 0.9,
+        "entity": "Covalence v2",
+        "temporal": true
+      },
+      {
+        "text": "Damped cascade retraction in Covalence v2 uses geometric decay (\u03b1=0.65), epsilon threshold (\u03b5=0.01), budget cap (500 nodes), and max-hop limit (H=8 hops), providing analytical guarantee of approximately 25 nodes visited on average.",
+        "confidence": 0.95,
+        "entity": "Covalence v2",
+        "temporal": true
+      },
+      {
+        "text": "Temporal Knowledge Graphs (TKGs) extend standard KG triples (head, relation, tail) to quadruples (head, relation, tail, timestamp), where timestamp can be an interval [t_start, t_end] or a point timestamp.",
+        "confidence": 0.95,
+        "entity": "Temporal Knowledge Graphs",
+        "temporal": false
+      },
+      {
+        "text": "TKG reasoning includes three task types: interpolation (completing unknown facts within the known time range), extrapolation (forecasting facts at time T+1), and temporal QA (answering time-scoped questions).",
+        "confidence": 0.9,
+        "entity": "Temporal Knowledge Graphs",
+        "temporal": false
+      },
+      {
+        "text": "RDF-star (W3C working draft) annotates facts with temporal metadata more compactly than RDF reification, requiring fewer triples per annotated fact.",
+        "confidence": 0.9,
+        "entity": "RDF-star",
+        "temporal": false
+      },
+      {
+        "text": "Kim et al. (2024/2026) found that RDF-star quadruples yield more informative memory despite greater storage cost per fact, because temporal context enables better reasoning.",
+        "confidence": 0.85,
+        "entity": "RDF-star",
+        "temporal": true
+      },
+      {
+        "text": "CFKGR (Counterfactual Knowledge Graph Reasoning, Zellinger et al., EACL 2024) frames counterfactual reasoning as adding hypothetical edges to a KG and inferring downstream graph structure changes.",
+        "confidence": 0.95,
+        "entity": "CFKGR",
+        "temporal": true
+      },
+      {
+        "text": "COULDD (COUnterfactual Learning from Data Dependencies) fine-tunes KG embeddings on hypothetical facts, enabling the model to propagate counterfactual consequences through learned structural patterns.",
+        "confidence": 0.9,
+        "entity": "COULDD",
+        "temporal": true
+      },
+      {
+        "text": "ChatGPT outperforms KGEs at detecting plausible counterfactual changes in KGs, but suffers from poor knowledge retention by hallucinating away original (non-hypothetical) facts.",
+        "confidence": 0.85,
+        "entity": "ChatGPT",
+        "temporal": true
+      },
+      {
+        "text": "AnyBURL (fully symbolic, rule-based) achieves performance matching RotatE on WN18RR benchmark (~0.478 MRR vs 0.476), suggesting symbolic methods are competitive with or superior to embeddings at structured-graph scale.",
+        "confidence": 0.9,
+        "entity": "AnyBURL",
+        "temporal": true
+      },
+      {
+        "text": "AnyBURL achieves MRR of 0.478 on WN18RR, matching ComplEx (0.480) and exceeding RotatE (0.476), demonstrating that symbolic rule-based methods are competitive with embedding approaches on structured knowledge graphs.",
+        "confidence": 0.9,
+        "entity": "AnyBURL",
+        "temporal": true
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "42953910-272f-4c25-a452-1adc19e49004",
+    "source_title": "covalence#173 \u2014 Surgical Pre-Claims Refactoring Spec",
+    "claims": [
+      {
+        "text": "Covalence issue covalence#173 is ready for review as of 2026-03-04.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "The proposed change in Covalence includes promoting parse_json_response to a shared worker module helper.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes moving select_by_trust_recency to a shared worker location.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes extracting the post-compile follow-up task sequence into a named function.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes adding a node_type parameter to enqueue_due_consolidations.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes adding 7 new EdgeType variants for claims.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes generalizing symmetric-edge enforcement in EdgeService.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes replacing hardcoded SQL edge-type lists with type-level helpers.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes renaming ConfidenceResult.article_id to node_id.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The proposed change in Covalence includes extracting fetch provenance inputs from compute confidence.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "5d8bbe59-4af5-4468-b0db-234bee2016f6",
+    "source_title": "PKM/Note-Taking Systems: Link Suggestion, Backlink Inference, and Graph Maintenance Patterns",
+    "claims": [
+      {
+        "text": "Obsidian uses exact string matching against note titles and aliases for its 'Unlinked Mentions' feature.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Roam Research automatically creates bidirectional links for every page reference or tag.",
+        "confidence": 0.9,
+        "entity": "Roam Research",
+        "temporal": false
+      },
+      {
+        "text": "Logseq's Automatic Linker plugin monitors typed text and auto-converts matching terms to page references.",
+        "confidence": 0.85,
+        "entity": "Logseq",
+        "temporal": false
+      },
+      {
+        "text": "Notion does not have automatic link suggestion or unlinked mentions features natively.",
+        "confidence": 0.95,
+        "entity": "Notion",
+        "temporal": false
+      },
+      {
+        "text": "Obsidian's Graph Analysis Plugin implements co-citation analysis to identify topical relationships between notes.",
+        "confidence": 0.85,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "The Jaccard Similarity formula measures how similar two notes' link neighborhoods are.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Obsidian Smart Connections Plugin uses an embedding model to compute cosine similarity between notes.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Roam Research allows block references using the '(())' syntax for granular connections.",
+        "confidence": 0.9,
+        "entity": "Roam Research",
+        "temporal": false
+      },
+      {
+        "text": "Logseq uses the same '(())' syntax as Roam for block-level references.",
+        "confidence": 0.9,
+        "entity": "Logseq",
+        "temporal": false
+      },
+      {
+        "text": "Obsidian's block references require a 'block-id' identifier.",
+        "confidence": 0.85,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "The Obsidian Community has requested a feature for typed links or semantic links since 2020.",
+        "confidence": 0.8,
+        "entity": "Obsidian",
+        "temporal": true
+      },
+      {
+        "text": "Roam Research's attribute syntax can encode typed relationships on blocks.",
+        "confidence": 0.85,
+        "entity": "Roam Research",
+        "temporal": false
+      },
+      {
+        "text": "The Adamic-Adar link prediction method weights shared neighbors by the inverse log of their degree.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Obsidian's Smart Connections Plugin supports over 100 embedding models via API.",
+        "confidence": 0.85,
+        "entity": "Obsidian",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "1ca95617-af01-4976-a0af-f3387370cab6",
+    "source_title": "Claims Architecture Spec v2 \u2014 Complete Revision with All Reviews Incorporated",
+    "claims": [
+      {
+        "text": "The Claims Architecture Spec v2 was fully revised on March 4, 2026.",
+        "confidence": 0.85,
+        "entity": "Claims Architecture Spec",
+        "temporal": true
+      },
+      {
+        "text": "Claims are atomic assertions compiled from articles in the semantic domain.",
+        "confidence": 0.85,
+        "entity": "Claims",
+        "temporal": false
+      },
+      {
+        "text": "The nodes table uses 'node_type = claim' to store claims.",
+        "confidence": 0.85,
+        "entity": "nodes table",
+        "temporal": false
+      },
+      {
+        "text": "Claims have a status that can be 'active', 'settled', 'archived', or 'superseded'.",
+        "confidence": 0.85,
+        "entity": "Claims",
+        "temporal": false
+      },
+      {
+        "text": "Claims are extracted from node sections, not raw sources.",
+        "confidence": 0.85,
+        "entity": "Claims",
+        "temporal": false
+      },
+      {
+        "text": "The confidence of a claim is calculated using the formula conf = 1 - \u220f(1 - r\u1d62) for the N exemplar sources.",
+        "confidence": 0.85,
+        "entity": "claim confidence calculation",
+        "temporal": false
+      },
+      {
+        "text": "Claims can be archived if they have zero EXTRACTED_FROM edges and zero CONTAINS edges.",
+        "confidence": 0.85,
+        "entity": "Claims",
+        "temporal": false
+      },
+      {
+        "text": "The extraction process for claims includes a cosine similarity check against existing claims.",
+        "confidence": 0.85,
+        "entity": "claim extraction process",
+        "temporal": false
+      },
+      {
+        "text": "Claims can be settled when their confidence exceeds 0.999.",
+        "confidence": 0.85,
+        "entity": "Claims",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "c2535e33-56a2-4f13-9d27-c27cadf9b142",
+    "source_title": "Cache Invalidation Strategies Across Distributed Systems \u2014 Patterns for Knowledge Graph Caching",
+    "claims": [
+      {
+        "text": "Cache invalidation is one of the two hard things in computer science.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "TTL-based invalidation guarantees an upper bound on staleness.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Choosing TTL for cache invalidation is heuristic.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Event-driven invalidation requires careful tracking of all cache keys affected by each data change.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Version-based invalidation allows for O(1) invalidation for entire namespaces.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Tag-based invalidation allows for surgical precision in cache invalidation.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The dependency graph approach requires explicit dependency registration.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The cache stampede problem occurs when a popular cached item expires.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Probabilistic early expiration is a mathematically optimal solution to the cache stampede problem.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "As of October 2025, Cloudflare achieves global purge-by-tag latency under 150ms.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": true
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "9af22048-fecf-419e-91a0-4c1c9ccb3190",
+    "source_title": "covalence#161 \u2014 Provenance Cap & Auto-Split Implementation Spec",
+    "claims": [
+      {
+        "text": "Covalence issue covalence#161 is ready for implementation.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "The recommended cap for provenance fan-in during article_compile is PROVENANCE_CAP = 40.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The auto_split threshold is set at PROVENANCE_SPLIT_THRESHOLD = 50.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The top-20 articles each have 524\u2013676 ORIGINATES edges.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "If the count of ORIGINATES edges exceeds PROVENANCE_SPLIT_THRESHOLD, an auto_split task is enqueued.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The auto_split task type is added to the slow_path_queue.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The algorithm for determining split boundary uses mini-batch k-means with k=2.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The embedding availability guard excludes sources without embeddings from centroid computation.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The primary assignment of sources to child articles is done via k-means clustering.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The original article is archived after the auto_split process.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "d06d53ac-ca2d-4358-9b45-c7ca24f7d912",
+    "source_title": "Incremental Compilation in Build Systems: Dependency Tracking and Minimal Rebuild Patterns (Bazel, Buck2, Gradle, rustc/Salsa)",
+    "claims": [
+      {
+        "text": "Bazel's evaluation framework is called Skyframe.",
+        "confidence": 0.9,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Bazel uses Merkle trees with SHA-256 digests for its remote cache.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "DICE is the Deterministic Incremental Computation Engine used in Buck2.",
+        "confidence": 0.9,
+        "entity": "Buck2",
+        "temporal": false
+      },
+      {
+        "text": "DICE tracks reverse dependencies explicitly.",
+        "confidence": 0.85,
+        "entity": "Buck2",
+        "temporal": false
+      },
+      {
+        "text": "The Rust compiler structures all compilation as a query system.",
+        "confidence": 0.9,
+        "entity": "Rust",
+        "temporal": false
+      },
+      {
+        "text": "The Red-Green Algorithm is used in the Rust compiler for incremental compilation.",
+        "confidence": 0.9,
+        "entity": "Rust",
+        "temporal": false
+      },
+      {
+        "text": "Gradle checks if task inputs have changed using content hashes before executing a task.",
+        "confidence": 0.85,
+        "entity": "Gradle",
+        "temporal": false
+      },
+      {
+        "text": "Gradle supports a remote build cache that is content-addressable.",
+        "confidence": 0.85,
+        "entity": "Gradle",
+        "temporal": false
+      },
+      {
+        "text": "All four systems use content hashing to detect input changes.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Bazel does not use a top-down invalidation strategy.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "1ddd3e0e-1d74-43d9-9c19-3c0b0328660c",
+    "source_title": "Materialized View Maintenance in Databases: Comprehensive Research (Oracle, PostgreSQL, Databricks, Academic IVM)",
+    "claims": [
+      {
+        "text": "A materialized view (MV) is a cached/precomputed result of a query.",
+        "confidence": 0.9,
+        "entity": "PostgreSQL",
+        "temporal": false
+      },
+      {
+        "text": "Oracle supports refreshing materialized views with the command CREATE MATERIALIZED VIEW ... REFRESH ON COMMIT.",
+        "confidence": 0.85,
+        "entity": "Oracle",
+        "temporal": false
+      },
+      {
+        "text": "PostgreSQL's pg_ivm extension provides incremental refresh via AFTER triggers and transition tables.",
+        "confidence": 0.85,
+        "entity": "PostgreSQL",
+        "temporal": false
+      },
+      {
+        "text": "Databricks allows manual refresh or scheduled refresh of materialized views via pipelines.",
+        "confidence": 0.85,
+        "entity": "Databricks",
+        "temporal": false
+      },
+      {
+        "text": "Oracle's FULL REFRESH requires dropping or truncating the materialized view and re-executing the defining query from scratch.",
+        "confidence": 0.9,
+        "entity": "Oracle",
+        "temporal": false
+      },
+      {
+        "text": "PostgreSQL's only built-in option for refreshing materialized views is FULL REFRESH.",
+        "confidence": 0.9,
+        "entity": "PostgreSQL",
+        "temporal": false
+      },
+      {
+        "text": "The Counting Algorithm maintains views incrementally by storing an additional COUNT column for each tuple.",
+        "confidence": 0.85,
+        "entity": "PostgreSQL",
+        "temporal": false
+      },
+      {
+        "text": "DBToaster introduced higher-order delta processing for incremental view maintenance.",
+        "confidence": 0.85,
+        "entity": "DBToaster",
+        "temporal": false
+      },
+      {
+        "text": "DBSP provides a clean algebraic framework for incremental view maintenance.",
+        "confidence": 0.85,
+        "entity": "DBSP",
+        "temporal": true
+      },
+      {
+        "text": "Incrementability is defined as benefit(IVM) / cost(IVM) according to Tang et al.",
+        "confidence": 0.85,
+        "entity": "Tang et al.",
+        "temporal": true
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "a7ef7b8a-0b07-4306-9bfa-131ab946a67e",
+    "source_title": "Claims Layer Spec \u2014 Blue-Green Migration (covalence#036)",
+    "claims": [
+      {
+        "text": "Claims are nodes in the existing nodes table.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The existing schema uses a unified nodes table with node_type IN ('article', 'source', 'entity').",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Claims fit naturally as node_type = 'claim'.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The edge types already support it: We add CONTAINS and SUPPORTS.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Claims use existing columns in the nodes table.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The generation column is added to track blue-green migration.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "The confidence pipeline becomes claim-level after migration.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "Claims are extracted from sources and inserted as nodes with node_type='claim'.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The migration process includes a validation gate to ensure coverage.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "The rollback plan is tested and fully reversible.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": true
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "7dbed385-def7-4ab7-90d1-3141f943cf98",
+    "source_title": "Spec: Article-to-Article Semantic Edge Inference \u2014 covalence#160",
+    "claims": [
+      {
+        "text": "Covalence articles currently only carry ORIGINATES/provenance edges linking them to their source documents.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The semantic graph in Covalence lives entirely in source space.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The inference pipeline in Covalence is designed to populate direct article-to-article semantic edges.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The first tier of edge inference in Covalence uses Jaccard similarity of article_sources sets.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "A Jaccard threshold of 0.3 is required to insert a RELATES_TO edge in Covalence.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The second tier of edge inference in Covalence uses array overlap on the domain_path column.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "A threshold of 2 shared tags is required to insert a RELATES_TO edge in Covalence's second tier.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The third tier of edge inference in Covalence uses ANN search via pgvector against articles.embedding.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "A cosine similarity threshold of 0.65 is required to insert a RELATES_TO edge in Covalence's third tier.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The fourth tier of edge inference in Covalence uses LLM judgment on article pairs.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The new task type infer_article_edges is added to the slow_path_queue in Covalence.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The composite index on knowledge_edges(edge_type, source_node_id, target_node_id) must exist in Covalence.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The migration file migrations/037_infer_article_edges_task_type.sql is created to add the new task type in Covalence.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The backfill pass in Covalence enqueues one task per article that has no outbound semantic edges to other articles.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The handle_infer_article_edges function is located in engine/src/worker/infer_article_edges.rs in Covalence.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The configuration struct InferenceConfig in Covalence includes a tier1_jaccard_threshold with a default of 0.3.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence logs each inferred edge at DEBUG level.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence emits a metric counter for inferred edges with tier and edge_type.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The acceptance criteria for Covalence include that an infer_article_edges task appears in slow_path_queue after article_compile.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "027cce25-2405-42a7-a192-3e87d74fdddd",
+    "source_title": "Claims Architecture Design Session \u2014 Complete Capture (2026-03-04)",
+    "claims": [
+      {
+        "text": "The Claims Architecture Design Session took place on March 4, 2026.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "Ten parallel research workers were spawned across various domains including build systems and cache invalidation.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The Output Equality Firewall is the single biggest optimization in the claims architecture.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Claims are atomic, structured, and hashable assertions.",
+        "confidence": 0.95,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The blue-green migration strategy includes an atomic cutover to activate generation 2.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "Claims should attribute to specific node_sections for verifiability.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The current system state includes 1,606 active nodes and 487 articles.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": true
+      },
+      {
+        "text": "The confidence propagation at the article level is too coarse.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Claims enable surgical updates by allowing source changes to affect specific claims.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "105c6c1b-de48-49b2-96b8-84c58d037b36",
+    "source_title": "PKM Systems: Link Suggestion & Graph Maintenance Research Summary",
+    "claims": [
+      {
+        "text": "Obsidian uses explicit user-created links in the format `[[Note Title]]` or `[[Note Title|alias]]`.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Roam Research uses explicit user-created links in the format `[[Page Name]]` and also supports implicit page links with `#tag`.",
+        "confidence": 0.9,
+        "entity": "Roam Research",
+        "temporal": false
+      },
+      {
+        "text": "Logseq uses explicit user-created links in the format `[[Page Link]]` and block-level references with `((block-uuid))`.",
+        "confidence": 0.9,
+        "entity": "Logseq",
+        "temporal": false
+      },
+      {
+        "text": "All three systems, Obsidian, Roam Research, and Logseq, create bidirectional edges automatically linking Note A to Note B.",
+        "confidence": 0.85,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Obsidian shows unlinked mentions in its Backlinks panel, allowing one-click conversion to a real link.",
+        "confidence": 0.85,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Roam Research displays unlinked references at the bottom of each page, which users can click to promote to linked.",
+        "confidence": 0.85,
+        "entity": "Roam Research",
+        "temporal": false
+      },
+      {
+        "text": "Logseq has a feature for unlinked references, with a community plugin that automates bulk promotion.",
+        "confidence": 0.85,
+        "entity": "Logseq",
+        "temporal": false
+      },
+      {
+        "text": "Obsidian's 'Smart Connections' plugin uses a local embedding model to compute embeddings for each note on save.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": true
+      },
+      {
+        "text": "The 'Smart Connections' plugin in Obsidian shows the top-N most similar notes by cosine similarity of embeddings.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": true
+      },
+      {
+        "text": "Roam Research's graph view can show unlinked references as dashed edges upon feature requests.",
+        "confidence": 0.8,
+        "entity": "Roam Research",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "b7c8dfb6-a3b7-4929-98c6-73562e81e0ba",
+    "source_title": "Synaptic Tagging and Capture (STC): Mechanism for Selective Memory Consolidation \u2014 Comprehensive Review (Frey & Morris 1997 through 2025)",
+    "claims": [
+      {
+        "text": "The Synaptic Tagging and Capture (STC) mechanism is involved in selective memory consolidation.",
+        "confidence": 0.9,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "Long-term potentiation (LTP) has two phases: early-LTP (e-LTP) and late-LTP (l-LTP).",
+        "confidence": 0.9,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "Early-LTP (e-LTP) lasts approximately 1-3 hours and is protein synthesis-independent.",
+        "confidence": 0.85,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "Late-LTP (l-LTP) lasts days to weeks and is protein synthesis-dependent.",
+        "confidence": 0.85,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "Synaptic tagging sets a local tag that lasts approximately 30-90 minutes ex vivo.",
+        "confidence": 0.85,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "Protein synthesis is the gating factor for converting e-LTP into l-LTP.",
+        "confidence": 0.9,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "Behavioral tagging (BT) allows weak learning experiences to be consolidated into long-term memory if followed by a strong event.",
+        "confidence": 0.85,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "The tagging window for STC is approximately 30-90 minutes ex vivo and can be extended up to 9 hours.",
+        "confidence": 0.8,
+        "entity": "LTP",
+        "temporal": true
+      },
+      {
+        "text": "Clustering of synaptic inputs enhances the efficiency of triggering and capturing PRP synthesis.",
+        "confidence": 0.85,
+        "entity": "LTP",
+        "temporal": false
+      },
+      {
+        "text": "Memories require a second wave of protein synthesis approximately 12-24 hours after initial consolidation for full persistence.",
+        "confidence": 0.85,
+        "entity": "LTP",
+        "temporal": true
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "0b7dbaf7-2065-4946-bfff-912e58c4d81e",
+    "source_title": "Incremental Build Systems: Dependency Tracking and Minimal Rebuild Patterns (Research Summary)",
+    "claims": [
+      {
+        "text": "Incremental build systems aim to rebuild only the minimal set of outputs when inputs change.",
+        "confidence": 0.9,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Incremental build systems operate on a Directed Acyclic Graph (DAG) of dependencies.",
+        "confidence": 0.9,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Bazel requires developers to declare all direct dependencies in BUILD files.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "The DAG enables parallelism and incremental rebuilding.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Buck and Bazel use Merkle-tree build graphs where each node's hash is derived from its inputs' hashes.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Forward propagation dirty-marking algorithms mark all downstream nodes dirty when an input changes.",
+        "confidence": 0.8,
+        "entity": "Make",
+        "temporal": false
+      },
+      {
+        "text": "Lazy demand-driven algorithms check if any dependencies have changed when a consumer queries a derived value.",
+        "confidence": 0.8,
+        "entity": "Salsa",
+        "temporal": false
+      },
+      {
+        "text": "Version-based invalidation in Salsa increments a global revision counter with each input change.",
+        "confidence": 0.8,
+        "entity": "Salsa",
+        "temporal": false
+      },
+      {
+        "text": "Content hashing in Bazel uses SHA-256 or similar to hash each input.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Gradle normalizes inputs before hashing to ensure semantically equivalent inputs produce the same cache key.",
+        "confidence": 0.85,
+        "entity": "Gradle",
+        "temporal": false
+      },
+      {
+        "text": "Salsa is a framework for on-demand incrementalized computation.",
+        "confidence": 0.9,
+        "entity": "Salsa",
+        "temporal": false
+      },
+      {
+        "text": "Gradle performs up-to-date checks by fingerprinting all declared inputs and outputs.",
+        "confidence": 0.85,
+        "entity": "Gradle",
+        "temporal": false
+      },
+      {
+        "text": "Buck distinguishes between rule keys to decide cache hits.",
+        "confidence": 0.8,
+        "entity": "Buck",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "dd1fc795-6e67-4722-8d2d-d3ca00bda4cb",
+    "source_title": "Reactive Patterns Applied to Knowledge Graph Change Propagation",
+    "claims": [
+      {
+        "text": "A knowledge graph is structurally analogous to a reactive computation graph.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "In a knowledge graph, articles/facts are represented as nodes.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "In a knowledge graph, provenance/dependency links are represented as edges.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "When a source changes, the knowledge system needs to determine which articles are affected and recompute them.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The dependency graph in a knowledge graph can be maintained to determine which articles need recompilation when a source is updated.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence's usage_score captures the frequency of article queries.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Dynamic dependency discovery allows for the re-establishment of dependencies at compilation time.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Fine-grained reactivity allows for tracking changes at a finer granularity than whole sources.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Stabilization epochs can be used to ensure consistency during batch updates in a knowledge graph.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Delta propagation allows for targeted updates instead of full recompilation of articles.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "cd342bbb-46ef-4a2c-b1dd-caaf1fb65b91",
+    "source_title": "Cross-Domain Research Synthesis: 8 Domains Applied to Covalence Knowledge Graph",
+    "claims": [
+      {
+        "text": "The Dependency DAG is the core abstraction in Bazel, where sources are inputs, articles are derived artifacts, and provenance links are edges.",
+        "confidence": 0.9,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Bazel uses content hashing instead of timestamps to skip recompilation if the source content_hash is unchanged.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Salsa employs demand-driven invalidation, recompiling dirty articles only on query and tracking verified_at_revision per article.",
+        "confidence": 0.85,
+        "entity": "Salsa",
+        "temporal": false
+      },
+      {
+        "text": "Bazel's output equality firewall optimization stops cascading recompilation if the article content is approximately equal to the old version after recompilation.",
+        "confidence": 0.9,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "Bazel's hermetic compilation ensures that output depends only on declared inputs and the compilation prompt.",
+        "confidence": 0.85,
+        "entity": "Bazel",
+        "temporal": false
+      },
+      {
+        "text": "PKM systems like Obsidian, Roam, and Logseq utilize tiered link inference, which includes lexical, structural, and semantic levels.",
+        "confidence": 0.9,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "PKM systems maintain a cosine similarity floor of approximately 0.65 for semantic links.",
+        "confidence": 0.85,
+        "entity": "Obsidian",
+        "temporal": false
+      },
+      {
+        "text": "Event sourcing systems treat sources as immutable, append-only events and articles as projections or materialized views.",
+        "confidence": 0.9,
+        "entity": "Event Sourcing",
+        "temporal": false
+      },
+      {
+        "text": "Materialized views in databases use a counting algorithm to track how many sources support each claim.",
+        "confidence": 0.85,
+        "entity": "Database IVM",
+        "temporal": false
+      },
+      {
+        "text": "Cache invalidation can utilize tag-based invalidation via provenance, where the source UUID serves as the tag.",
+        "confidence": 0.85,
+        "entity": "Cache Invalidation",
+        "temporal": false
+      },
+      {
+        "text": "Reactive dataflow systems like Excel and MobX implement a mark-then-sweep strategy to manage stale flags and recomputation.",
+        "confidence": 0.85,
+        "entity": "Excel",
+        "temporal": false
+      },
+      {
+        "text": "Neural plasticity principles suggest that the hippocampus processes fast, episodic information while the neocortex handles slow, consolidated knowledge.",
+        "confidence": 0.9,
+        "entity": "Neural Plasticity",
+        "temporal": false
+      },
+      {
+        "text": "Merge and conflict resolution in systems like Git utilize a three-way merge approach to detect conflicts.",
+        "confidence": 0.85,
+        "entity": "Git",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "09e23767-d0be-404c-8fc1-d9d17efa79f6",
+    "source_title": "Fine-Grained Reactivity: MobX, Signals, SolidJS, and Svelte Internals",
+    "claims": [
+      {
+        "text": "MobX makes observable state values via Proxy/Object.defineProperty.",
+        "confidence": 0.9,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "Computed values in MobX are derived from observables via pure functions and are cached until inputs change.",
+        "confidence": 0.9,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "Reactions in MobX are side effects that run when observed values change.",
+        "confidence": 0.9,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "Actions in MobX are the only way to modify state and batch mutations into atomic transactions.",
+        "confidence": 0.9,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "MobX tracks dependencies at runtime by intercepting property access.",
+        "confidence": 0.9,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "MobX achieves glitch-free updates through a two-phase transaction model.",
+        "confidence": 0.85,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "MobX automatically prunes the dependency graph when a computed is no longer observed by any reaction.",
+        "confidence": 0.85,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "SolidJS uses signals as reactive values with getter/setter.",
+        "confidence": 0.9,
+        "entity": "SolidJS",
+        "temporal": false
+      },
+      {
+        "text": "In SolidJS, effects/reactions are side-effecting computations that re-run when dependencies change.",
+        "confidence": 0.9,
+        "entity": "SolidJS",
+        "temporal": false
+      },
+      {
+        "text": "Svelte 5 moved to a signals-based reactivity model called 'runes'.",
+        "confidence": 0.9,
+        "entity": "Svelte",
+        "temporal": true
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "94711592-f9cd-45c2-b590-de165bc9486b",
+    "source_title": "Complete Cross-Domain Research: 10 Domains \u2192 7 Design Principles for Covalence",
+    "claims": [
+      {
+        "text": "Covalence uses an immutable segment architecture to write new sources quickly and defer restructuring to background maintenance.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence employs a TieredMergePolicy to group articles by size tier and merge when the count in a tier exceeds a threshold.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence uses single-pass clustering for source to article assignment based on similarity thresholds.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence maintains compact article summary vectors for merge and split decisions using BIRCH CF-tree insights.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence creates new articles under write pressure and merges under query pressure when the fan-out cost exceeds the merge cost.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence implements a push-pull hybrid approach for supply chain disruption propagation.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence uses geometric decay damping to stop propagating disruption signals when they fall below a minimum threshold.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence employs dual sourcing to maintain confidence in articles despite single source deletions.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence serves stale articles while recompilation runs using buffer inventory.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence tracks how many independent sources support each article claim using a reference-counted provenance system.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence requires a higher evidence threshold to override well-established articles to protect high-confidence articles.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence processes the mutation queue in ascending height order to prevent glitches during propagation.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence splits articles when there are more than 15 sources or high contention density.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "Covalence merges articles when there is more than 60% semantic overlap or when near-eviction and small size conditions are met.",
+        "confidence": 0.85,
+        "entity": "Covalence",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "5d34dd8c-d7e0-48b3-a6ed-766615bbd47c",
+    "source_title": "Reactive Programming & Dataflow Systems \u2014 Synthesis Summary (2026-03-04)",
+    "claims": [
+      {
+        "text": "All reactive/dataflow systems share one abstraction: a directed acyclic graph (DAG) where nodes are computations and edges are dependency relationships.",
+        "confidence": 0.9,
+        "entity": "Reactive Programming",
+        "temporal": false
+      },
+      {
+        "text": "Excel's Dependency Engine is the canonical spreadsheet recalculation model.",
+        "confidence": 0.85,
+        "entity": "Excel",
+        "temporal": false
+      },
+      {
+        "text": "MobX implements a fine-grained reactive object graph with three primitives: observables, computed values, and reactions.",
+        "confidence": 0.85,
+        "entity": "MobX",
+        "temporal": false
+      },
+      {
+        "text": "Jane Street's Incremental library is a typed, DAG-based incremental computation framework.",
+        "confidence": 0.85,
+        "entity": "Jane Street's Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Glitches arise in the diamond pattern when a node is pushed eagerly after one input updates but before another input updates.",
+        "confidence": 0.8,
+        "entity": "Reactive Programming",
+        "temporal": false
+      },
+      {
+        "text": "Most production systems use a push-pull hybrid: push cheap invalidation markers, pull actual recomputation only when needed.",
+        "confidence": 0.8,
+        "entity": "Reactive Programming",
+        "temporal": false
+      },
+      {
+        "text": "A knowledge graph maps cleanly onto the reactive model.",
+        "confidence": 0.85,
+        "entity": "Knowledge Graph",
+        "temporal": false
+      },
+      {
+        "text": "The mutation_queue in Covalence implements the staging layer for marking dependent articles as STALE.",
+        "confidence": 0.9,
+        "entity": "Covalence",
+        "temporal": false
+      },
+      {
+        "text": "The cutoff optimization in knowledge graph recompilation is critical because most source edits are local.",
+        "confidence": 0.85,
+        "entity": "Knowledge Graph",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  },
+  {
+    "source_id": "8f665358-8ac8-4176-b3a3-190d7dbdf578",
+    "source_title": "Jane Street Incremental: Self-Adjusting Computation for Efficient Change Propagation",
+    "claims": [
+      {
+        "text": "Incremental is a library for building self-adjusting computations (SAC).",
+        "confidence": 0.95,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Self-adjusting computations update efficiently when inputs change.",
+        "confidence": 0.9,
+        "entity": "self-adjusting computations",
+        "temporal": false
+      },
+      {
+        "text": "Incremental supports bind, allowing the computation structure of the graph to change.",
+        "confidence": 0.85,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "The stabilize() function must be called to trigger recomputation in Incremental.",
+        "confidence": 0.9,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Each node in Incremental can have a custom cutoff function to stop change propagation.",
+        "confidence": 0.85,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Incremental uses a height-based priority queue for stabilization.",
+        "confidence": 0.9,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Incremental only computes nodes that are transitively required by some observer.",
+        "confidence": 0.9,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Incremental is related to Adapton, another SAC library from academia.",
+        "confidence": 0.85,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Incremental is used for risk calculations that depend on live market data and user configurations.",
+        "confidence": 0.9,
+        "entity": "Incremental",
+        "temporal": false
+      },
+      {
+        "text": "Incremental is used for GUI construction to ensure only changed parts re-render.",
+        "confidence": 0.9,
+        "entity": "Incremental",
+        "temporal": false
+      }
+    ],
+    "extraction_ok": true,
+    "notes": ""
+  }
+]
