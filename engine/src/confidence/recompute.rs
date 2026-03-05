@@ -61,12 +61,8 @@ pub async fn recompute_article_confidence(
         // reliability is DOUBLE PRECISION on nodes; causal_weight / conf_link are REAL on article_sources.
         // causal_weight and conf_link are NOT NULL; COALESCE in SQL is belt-and-suspenders.
         let rel: f64 = row.try_get("reliability").unwrap_or(0.5);
-        let cw: f64 = row
-            .try_get::<f32, _>("causal_weight")
-            .expect("causal_weight is NOT NULL") as f64;
-        let cl: f64 = row
-            .try_get::<f32, _>("conf_link")
-            .expect("confidence is NOT NULL") as f64;
+        let cw: f64 = row.try_get::<f32, _>("causal_weight")? as f64;
+        let cl: f64 = row.try_get::<f32, _>("conf_link")? as f64;
         let eff = (rel * cw * cl).clamp(0.0, 1.0);
         source_ids.push(sid);
         source_eff_reliabilities.push(eff);
@@ -103,9 +99,7 @@ pub async fn recompute_article_confidence(
         use sqlx::Row;
         let trust: f64 = row.try_get("trust_score").unwrap_or(0.5);
         // causal_weight is NOT NULL; read directly as f32 and widen to f64.
-        let w: f64 = row
-            .try_get::<f32, _>("causal_weight")
-            .expect("causal_weight is NOT NULL") as f64;
+        let w: f64 = row.try_get::<f32, _>("causal_weight")? as f64;
         attackers.push((trust, w));
     }
 
@@ -145,9 +139,7 @@ pub async fn recompute_article_confidence(
         let trust: f64 = row.try_get("trust_score").unwrap_or(0.5);
         // causal_weight is NOT NULL; COALESCE in SQL is belt-and-suspenders.
         // Read as f32 (REAL column) then widen to f64.
-        let cw: f64 = row
-            .try_get::<f32, _>("causal_weight")
-            .expect("causal_weight is NOT NULL") as f64;
+        let cw: f64 = row.try_get::<f32, _>("causal_weight")? as f64;
         supersedes_pairs.push((trust, cw));
     }
 
@@ -176,7 +168,9 @@ pub async fn recompute_article_confidence(
     // Bel = conf_ds (committed belief mass).
     // Pl  = Bel + (1 − Bel)  (belief + uncommitted mass — epistemic upper bound).
     let bel = conf_ds;
-    let pl = conf_ds + (1.0 - conf_ds); // always 1.0 in classic two-valued DS
+    // TODO: make configurable — in a richer DS model, Pl could be < 1.0 when
+    // uncertainty mass is distributed across multiple hypotheses.
+    let pl = 1.0_f64; // always 1.0 in classic two-valued DS
 
     // ── Build confidence_breakdown JSON ──────────────────────────────────────
     let breakdown = serde_json::json!({
@@ -235,7 +229,7 @@ pub async fn recompute_article_confidence(
         article_id,
         final_score,
         breakdown,
-        flags: flags.clone(),
+        flags,
         computed_at,
     })
 }

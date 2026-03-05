@@ -4,8 +4,11 @@
 /// Ensures no article ever reaches zero confidence (epistemic humility floor).
 pub const CONF_FLOOR: f64 = 0.02;
 
-/// Default edge weight for CONTRADICTS attackers in DF-QuAD penalty.
-pub const CONTRADICTS_DEFAULT_WEIGHT: f64 = 1.0;
+// ── Test-only fixtures ────────────────────────────────────────────────────────
+// These constants are reference values for unit tests, not production defaults.
+// Edge weights in production are read from `covalence.article_sources.causal_weight`.
+#[cfg(test)]
+pub const TEST_CONTRADICTS_DEFAULT_WEIGHT: f64 = 1.0;
 
-/// Default edge weight for CONTENDS attackers in DF-QuAD penalty.
-pub const CONTENDS_DEFAULT_WEIGHT: f64 = 0.3;
+#[cfg(test)]
+pub const TEST_CONTENDS_DEFAULT_WEIGHT: f64 = 0.3;
