@@ -116,6 +116,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/gaps", get(admin_gaps))
         // Whatif retract preview (covalence#119)
         .route("/admin/whatif/retract", post(admin_whatif_retract))
+        // Claim deduplication (covalence#208)
+        .route("/admin/dedup-claims", post(admin_dedup_claims))
 }
 
 // ── Graph reload helper ─────────────────────────────────────────
@@ -1088,6 +1090,22 @@ async fn admin_whatif_retract(
     let svc = WhatifService::new(state.pool);
     let report = svc.retract_preview(req).await?;
     Ok(Json(serde_json::json!({ "data": report })))
+}
+
+/// `POST /admin/dedup-claims` — retroactive claim deduplication (covalence#208).
+///
+/// Scans active `claim` nodes for near-duplicate pairs using the HNSW
+/// pgvector index.  In `dry_run` mode (default) returns candidate pairs
+/// without writing any edges.  In apply mode creates `SAME_AS` edges.
+///
+/// Request body: `{ "threshold": 0.08, "dry_run": true, "limit": 500 }`
+async fn admin_dedup_claims(
+    State(state): State<AppState>,
+    Json(req): Json<DedupClaimsRequest>,
+) -> Result<Json<serde_json::Value>, crate::errors::AppError> {
+    let svc = AdminService::new(state.pool);
+    let result = svc.dedup_claims(req).await?;
+    Ok(Json(serde_json::json!({ "data": result })))
 }
 
 async fn admin_knowledge_audit(
