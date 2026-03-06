@@ -17,6 +17,7 @@ pub mod consolidation;
 pub mod contention;
 pub mod critique;
 pub mod decay;
+pub mod dedup_claims;
 pub mod divergence;
 pub mod infer_article_edges;
 pub mod llm;
@@ -452,6 +453,7 @@ pub async fn execute_task(
             recompute_graph_embeddings(pool, method).await
         }
         "auto_split" => provenance_cap::handle_auto_split(pool, llm, task).await,
+        "dedup_claims" => dedup_claims::handle_dedup_claims(pool, task).await,
         other => anyhow::bail!("unknown task_type: {other}"),
     }
 }

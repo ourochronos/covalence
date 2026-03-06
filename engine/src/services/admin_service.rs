@@ -1682,4 +1682,41 @@ impl AdminService {
         .map(|r| r.rows_affected() as i64)
         .map_err(AppError::Database)
     }
+
+    /// Run (or enqueue) a retroactive claim deduplication pass (covalence#208).
+    ///
+    /// When `dry_run` is `true` (default) the scan returns candidate pairs
+    /// without writing any edges.  When `dry_run` is `false` it creates
+    /// `SAME_AS` edges between duplicate claims.
+    ///
+    /// The scan runs **inline** (not via the queue) so the HTTP response
+    /// contains the full result immediately.
+    pub async fn dedup_claims(
+        &self,
+        req: DedupClaimsRequest,
+    ) -> AppResult<crate::worker::dedup_claims::DedupResult> {
+        let threshold = req
+            .threshold
+            .unwrap_or_else(crate::worker::dedup_claims::effective_threshold)
+            .clamp(0.0, 1.0);
+        let dry_run = req.dry_run.unwrap_or(true);
+        let limit = req.limit.unwrap_or(500);
+
+        crate::worker::dedup_claims::run_dedup_claims(&self.pool, threshold, dry_run, limit)
+            .await
+            .map_err(AppError::Internal)
+    }
+}
+
+// ─── Request / response types for dedup-claims endpoint ──────────────────────
+
+/// Request body for `POST /api/admin/dedup-claims` (covalence#208).
+#[derive(Debug, Default, serde::Deserialize, utoipa::ToSchema)]
+pub struct DedupClaimsRequest {
+    /// Cosine-distance cutoff (default: `COVALENCE_CLAIM_DEDUP_THRESHOLD` env var or 0.08).
+    pub threshold: Option<f64>,
+    /// When `true` (default) only reports candidate pairs without writing edges.
+    pub dry_run: Option<bool>,
+    /// Maximum number of claim nodes to scan (default 500).
+    pub limit: Option<i64>,
 }
