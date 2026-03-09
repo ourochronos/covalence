@@ -1,6 +1,8 @@
 //! Vector search dimension — multi-granularity semantic similarity via pgvector.
 //!
-//! Searches chunks, nodes, and articles by embedding cosine distance.
+//! Searches chunks, nodes, sources, and articles by embedding cosine
+//! distance. Each table is queried independently so that a dimension
+//! mismatch in one table does not prevent results from the others.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -11,9 +13,12 @@ use crate::search::SearchResult;
 
 /// Semantic similarity search using pgvector cosine distance.
 ///
-/// Queries the `chunks`, `nodes`, and `articles` tables for the closest
-/// embeddings to the query vector using the `<=>` (cosine distance)
-/// operator. Results from all granularities are merged and re-ranked.
+/// Queries the `chunks`, `nodes`, `sources`, and `articles` tables
+/// for the closest embeddings to the query vector using the `<=>`
+/// (cosine distance) operator. Each table is queried independently
+/// so that a dimension mismatch in one table does not prevent
+/// results from the others. Results from all granularities are
+/// merged and re-ranked.
 pub struct VectorDimension {
     pool: PgPool,
 }
@@ -23,6 +28,41 @@ impl VectorDimension {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// Query a single table for embedding similarity, returning
+    /// an empty vec (with a warning log) on error rather than
+    /// propagating the failure.
+    async fn query_table(
+        &self,
+        table: &str,
+        pgvec: &str,
+        limit: i64,
+    ) -> Vec<(Uuid, f64)> {
+        let sql = format!(
+            "SELECT id, \
+             (1.0 - (embedding <=> $1::halfvec))::float8 AS score \
+             FROM {table} \
+             WHERE embedding IS NOT NULL \
+             ORDER BY embedding <=> $1::halfvec \
+             LIMIT $2"
+        );
+        match sqlx::query_as::<_, (Uuid, f64)>(&sql)
+            .bind(pgvec)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    table,
+                    error = %e,
+                    "vector search skipped for table"
+                );
+                Vec::new()
+            }
+        }
+    }
 }
 
 impl SearchDimension for VectorDimension {
@@ -30,6 +70,11 @@ impl SearchDimension for VectorDimension {
         let Some(ref embedding) = query.embedding else {
             return Ok(Vec::new());
         };
+
+        tracing::debug!(
+            embedding_dim = embedding.len(),
+            "vector search query embedding"
+        );
 
         // Format embedding as pgvector literal: '[0.1,0.2,...]'
         let pgvec = format!(
@@ -41,59 +86,17 @@ impl SearchDimension for VectorDimension {
                 .join(",")
         );
 
-        // Search chunks by embedding similarity.
-        let chunk_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, 1.0 - (embedding <=> $1::halfvec) AS score \
-             FROM chunks \
-             WHERE embedding IS NOT NULL \
-             ORDER BY embedding <=> $1::halfvec \
-             LIMIT $2",
-        )
-        .bind(&pgvec)
-        .bind(query.limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let limit = query.limit as i64;
 
-        // Search nodes by embedding similarity.
-        let node_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, 1.0 - (embedding <=> $1::halfvec) AS score \
-             FROM nodes \
-             WHERE embedding IS NOT NULL \
-             ORDER BY embedding <=> $1::halfvec \
-             LIMIT $2",
-        )
-        .bind(&pgvec)
-        .bind(query.limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Search sources by embedding similarity.
-        let source_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-             1.0 - (embedding <=> $1::halfvec) AS score \
-             FROM sources \
-             WHERE embedding IS NOT NULL \
-             ORDER BY embedding <=> $1::halfvec \
-             LIMIT $2",
-        )
-        .bind(&pgvec)
-        .bind(query.limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Search articles by embedding similarity.
-        let article_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-             1.0 - (embedding <=> $1::halfvec) AS score \
-             FROM articles \
-             WHERE embedding IS NOT NULL \
-             ORDER BY embedding <=> $1::halfvec \
-             LIMIT $2",
-        )
-        .bind(&pgvec)
-        .bind(query.limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        // Query each table independently so a dimension mismatch
+        // in one table does not prevent results from others.
+        let (chunk_rows, node_rows, source_rows, article_rows) =
+            tokio::join!(
+                self.query_table("chunks", &pgvec, limit),
+                self.query_table("nodes", &pgvec, limit),
+                self.query_table("sources", &pgvec, limit),
+                self.query_table("articles", &pgvec, limit),
+            );
 
         // Merge and re-rank by score descending.
         let mut combined: Vec<(Uuid, f64, &str)> = Vec::new();
@@ -109,7 +112,10 @@ impl SearchDimension for VectorDimension {
         for (id, score) in article_rows {
             combined.push((id, score, "article"));
         }
-        combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        combined.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         combined.truncate(query.limit);
 
         let results = combined

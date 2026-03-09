@@ -47,7 +47,7 @@ impl LexicalDimension {
         // Primary: plainto_tsquery with ts_headline snippets.
         let rows = sqlx::query_as::<_, (Uuid, f64, String)>(
             "SELECT c.id, \
-                    ts_rank_cd(c.content_tsv, q) AS score, \
+                    ts_rank_cd(c.content_tsv, q)::float8 AS score, \
                     ts_headline('english', c.content, q, \
                         'MaxWords=' || $3 || \
                         ', MinWords=15, ShortWord=3') \
@@ -71,7 +71,7 @@ impl LexicalDimension {
         // Fallback: websearch_to_tsquery with ts_headline.
         let rows = sqlx::query_as::<_, (Uuid, f64, String)>(
             "SELECT c.id, \
-                    ts_rank_cd(c.content_tsv, q) AS score, \
+                    ts_rank_cd(c.content_tsv, q)::float8 AS score, \
                     ts_headline('english', c.content, q, \
                         'MaxWords=' || $3 || \
                         ', MinWords=15, ShortWord=3') \
@@ -126,7 +126,7 @@ impl SearchDimension for LexicalDimension {
         // Search nodes via name_tsv (canonical_name + description).
         let node_rows = sqlx::query_as::<_, (Uuid, f64)>(
             "SELECT id, \
-                    ts_rank_cd(name_tsv, query) AS score \
+                    ts_rank_cd(name_tsv, query)::float8 AS score \
              FROM nodes, \
                   plainto_tsquery('english', $1) query \
              WHERE name_tsv @@ query \
@@ -141,7 +141,7 @@ impl SearchDimension for LexicalDimension {
         // Search articles via body_tsv (title + body).
         let article_rows = sqlx::query_as::<_, (Uuid, f64)>(
             "SELECT id, \
-                    ts_rank_cd(body_tsv, query) AS score \
+                    ts_rank_cd(body_tsv, query)::float8 AS score \
              FROM articles, \
                   plainto_tsquery('english', $1) query \
              WHERE body_tsv @@ query \
