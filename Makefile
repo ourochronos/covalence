@@ -1,5 +1,5 @@
 .PHONY: build test fmt lint clippy check run watch \
-       dev-db test-db migrate \
+       dev-db test-db migrate reset-db \
        spec spec-fetch \
        cli-build cli-install \
        docker-up docker-down
@@ -60,6 +60,19 @@ test-db-stop:
 
 migrate:
 	cd engine && cargo run -p covalence-migrations
+
+reset-db:
+	@echo "Dropping and recreating covalence_dev..."
+	@docker exec covalence-dev-pg psql -U covalence -d postgres \
+		-c "DROP DATABASE IF EXISTS covalence_dev;" \
+		-c "CREATE DATABASE covalence_dev OWNER covalence;"
+	@docker exec covalence-dev-pg psql -U covalence -d covalence_dev \
+		-c "CREATE EXTENSION IF NOT EXISTS vector;" \
+		-c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" \
+		-c "CREATE EXTENSION IF NOT EXISTS ltree;"
+	@echo "Running migrations..."
+	@cd engine && cargo run -p covalence-migrations
+	@echo "Database reset complete."
 
 # === OpenAPI ===
 

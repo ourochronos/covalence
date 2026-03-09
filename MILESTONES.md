@@ -360,9 +360,26 @@ Comprehensive spec audit and implementation of all remaining gaps, plus per-tabl
 
 **Note:** 476 tests passing (433 core + 43 eval), clippy clean, fmt clean.
 
+## Wave 7 — Late Chunking + DB Reset *(complete)*
+
+### Late Chunking (Contextual Chunk Embeddings)
+- [x] `Embedder::embed_document_chunks()` trait method with default fallback
+- [x] VoyageEmbedder: auto-detect `voyage-context-3` model and route to `/contextualizedembeddings`
+- [x] Contextual response parsing (`ContextualResponse`, `ContextualResult` types)
+- [x] Ingestion pipeline: `embed_document_chunks()` for chunk embeddings
+- [x] All other embeddings (source, node, query, article) still use `embed()`
+- [x] Tests: `supports_contextual` detection, empty input, contextual response deserialization
+
+### DB Reset + E2E Flow
+- [x] `make reset-db` target (drop, recreate, extensions, migrations)
+- [x] End-to-end test flow documented in providers.md
+
+### Verification
+- [x] Voyage defaults: `voyage-3-large`, `output_dimension`, `input_type`
+- [x] 479 tests (436 core + 43 eval), clippy clean, fmt clean
+
 ## Future
 
-- Late chunking integration (Voyage `context` field for context-aware chunk embeddings)
 - Federation protocol (clearance-based egress, ZK edges)
 - Multi-tenant support
 - Cross-encoder reranking (ColBERT via BGE-M3)

@@ -277,11 +277,15 @@ impl SourceService {
 
         // Stage 5: Embed chunks
         //
+        // Uses contextual chunk embeddings when supported (e.g.,
+        // Voyage `voyage-context-3`). Each chunk embedding reflects
+        // the surrounding document context (late chunking).
+        //
         // Also runs landscape analysis to determine which chunks
         // need LLM extraction.
         let landscape_results = if let Some(ref embedder) = self.embedder {
             let texts: Vec<String> = chunk_outputs.iter().map(|co| co.text.clone()).collect();
-            let embeddings = embedder.embed(&texts).await?;
+            let embeddings = embedder.embed_document_chunks(&texts).await?;
 
             for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
                 let chunk_id = id_map[&co.id];

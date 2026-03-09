@@ -59,6 +59,18 @@ struct VoyageResponse {
     data: Vec<VoyageDatum>,
 }
 
+/// A single result in the Voyage contextual embeddings response.
+#[derive(Deserialize)]
+struct ContextualResult {
+    embeddings: Vec<Vec<f64>>,
+}
+
+/// Response from the `/contextualizedembeddings` endpoint.
+#[derive(Deserialize)]
+struct ContextualResponse {
+    results: Vec<ContextualResult>,
+}
+
 /// Voyage AI embedding client.
 pub struct VoyageEmbedder {
     config: VoyageConfig,
@@ -72,6 +84,12 @@ impl VoyageEmbedder {
             client: reqwest::Client::new(),
             config,
         }
+    }
+
+    /// Whether the configured model supports the contextual
+    /// chunk embeddings endpoint.
+    fn supports_contextual(&self) -> bool {
+        self.config.model.contains("context")
     }
 }
 
@@ -122,6 +140,69 @@ impl Embedder for VoyageEmbedder {
         Ok(all_embeddings)
     }
 
+    /// Embed chunks from a single document using the Voyage
+    /// contextual chunk embeddings endpoint.
+    ///
+    /// When the model supports it (e.g., `voyage-context-3`), all
+    /// chunks are sent as a single inner list to the
+    /// `/contextualizedembeddings` endpoint. Each chunk's embedding
+    /// reflects the surrounding document context (late chunking).
+    ///
+    /// Falls back to regular per-chunk embeddings for models that
+    /// don't support the contextual endpoint.
+    async fn embed_document_chunks(&self, chunks: &[String]) -> Result<Vec<Vec<f64>>> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if !self.supports_contextual() {
+            return self.embed(chunks).await;
+        }
+
+        // Voyage contextual endpoint: inputs is a list of lists.
+        // Each inner list is all chunks from one document.
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "inputs": [chunks],
+            "input_type": self.config.input_type,
+        });
+
+        if self.config.dimensions > 0 {
+            body["output_dimension"] = self.config.dimensions.into();
+        }
+
+        let resp = self
+            .client
+            .post(format!("{}/contextualizedembeddings", self.config.base_url))
+            .bearer_auth(&self.config.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Embedding(format!("Voyage contextual API request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::Embedding(format!(
+                "Voyage contextual API error {status}: {text}"
+            )));
+        }
+
+        let parsed: ContextualResponse = resp.json().await.map_err(|e| {
+            Error::Embedding(format!("Failed to parse Voyage contextual response: {e}"))
+        })?;
+
+        // We sent one inner list, so we expect one result.
+        let embeddings = parsed
+            .results
+            .into_iter()
+            .next()
+            .map(|r| r.embeddings)
+            .unwrap_or_default();
+
+        Ok(embeddings)
+    }
+
     fn dimension(&self) -> usize {
         self.config.dimensions
     }
@@ -168,11 +249,52 @@ mod tests {
         assert_eq!(config.model, "voyage-3-large");
     }
 
+    #[test]
+    fn supports_contextual_detection() {
+        let default = VoyageEmbedder::new(VoyageConfig::default());
+        assert!(!default.supports_contextual());
+
+        let contextual = VoyageEmbedder::new(VoyageConfig {
+            model: "voyage-context-3".to_string(),
+            ..VoyageConfig::default()
+        });
+        assert!(contextual.supports_contextual());
+    }
+
     #[tokio::test]
     async fn voyage_embed_empty_input() {
         let embedder = VoyageEmbedder::new(VoyageConfig::default());
         let result = embedder.embed(&[]).await.unwrap();
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn voyage_embed_document_chunks_empty() {
+        let embedder = VoyageEmbedder::new(VoyageConfig::default());
+        let result = embedder.embed_document_chunks(&[]).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn contextual_response_deserialization() {
+        let json = serde_json::json!({
+            "results": [
+                {
+                    "embeddings": [
+                        [0.1, 0.2, 0.3],
+                        [0.4, 0.5, 0.6]
+                    ],
+                    "texts": ["chunk1", "chunk2"],
+                    "index": 0
+                }
+            ],
+            "total_tokens": 10
+        });
+        let resp: ContextualResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0].embeddings.len(), 2);
+        assert_eq!(resp.results[0].embeddings[0], vec![0.1, 0.2, 0.3]);
+        assert_eq!(resp.results[0].embeddings[1], vec![0.4, 0.5, 0.6]);
     }
 
     #[test]

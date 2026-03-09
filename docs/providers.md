@@ -18,10 +18,9 @@ Covalence uses external providers for embeddings and (optionally) LLM-based enti
 
 | Feature | OpenAI | Voyage AI | Jina | Ollama |
 |---|---|---|---|---|
-| Dimensionality control (`dimensions` param) | text-embedding-3-* only | No | v3 only | No |
-| Late chunking | No | voyage-context-3 | jina-embeddings-v3 | No |
-| Contextual embeddings | No | voyage-context-3 | No | No |
-| Matryoshka embeddings | text-embedding-3-* | No | jina-embeddings-v3 | No |
+| Dimensionality control (`output_dimension` / `dimensions`) | text-embedding-3-* only | voyage-3-large, voyage-4-large | v3 only | No |
+| Late chunking (contextual) | No | voyage-context-3 (auto-activated) | jina-embeddings-v3 | No |
+| Matryoshka embeddings | text-embedding-3-* | voyage-3-large, voyage-4-large | jina-embeddings-v3 | No |
 | Batch API | Yes | Yes | Yes | No |
 | Chat/extraction | Yes (gpt-4o, etc.) | No | No | Yes (llama3, etc.) |
 
@@ -49,6 +48,12 @@ Covalence supports **per-table embedding dimensions** to optimize quality vs. st
 | `node_aliases` | 256 | Must match nodes for cosine comparisons |
 
 **Important:** Per-table dimensions must match the DB column dimensions. After changing, run migration 007 or manually `ALTER TABLE ... ALTER COLUMN embedding TYPE halfvec(N)` on each table. The legacy `COVALENCE_EMBED_DIM` env var is still supported as the fallback for chunk and article dimensions.
+
+### Late chunking (contextual embeddings)
+
+When the configured model supports it (`voyage-context-3`), Covalence automatically uses the Voyage `/contextualizedembeddings` endpoint for chunk embeddings. All chunks from a single document are sent together, and each chunk's embedding reflects the surrounding document context — preventing the "orphan chunk" problem where a chunk about "it" loses the referent.
+
+Late chunking is auto-activated: if the model name contains `context`, the ingestion pipeline calls `embed_document_chunks()` which routes to the contextual endpoint. Source-level, node-level, and query embeddings always use the standard endpoint.
 
 ## Per-Cloud Quickstart
 
@@ -217,3 +222,32 @@ COVALENCE_CHAT_MODEL=               # Leave empty to disable LLM extraction
 |---|---|---|
 | `VOYAGE_API_KEY` | Voyage API key (auto-activates Voyage provider + reranker) | _(none)_ |
 | `VOYAGE_BASE_URL` | Voyage base URL | `https://api.voyageai.com/v1` |
+
+## End-to-End Test Flow
+
+Reset the database, ingest a document, and verify search results:
+
+```bash
+# 1. Reset the dev database (drops + recreates + runs migrations)
+make reset-db
+
+# 2. Start the engine
+make run
+
+# 3. In another terminal — ingest a test document
+cove source add --title "Test" --content "Albert Einstein developed the theory of general relativity. The theory describes gravity as the curvature of spacetime caused by mass and energy."
+
+# 4. Verify chunks were created with embeddings
+cove source list --json | jq '.[0].id'
+# Use the source ID to check chunks:
+curl -s http://localhost:8431/sources/<id>/chunks | jq '.[].embedding | length'
+
+# 5. Search and verify results
+cove search "general relativity"
+cove search "who developed the theory of gravity"
+
+# 6. Check node extraction
+cove node resolve "Albert Einstein"
+```
+
+When using Voyage `voyage-context-3`, chunk embeddings are context-aware — a search for "the theory" should rank chunks about relativity higher than it would with independent chunk embeddings.

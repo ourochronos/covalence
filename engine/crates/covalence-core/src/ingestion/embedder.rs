@@ -10,6 +10,23 @@ pub trait Embedder: Send + Sync {
     /// Generate embeddings for a batch of texts.
     async fn embed(&self, texts: &[String]) -> crate::error::Result<Vec<Vec<f64>>>;
 
+    /// Embed chunks from a single document with context awareness.
+    ///
+    /// Providers that support contextual chunk embeddings (e.g.,
+    /// Voyage AI `voyage-context-3`) produce embeddings where each
+    /// chunk vector reflects the surrounding document context. This
+    /// prevents the "orphan chunk" problem where a chunk about
+    /// "it" loses the referent.
+    ///
+    /// Providers without contextual support fall back to
+    /// independent per-chunk embeddings via [`embed`].
+    async fn embed_document_chunks(
+        &self,
+        chunks: &[String],
+    ) -> crate::error::Result<Vec<Vec<f64>>> {
+        self.embed(chunks).await
+    }
+
     /// The dimensionality of the embedding vectors produced.
     fn dimension(&self) -> usize;
 
