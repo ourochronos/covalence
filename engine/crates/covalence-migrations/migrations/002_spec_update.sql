@@ -1,4 +1,4 @@
--- Spec update: bi-temporal edges, 2048d embeddings, landscape analysis, query cache
+-- Spec update: bi-temporal edges, 1024d embeddings, landscape analysis, query cache
 
 -- 1. Edge bi-temporal columns
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ;
@@ -12,23 +12,21 @@ CREATE INDEX IF NOT EXISTS idx_edges_active ON edges(source_node_id, target_node
 
 DROP INDEX IF EXISTS idx_edges_temporal;
 
--- 2. Embedding dimension 768 -> 2048
--- NOTE: Migration 004 retypes these to 1024. This step is still needed
--- for fresh databases that start from migration 001 (halfvec(768)).
+-- 2. Embedding dimension 768 -> 1024
 DROP INDEX IF EXISTS idx_chunks_embedding;
-ALTER TABLE chunks ALTER COLUMN embedding TYPE halfvec(2048);
+ALTER TABLE chunks ALTER COLUMN embedding TYPE halfvec(1024);
 CREATE INDEX idx_chunks_embedding ON chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
 
 DROP INDEX IF EXISTS idx_nodes_embedding;
-ALTER TABLE nodes ALTER COLUMN embedding TYPE halfvec(2048);
+ALTER TABLE nodes ALTER COLUMN embedding TYPE halfvec(1024);
 CREATE INDEX idx_nodes_embedding ON nodes USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
 
 DROP INDEX IF EXISTS idx_articles_embedding;
-ALTER TABLE articles ALTER COLUMN embedding TYPE halfvec(2048);
+ALTER TABLE articles ALTER COLUMN embedding TYPE halfvec(1024);
 CREATE INDEX idx_articles_embedding ON articles USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
 
 DROP INDEX IF EXISTS idx_aliases_embedding;
-ALTER TABLE node_aliases ALTER COLUMN alias_embedding TYPE halfvec(2048);
+ALTER TABLE node_aliases ALTER COLUMN alias_embedding TYPE halfvec(1024);
 CREATE INDEX idx_aliases_embedding ON node_aliases USING hnsw (alias_embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
 
 -- 3. Chunk landscape fields
@@ -56,7 +54,7 @@ CREATE TABLE IF NOT EXISTS model_calibrations (
 CREATE TABLE IF NOT EXISTS query_cache (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     query_text TEXT NOT NULL,
-    query_embedding halfvec(2048) NOT NULL,
+    query_embedding halfvec(1024) NOT NULL,
     response JSONB NOT NULL,
     strategy_used TEXT NOT NULL,
     hit_count INT NOT NULL DEFAULT 0,
