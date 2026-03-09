@@ -95,6 +95,12 @@ impl SearchService {
             None
         };
 
+        tracing::debug!(
+            has_embedding = query_embedding.is_some(),
+            embedding_dim = query_embedding.as_ref().map(|e| e.len()),
+            "query embedding status"
+        );
+
         let search_query = SearchQuery {
             text: query.to_string(),
             strategy: strategy.clone(),
@@ -138,6 +144,12 @@ impl SearchService {
         for (name, result, weight) in dimensions {
             match result {
                 Ok(results) => {
+                    tracing::debug!(
+                        dimension = name,
+                        count = results.len(),
+                        weight,
+                        "search dimension returned results"
+                    );
                     for r in &results {
                         if let Some(s) = &r.snippet {
                             snippets.entry(r.id).or_insert_with(|| s.clone());

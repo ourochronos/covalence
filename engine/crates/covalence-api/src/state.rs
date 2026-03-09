@@ -6,6 +6,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use covalence_core::config::Config;
+use covalence_core::graph::sync::full_reload;
 use covalence_core::graph::{GraphSidecar, SharedGraph};
 use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
@@ -47,6 +48,22 @@ impl AppState {
     pub async fn new(config: Config) -> Result<Self> {
         let repo = Arc::new(PgRepo::new(&config.database_url).await?);
         let graph: SharedGraph = Arc::new(RwLock::new(GraphSidecar::new()));
+
+        // Load the graph sidecar from PG on startup so graph and
+        // structural search dimensions have data immediately.
+        match full_reload(repo.pool(), Arc::clone(&graph)).await {
+            Ok(()) => {
+                let g = graph.read().await;
+                tracing::info!(
+                    nodes = g.node_count(),
+                    edges = g.edge_count(),
+                    "graph sidecar loaded from PG"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load graph sidecar on startup");
+            }
+        }
 
         let embedder: Option<Arc<dyn Embedder>> = config.openai_api_key.as_ref().map(|key| {
             Arc::new(OpenAiEmbedder::new(
