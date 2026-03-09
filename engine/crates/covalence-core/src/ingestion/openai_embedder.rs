@@ -41,6 +41,11 @@ impl OpenAiEmbedder {
 struct EmbedRequest<'a> {
     model: &'a str,
     input: &'a [String],
+    /// Requested output dimensions. OpenAI text-embedding-3-*
+    /// models support truncating to fewer dimensions. Omitted
+    /// when `None` (provider does not support it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<usize>,
 }
 
 /// A single embedding datum in the response.
@@ -68,6 +73,7 @@ impl Embedder for OpenAiEmbedder {
             let body = EmbedRequest {
                 model: &self.model,
                 input: batch,
+                dimensions: Some(self.dimensions),
             };
 
             let resp = self
@@ -112,15 +118,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embed_request_serialization() {
+    fn embed_request_serialization_with_dimensions() {
         let texts = vec!["hello".to_string(), "world".to_string()];
         let req = EmbedRequest {
             model: "text-embedding-3-small",
             input: &texts,
+            dimensions: Some(1024),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "text-embedding-3-small");
         assert_eq!(json["input"], serde_json::json!(["hello", "world"]));
+        assert_eq!(json["dimensions"], 1024);
+    }
+
+    #[test]
+    fn embed_request_omits_dimensions_when_none() {
+        let texts = vec!["hello".to_string()];
+        let req = EmbedRequest {
+            model: "test",
+            input: &texts,
+            dimensions: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("dimensions").is_none());
     }
 
     #[test]
