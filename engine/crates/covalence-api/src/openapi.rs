@@ -1,0 +1,94 @@
+//! OpenAPI specification via utoipa.
+
+use utoipa::OpenApi;
+
+use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
+
+/// OpenAPI documentation for the Covalence API.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Covalence API",
+        version = "0.1.0",
+        description = "Hybrid GraphRAG knowledge engine API",
+    ),
+    paths(
+        // Sources
+        sources::create_source,
+        sources::get_source,
+        sources::list_sources,
+        sources::get_source_chunks,
+        sources::delete_source,
+        // Search
+        search::search,
+        // Nodes
+        nodes::get_node,
+        nodes::get_neighborhood,
+        nodes::get_provenance,
+        nodes::resolve_node,
+        nodes::merge_nodes,
+        nodes::split_node,
+        // Edges
+        edges::get_edge,
+        // Graph
+        admin::graph_stats,
+        admin::graph_communities,
+        admin::graph_topology,
+        // Audit
+        admin::audit_log,
+        // MCP
+        mcp::list_tools_handler,
+        mcp::call_tool,
+        // Admin
+        admin::reload_graph,
+        admin::publish_source,
+        admin::trigger_consolidation,
+        admin::health,
+        admin::metrics,
+    ),
+    components(schemas(
+        dto::CreateSourceRequest,
+        dto::CreateSourceResponse,
+        dto::SourceResponse,
+        dto::DeleteSourceResponse,
+        dto::ChunkResponse,
+        dto::PaginationParams,
+        dto::SearchRequest,
+        dto::SearchResultResponse,
+        dto::NodeResponse,
+        dto::NeighborhoodParams,
+        dto::ResolveNodeRequest,
+        dto::MergeNodesRequest,
+        dto::MergeNodesResponse,
+        dto::SplitNodeRequest,
+        dto::SplitSpecRequest,
+        dto::SplitNodeResponse,
+        dto::ProvenanceResponse,
+        dto::EdgeResponse,
+        dto::GraphStatsResponse,
+        dto::CommunityResponse,
+        dto::TopologyResponse,
+        dto::DomainResponse,
+        dto::DomainLinkResponse,
+        dto::AuditLogResponse,
+        dto::ReloadResponse,
+        dto::PublishResponse,
+        dto::ConsolidateResponse,
+        dto::HealthResponse,
+        dto::MetricsResponse,
+        mcp::McpTool,
+        mcp::McpToolCall,
+        mcp::McpToolResult,
+        mcp::McpContent,
+    )),
+    tags(
+        (name = "sources", description = "Source ingestion and management"),
+        (name = "search", description = "Multi-dimensional fused search"),
+        (name = "nodes", description = "Graph node operations"),
+        (name = "edges", description = "Graph edge operations"),
+        (name = "graph", description = "Graph analysis endpoints"),
+        (name = "mcp", description = "Model Context Protocol tool interface"),
+        (name = "admin", description = "Administrative operations"),
+    )
+)]
+pub struct ApiDoc;

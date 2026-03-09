@@ -1,0 +1,26 @@
+[package]
+name = "covalence-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Covalence knowledge engine — core library"
+
+[dependencies]
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+petgraph = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+unicode-normalization = { workspace = true }
+async-trait = { workspace = true }
+dotenvy = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

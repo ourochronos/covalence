@@ -1,0 +1,25 @@
+[package]
+name = "covalence-api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Covalence knowledge engine — API server"
+
+[dependencies]
+covalence-core = { path = "../covalence-core" }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+axum = "0.8"
+utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+tower-http = { version = "0.6", features = ["cors", "limit"] }
+base64 = "0.22"

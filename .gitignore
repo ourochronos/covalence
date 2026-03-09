@@ -1,0 +1,49 @@
+# Rust
+/engine/target/
+**/*.rs.bk
+*.pdb
+
+# Go
+/cli/cove
+/cli/cov
+
+# PostgreSQL
+*.sql.bak
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# SQLx offline data
+# engine/crates/covalence-core/sqlx-data.json  # DO commit this
+
+# Build artifacts
+*.dylib
+*.so
+*.dll
+
+# Backups
+.backups/
+
+# Coverage
+lcov.info
+*.profraw
+*.profdata
+tarpaulin-report.html

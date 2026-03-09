@@ -1,0 +1,1004 @@
+# 05 — Ingestion Pipeline
+
+**Status:** Draft
+
+This is the primary focus area. The ingestion pipeline transforms raw unstructured sources into structured graph elements with embeddings at multiple granularities.
+
+## Design Goals
+
+1. **Format-agnostic** — Handle documents, web pages, conversations, code, and arbitrary text
+2. **Structure-preserving** — Capture document hierarchy (title, headings, sections, paragraphs) as metadata, not just flat text
+3. **Metadata-rich** — Source type, author, date, URI, format-specific properties are all first-class
+4. **Hierarchical chunking** — Decompose at multiple levels; preserve parent-child relationships
+5. **Semantic boundaries** — Use embedding similarity to detect topic shifts, not just structural markers
+6. **Embedding-first extraction gating** — The embedding landscape (parent-child alignment, adjacent similarity topology) determines *what* gets LLM-extracted, not the other way around. LLM extraction is expensive and should be targeted at chunks where embeddings reveal anomalies, novelty, or misalignment.
+7. **Entity resolution** — Deduplicate entities across sources using vector similarity + graph context
+8. **Incremental** — Re-ingesting an updated source should update, not duplicate
+9. **Idempotent** — Re-ingesting the same content (same hash) is a no-op
+10. **Markdown normalization** — All formats convert to extended Markdown as the intermediate representation before chunking
+
+## Pipeline Stages
+
+```
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│  Accept   │─→│  Parse   │─→│ Normalize│─→│  Chunk   │─→│  Embed   │─→│ Landscape│─→│ Extract  │─→│ Resolve  │
+│  Source   │  │  + Meta  │  │  to MD   │  │  (hier.) │  │ +Context │  │ Analysis │  │(targeted)│  │ + Store  │
+└──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘
+                                                                            │
+                                                                  ┌─────────┴─────────┐
+                                                                  │ Extraction Priority│
+                                                                  │ Map (per-chunk     │
+                                                                  │ scores + reasons)  │
+                                                                  └───────────────────┘
+```
+
+The key architectural change from a naive GraphRAG pipeline: **embedding landscape analysis sits between embedding and extraction**, acting as the decision layer. Embeddings are cheap and fast. LLM extraction is slow and expensive. The landscape analysis uses embedding topology to determine which chunks are worth spending LLM tokens on.
+
+### Stage 1: Accept Source
+
+Input: Raw content + metadata envelope.
+
+```rust
+struct SourceInput {
+    content: SourceContent,     // enum: FilePath, Url, RawText, Conversation
+    source_type: SourceType,
+    metadata: SourceMetadata,   // author, title, date, uri, custom fields
+    clearance_level: ClearanceLevel, // Local, FederatedTrusted, FederatedPublic
+}
+
+enum SourceType {
+    Document,       // PDF, DOCX, etc.
+    WebPage,        // HTML
+    Conversation,   // Chat logs, transcripts, threads
+    Code,           // Source code files
+    Api,            // Structured API responses
+    Manual,         // User-provided knowledge
+}
+```
+
+- Compute content hash (SHA-256) for dedup
+- Check if source already exists (by hash) — if so, route to update handling (see [Source Update Classes](#source-update-classes))
+- Create `sources` record with full document-level metadata
+
+**Document-Level Metadata Schema:**
+
+```json
+{
+  "document_id": "sha256_hash",
+  "source_uri": "https://...",
+  "format_origin": "pdf | html | markdown | conversation | code",
+  "ingestion_timestamp": "2026-03-07T10:29:20Z",
+  "authors": ["extracted or provided author list"],
+  "publication_date": "YYYY-MM-DD",
+  "clearance_level": "local_strict | federated_trusted | federated_public",
+  "federation_origin": "local | external_node_id",
+  "content_version": 1,
+  "supersedes": null
+}
+```
+
+### Stage 2: Parse + Extract Metadata
+
+Convert raw format into structured representation, preserving all available structure.
+
+| Format | Parser | Structural Output |
+|--------|--------|-------------------|
+| PDF | pdf-extract / pdfium | Pages → paragraphs, with headings, page numbers |
+| HTML/Web | readability + html5ever | Headings → sections → paragraphs |
+| Markdown | pulldown-cmark | Headings → sections → paragraphs (passthrough) |
+| Plain text | Paragraph splitting | Paragraphs (by blank lines) |
+| Conversation | Custom (speaker turns) | Turn-based segments with speaker metadata |
+| Code | tree-sitter | Functions, classes, modules with hierarchy |
+| DOCX | docx-rs | Headings → sections → paragraphs, with styles |
+| Tables (CSV/XLSX) | Custom | Row groups with column headers as context |
+
+**Key principle:** Preserve as much structural information as possible. Heading levels, page numbers, speaker identity, code structure, table boundaries — all become chunk metadata.
+
+### Stage 3: Normalize to Markdown
+
+All parsed output is converted to extended Markdown as the canonical intermediate format before chunking.
+
+**Why Markdown:**
+- LLMs are natively trained on Markdown — `### Financial Outlook` is semantically understood as a subsection
+- Preserves hierarchy via heading levels without token-heavy markup (unlike HTML)
+- Tables render cleanly in Markdown pipe syntax (`| Col A | Col B |`), allowing relational reading
+- Supports YAML frontmatter for injecting metadata directly into the document
+
+**Normalization rules:**
+1. Document metadata → YAML frontmatter block
+2. Headings → `#`/`##`/`###` with appropriate nesting
+3. Tables → Markdown pipe tables
+4. Code blocks → fenced code blocks with language tags
+5. Conversation turns → blockquotes with speaker attribution
+6. Images/figures → placeholder with caption metadata (no embedding of binary content)
+
+**Output format:**
+
+```markdown
+---
+source_id: "abc-123"
+title: "Q3 Earnings Report"
+authors: ["Jane Smith"]
+publication_date: "2026-01-15"
+format_origin: "pdf"
+---
+
+# Q3 Earnings Report
+
+## Financial Outlook
+
+Revenue increased 15% year-over-year...
+
+| Quarter | Revenue | Growth |
+|---------|---------|--------|
+| Q1      | $2.1B   | 12%    |
+| Q2      | $2.3B   | 14%    |
+| Q3      | $2.5B   | 15%    |
+```
+
+### Stage 4: Hierarchical Chunking
+
+Decompose the normalized Markdown into a chunk tree:
+
+```
+Document (level 0)
+├── Section "Introduction" (level 1)    — split at ## headings
+│   ├── Paragraph 1 (level 2)          — split at blank lines
+│   │   ├── Sentence 1 (level 3)       — split at sentence boundaries
+│   │   └── Sentence 2 (level 3)
+│   └── Paragraph 2 (level 2)
+│       └── ...
+├── Section "Methods" (level 1)
+│   └── ...
+└── ...
+```
+
+**Chunking strategy (hybrid):**
+
+1. **Structural first** — Use Markdown heading levels as primary boundaries. Hard breaks at `#`, `##`, `###`. Tables and code blocks are never split mid-element.
+2. **Semantic refinement** — Within structural chunks, embed adjacent sentences and compute pairwise cosine similarity. Valleys in the similarity curve indicate topic shifts that the structural chunking missed. Split at valleys whose prominence exceeds 1 standard deviation below the local mean (using calibrated model statistics from Stage 6.1). This is the "embedding first, chunking second" principle (cf. Max-Min Semantic Chunking) applied as a refinement pass on structural boundaries.
+3. **Size constraints** — No chunk exceeds a max token count (configurable, default 1024 tokens for complex documents, 512 for short-form content). Chunks below a minimum (default 32 tokens) are merged with neighbors. Empirical finding: chunk size 1024 optimized faithfulness and relevancy on complex documents (LlamaIndex eval on SEC filings). Context completeness matters more than precision for complex content.
+
+**Semantic boundary detection (sentence-level valley detection):**
+
+```
+For sentences [s1, s2, s3, ...] within a structural chunk:
+  1. Embed each sentence
+  2. Compute sim(i) = cosine_similarity(embed(s_i), embed(s_{i+1}))
+  3. Compute local_mean and local_stddev of sim values
+  4. Where sim(i) < local_mean - stddev (i.e., prominent valley), insert a break
+  5. Resulting segments become child chunks
+```
+
+This replaces the naive fixed-threshold approach. Valley prominence is relative to the document's own similarity distribution, not an absolute cutoff.
+
+**Contextualized embeddings (v1 default with voyage-context-3).** Voyage's voyage-context-3 model processes the full document and generates per-chunk embeddings that capture both chunk-level detail and document-level context. This is late chunking done at the model level — no token-level embedding access needed. Each chunk embedding already "knows" its document context, which means:
+- Parent-child alignment analysis becomes a **confirmation metric** rather than the primary signal for extraction gating
+- High-alignment chunks genuinely indicate redundancy (the model already captured the relationship)
+- Low-alignment chunks genuinely indicate novelty (even with full context, the content diverges)
+- Less sensitivity to chunking strategy (2.06% variance vs 4.34% for standard embeddings)
+
+**Fallback path: standard embeddings (OpenAI text-embedding-3-small).** If using non-contextualized embeddings, parent-child alignment is the primary signal, as originally designed. The landscape analysis pipeline handles both modes — contextualized embeddings just make the signals cleaner.
+
+**v2 path: Local late chunking.** For fully local inference, jina-embeddings-v3 supports `late_chunking: true` via API or local deployment. Embeds the full document through the transformer first, then applies chunk boundaries to the token embedding sequence after self-attention. Each chunk embedding retains full document context. Lower quality than voyage-context-3 (23.66% gap per Voyage benchmarks) but zero API dependency.
+
+**Chunk-Level Metadata Schema:**
+
+```json
+{
+  "chunk_id": "docID_chunk004",
+  "parent_document_id": "sha256_hash",
+  "chunk_index": 4,
+  "structural_hierarchy": "Title > Chapter 2 > Section 2.1",
+  "contains_table": false,
+  "contains_code": false,
+  "token_count": 412,
+  "heading_text": "Section 2.1: Implementation Details",
+  "page_number": 7,
+  "speaker": null
+}
+```
+
+The `structural_hierarchy` field is critical — it captures the Markdown heading ancestry above the chunk. This enables pre-filtering: a query about "Chapter 2" can filter chunks by hierarchy metadata *before* running vector search, eliminating 90%+ of candidates.
+
+**Parent-child context linking:**
+
+Each chunk stores its `parent_chunk_id`. At retrieval time, when a sentence-level chunk matches, the system can walk up to retrieve the full paragraph or section for context (parent-child retrieval pattern).
+
+**Chunk overlap (boundary information preservation):**
+
+With voyage-context-3's contextualized embeddings, each chunk already captures document-level context — reducing the traditional need for overlap. However, for the lexical search dimension (tsvector) and for entity extraction, information that spans a chunk boundary can be lost.
+
+Policy:
+- **Paragraph-level chunks:** No overlap. Semantic boundaries are natural paragraph breaks.
+- **Sentence-level chunks (within paragraphs):** 1-sentence overlap with the preceding chunk. This preserves cross-sentence references ("The company" in sentence N+1 refers to the entity named in sentence N).
+- **Structural chunks (sections):** No overlap. The parent-child hierarchy provides context.
+- **Overlap stored as metadata:** `overlap_tokens: Int` on each chunk. Overlap content is NOT deduplicated in embeddings (voyage-context-3 handles this natively via document context). Overlap IS excluded from token counting for extraction cost estimates.
+
+### Stage 5: Embed + Contextual Prefix
+
+Generate vector embeddings for all chunks, with contextual enrichment.
+
+**Contextual prefix generation:**
+
+Before embedding, each chunk receives a short LLM-generated prefix that summarizes the document-level context. This addresses the "orphan chunk" problem where an isolated chunk like "It was a massive failure" loses meaning without surrounding context.
+
+```
+Contextual prefix: "From Q3 Earnings Report (src:abc-123) by Jane Smith, Section: Financial Outlook. "
+Chunk content: "Revenue increased 15% year-over-year, exceeding analyst expectations."
+Embedded text: prefix + content
+```
+
+**Important:** The prefix must include the `source_id` (or a short hash fragment) to prevent false clustering when multiple sources share similar titles or metadata. Without a unique discriminator, chunks from different documents titled "Q3 Report" would cluster together in vector space.
+
+The prefix is generated once per document (or per top-level section) and prepended to all child chunks before embedding. This is cheaper than embedding the full parent — one LLM call per section, not per chunk.
+
+**Embedding operations:**
+- Batch embedding calls to minimize API round-trips (100+ chunks per batch)
+- Use the configured embedding provider (OpenAI, local model, etc.)
+- Store embeddings in the `chunks.embedding` column
+- Optionally generate node-level embeddings from description or aggregated chunk embeddings
+
+### Stage 6: Embedding Landscape Analysis
+
+**This is the architectural core of the pipeline.** Embeddings are cheap (one API call per batch). LLM extraction is expensive (one call per chunk, structured output parsing, entity resolution). The landscape analysis stage examines the embedding topology to decide *how* each chunk should contribute to the graph — from pure embedding linkage for well-understood content to full LLM extraction for genuinely novel material.
+
+**Inputs:** All chunks with embeddings from Stage 5, organized by parent-child hierarchy.
+
+**Outputs:** A per-chunk `ExtractionMethod` classification that determines how Stage 7 processes each chunk.
+
+**Principle:** Nothing is silently skipped. Every chunk contributes to the graph. The question is *how* — via embedding linkage (cheap, always-on) or via LLM extraction (expensive, targeted). No heuristics, no regex — embeddings and LLMs only.
+
+#### 6.1: Threshold Calibration
+
+Cosine similarity distributions vary dramatically between embedding models. OpenAI's text-embedding-3-small clusters in a narrow cone (typical range 0.65–0.95), while BGE-base uses more of the space (typical range 0.30–0.90). Hardcoded thresholds are model-dependent and will silently break on model changes.
+
+**On first ingestion with a new model** (or periodically as a calibration check), compute the empirical distribution:
+
+```rust
+struct ModelCalibration {
+    model_name: String,
+    /// Percentile-based thresholds computed from sample
+    parent_child_p25: f64,  // 25th percentile of parent-child similarities
+    parent_child_p50: f64,  // median
+    parent_child_p75: f64,  // 75th percentile
+    adjacent_mean: f64,     // mean adjacent similarity
+    adjacent_stddev: f64,   // stddev of adjacent similarity
+    calibrated_at: DateTime<Utc>,
+    sample_size: usize,
+}
+
+/// Calibrate thresholds from the first N documents processed with this model.
+/// Requires at least 500 parent-child pairs for stable percentiles.
+fn calibrate_model(pairs: &[(f64, f64)]) -> ModelCalibration {
+    // Compute percentiles from actual parent-child similarity distribution
+    // Use these as relative thresholds instead of hardcoded values
+}
+```
+
+**Alignment classification uses calibrated percentiles, not absolute values:**
+
+| Alignment | Threshold | Meaning |
+|-----------|-----------|---------|
+| **High** | > p75 of parent-child distribution | Top quartile — child faithfully represents parent topic |
+| **Medium** | p25–p75 | Normal range — child adds specificity |
+| **Low** | < p25 | Bottom quartile — child diverges significantly |
+| **Misaligned** | < p25 - 1.5 × IQR | Statistical outlier — child is semantically unrelated |
+
+Until calibration completes (cold start), use conservative defaults that send more chunks to LLM extraction rather than fewer. Better to over-extract on the first few documents than to silently miss facts.
+
+**Cold start behavior (< 500 chunks):**
+- All chunks get `FullExtraction` (no embedding linkage shortcuts — no graph to link to)
+- Gleaning enabled by default (first pass often misses relationships when entity types are unknown)
+- `known_entity_types` and `known_rel_types` in extraction prompt are empty → LLM discovers the schema
+- Community detection skipped (too few nodes for meaningful communities)
+- Adaptive query routing falls back to `balanced` strategy (no score distribution history)
+- After 500+ chunks: calibration runs, extraction method distribution stabilizes, community detection begins
+
+#### 6.2: Parent-Child Alignment Scoring
+
+For every child chunk, compute cosine similarity to its parent:
+
+```
+alignment(child) = cosine_similarity(child.embedding, parent.embedding)
+```
+
+Classify using calibrated thresholds from 6.1. The alignment score determines the **extraction method**, not a binary extract/skip decision:
+
+| Alignment | Extraction Method | Rationale |
+|-----------|------------------|-----------|
+| **High** | **Embedding linkage** — vector similarity to existing graph nodes creates `MENTIONED_IN` edges. No LLM. | The embedding already captures this content. Link it to what the graph knows. |
+| **Medium** | **Delta check** — cheap LLM call (4o-mini): "Does this chunk contain entities or relationships not present in the parent?" If yes → full extraction. If no → embedding linkage. | Catches the "silent signal" problem — negations, new relationships, specific facts hiding in high-similarity text. |
+| **Low** | **Full LLM extraction** + cross-document novelty check (6.4) | Divergent content likely contains novel entities/relationships worth capturing. |
+| **Misaligned** | **Full LLM extraction** + structural review flag | May indicate a chunking boundary error or genuinely unrelated content. |
+
+```rust
+/// How each chunk will be processed in Stage 7.
+/// No chunk is silently skipped — every chunk contributes to the graph.
+enum ExtractionMethod {
+    /// Vector similarity to existing nodes → MENTIONED_IN edges. No LLM call.
+    EmbeddingLinkage,
+    /// Cheap LLM delta check, then either full extraction or embedding linkage.
+    DeltaCheck,
+    /// Full structured LLM extraction (entities, relationships, coreferences).
+    FullExtraction,
+    /// Full extraction + flag for human/system review of structural placement.
+    FullExtractionWithReview,
+}
+
+struct ChunkAnalysis {
+    chunk_id: ChunkId,
+    parent_alignment: f64,
+    adjacent_similarity: Option<f64>,
+    sibling_outlier_score: Option<f64>,
+    graph_novelty: Option<f64>,       // from cross-document analysis (6.4)
+    extraction_method: ExtractionMethod,
+    flags: Vec<AnalysisFlag>,
+}
+
+enum AnalysisFlag {
+    TopicShift,           // Adjacent similarity valley
+    OrphanChunk,          // Low alignment + low self-coherence
+    NovelContent,         // Low alignment + high self-coherence
+    SemanticBoundaryError, // Misaligned, structural chunking may be wrong
+    ClusterOutlier,       // Doesn't cluster with siblings
+    GraphNovel,           // No close matches in existing graph
+    GraphRedundant,       // Very close match to existing graph content
+}
+```
+
+#### 6.3: Adjacent Chunk Similarity (Peaks and Valleys)
+
+For same-level siblings (e.g., consecutive paragraphs within a section), compute pairwise cosine similarity:
+
+```
+sim(chunk_i, chunk_{i+1}) = cosine_similarity(chunk_i.embedding, chunk_{i+1}.embedding)
+```
+
+Plot this as a similarity curve across the document. The topology reveals:
+
+- **Peaks** (high similarity between adjacent chunks) — Continuous topic. These chunks could potentially be merged for retrieval purposes without information loss.
+- **Valleys** (low similarity between adjacent chunks) — Topic boundaries. If the structural chunking didn't already break here, the semantic signal suggests it should have.
+- **Plateaus** (sustained high similarity) — Extended discussion of a single topic. Good candidate for a single article compilation.
+- **Cliffs** (sudden drop from high to low) — Abrupt topic shift. The chunk after the cliff gets its extraction method upgraded (e.g., DeltaCheck → FullExtraction) because it introduces something new.
+
+```rust
+struct SimilarityCurve {
+    /// Ordered list of (chunk_id, similarity_to_next) pairs
+    points: Vec<(ChunkId, f64)>,
+    /// Detected valleys (topic boundaries)
+    valleys: Vec<ValleyPoint>,
+    /// Detected plateaus (sustained topics)
+    plateaus: Vec<PlateauRange>,
+}
+
+struct ValleyPoint {
+    between: (ChunkId, ChunkId),
+    similarity: f64,
+    /// How much deeper this valley is than the local average.
+    /// Uses calibrated stddev — prominence = (local_mean - valley) / calibrated_stddev
+    prominence: f64,
+}
+```
+
+**Valley prominence** is computed relative to calibrated statistics, not absolute values. A valley is prominent when it's more than 1 standard deviation below the local mean for this model.
+
+#### 6.4: Cross-Document Novelty Analysis
+
+After intra-document analysis, check each chunk against the **existing graph** to determine whether the content is genuinely novel to the system or redundant with what's already known.
+
+```rust
+struct GraphNoveltyResult {
+    chunk_id: ChunkId,
+    /// Closest existing node embedding distance
+    nearest_node_distance: f64,
+    /// Number of existing nodes within similarity threshold
+    nearby_node_count: usize,
+    /// Closest existing chunk embedding distance (from other sources)
+    nearest_chunk_distance: f64,
+    /// Is this chunk saying something the graph doesn't already know?
+    novelty_classification: NoveltyClass,
+}
+
+enum NoveltyClass {
+    /// No close matches in existing graph. Genuinely new content.
+    Novel,
+    /// Close to existing nodes but may add new relationships or properties.
+    Augmenting,
+    /// Very close to existing content from other sources. Confirms existing knowledge.
+    Confirming,
+    /// Near-duplicate of existing chunk from another source.
+    Redundant,
+}
+```
+
+**How novelty modifies extraction method:**
+
+| Intra-doc Alignment | Graph Novelty | Final Extraction Method |
+|---------------------|--------------|------------------------|
+| High | Novel | **Upgrade to DeltaCheck** — the graph doesn't know this yet, even if the parent does |
+| High | Confirming/Redundant | Embedding linkage (creates `CONFIRMS` edges cheaply) |
+| Medium | Novel | **Upgrade to FullExtraction** — new to parent AND new to graph |
+| Medium | Confirming | DeltaCheck (standard) |
+| Low | Novel | FullExtraction (already was) |
+| Low | Redundant | **Downgrade to DeltaCheck** — diverges from parent but graph already knows it |
+
+This prevents two failure modes:
+1. **Over-extraction:** Ingesting a source that covers well-trodden ground wastes LLM budget re-extracting known entities.
+2. **Under-extraction:** A chunk that aligns with its parent but contains content novel to the broader graph gets linked rather than extracted, missing new knowledge.
+
+**Implementation:** Cross-document analysis requires querying the existing node and chunk embeddings during ingestion. Use pgvector approximate nearest neighbor search with a generous `ef_search` for speed:
+
+```sql
+-- Find closest existing nodes to this chunk's embedding
+SELECT id, canonical_name, 1 - (embedding <=> $1) as similarity
+FROM nodes
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> $1
+LIMIT 5;
+```
+
+This adds one PG query per chunk but avoids any LLM calls. For a 100-chunk document, that's 100 fast ANN queries vs potentially 60+ saved LLM calls.
+
+#### 6.5: Cross-Level Cluster Analysis
+
+Beyond pairwise comparisons, analyze how chunks cluster in embedding space:
+
+1. **Sibling clustering** — Do all paragraphs under a section cluster together? If one paragraph is an outlier among its siblings, it's worth upgrading its extraction method.
+2. **Cross-section similarity** — Do chunks from different sections cluster together? This suggests a latent topic that spans structural boundaries — a potential graph edge between sections.
+3. **Document-level centroid distance** — How far is each chunk from the document centroid? Extreme outliers may be off-topic noise or highly specific content.
+
+```
+sibling_outlier_score(chunk) = 1 - cosine_similarity(chunk.embedding, mean(sibling_embeddings))
+```
+
+Chunks with high sibling outlier scores get their extraction method upgraded by one level (e.g., EmbeddingLinkage → DeltaCheck, DeltaCheck → FullExtraction).
+
+#### 6.6: Building the Final Extraction Method Map
+
+Combine all signals — parent alignment (6.2), valley/cliff detection (6.3), cross-document novelty (6.4), and sibling outlier analysis (6.5) — into the final per-chunk extraction method:
+
+```rust
+fn determine_extraction_method(
+    alignment: AlignmentClass,  // from calibrated thresholds
+    novelty: NoveltyClass,      // from cross-document analysis
+    follows_cliff: bool,        // from adjacent similarity
+    sibling_outlier: bool,      // from cluster analysis
+) -> ExtractionMethod {
+    // Start with alignment-based default
+    let mut method = match alignment {
+        AlignmentClass::High => ExtractionMethod::EmbeddingLinkage,
+        AlignmentClass::Medium => ExtractionMethod::DeltaCheck,
+        AlignmentClass::Low => ExtractionMethod::FullExtraction,
+        AlignmentClass::Misaligned => ExtractionMethod::FullExtractionWithReview,
+    };
+
+    // Cross-document novelty can upgrade or downgrade
+    method = match (method, novelty) {
+        (EmbeddingLinkage, Novel) => DeltaCheck,           // Graph doesn't know this
+        (DeltaCheck, Novel) => FullExtraction,              // Novel to both parent and graph
+        (FullExtraction, Redundant) => DeltaCheck,          // Graph already knows this
+        (m, _) => m,                                        // No change
+    };
+
+    // Topological signals only upgrade, never downgrade
+    if follows_cliff || sibling_outlier {
+        method = method.upgrade_one_level();
+    }
+
+    method
+}
+```
+
+**No budget-based skipping.** Every chunk gets at least embedding linkage. If the LLM budget runs out mid-ingestion, chunks classified for DeltaCheck or FullExtraction are queued for the next batch consolidation pass — but they still get embedding linkage immediately. The graph is never hollow.
+
+#### 6.7: Storing Landscape Metrics
+
+The landscape analysis results are valuable beyond extraction gating. Store them as chunk metadata:
+
+```json
+{
+  "parent_alignment": 0.42,
+  "alignment_class": "low",
+  "adjacent_similarity_left": 0.78,
+  "adjacent_similarity_right": 0.31,
+  "sibling_outlier_score": 0.67,
+  "graph_novelty": "novel",
+  "nearest_node_distance": 0.72,
+  "extraction_method": "full_extraction",
+  "flags": ["topic_shift", "novel_content", "graph_novel"],
+  "follows_valley": true,
+  "valley_prominence": 1.8
+}
+```
+
+These metrics are useful for:
+- **Search quality** — low-alignment chunks trigger parent context injection at retrieval time
+- **Article compilation** — plateaus identify natural article boundaries
+- **Debugging** — understanding why each chunk got a particular extraction method
+- **Re-extraction** — if the extraction model improves, re-process FullExtraction chunks first
+- **Model migration** — when the embedding model changes, recalibrate thresholds and re-run landscape analysis; chunks whose alignment class changed get re-processed
+
+### Stage 7: Graduated Entity Extraction
+
+Extraction is **graduated, not binary.** Every chunk contributes to the graph — the extraction method from Stage 6 determines how.
+
+#### 7.1: Embedding Linkage (All Chunks)
+
+Every chunk, regardless of extraction method, gets embedding linkage. This is the baseline that ensures the graph is never hollow:
+
+```sql
+-- For each chunk, find the closest existing graph nodes
+SELECT n.id, n.canonical_name, 1 - (n.embedding <=> $1) as similarity
+FROM nodes n
+WHERE n.embedding IS NOT NULL
+  AND 1 - (n.embedding <=> $1) > $calibrated_linkage_threshold
+ORDER BY n.embedding <=> $1
+LIMIT 10;
+```
+
+For each match above the linkage threshold, create a `MENTIONED_IN` edge:
+```
+(Node: "Company X") -[MENTIONED_IN {confidence: similarity_score}]-> (Chunk)
+```
+
+This captures the "consensus" layer — what the graph already knows about, referenced in this chunk. Pure vector math, no LLM, no heuristics, handles pronouns and paraphrases because the embedding encodes them.
+
+**Cost:** One ANN query per chunk. For a 100-chunk document: ~100ms total.
+
+#### 7.2: Delta Check (Medium-Alignment + Novel High-Alignment Chunks)
+
+A cheap LLM call to determine if full extraction is warranted. The prompt is structured to leverage the landscape analysis context:
+
+```
+Model: gpt-4o-mini (or equivalent cheap/fast model)
+Response format: json_object
+
+System: You are a semantic delta detector for a knowledge graph ingestion 
+pipeline. You receive structured JSON describing a child text chunk and 
+its parent context. Determine if the child contains entities, 
+relationships, or specific facts NOT present in or inferable from the 
+parent.
+
+Focus on: named entities not in parent, specific relationships absent 
+from parent, negations or contradictions, quantitative facts (dates, 
+numbers, metrics), and coreferences that resolve differently than 
+parent context suggests.
+
+User:
+{
+  "parent_context": "{parent_chunk.content}",
+  "child_text": "{chunk.content}",
+  "structural_location": "{chunk.metadata.structural_hierarchy}",
+  "embedding_analysis": {
+    "parent_child_alignment": {analysis.parent_alignment},
+    "alignment_class": "{analysis.alignment_class}",
+    "graph_novelty": "{analysis.graph_novelty}",
+    "flags": {analysis.flags}
+  }
+}
+
+Expected response schema:
+{
+  "has_novel_facts": true | false,
+  "novel_elements": [
+    {
+      "type": "entity | relationship | fact | negation | quantity",
+      "description": "brief description of what's novel"
+    }
+  ],
+  "reasoning": "one sentence explaining your decision"
+}
+```
+
+- If `has_novel_facts: true` → upgrade to full extraction for this chunk, passing `novel_elements` as extraction hints
+- If `has_novel_facts: false` → embedding linkage is sufficient
+
+**Cost:** ~200-400 tokens per call. ~10x cheaper than full extraction.
+
+This catches the "silent signal" problem Gemini identified — negations, new relationships, and specific facts hiding inside high-similarity text — without paying full extraction cost for every chunk.
+
+#### 7.3: Full LLM Extraction (Low-Alignment + Upgraded Chunks)
+
+Full structured extraction for chunks where the landscape analysis identified genuine novelty. The prompt is designed to leverage all available context — structural location, parent content, landscape analysis flags, delta check hints (if available), and embedding-derived entity type hints.
+
+```
+Model: gpt-4o (or equivalent capable model)
+Response format: json_object
+
+System: You are a precise entity and relationship extractor for a hybrid 
+knowledge graph. Extract ONLY what is clearly supported by the text. 
+Do not infer or hallucinate entities/relationships not present.
+
+Your extractions build graph nodes and edges. Quality and precision 
+matter more than recall — missed entities can be caught in later 
+passes, but false entities corrupt the graph.
+
+Rules:
+- Use consistent canonical names across entities and relationships.
+- If an entity matches one from nearby_graph_nodes, set 
+  is_existing_match: true and use the graph's canonical_name.
+- Relationship rel_type should be UPPER_SNAKE_CASE verbs.
+- Confidence: 0.9+ explicitly stated, 0.7-0.9 strongly implied, 
+  0.5-0.7 inferred. Below 0.5: do not extract.
+- causal_level: "association" (co-occurrence), "intervention" (causal),
+  "counterfactual" (hypothetical). Default "association" when uncertain.
+
+User:
+{
+  "source_text": "{chunk.content}",
+  "parent_context": "{parent_chunk.content}",
+  "structural_location": "{chunk.metadata.structural_hierarchy}",
+  "source_metadata": {
+    "title": "{source.title}",
+    "source_type": "{source.source_type}"
+  },
+  "extraction_context": {
+    "flags": {analysis.flags},
+    "parent_alignment": {analysis.parent_alignment},
+    "alignment_class": "{analysis.alignment_class}",
+    "graph_novelty": "{analysis.graph_novelty}",
+    "delta_check_hints": {delta_check.novel_elements | null}
+  },
+  "nearby_graph_nodes": [
+    {
+      "canonical_name": "{node.canonical_name}",
+      "node_type": "{node.node_type}",
+      "description": "{node.description}"
+    }
+  ],
+  "known_entity_types": ["{distinct node_type values from graph, e.g. person, organization, technology, ...}"],
+  "known_rel_types": ["{distinct rel_type values from graph, e.g. WORKS_AT, CREATED_BY, ...}"]
+}
+
+Expected response schema:
+{
+  "entities": [
+    {
+      "name": "entity name as it appears in text",
+      "canonical_name": "preferred name (use existing graph name if match)",
+      "entity_type": "lowercase category (common: person, organization, location, concept, event, technology, metric, temporal; use existing graph types when possible, create new types sparingly)",
+      "description": "brief factual description grounded in the text",
+      "properties": {},
+      "confidence": 0.0-1.0,
+      "is_existing_match": true | false
+    }
+  ],
+  "relationships": [
+    {
+      "source_name": "source entity canonical name",
+      "target_name": "target entity canonical name",
+      "rel_type": "UPPER_SNAKE_CASE verb",
+      "description": "brief description grounded in text",
+      "properties": {},
+      "confidence": 0.0-1.0,
+      "causal_level": "association | intervention | counterfactual"
+    }
+  ],
+  "coreferences": [
+    {
+      "mentions": ["he", "the CEO", "Tim Cook"],
+      "resolved_entity": "Tim Cook",
+      "confidence": 0.0-1.0
+    }
+  ]
+}
+```
+
+**Key design decisions in this prompt:**
+
+1. **Nearby graph context is injected.** Embedding linkage (7.1) already found the closest existing nodes. Passing those names to the extractor enables entity resolution *during* extraction rather than as a separate post-processing step. This is the "Entity Resolution via Vectors" approach from the Gemini conversation.
+
+2. **Delta check hints are forwarded.** If the chunk went through a delta check first, the novel elements identified there focus the extractor on what's actually new, reducing hallucination.
+
+3. **Causal level is extracted per-relationship.** This feeds directly into Pearl's causal hierarchy (L0/L1/L2) used by the epistemic model. Most extractors ignore this — we're capturing it at source.
+
+4. **`is_existing_match` flag** enables the entity resolver to short-circuit. If the LLM already identified a match to an existing graph node, the resolver can skip fuzzy matching and go straight to confirmation.
+
+5. **Confidence floor at 0.5.** Below that, don't extract — let a future pass with better context catch it rather than polluting the graph with low-confidence noise.
+
+**Extraction strategy:**
+
+1. **Flag-aware prompting** — The extraction prompt includes *why* the chunk was flagged (topic shift, novel content, sibling outlier, graph novel). This guides the LLM to focus on what's actually anomalous.
+2. **Batch by section** — Process all flagged chunks within a section together for better co-reference resolution.
+3. **Confidence scoring** — Confidence is per-extraction, not per-chunk. Individual entities within the same chunk may have different confidence levels.
+4. **Dedup within source** — Merge duplicate entities extracted from different chunks of the same source.
+5. **Clearance inheritance** — Extracted nodes/edges inherit the `clearance_level` of their source. See [09-federation](09-federation.md).
+6. **Cross-document confirmation** — When full extraction produces entities that match existing graph nodes (from embedding linkage in 7.1), create `CONFIRMS` edges instead of duplicate nodes. This strengthens existing knowledge rather than duplicating it.
+
+**Gleaning (multi-pass extraction):**
+
+For chunks classified as `FullExtractionWithReview` or any chunk where the initial extraction returns zero entities despite high novelty scores, perform up to 1 gleaning pass (configurable, default `max_gleanings: 1`). This follows the Microsoft GraphRAG pattern:
+
+1. After initial extraction, ask the LLM: "Many entities and relationships were missed in the previous extraction. Please identify any additional entities and relationships not already listed."
+2. Pass the previously extracted entities as context so the LLM focuses on what's missing.
+3. Merge gleaning results with initial extraction (deduplicate by canonical_name).
+4. **Cost guard:** Gleaning doubles extraction cost per chunk. Only trigger for chunks where `analysis.graph_novelty == "Novel"` AND initial extraction yielded fewer entities than expected (heuristic: < 2 entities for a chunk > 200 tokens).
+
+```json
+{
+  "system": "You are reviewing a previous entity extraction for completeness. Many entities and relationships were missed. Identify additional entities and relationships not in the already_extracted list.",
+  "user": {
+    "source_text": "{chunk.content}",
+    "already_extracted": {
+      "entities": ["{previous_extraction.entities}"],
+      "relationships": ["{previous_extraction.relationships}"]
+    },
+    "parent_context": "{parent_chunk.content}"
+  }
+}
+```
+
+### Stage 7.5: Type Normalization (Emergent Ontology)
+
+Before entity resolution, normalize extracted entity types and relationship types against the graph's emergent schema. This prevents drift without requiring a formal ontology.
+
+**The problem:** Without normalization, the LLM produces `person`, `Person`, `individual`, `human`, `researcher` as separate entity types. Similarly, `WORKS_AT`, `employed_by`, `works_for` proliferate as distinct relationship types. This fragments the graph — community detection, structural search, and type-based queries all degrade.
+
+**The approach: Extract-Define-Canonicalize** (EDC pattern, arXiv:2404.03868):
+
+1. **Extract** — Already done in Stage 7.3. The LLM produced entity types and relationship types.
+2. **Canonicalize** — For each extracted type:
+   a. Embed the type string (e.g., embed "researcher")
+   b. Search existing type embeddings: `SELECT type_name, embedding FROM type_registry WHERE embedding <=> $type_embedding < 0.15`
+   c. If match found (cosine < 0.15): rewrite to the canonical type. "researcher" → "person"
+   d. If no match: this is a genuinely new type. Add to registry.
+
+**Type registry** (lightweight, in-memory + persisted):
+
+```sql
+CREATE TABLE type_registry (
+    id SERIAL PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('entity', 'relationship')),
+    canonical_name TEXT NOT NULL,
+    embedding halfvec(2048) NOT NULL,
+    aliases TEXT[] NOT NULL DEFAULT '{}',
+    instance_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_type_registry_canonical ON type_registry(kind, canonical_name);
+CREATE INDEX idx_type_registry_embedding ON type_registry
+    USING hnsw (embedding halfvec_cosine_ops);
+```
+
+**Merge decisions:**
+- Cosine < 0.1: auto-merge (clearly same type). Add as alias.
+- Cosine 0.1–0.15: merge if instance_count of existing type > 10× the new type's count. Otherwise flag for review.
+- Cosine > 0.15: new type. Register it.
+
+**Periodic consolidation (daily):**
+- Cluster all types by embedding (DBSCAN, eps=0.12)
+- Within each cluster, elect the type with the highest `instance_count` as canonical
+- Rewrite all nodes/edges using non-canonical types
+- This catches drift that accumulates between normalization runs
+
+**Why this avoids the deep end:**
+- No formal ontology language (no OWL, no SHACL, no inference rules)
+- No predefined schema — the schema emerges from the data
+- No human ontology engineering — the system self-organizes
+- Types consolidate naturally as the graph grows (more data → more stable types)
+- But it still prevents the chaos of completely uncontrolled types
+
+### Stage 8: Entity Resolution + Store
+
+Match extracted entities against existing nodes in the graph. Uses a three-phase approach (cf. Shereshevsky 2025) that leverages embedding linkage from Stage 7.1 as a natural blocking mechanism:
+
+**Phase 1: Blocking via Embedding Similarity (already done)**
+
+Embedding linkage (Stage 7.1) already identified the top-k nearest existing nodes for each chunk. The `is_existing_match` flag from the extraction prompt (Stage 7.3) further narrows candidates. This replaces traditional blocking strategies and naturally avoids O(n²) pairwise comparisons.
+
+**Phase 2: Multi-Signal Pairwise Resolution**
+
+For each extracted entity, compare against candidates from Phase 1:
+
+1. **Extraction-provided match** — If the LLM set `is_existing_match: true` and provided a `canonical_name` matching an existing node, short-circuit to merge. The LLM already had the existing node's context in the prompt.
+2. **Exact name match** — Direct lookup on `nodes.canonical_name` and `node_aliases.alias`
+3. **Fuzzy name match** — Trigram similarity (`pg_trgm`) for near-matches
+4. **Vector similarity** — Embed the entity name/description, compare against existing node embeddings and alias embeddings
+5. **Graph context disambiguation** — If two candidates have similar names but different graph neighborhoods, they're likely different entities. "Apple" near tech entities ≠ "Apple" near food entities. Use the 1-hop neighborhood embedding centroid as a disambiguation signal.
+
+**Phase 3: Transitive Closure**
+
+After pairwise resolution, check for transitive chains: if entity A matches node X, and entity B also matches node X, then A and B should be merged even if they don't directly match each other. This catches cases like "Tim Cook", "Apple CEO", and "Cook" all resolving to the same node.
+
+**Concurrency safety:** Entity resolution must be serialized per canonical name to prevent parallel workers from creating duplicate nodes. Use PostgreSQL advisory locks:
+
+```rust
+let lock_key = hash_to_i64(&canonical_name);
+sqlx::query!("SELECT pg_advisory_xact_lock($1)", lock_key).execute(&mut tx).await?;
+// Perform resolution within this transaction
+```
+
+**Resolution thresholds (calibrated per embedding model):**
+
+| Signal | Match | Maybe | Miss |
+|--------|-------|-------|------|
+| LLM `is_existing_match` | Direct merge | - | - |
+| Exact name | > 0.95 | - | - |
+| Trigram | > 0.8 | 0.6–0.8 | < 0.6 |
+| Vector cosine | > 0.9 | 0.7–0.9 | < 0.7 |
+| Graph context (neighborhood centroid) | > 0.8 | 0.5–0.8 | < 0.5 |
+
+- **Match** → Merge into existing node:
+  - Update `last_seen`, increment `mention_count`, add alias if new name variant
+  - **Description evolution:** When new extraction provides description content not present in the existing description, consolidate via LLM:
+    ```json
+    {
+      "system": "Merge these descriptions of the same entity into a single comprehensive description. Keep all unique facts. Resolve contradictions by preferring the more recent or more specific information. Maximum 3 sentences.",
+      "user": {
+        "entity_name": "{node.canonical_name}",
+        "existing_description": "{node.description}",
+        "new_description": "{extracted.description}",
+        "new_source_date": "{source.created_date}"
+      }
+    }
+    ```
+  - **Embedding update:** Re-embed the consolidated description. This is critical — the node's embedding is its vector identity. Stale embeddings mean the node drifts out of relevant search results.
+  - **Cost guard:** Only trigger description consolidation when the new description has low similarity to the existing one (cosine < 0.85). If the new info is redundant (cosine ≥ 0.85), just update `last_seen` and skip the LLM call.
+- **Maybe** → Use graph context to disambiguate. If graph context is also "Maybe", flag for review.
+- **Miss** → Create new node
+
+**Storage:**
+1. Upsert nodes (new or merged)
+2. Insert edges
+3. Insert extraction provenance records
+4. Update graph sidecar (incremental sync via outbox)
+
+---
+
+## Source Update Classes
+
+Sources don't all update the same way. The system recognizes four classes of updates, each with distinct handling:
+
+### Class 1: Append-Only (Conversations, Logs, Event Streams)
+
+Past data is still valid; the timeline is extending.
+
+**Detection:** Same URI, content starts with the same bytes as existing content but has additional content appended.
+
+**Handling:**
+- Hash and chunk only the **delta** (new messages/entries)
+- Extract entities/relationships from new chunks only
+- Link new chunks to existing ones via sequence:
+  ```
+  (Chunk_99) -[APPENDED_AFTER]-> (Chunk_98)
+  ```
+- The source record's `content_hash` updates; `metadata.content_version` increments
+- Existing extractions remain untouched
+
+**Examples:** Slack threads, GitHub issues, log files, ongoing meeting transcripts
+
+### Class 2: Mutating & Versioned (Code, Documentation, Specs)
+
+Content evolves; old versions don't become false, they become historical.
+
+**Detection:** Same URI, different content hash, explicit version indicator or content diff shows mutations (not just appends).
+
+**Handling:**
+- Ingest as a **new source record** (new `document_id`)
+- Full pipeline: parse, chunk, embed, extract
+- Link to predecessor via structural edge:
+  ```
+  (Source_v2) -[SUPERSEDES]-> (Source_v1)
+  ```
+- `SUPERSEDES` edges also created between entity-level claims where applicable
+- Old source's extractions receive an epistemic penalty (reduced confidence, not deleted)
+- **Traversal rule:** Default graph traversal follows `SUPERSEDES` edges to the terminus before answering current-state questions
+
+**Examples:** API documentation versions, code file updates, spec revisions, wiki page edits
+
+### Class 3: Explicit Retractions & Corrections
+
+A source doesn't just update — it explicitly states prior information was wrong.
+
+**Detection:** New source references a prior claim and contradicts it, or metadata includes explicit retraction/correction markers.
+
+**Handling:**
+- Extract the corrected claim as a new entity
+- Create an adversarial edge:
+  ```
+  (Claim_New: "The API uses GraphQL") -[CORRECTS]-> (Claim_Old: "The API uses REST")
+  ```
+- `CORRECTS` is stronger than `SUPERSEDES` — it immediately zeros out the epistemic confidence of the old claim
+- The old claim persists in the graph (queryable for historical context) but is suppressed in current-state queries
+
+**Examples:** Errata, CVE corrections, journalistic corrections, federated peer corrections
+
+### Class 4: Structural Refactoring (Container Changes, Content Unchanged)
+
+The knowledge doesn't change, but its container does (e.g., a large doc split into multiple files).
+
+**Detection:** Incoming chunks have SHA-256 hashes matching existing chunks, but different `source_uri` or `structural_hierarchy`.
+
+**Handling:**
+- **Do not re-extract.** The graph topology is already correct.
+- Update chunk-level metadata: `source_uri`, `structural_hierarchy`, page numbers
+- Update provenance pointers to route to new file locations
+- No new nodes, edges, or extractions created
+
+**Examples:** Documentation restructuring, monolith → microservice repo splits, wiki reorganization
+
+### Class 5: Takedown / Deletion (GDPR, User Deletion)
+
+The source is permanently removed — not updated, not superseded, but deleted.
+
+**Detection:** Explicit API call (`DELETE /sources/:id`) or GDPR data subject request.
+
+**Handling:**
+- Mark source as deleted (soft-delete, retain tombstone for audit)
+- Execute **TMS Cascade**: locate all nodes and edges whose *sole* provenance was the deleted source
+  - Sole-provenance entities: delete or mark inactive (clearance_level = -1)
+  - Multi-provenance entities: decrement `mention_count`, remove extraction links to deleted source, recompute confidence
+- **Orphan detection** — After cascade, identify nodes with zero edges (degree-0 in the graph sidecar). Nodes that are sole-provenance AND degree-0 are unreachable and should be archived. Multi-provenance degree-0 nodes are flagged for review (they may be legitimate isolates or a sign of incomplete extraction). Run this check as a post-cascade step, not a separate batch job — Graphiti's issue #1083 demonstrated that deferred orphan cleanup leads to unbounded graph growth.
+- Chunks from the deleted source are purged (hard delete for GDPR compliance)
+- Log the takedown action in `audit_logs` with full rationale
+- Trigger epistemic delta recomputation for affected topic clusters
+
+**Examples:** GDPR right-to-erasure requests, user deleting personal notes, retraction of a source due to legal action
+
+### Epistemic Delta Threshold
+
+Not every update warrants re-synthesis of derived articles/summaries. The system tracks an **epistemic delta** — the degree to which new or updated claims shift the coherence of a topic cluster.
+
+```
+epistemic_delta = Σ |confidence_change(claim)| for all affected claims in the topic cluster
+```
+
+- If `epistemic_delta > threshold` (default: 0.10 = 10% shift): trigger LLM re-synthesis of the topic's materialized article
+- If below threshold: new facts sit in the atomic graph, incorporated at next scheduled synthesis or on-demand query
+
+This prevents expensive LLM re-writes for trivial changes (typo fixes, minor addenda) while ensuring significant knowledge shifts are reflected promptly.
+
+---
+
+## Three-Timescale Consolidation
+
+Ingestion is the online (fast) tier of a three-timescale consolidation pipeline modeled on hippocampal-neocortical memory consolidation (Complementary Learning Systems theory). See [01-architecture](01-architecture.md#layer-responsibilities) for the full picture.
+
+### Online Tier (This Pipeline — Seconds)
+
+Per-source processing: parse → chunk → embed → **landscape analysis** → targeted extract → resolve → store. The landscape analysis stage determines extraction priority per chunk. Produces raw chunks and graph elements. Updates confirms/contradicts/originates edges. Incremental confidence updates via Dempster-Shafer fusion and Subjective Logic.
+
+### Batch Tier (Hours)
+
+Groups sources by topic cluster. LLM-driven compilation synthesizes multiple sources into **articles** — right-sized summaries (200–4000 tokens) that serve as the primary retrieval unit. Applies Bayesian confidence aggregation across compiled articles. Detects and queues contentions. Triggered by timer or when epistemic delta exceeds threshold.
+
+### Deep Tier (Daily+)
+
+Structural maintenance: TrustRank global recalibration, community detection refresh, domain topology map update, landmark article identification. Bayesian Model Reduction for principled forgetting (see [07-epistemic-model](07-epistemic-model.md#forgetting-as-bayesian-model-reduction)). Cross-domain generalization discovery.
+
+---
+
+## Error Handling
+
+- Each stage is independently retriable
+- Failed chunks are marked in metadata and can be re-processed
+- LLM extraction failures (rate limits, malformed output) → retry with exponential backoff, then skip and mark
+- The pipeline should be resumable: if it crashes mid-source, it can pick up from the last completed stage
+
+## Performance Considerations
+
+- **Embedding batching** — Group chunks into batches of 100+ for API efficiency
+- **Parallel extraction** — Multiple chunks can be sent to the LLM concurrently (respect rate limits)
+- **Lazy sentence-level chunking** — Only decompose to sentence level for chunks above a size threshold
+- **Skip extraction for low-information chunks** — Chunks with very low token count or very high similarity to parent may not need LLM extraction
+- **Delta-only processing for append-only sources** — Hash comparison to avoid re-processing unchanged content
+
+## Open Questions
+
+- [x] Extraction model → General-purpose LLM for v1 (flexibility for open-domain KG). GLiNER (NAACL 2024) matches GPT-4o at fraction of cost — use for v2 production volume optimization. Hybrid: LLM for schema discovery, fine-tuned model for bulk extraction.
+- [x] Multi-lingual sources → BGE-M3 supports 100+ languages in unified vector space (ACL Findings 2024). For v1, English-only with OpenAI text-embedding-3-small. Switch to BGE-M3 (1024 dims) when multi-lingual needed.
+- [x] Streaming vs batch → Micro-batch (per-source batch). Buffer per-source, process as batch, merge into graph. Pure streaming makes entity resolution harder (iText2KG, arxiv 2409.03284).
+- [x] Default embedding model → Voyage voyage-context-3 (2048 dims, Matryoshka to 512). Contextualized chunk embeddings: each chunk embedding captures both chunk-level detail and full document context. Outperforms OpenAI text-embedding-3-large by 14.24% on chunk-level retrieval. First 200M tokens free ($0.18/M thereafter). Drop-in API, no special infrastructure. Reduces (but doesn't eliminate) parent-child alignment problem — landscape analysis still valuable for cross-document novelty, sibling outlier detection, and extraction gating. OpenAI text-embedding-3-small as fallback ($0.02/M tokens, no contextualization).
+- [x] Tabular data → For v1: convert tables to Markdown pipe format, extract entities normally. For v2: RML/YARRRML mappings (W3C standard) for structured relational semantics. Primary key → subject, foreign key → object property, column → predicate.
+- [x] Ontology hints → Defer. Not needed for v1. Dynamic ontology via community detection is the design principle.
+- [x] Contextual prefix scope → Per top-level section. 50-100 token prefix optimal (Anthropic Contextual Retrieval, Sept 2024). Include source_id in prefix to prevent false clustering. Cost: $1.02/M doc tokens with prompt caching.
+- [x] Delta detection → Chunk-hash comparison (SHA-256 content_hash). More robust against whitespace/formatting changes.
+- [x] Articles per cluster → Multiple when cluster is large. One "overview" article + specialized sub-articles for distinct sub-topics. Guided by Louvain hierarchy.
+- [x] Compilation trigger → Both timer AND epistemic delta. Already specified.
+- [x] Blanket vs targeted extraction → **Graduated.** No chunk is silently skipped. Every chunk gets at minimum embedding linkage (MENTIONED_IN edges via vector similarity to existing nodes). Medium-alignment chunks get a cheap delta check (4o-mini). Low-alignment and novel chunks get full LLM extraction. Lesson learned from prior claims-extraction approach: 29K flat extracted claims from blanket extraction produced noise, not signal. But also: silently skipping chunks produces a hollow graph where consensus lives only in vectors.
+- [x] Landscape metric storage → Store in chunk metadata JSONB (parent_alignment, alignment_class, adjacent_similarity, sibling_outlier_score, graph_novelty, extraction_method, flags). Cheap to compute, valuable for debugging and re-extraction.
+- [x] Extraction budget → If LLM budget exhausts mid-ingestion, chunks needing DeltaCheck or FullExtraction are queued for next batch consolidation pass. They still get embedding linkage immediately. Graph is never hollow.
+- [x] Threshold calibration → Percentile-based thresholds from empirical parent-child similarity distribution. Requires 500+ pairs for stable calibration. Conservative defaults (more extraction) during cold start. Stored in model_calibrations table.
+- [x] Cross-document novelty → Checked during landscape analysis via pgvector ANN queries against existing node/chunk embeddings. Novel chunks upgrade extraction method; redundant chunks downgrade. One ANN query per chunk (~1ms each).

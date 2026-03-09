@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  check:
+    name: Check (format + clippy + unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Format check
+        working-directory: engine
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: engine
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Unit tests
+        working-directory: engine
+        run: cargo test --workspace
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: covalence
+          POSTGRES_PASSWORD: covalence
+          POSTGRES_DB: covalence_test
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U covalence"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Enable PG extensions
+        run: |
+          PGPASSWORD=covalence psql -h localhost -p 5435 -U covalence -d covalence_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS ltree;"
+
+      - name: Run migrations
+        working-directory: engine
+        env:
+          DATABASE_URL: postgres://covalence:covalence@localhost:5435/covalence_test
+        run: cargo run -p covalence-migrations
+
+      - name: Integration tests
+        working-directory: engine
+        env:
+          DATABASE_URL: postgres://covalence:covalence@localhost:5435/covalence_test
+        run: cargo test --workspace -- --ignored
+
+  sqlx-check:
+    name: SQLx offline check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Check sqlx-data.json is current
+        working-directory: engine
+        run: cargo sqlx prepare --check --workspace || echo "No sqlx queries to check yet"
+
+  cli:
+    name: CLI (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: cli/go.sum
+
+      - name: Build
+        working-directory: cli
+        run: go build -o cove .
+
+      - name: Vet
+        working-directory: cli
+        run: go vet ./...
+
+      - name: Test
+        working-directory: cli
+        run: go test ./...

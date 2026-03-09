@@ -1,0 +1,1645 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Covalence API",
+        "description": "Hybrid GraphRAG knowledge engine API",
+        "license": {
+            "name": "MIT",
+            "identifier": "MIT"
+        },
+        "version": "0.1.0"
+    },
+    "paths": {
+        "/admin/consolidate": {
+            "post": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Trigger batch consolidation.",
+                "operationId": "trigger_consolidation",
+                "responses": {
+                    "200": {
+                        "description": "Consolidation triggered",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ConsolidateResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/graph/reload": {
+            "post": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Reload the graph sidecar from PG.",
+                "operationId": "reload_graph",
+                "responses": {
+                    "200": {
+                        "description": "Graph reloaded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReloadResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/health": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Health check.",
+                "operationId": "health",
+                "responses": {
+                    "200": {
+                        "description": "Service is healthy",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/metrics": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Get service metrics.",
+                "operationId": "metrics",
+                "responses": {
+                    "200": {
+                        "description": "Service metrics",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MetricsResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/publish/{source_id}": {
+            "post": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Promote a source to a higher clearance level for federation.",
+                "operationId": "publish_source",
+                "parameters": [
+                    {
+                        "name": "source_id",
+                        "in": "path",
+                        "description": "Source ID to publish",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Source published",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PublishResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/audit": {
+            "get": {
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List recent audit log entries.",
+                "operationId": "audit_log",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "description": "Maximum number of results (default 20).",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "offset",
+                        "in": "query",
+                        "description": "Offset for pagination (default 0).",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "format": "int64"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Audit log entries",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/AuditLogResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/edges/{id}": {
+            "get": {
+                "tags": [
+                    "edges"
+                ],
+                "summary": "Get an edge by ID.",
+                "operationId": "get_edge",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Edge ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Edge found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EdgeResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Edge not found"
+                    }
+                }
+            }
+        },
+        "/graph/communities": {
+            "get": {
+                "tags": [
+                    "graph"
+                ],
+                "summary": "Get detected communities.",
+                "operationId": "graph_communities",
+                "responses": {
+                    "200": {
+                        "description": "Detected communities",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/CommunityResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graph/stats": {
+            "get": {
+                "tags": [
+                    "graph"
+                ],
+                "summary": "Get graph statistics.",
+                "operationId": "graph_stats",
+                "responses": {
+                    "200": {
+                        "description": "Graph statistics",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GraphStatsResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/tools/call": {
+            "post": {
+                "tags": [
+                    "mcp"
+                ],
+                "summary": "Call an MCP tool by name.",
+                "operationId": "call_tool",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/McpToolCall"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Tool result",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/McpToolResult"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/tools/list": {
+            "post": {
+                "tags": [
+                    "mcp"
+                ],
+                "summary": "List all available MCP tools.",
+                "operationId": "list_tools_handler",
+                "responses": {
+                    "200": {
+                        "description": "Available tools",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/McpTool"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/nodes/merge": {
+            "post": {
+                "tags": [
+                    "nodes"
+                ],
+                "summary": "Merge multiple nodes into a target.",
+                "operationId": "merge_nodes",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MergeNodesRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Merge completed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MergeNodesResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Not yet implemented"
+                    }
+                }
+            }
+        },
+        "/nodes/resolve": {
+            "post": {
+                "tags": [
+                    "nodes"
+                ],
+                "summary": "Resolve a name to a node.",
+                "operationId": "resolve_node",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ResolveNodeRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Resolved node",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/NodeResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No matching node"
+                    }
+                }
+            }
+        },
+        "/nodes/{id}": {
+            "get": {
+                "tags": [
+                    "nodes"
+                ],
+                "summary": "Get a node by ID.",
+                "operationId": "get_node",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Node ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Node found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/NodeResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Node not found"
+                    }
+                }
+            }
+        },
+        "/nodes/{id}/neighborhood": {
+            "get": {
+                "tags": [
+                    "nodes"
+                ],
+                "summary": "Get the neighborhood of a node.",
+                "operationId": "get_neighborhood",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Node ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    },
+                    {
+                        "name": "hops",
+                        "in": "query",
+                        "description": "Number of hops (default 1).",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "minimum": 0
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Neighbor nodes",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/NodeResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/nodes/{id}/provenance": {
+            "get": {
+                "tags": [
+                    "nodes"
+                ],
+                "summary": "Get the provenance chain for a node.",
+                "operationId": "get_provenance",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Node ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Provenance chain",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProvenanceResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/nodes/{id}/split": {
+            "post": {
+                "tags": [
+                    "nodes"
+                ],
+                "summary": "Split a node.",
+                "operationId": "split_node",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Node ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SplitNodeRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Split completed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SplitNodeResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Node not found"
+                    }
+                }
+            }
+        },
+        "/search": {
+            "post": {
+                "tags": [
+                    "search"
+                ],
+                "summary": "Execute a multi-dimensional fused search.",
+                "operationId": "search",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SearchRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Search results",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/SearchResultResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/sources": {
+            "get": {
+                "tags": [
+                    "sources"
+                ],
+                "summary": "List sources with pagination.",
+                "operationId": "list_sources",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "description": "Maximum number of results (default 20).",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "offset",
+                        "in": "query",
+                        "description": "Offset for pagination (default 0).",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "format": "int64"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of sources",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/SourceResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "sources"
+                ],
+                "summary": "Ingest a new source.",
+                "operationId": "create_source",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CreateSourceRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Source created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CreateSourceResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input"
+                    }
+                }
+            }
+        },
+        "/sources/{id}": {
+            "get": {
+                "tags": [
+                    "sources"
+                ],
+                "summary": "Get a source by ID.",
+                "operationId": "get_source",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Source ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Source found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SourceResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Source not found"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "sources"
+                ],
+                "summary": "Delete a source and its chunks.",
+                "operationId": "delete_source",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Source ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Source deleted",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeleteSourceResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/sources/{id}/chunks": {
+            "get": {
+                "tags": [
+                    "sources"
+                ],
+                "summary": "Get chunks for a source.",
+                "operationId": "get_source_chunks",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Source ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Chunks for source",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ChunkResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "AuditLogResponse": {
+                "type": "object",
+                "description": "Response for an audit log entry.",
+                "required": [
+                    "id",
+                    "action",
+                    "actor",
+                    "created_at"
+                ],
+                "properties": {
+                    "action": {
+                        "type": "string"
+                    },
+                    "actor": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "target_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid"
+                    },
+                    "target_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "ChunkResponse": {
+                "type": "object",
+                "description": "Response for a chunk entity.",
+                "required": [
+                    "id",
+                    "source_id",
+                    "level",
+                    "ordinal",
+                    "content",
+                    "token_count"
+                ],
+                "properties": {
+                    "content": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "level": {
+                        "type": "string"
+                    },
+                    "ordinal": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "source_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "token_count": {
+                        "type": "integer",
+                        "format": "int32"
+                    }
+                }
+            },
+            "CommunityResponse": {
+                "type": "object",
+                "description": "Response for a community.",
+                "required": [
+                    "id",
+                    "node_ids",
+                    "coherence"
+                ],
+                "properties": {
+                    "coherence": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "id": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "node_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                }
+            },
+            "ConsolidateResponse": {
+                "type": "object",
+                "description": "Response for consolidation trigger.",
+                "required": [
+                    "triggered"
+                ],
+                "properties": {
+                    "triggered": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "CreateSourceRequest": {
+                "type": "object",
+                "description": "Request body for source ingestion.",
+                "required": [
+                    "content",
+                    "source_type"
+                ],
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Base64-encoded content bytes."
+                    },
+                    "metadata": {
+                        "description": "Optional metadata."
+                    },
+                    "mime": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "MIME type of the content (e.g. \"text/markdown\", \"text/plain\").\nDefaults to \"text/plain\" if omitted."
+                    },
+                    "source_type": {
+                        "type": "string",
+                        "description": "Source type (document, web_page, conversation, code, api, manual,\ntool_output, observation)."
+                    },
+                    "uri": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Optional URI of the original material."
+                    }
+                }
+            },
+            "CreateSourceResponse": {
+                "type": "object",
+                "description": "Response after successful source creation.",
+                "required": [
+                    "id"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "ID of the created (or deduplicated) source."
+                    }
+                }
+            },
+            "DeleteSourceResponse": {
+                "type": "object",
+                "description": "Response for source deletion.",
+                "required": [
+                    "deleted",
+                    "chunks_deleted"
+                ],
+                "properties": {
+                    "chunks_deleted": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "deleted": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "EdgeResponse": {
+                "type": "object",
+                "description": "Response for an edge entity.",
+                "required": [
+                    "id",
+                    "source_node_id",
+                    "target_node_id",
+                    "rel_type",
+                    "weight",
+                    "confidence",
+                    "clearance_level",
+                    "created_at"
+                ],
+                "properties": {
+                    "clearance_level": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "created_at": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "rel_type": {
+                        "type": "string"
+                    },
+                    "source_node_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "target_node_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "weight": {
+                        "type": "number",
+                        "format": "double"
+                    }
+                }
+            },
+            "GraphStatsResponse": {
+                "type": "object",
+                "description": "Response for graph statistics.",
+                "required": [
+                    "node_count",
+                    "edge_count",
+                    "density",
+                    "component_count"
+                ],
+                "properties": {
+                    "component_count": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "density": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "edge_count": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "node_count": {
+                        "type": "integer",
+                        "minimum": 0
+                    }
+                }
+            },
+            "HealthResponse": {
+                "type": "object",
+                "description": "Health check response.",
+                "required": [
+                    "status",
+                    "service",
+                    "version"
+                ],
+                "properties": {
+                    "service": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "version": {
+                        "type": "string"
+                    }
+                }
+            },
+            "McpContent": {
+                "type": "object",
+                "description": "A single content block in an MCP result.",
+                "required": [
+                    "type",
+                    "text"
+                ],
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text payload (usually JSON-serialized data)."
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Content type (typically \"text\")."
+                    }
+                }
+            },
+            "McpTool": {
+                "type": "object",
+                "description": "Definition of an MCP tool.",
+                "required": [
+                    "name",
+                    "description",
+                    "input_schema"
+                ],
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Human-readable description."
+                    },
+                    "input_schema": {
+                        "description": "JSON Schema describing the tool's input parameters."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Tool name."
+                    }
+                }
+            },
+            "McpToolCall": {
+                "type": "object",
+                "description": "Request to call an MCP tool.",
+                "required": [
+                    "name",
+                    "arguments"
+                ],
+                "properties": {
+                    "arguments": {
+                        "description": "Arguments as a JSON object."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tool to invoke."
+                    }
+                }
+            },
+            "McpToolResult": {
+                "type": "object",
+                "description": "Result from an MCP tool call.",
+                "required": [
+                    "content",
+                    "is_error"
+                ],
+                "properties": {
+                    "content": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/McpContent"
+                        },
+                        "description": "Content blocks in the result."
+                    },
+                    "is_error": {
+                        "type": "boolean",
+                        "description": "Whether the tool call resulted in an error."
+                    }
+                }
+            },
+            "MergeNodesRequest": {
+                "type": "object",
+                "description": "Request body for merging nodes.",
+                "required": [
+                    "source_ids",
+                    "target_id"
+                ],
+                "properties": {
+                    "source_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "description": "IDs of source nodes to merge from."
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "ID of the target node to merge into."
+                    }
+                }
+            },
+            "MergeNodesResponse": {
+                "type": "object",
+                "description": "Response after merge.",
+                "required": [
+                    "audit_log_id"
+                ],
+                "properties": {
+                    "audit_log_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Audit log entry ID for the merge operation."
+                    }
+                }
+            },
+            "MetricsResponse": {
+                "type": "object",
+                "description": "Metrics response.",
+                "required": [
+                    "graph_nodes",
+                    "graph_edges",
+                    "source_count"
+                ],
+                "properties": {
+                    "graph_edges": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "graph_nodes": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "source_count": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                }
+            },
+            "NeighborhoodParams": {
+                "type": "object",
+                "description": "Query parameters for neighborhood.",
+                "properties": {
+                    "hops": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Number of hops (default 1).",
+                        "minimum": 0
+                    }
+                }
+            },
+            "NodeResponse": {
+                "type": "object",
+                "description": "Response for a node entity.",
+                "required": [
+                    "id",
+                    "canonical_name",
+                    "node_type",
+                    "properties",
+                    "clearance_level",
+                    "first_seen",
+                    "last_seen",
+                    "mention_count"
+                ],
+                "properties": {
+                    "canonical_name": {
+                        "type": "string"
+                    },
+                    "clearance_level": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "first_seen": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "last_seen": {
+                        "type": "string"
+                    },
+                    "mention_count": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "node_type": {
+                        "type": "string"
+                    },
+                    "properties": {}
+                }
+            },
+            "PaginationParams": {
+                "type": "object",
+                "description": "Common pagination query parameters.",
+                "properties": {
+                    "limit": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Maximum number of results (default 20)."
+                    },
+                    "offset": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Offset for pagination (default 0)."
+                    }
+                }
+            },
+            "ProvenanceResponse": {
+                "type": "object",
+                "description": "Provenance chain response.",
+                "required": [
+                    "node_id",
+                    "extraction_count",
+                    "chunk_count",
+                    "source_count"
+                ],
+                "properties": {
+                    "chunk_count": {
+                        "type": "integer",
+                        "description": "Number of source chunks.",
+                        "minimum": 0
+                    },
+                    "extraction_count": {
+                        "type": "integer",
+                        "description": "Number of extraction records.",
+                        "minimum": 0
+                    },
+                    "node_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Node ID."
+                    },
+                    "source_count": {
+                        "type": "integer",
+                        "description": "Number of originating sources.",
+                        "minimum": 0
+                    }
+                }
+            },
+            "PublishResponse": {
+                "type": "object",
+                "description": "Response for publish operation.",
+                "required": [
+                    "published"
+                ],
+                "properties": {
+                    "published": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "ReloadResponse": {
+                "type": "object",
+                "description": "Response for graph reload.",
+                "required": [
+                    "node_count",
+                    "edge_count",
+                    "density",
+                    "component_count"
+                ],
+                "properties": {
+                    "component_count": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "density": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "edge_count": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "node_count": {
+                        "type": "integer",
+                        "minimum": 0
+                    }
+                }
+            },
+            "ResolveNodeRequest": {
+                "type": "object",
+                "description": "Request body for node resolution.",
+                "required": [
+                    "name"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name to resolve."
+                    }
+                }
+            },
+            "SearchRequest": {
+                "type": "object",
+                "description": "Request body for search.",
+                "required": [
+                    "query"
+                ],
+                "properties": {
+                    "date_range_end": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "End of date range filter (ISO 8601)."
+                    },
+                    "date_range_start": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Start of date range filter (ISO 8601)."
+                    },
+                    "limit": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Maximum number of results.",
+                        "minimum": 0
+                    },
+                    "min_confidence": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Minimum epistemic confidence threshold (0.0\u20131.0)."
+                    },
+                    "node_types": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Restrict to specific node types."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "The search query text."
+                    },
+                    "strategy": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Search strategy (balanced, precise, exploratory, recent,\ngraph_first)."
+                    }
+                }
+            },
+            "SearchResultResponse": {
+                "type": "object",
+                "description": "A single fused search result.",
+                "required": [
+                    "id",
+                    "fused_score",
+                    "dimension_scores",
+                    "dimension_ranks"
+                ],
+                "properties": {
+                    "confidence": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Epistemic confidence (projected probability)."
+                    },
+                    "dimension_ranks": {
+                        "type": "object",
+                        "description": "Per-dimension ranks.",
+                        "additionalProperties": {
+                            "type": "integer",
+                            "minimum": 0
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "dimension_scores": {
+                        "type": "object",
+                        "description": "Per-dimension scores.",
+                        "additionalProperties": {
+                            "type": "number",
+                            "format": "double"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "entity_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Entity type (e.g. \"node\")."
+                    },
+                    "fused_score": {
+                        "type": "number",
+                        "format": "double",
+                        "description": "Fused RRF score."
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Entity ID."
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Canonical name of the entity."
+                    },
+                    "snippet": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Best available text snippet."
+                    }
+                }
+            },
+            "SourceResponse": {
+                "type": "object",
+                "description": "Response for a source entity.",
+                "required": [
+                    "id",
+                    "source_type",
+                    "ingested_at",
+                    "reliability_score",
+                    "clearance_level",
+                    "content_version"
+                ],
+                "properties": {
+                    "author": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "clearance_level": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "content_version": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "ingested_at": {
+                        "type": "string"
+                    },
+                    "reliability_score": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "source_type": {
+                        "type": "string"
+                    },
+                    "title": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "uri": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "SplitNodeRequest": {
+                "type": "object",
+                "description": "Request for node split.",
+                "required": [
+                    "specs"
+                ],
+                "properties": {
+                    "specs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SplitSpecRequest"
+                        },
+                        "description": "Specifications for each new node."
+                    }
+                }
+            },
+            "SplitNodeResponse": {
+                "type": "object",
+                "description": "Response after split.",
+                "required": [
+                    "node_ids"
+                ],
+                "properties": {
+                    "node_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "description": "IDs of the newly created nodes."
+                    }
+                }
+            },
+            "SplitSpecRequest": {
+                "type": "object",
+                "description": "A single split target specification.",
+                "required": [
+                    "name",
+                    "node_type",
+                    "edge_ids"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Optional description."
+                    },
+                    "edge_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "description": "Edge IDs to reassign to this new node."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the new node."
+                    },
+                    "node_type": {
+                        "type": "string",
+                        "description": "Type for the new node."
+                    }
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "sources",
+            "description": "Source ingestion and management"
+        },
+        {
+            "name": "search",
+            "description": "Multi-dimensional fused search"
+        },
+        {
+            "name": "nodes",
+            "description": "Graph node operations"
+        },
+        {
+            "name": "edges",
+            "description": "Graph edge operations"
+        },
+        {
+            "name": "graph",
+            "description": "Graph analysis endpoints"
+        },
+        {
+            "name": "mcp",
+            "description": "Model Context Protocol tool interface"
+        },
+        {
+            "name": "admin",
+            "description": "Administrative operations"
+        }
+    ]
+}
