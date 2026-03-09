@@ -59,6 +59,23 @@ pub struct Config {
     /// Search behavior configuration.
     pub search: SearchConfig,
 
+    /// Which entity extractor backend to use.
+    ///
+    /// Supported values: `"llm"` (default), `"gliner2"`.
+    pub entity_extractor: String,
+
+    /// Base URL for the extraction sidecar (used by `gliner2` backend).
+    ///
+    /// Env: `COVALENCE_EXTRACT_URL`. Defaults to `http://localhost:8432`
+    /// when the `gliner2` backend is selected.
+    pub extract_url: Option<String>,
+
+    /// GLiNER2 confidence threshold in \[0.0, 1.0\].
+    ///
+    /// Entities scoring below this threshold are discarded by the
+    /// sidecar. Env: `COVALENCE_GLINER_THRESHOLD`. Default: `0.5`.
+    pub gliner_threshold: f32,
+
     /// Trigram similarity threshold for entity and relationship
     /// resolution (0.0–1.0). Values below this are not considered
     /// matches.
@@ -167,6 +184,9 @@ impl std::fmt::Debug for Config {
             .field("chunk_overlap", &self.chunk_overlap)
             .field("embedding", &self.embedding)
             .field("extract_concurrency", &self.extract_concurrency)
+            .field("entity_extractor", &self.entity_extractor)
+            .field("extract_url", &self.extract_url)
+            .field("gliner_threshold", &self.gliner_threshold)
             .field("consolidation", &self.consolidation)
             .field("search", &self.search)
             .field("resolve_trigram_threshold", &self.resolve_trigram_threshold)
@@ -203,6 +223,9 @@ impl Config {
                 node_embed_dim: env_parse("COVALENCE_NODE_EMBED_DIM", 256)?,
             },
             extract_concurrency: env_parse("COVALENCE_EXTRACT_CONCURRENCY", 8)?,
+            entity_extractor: env_or("COVALENCE_ENTITY_EXTRACTOR", "llm"),
+            extract_url: optional_env("COVALENCE_EXTRACT_URL"),
+            gliner_threshold: env_parse("COVALENCE_GLINER_THRESHOLD", 0.5_f32)?,
             consolidation: ConsolidationConfig {
                 batch_interval_secs: env_parse("COVALENCE_BATCH_INTERVAL", 300)?,
                 deep_interval_secs: env_parse("COVALENCE_DEEP_INTERVAL", 86_400)?,

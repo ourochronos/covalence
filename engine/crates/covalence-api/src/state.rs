@@ -10,7 +10,7 @@ use covalence_core::graph::{GraphSidecar, SharedGraph};
 use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
-use covalence_core::ingestion::{LlmExtractor, OpenAiEmbedder, PgResolver};
+use covalence_core::ingestion::{GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver};
 use covalence_core::services::{
     AdminService, ArticleService, EdgeService, NodeService, SearchService, SourceService,
 };
@@ -56,7 +56,16 @@ impl AppState {
             )) as Arc<dyn Embedder>
         });
 
-        let extractor: Option<Arc<dyn Extractor>> = if config.chat_model.is_empty() {
+        let extractor: Option<Arc<dyn Extractor>> = if config.entity_extractor == "gliner2" {
+            let base_url = config
+                .extract_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:8432".to_string());
+            Some(
+                Arc::new(GlinerExtractor::new(base_url, config.gliner_threshold))
+                    as Arc<dyn Extractor>,
+            )
+        } else if config.chat_model.is_empty() {
             None
         } else {
             // Use dedicated chat API key/URL, falling back to the shared OpenAI config.

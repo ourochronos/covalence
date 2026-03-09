@@ -8,6 +8,7 @@ pub mod chunker;
 pub mod coreference;
 pub mod embedder;
 pub mod extractor;
+pub mod gliner_extractor;
 pub mod landscape;
 pub mod llm_extractor;
 pub mod normalize;
@@ -25,6 +26,7 @@ pub use embedder::{Embedder, MockEmbedder};
 pub use extractor::{
     ExtractedEntity, ExtractedRelationship, ExtractionResult, Extractor, MockExtractor,
 };
+pub use gliner_extractor::GlinerExtractor;
 pub use landscape::{
     ChunkLandscapeResult, ExtractionMethod, LandscapeMetrics, ModelCalibration, analyze_landscape,
     cosine_similarity,
