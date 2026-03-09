@@ -230,6 +230,29 @@ Four parallel implementation tracks:
 
 **Note:** 345 tests passing (317 core + 28 eval), clippy clean, fmt clean.
 
+## Wave 2 Enhancements *(complete)*
+
+Three parallel implementation tracks:
+
+### Issue #7 — Doc Embedding to Source Record *(complete)*
+- [x] Removed document-level chunk from chunker (Section/Paragraph only)
+- [x] Source embedding stored directly on source record
+- [x] Migration 003: `embedding halfvec(2048)` on sources table with HNSW index
+- [x] Source-level vector search added to vector dimension
+
+### Issue #3 — Node Embeddings *(complete)*
+- [x] `COVALENCE_NODE_EMBED_DIM` config (default 256) in EmbeddingConfig
+- [x] Batch node embedding after extraction: `"{canonical_name}: {description}"`
+- [x] `NodeRepo::update_embedding` trait method + PG implementation
+
+### Issue #9 Phase 1 — Fuzzy Resolution *(complete)*
+- [x] Configurable `COVALENCE_RESOLVE_TRIGRAM_THRESHOLD` (default 0.4)
+- [x] Relationship type normalization + DB trigram similarity matching
+- [x] `PgResolver::resolve_rel_type()` for canonical edge labels
+- [x] `normalize_rel_type()` helper (lowercase, separator unification, prefix stripping)
+
+**Note:** 359 tests passing (331 core + 28 eval), clippy clean, fmt clean.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)
