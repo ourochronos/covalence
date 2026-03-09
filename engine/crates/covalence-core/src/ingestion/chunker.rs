@@ -1,9 +1,12 @@
 //! Stage 4: Hierarchical chunking.
 //!
 //! Decomposes normalized Markdown into a chunk tree:
-//! document → section → paragraph.
+//! section → paragraph.
 //! Primary boundaries from heading structure (structural),
 //! with paragraph splitting for oversized sections.
+//!
+//! Document-level embedding is stored on the [`Source`] record
+//! directly, so there is no document-level chunk.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,8 +14,6 @@ use uuid::Uuid;
 /// Granularity level of a chunk output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChunkLevel {
-    /// Entire document.
-    Document,
     /// Section delimited by headings.
     Section,
     /// Paragraph within a section.
@@ -24,7 +25,7 @@ pub enum ChunkLevel {
 pub struct ChunkOutput {
     /// Unique identifier for this chunk.
     pub id: Uuid,
-    /// Parent chunk identifier (None for document-level).
+    /// Parent chunk identifier (None for top-level sections).
     pub parent_id: Option<Uuid>,
     /// Text content of the chunk.
     pub text: String,
@@ -42,7 +43,8 @@ pub struct ChunkOutput {
 ///
 /// Sections are split on `# ` headings. Sections exceeding
 /// `max_chunk_size` bytes are further split into paragraphs
-/// by `\n\n`.
+/// by `\n\n`. No document-level chunk is created; the
+/// document embedding lives on the source record.
 ///
 /// When `overlap` is non-zero, each paragraph chunk after the
 /// first within a section is prefixed with the last `overlap`
@@ -57,16 +59,6 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
         return chunks;
     }
 
-    let doc_id = Uuid::new_v4();
-    chunks.push(ChunkOutput {
-        id: doc_id,
-        parent_id: None,
-        text: markdown.to_string(),
-        level: ChunkLevel::Document,
-        heading_path: vec![],
-        context_prefix_len: 0,
-    });
-
     let sections = split_sections(markdown);
 
     for (heading, body) in &sections {
@@ -80,7 +72,7 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
         let section_id = Uuid::new_v4();
         chunks.push(ChunkOutput {
             id: section_id,
-            parent_id: Some(doc_id),
+            parent_id: None,
             text: section_text.to_string(),
             level: ChunkLevel::Section,
             heading_path: heading_path.clone(),
@@ -199,8 +191,18 @@ mod tests {
     fn single_section() {
         let md = "# Title\n\nSome content here.";
         let chunks = chunk_document(md, 500, 0);
-        assert!(chunks.iter().any(|c| c.level == ChunkLevel::Document));
         assert!(chunks.iter().any(|c| c.level == ChunkLevel::Section));
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn no_document_level_chunk() {
+        let md = "# Title\n\nSome content here.";
+        let chunks = chunk_document(md, 500, 0);
+        // Document-level chunks should never appear.
+        for c in &chunks {
+            assert!(c.level == ChunkLevel::Section || c.level == ChunkLevel::Paragraph);
+        }
     }
 
     #[test]
@@ -241,19 +243,38 @@ mod tests {
     }
 
     #[test]
-    fn parent_child_hierarchy() {
+    fn sections_have_no_parent() {
         let md = "# Title\n\nContent.";
         let chunks = chunk_document(md, 500, 0);
-        let doc = chunks
-            .iter()
-            .find(|c| c.level == ChunkLevel::Document)
-            .unwrap();
         let section = chunks
             .iter()
             .find(|c| c.level == ChunkLevel::Section)
             .unwrap();
-        assert_eq!(doc.parent_id, None);
-        assert_eq!(section.parent_id, Some(doc.id));
+        assert_eq!(section.parent_id, None);
+    }
+
+    #[test]
+    fn paragraph_parent_is_section() {
+        let long_section = format!("# Big\n\n{}\n\n{}", "a".repeat(100), "b".repeat(100));
+        let chunks = chunk_document(&long_section, 50, 0);
+        let section = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::Section)
+            .unwrap();
+        let para = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::Paragraph)
+            .unwrap();
+        assert_eq!(para.parent_id, Some(section.id));
+    }
+
+    #[test]
+    fn context_prefix_len_defaults_to_zero() {
+        let md = "# Title\n\nContent.";
+        let chunks = chunk_document(md, 500, 0);
+        for c in &chunks {
+            assert_eq!(c.context_prefix_len, 0);
+        }
     }
 
     #[test]
@@ -317,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn overlap_does_not_affect_document_or_section_chunks() {
+    fn overlap_does_not_affect_section_chunks() {
         let md = format!("# Title\n\n{}\n\n{}", "x".repeat(100), "y".repeat(100));
         let chunks = chunk_document(&md, 50, 30);
         for c in &chunks {

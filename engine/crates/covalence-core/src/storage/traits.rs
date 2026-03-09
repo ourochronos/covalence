@@ -38,6 +38,13 @@ pub trait SourceRepo: Send + Sync {
 
     /// Count total number of sources.
     fn count(&self) -> impl Future<Output = Result<i64>> + Send;
+
+    /// Update the document-level embedding vector for a source.
+    fn update_embedding(
+        &self,
+        id: SourceId,
+        embedding: &[f32],
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Chunk`] entities.

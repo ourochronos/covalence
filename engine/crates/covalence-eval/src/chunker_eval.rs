@@ -67,13 +67,7 @@ impl LayerEvaluator for ChunkerEval {
 /// Compute chunker metrics from output (standalone function for
 /// reuse outside the trait).
 pub fn compute_chunker_metrics(output: &ChunkerOutput) -> ChunkerMetrics {
-    let non_doc_chunks: Vec<&ChunkOutput> = output
-        .chunks
-        .iter()
-        .filter(|c| c.level != ChunkLevel::Document)
-        .collect();
-
-    let chunk_sizes: Vec<usize> = non_doc_chunks.iter().map(|c| c.text.len()).collect();
+    let chunk_sizes: Vec<usize> = output.chunks.iter().map(|c| c.text.len()).collect();
 
     let total_chunk_bytes: usize = chunk_sizes.iter().sum();
     let coverage = if output.source_len > 0 {
@@ -94,11 +88,7 @@ pub fn compute_chunker_metrics(output: &ChunkerOutput) -> ChunkerMetrics {
     let min_chunk_size = chunk_sizes.iter().copied().min().unwrap_or(0);
     let max_chunk_size = chunk_sizes.iter().copied().max().unwrap_or(0);
 
-    let document_chunks = output
-        .chunks
-        .iter()
-        .filter(|c| c.level == ChunkLevel::Document)
-        .count();
+    let document_chunks = 0;
     let section_chunks = output
         .chunks
         .iter()
@@ -148,7 +138,7 @@ mod tests {
         let metrics = eval.score(&output, &output);
         assert!(metrics.coverage > 0.0);
         assert!(metrics.section_chunks >= 1);
-        assert_eq!(metrics.document_chunks, 1);
+        assert_eq!(metrics.document_chunks, 0);
     }
 
     #[test]
@@ -184,7 +174,7 @@ mod tests {
         };
         let output = eval.evaluate(&input);
         let metrics = eval.score(&output, &output);
-        assert_eq!(metrics.document_chunks, 1);
+        assert_eq!(metrics.document_chunks, 0);
         assert_eq!(metrics.section_chunks, 2);
         assert_eq!(metrics.paragraph_chunks, 0);
     }

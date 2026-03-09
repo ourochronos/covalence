@@ -9,7 +9,8 @@ use crate::ingestion::coreference::CorefResolver;
 use crate::ingestion::embedder::Embedder;
 use crate::ingestion::extractor::Extractor;
 use crate::ingestion::resolver::EntityResolver;
-use crate::models::chunk::{Chunk, ChunkLevel as ModelChunkLevel};
+use crate::models::chunk::Chunk;
+use crate::models::chunk::ChunkLevel as ModelChunkLevel;
 use crate::models::edge::Edge;
 use crate::models::extraction::{ExtractedEntityType, Extraction};
 use crate::models::node::Node;
@@ -145,7 +146,6 @@ impl SourceService {
             .map(|(ordinal, co)| {
                 let chunk_id = id_map[&co.id];
                 let level = match co.level {
-                    crate::ingestion::chunker::ChunkLevel::Document => ModelChunkLevel::Document,
                     crate::ingestion::chunker::ChunkLevel::Section => ModelChunkLevel::Section,
                     crate::ingestion::chunker::ChunkLevel::Paragraph => ModelChunkLevel::Paragraph,
                 };
@@ -191,6 +191,15 @@ impl SourceService {
             for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
                 let chunk_id = id_map[&co.id];
                 ChunkRepo::update_embedding(&*self.repo, chunk_id, emb).await?;
+            }
+
+            // Embed the full normalized text and store on the source
+            // record directly. This replaces the old document-level
+            // chunk embedding.
+            let source_embeddings = embedder.embed(std::slice::from_ref(&normalized)).await?;
+            if let Some(emb) = source_embeddings.first() {
+                let emb_f32: Vec<f32> = emb.iter().map(|&v| v as f32).collect();
+                SourceRepo::update_embedding(&*self.repo, source.id, &emb_f32).await?;
             }
         }
 
