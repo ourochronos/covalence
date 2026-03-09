@@ -10,7 +10,9 @@ mod edge;
 mod extraction;
 mod node;
 mod node_alias;
+mod node_landmark;
 mod source;
+mod trace;
 
 use sqlx::postgres::PgPoolOptions;
 

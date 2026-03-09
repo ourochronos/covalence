@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+use crate::config::TableDimensions;
 use crate::error::{Error, Result};
 use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::CorefResolver;
-use crate::ingestion::embedder::Embedder;
+use crate::ingestion::embedder::{Embedder, truncate_embedding};
 use crate::ingestion::extractor::Extractor;
+use crate::ingestion::landscape::ExtractionMethod;
 use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
 use crate::models::chunk::Chunk;
@@ -17,7 +19,7 @@ use crate::models::edge::Edge;
 use crate::models::extraction::{ExtractedEntityType, Extraction};
 use crate::models::node::Node;
 use crate::models::node_alias::NodeAlias;
-use crate::models::source::{Source, SourceType};
+use crate::models::source::{Source, SourceType, UpdateClass};
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{
     ChunkRepo, EdgeRepo, ExtractionRepo, NodeAliasRepo, NodeRepo, SourceRepo,
@@ -50,6 +52,8 @@ pub struct SourceService {
     /// content is run through the matching converter to produce
     /// Markdown before parsing.
     converter_registry: Option<ConverterRegistry>,
+    /// Per-table embedding dimensions for truncation.
+    table_dims: TableDimensions,
 }
 
 impl SourceService {
@@ -66,6 +70,7 @@ impl SourceService {
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver: None,
             converter_registry: None,
+            table_dims: TableDimensions::default(),
         }
     }
 
@@ -83,6 +88,7 @@ impl SourceService {
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver: None,
             converter_registry: None,
+            table_dims: TableDimensions::default(),
         }
     }
 
@@ -102,6 +108,7 @@ impl SourceService {
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver,
             converter_registry: None,
+            table_dims: TableDimensions::default(),
         }
     }
 
@@ -116,17 +123,35 @@ impl SourceService {
         self
     }
 
+    /// Set per-table embedding dimensions.
+    pub fn with_table_dims(mut self, dims: TableDimensions) -> Self {
+        self.table_dims = dims;
+        self
+    }
+
     /// Set the maximum number of concurrent LLM extraction calls.
     pub fn with_extract_concurrency(mut self, concurrency: usize) -> Self {
         self.extract_concurrency = concurrency;
         self
     }
 
-    /// Ingest new content through the pipeline: hash, parse, normalize,
-    /// chunk, and store.
+    /// Ingest new content through the full pipeline.
     ///
-    /// Later stages (embed, extract, resolve) require LLM integration and
-    /// are not yet wired.
+    /// Stages: hash, dedup/supersede, parse, normalize, chunk, embed,
+    /// landscape analysis, extract (gated by landscape), resolve,
+    /// embed nodes.
+    ///
+    /// **Embedding landscape gating**: After landscape analysis, only
+    /// chunks with `FullExtraction` or `FullExtractionWithReview`
+    /// extraction methods are sent to the LLM extractor. Chunks
+    /// classified as `EmbeddingLinkage` or `DeltaCheck` skip
+    /// expensive LLM calls.
+    ///
+    /// **Source update classes**: When a URI is provided and an
+    /// existing source shares that URI, the system detects the
+    /// update class (correction, versioned, refactor) based on
+    /// content overlap, marks the old source as superseded, and
+    /// links the new source via `supersedes_id`.
     pub async fn ingest(
         &self,
         content: &[u8],
@@ -137,7 +162,7 @@ impl SourceService {
     ) -> Result<SourceId> {
         let hash = Sha256::digest(content).to_vec();
 
-        // Dedup check
+        // Dedup check — exact content hash match
         if let Some(existing) = SourceRepo::get_by_hash(&*self.repo, &hash).await? {
             return Ok(existing.id);
         }
@@ -145,9 +170,19 @@ impl SourceService {
         let st = SourceType::from_str_opt(source_type)
             .ok_or_else(|| Error::InvalidInput(format!("unknown source type: {source_type}")))?;
 
+        // --- Source update class detection ---
+        //
+        // If a URI is provided, check whether an existing source
+        // shares that URI. If content hashes differ, determine the
+        // update class and mark the old source as superseded.
+        let supersedes_info = if let Some(uri_str) = uri {
+            self.detect_source_update(uri_str, content).await?
+        } else {
+            None
+        };
+
         // Stage 1.5: Convert content if a converter registry is
-        // configured. This transforms non-Markdown formats (HTML,
-        // plain text, etc.) into Markdown before the parser stage.
+        // configured.
         let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
             if let Some(ref registry) = self.converter_registry {
                 let converted = registry.convert(content, mime).await?;
@@ -172,12 +207,25 @@ impl SourceService {
         source.metadata = metadata;
         source.raw_content = String::from_utf8(content.to_vec()).ok();
 
+        // Apply supersession metadata if detected
+        if let Some(ref info) = supersedes_info {
+            source.supersedes_id = Some(info.old_source_id);
+            source.update_class = Some(info.update_class.as_str().to_string());
+            source.content_version = info.new_version;
+        }
+
         SourceRepo::create(&*self.repo, &source).await?;
+
+        // Mark old source as superseded if applicable
+        if let Some(ref info) = supersedes_info {
+            self.mark_superseded(info.old_source_id, &info.update_class)
+                .await?;
+        }
 
         // Stage 4: Chunk
         let chunk_outputs = crate::ingestion::chunker::chunk_document(&normalized, 1000, 200);
 
-        // Build a map from chunker UUIDs to ChunkIds for parent references
+        // Build a map from chunker UUIDs to ChunkIds
         let mut id_map = std::collections::HashMap::new();
         for co in &chunk_outputs {
             id_map.insert(co.id, ChunkId::from_uuid(co.id));
@@ -228,47 +276,95 @@ impl SourceService {
         ChunkRepo::batch_create(&*self.repo, &chunks).await?;
 
         // Stage 5: Embed chunks
-        if let Some(ref embedder) = self.embedder {
+        //
+        // Also runs landscape analysis to determine which chunks
+        // need LLM extraction.
+        let landscape_results = if let Some(ref embedder) = self.embedder {
             let texts: Vec<String> = chunk_outputs.iter().map(|co| co.text.clone()).collect();
             let embeddings = embedder.embed(&texts).await?;
 
             for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
                 let chunk_id = id_map[&co.id];
-                ChunkRepo::update_embedding(&*self.repo, chunk_id, emb).await?;
+                let truncated = truncate_embedding(emb, self.table_dims.chunk);
+                ChunkRepo::update_embedding(&*self.repo, chunk_id, &truncated).await?;
             }
 
-            // Embed the full normalized text and store on the source
-            // record directly. This replaces the old document-level
-            // chunk embedding.
+            // Embed the full normalized text for source-level search
             let source_embeddings = embedder.embed(std::slice::from_ref(&normalized)).await?;
             if let Some(emb) = source_embeddings.first() {
-                let emb_f32: Vec<f32> = emb.iter().map(|&v| v as f32).collect();
+                let truncated = truncate_embedding(emb, self.table_dims.source);
+                let emb_f32: Vec<f32> = truncated.iter().map(|&v| v as f32).collect();
                 SourceRepo::update_embedding(&*self.repo, source.id, &emb_f32).await?;
             }
-        }
 
-        // Stage 5.5: Co-reference resolution across chunks.
-        //
-        // Build a mapping from mentions (abbreviations, short forms) to
-        // their full referent entity names so the extraction stage can
-        // resolve them correctly.
+            // Stage 5.5: Embedding landscape analysis.
+            //
+            // Determine extraction method per chunk based on
+            // embedding topology.
+            let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
+                .iter()
+                .map(|co| {
+                    co.parent_id.and_then(|pid| {
+                        chunk_outputs
+                            .iter()
+                            .position(|c| c.id == pid)
+                            .and_then(|idx| embeddings.get(idx))
+                    })
+                })
+                .collect();
+
+            let landscape = crate::ingestion::landscape::analyze_landscape(
+                &embeddings,
+                &parent_embeddings,
+                None,
+            );
+
+            // Store landscape results on chunks
+            for lr in &landscape {
+                if lr.chunk_index < chunk_outputs.len() {
+                    let chunk_id = id_map[&chunk_outputs[lr.chunk_index].id];
+                    let metrics_json = serde_json::to_value(&lr.metrics).ok();
+                    ChunkRepo::update_landscape(
+                        &*self.repo,
+                        chunk_id,
+                        lr.parent_alignment,
+                        lr.extraction_method.as_str(),
+                        metrics_json,
+                    )
+                    .await?;
+                }
+            }
+
+            Some(landscape)
+        } else {
+            None
+        };
+
+        // Stage 5.5: Co-reference resolution across chunks
         let coref_resolver = CorefResolver::new();
         let coref_links = coref_resolver.resolve(&chunk_outputs);
-        // Index: mention (lowercase) -> referent name (lowercase)
         let mut coref_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for link in &coref_links {
             coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
         }
 
-        // Stages 6-7: Extract entities + resolve + create nodes/edges
+        // Stages 6-7: Extract entities + resolve + create
+        // nodes/edges.
+        //
+        // Landscape gating: Only send chunks with FullExtraction
+        // or FullExtractionWithReview to the LLM. Chunks classified
+        // as EmbeddingLinkage or DeltaCheck are skipped.
         if let Some(ref extractor) = self.extractor {
-            // Phase 1: Run LLM extraction calls concurrently,
-            // bounded by a semaphore to limit parallelism.
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
+
+            // Determine which chunks should go through LLM
+            // extraction based on landscape analysis
             let extraction_futures: Vec<_> = chunk_outputs
                 .iter()
-                .map(|co| {
+                .enumerate()
+                .filter(|(i, _co)| should_extract(*i, landscape_results.as_deref()))
+                .map(|(_i, co)| {
                     let sem = Arc::clone(&semaphore);
                     let ext = Arc::clone(extractor);
                     let text = co.text.clone();
@@ -285,8 +381,7 @@ impl SourceService {
 
             let extraction_results = futures::future::join_all(extraction_futures).await;
 
-            // Phase 2: Process extraction results sequentially —
-            // entity resolution and dedup depend on ordering.
+            // Phase 2: Process extraction results sequentially
             let mut name_to_node: std::collections::HashMap<String, NodeId> =
                 std::collections::HashMap::new();
 
@@ -294,27 +389,17 @@ impl SourceService {
                 let (chunk_uuid, extraction) = extraction_result?;
                 let chunk_id = id_map[&chunk_uuid];
 
-                // Process extracted entities
                 for entity in &extraction.entities {
                     let node_id = self.resolve_and_store_entity(entity, chunk_id).await?;
                     name_to_node.insert(entity.name.to_lowercase(), node_id);
 
-                    // If this entity name is a co-reference mention,
-                    // also register its referent mapping so edge
-                    // lookups can find it via the canonical name.
                     if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
                         name_to_node.entry(referent.clone()).or_insert(node_id);
-
-                        // Create an alias for the co-reference so
-                        // future ingestion resolves it directly.
                         self.ensure_alias(&entity.name, node_id, chunk_id).await?;
                     }
                 }
 
-                // Process extracted relationships
                 for rel in &extraction.relationships {
-                    // Resolve source/target names through co-reference
-                    // map if they are abbreviations/mentions.
                     let src_key = coref_map
                         .get(&rel.source_name.to_lowercase())
                         .cloned()
@@ -333,8 +418,6 @@ impl SourceService {
                         None => continue,
                     };
 
-                    // Resolve the relationship type against existing
-                    // edge types to unify synonymous labels.
                     let resolved_rel_type = if let Some(ref rtr) = self.rel_type_resolver {
                         rtr.resolve_rel_type(&rel.rel_type).await?
                     } else {
@@ -345,7 +428,6 @@ impl SourceService {
                     edge.confidence = rel.confidence;
                     EdgeRepo::create(&*self.repo, &edge).await?;
 
-                    // Create extraction provenance for the edge
                     let ext_record = Extraction::new(
                         chunk_id,
                         ExtractedEntityType::Edge,
@@ -357,16 +439,11 @@ impl SourceService {
                 }
             }
 
-            // Stage 7.5: Embed node descriptions.
-            //
-            // After all entities for this source have been extracted
-            // and resolved, batch-embed their descriptions so that
-            // nodes are searchable via vector similarity.
+            // Stage 7.5: Embed node descriptions
             if let Some(ref embedder) = self.embedder {
                 let node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
 
                 if !node_ids.is_empty() {
-                    // Fetch current node data for embedding text.
                     let mut texts: Vec<String> = Vec::with_capacity(node_ids.len());
                     let mut valid_ids: Vec<NodeId> = Vec::with_capacity(node_ids.len());
 
@@ -385,9 +462,9 @@ impl SourceService {
 
                     if !texts.is_empty() {
                         let embeddings = embedder.embed(&texts).await?;
-
                         for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
-                            NodeRepo::update_embedding(&*self.repo, *nid, emb).await?;
+                            let truncated = truncate_embedding(emb, self.table_dims.node);
+                            NodeRepo::update_embedding(&*self.repo, *nid, &truncated).await?;
                         }
                     }
                 }
@@ -395,6 +472,63 @@ impl SourceService {
         }
 
         Ok(source.id)
+    }
+
+    /// Detect whether an existing source with the same URI exists
+    /// and determine the update class based on content overlap.
+    ///
+    /// Returns `None` if no existing source shares the URI.
+    async fn detect_source_update(
+        &self,
+        uri: &str,
+        new_content: &[u8],
+    ) -> Result<Option<SupersedesInfo>> {
+        use sqlx::Row;
+
+        // Query for existing source with this URI
+        let row = sqlx::query(
+            "SELECT id, content_hash, raw_content, content_version \
+             FROM sources \
+             WHERE uri = $1 \
+             ORDER BY content_version DESC \
+             LIMIT 1",
+        )
+        .bind(uri)
+        .fetch_optional(self.repo.pool())
+        .await?;
+
+        let row = match row {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let old_id: SourceId = row.get("id");
+        let old_content: Option<String> = row.get("raw_content");
+        let old_version: i32 = row.get("content_version");
+
+        let new_text = String::from_utf8_lossy(new_content);
+
+        let update_class = match old_content {
+            Some(ref old_text) => detect_update_class(old_text, &new_text),
+            None => UpdateClass::Versioned,
+        };
+
+        Ok(Some(SupersedesInfo {
+            old_source_id: old_id,
+            update_class,
+            new_version: old_version + 1,
+        }))
+    }
+
+    /// Mark an old source as superseded by updating its
+    /// `update_class` to reflect the supersession.
+    async fn mark_superseded(&self, old_id: SourceId, update_class: &UpdateClass) -> Result<()> {
+        sqlx::query("UPDATE sources SET update_class = $2 WHERE id = $1")
+            .bind(old_id)
+            .bind(update_class.as_str())
+            .execute(self.repo.pool())
+            .await?;
+        Ok(())
     }
 
     /// Resolve an extracted entity against the graph and store it.
@@ -704,6 +838,89 @@ pub(crate) fn entity_name_lock_key(name: &str) -> i64 {
     i64::from_le_bytes(bytes) ^ ENTITY_LOCK_NAMESPACE
 }
 
+/// Information about a source supersession detected during
+/// URI-based update class analysis.
+struct SupersedesInfo {
+    /// The ID of the source being superseded.
+    old_source_id: SourceId,
+    /// The detected update class.
+    update_class: UpdateClass,
+    /// The version number for the new source.
+    new_version: i32,
+}
+
+/// Determine whether a chunk should go through LLM extraction
+/// based on landscape analysis results.
+///
+/// Returns `true` if:
+/// - No landscape results exist (all chunks should be extracted)
+/// - The chunk's extraction method is `FullExtraction` or
+///   `FullExtractionWithReview`
+///
+/// Returns `false` for `EmbeddingLinkage` (high parent alignment,
+/// redundant content) and `DeltaCheck` (moderate alignment, only
+/// delta check needed).
+fn should_extract(
+    chunk_index: usize,
+    landscape: Option<&[crate::ingestion::landscape::ChunkLandscapeResult]>,
+) -> bool {
+    match landscape {
+        None => true, // No landscape data — extract everything
+        Some(results) => {
+            match results.get(chunk_index) {
+                None => true, // Missing result — extract
+                Some(lr) => matches!(
+                    lr.extraction_method,
+                    ExtractionMethod::FullExtraction | ExtractionMethod::FullExtractionWithReview
+                ),
+            }
+        }
+    }
+}
+
+/// Detect the update class by comparing old and new content.
+///
+/// Uses a simple word-level Jaccard similarity metric:
+/// - `>=80%` overlap: `Correction` (minor fix to existing content)
+/// - `<20%` overlap: `Refactor` (structural rewrite)
+/// - Otherwise: `Versioned` (normal update)
+///
+/// This is a lightweight heuristic. Production systems may use
+/// more sophisticated diff algorithms.
+fn detect_update_class(old_text: &str, new_text: &str) -> UpdateClass {
+    let overlap = content_overlap(old_text, new_text);
+    if overlap >= 0.80 {
+        UpdateClass::Correction
+    } else if overlap < 0.20 {
+        UpdateClass::Refactor
+    } else {
+        UpdateClass::Versioned
+    }
+}
+
+/// Compute word-level Jaccard similarity between two texts.
+///
+/// Returns a value in `[0.0, 1.0]` representing the proportion
+/// of shared words between the two texts. Returns 0.0 if both
+/// texts are empty.
+fn content_overlap(a: &str, b: &str) -> f64 {
+    let words_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
+    let words_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
+
+    if words_a.is_empty() && words_b.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = words_a.intersection(&words_b).count();
+    let union = words_a.union(&words_b).count();
+
+    if union == 0 {
+        return 0.0;
+    }
+
+    intersection as f64 / union as f64
+}
+
 /// Sanitize a string for use as an ltree label.
 ///
 /// ltree labels can only contain alphanumeric characters and
@@ -789,5 +1006,169 @@ mod tests {
         assert_eq!(sanitize_ltree_label(""), "_");
         assert_eq!(sanitize_ltree_label("a-b"), "a_b");
         assert_eq!(sanitize_ltree_label("abc_123"), "abc_123");
+    }
+
+    // --- Content overlap tests ---
+
+    #[test]
+    fn content_overlap_identical() {
+        let text = "the quick brown fox jumps over the lazy dog";
+        let overlap = content_overlap(text, text);
+        assert!((overlap - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn content_overlap_no_shared_words() {
+        let a = "alpha beta gamma";
+        let b = "one two three";
+        let overlap = content_overlap(a, b);
+        assert!((overlap - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn content_overlap_partial() {
+        let a = "the quick brown fox";
+        let b = "the slow brown bear";
+        // Shared: "the", "brown" = 2
+        // Union: "the", "quick", "brown", "fox", "slow", "bear" = 6
+        let overlap = content_overlap(a, b);
+        assert!((overlap - 2.0 / 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn content_overlap_both_empty() {
+        assert!((content_overlap("", "") - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn content_overlap_one_empty() {
+        assert!((content_overlap("hello", "") - 0.0).abs() < 1e-10);
+        assert!((content_overlap("", "hello") - 0.0).abs() < 1e-10);
+    }
+
+    // --- Update class detection tests ---
+
+    #[test]
+    fn detect_update_class_correction() {
+        // >80% overlap = correction (minor edit)
+        // 9/10 words shared = 0.9 Jaccard
+        let old = "the quick brown fox jumps over the lazy dog today";
+        let new = "the quick brown fox leaps over the lazy dog today";
+        let class = detect_update_class(old, new);
+        assert_eq!(class, UpdateClass::Correction);
+    }
+
+    #[test]
+    fn detect_update_class_refactor() {
+        // <20% overlap = refactor (complete rewrite)
+        let old = "alpha beta gamma delta epsilon";
+        let new = "one two three four five six seven";
+        let class = detect_update_class(old, new);
+        assert_eq!(class, UpdateClass::Refactor);
+    }
+
+    #[test]
+    fn detect_update_class_versioned() {
+        // Between 20%-80% overlap = versioned (significant update)
+        // Shared: a, b, c, d, e = 5 out of union 10 = 0.5
+        let old = "a b c d e f g h i j";
+        let new = "a b c d e k l m n o";
+        let class = detect_update_class(old, new);
+        assert_eq!(class, UpdateClass::Versioned);
+    }
+
+    // --- Landscape gating tests ---
+
+    #[test]
+    fn should_extract_no_landscape() {
+        // No landscape data — extract everything
+        assert!(should_extract(0, None));
+        assert!(should_extract(5, None));
+    }
+
+    #[test]
+    fn should_extract_full_extraction() {
+        use crate::ingestion::landscape::{ChunkLandscapeResult, LandscapeMetrics};
+
+        let results = vec![ChunkLandscapeResult {
+            chunk_index: 0,
+            parent_alignment: Some(0.3),
+            extraction_method: ExtractionMethod::FullExtraction,
+            metrics: LandscapeMetrics {
+                adjacent_similarity: None,
+                sibling_outlier_score: None,
+                graph_novelty: None,
+                flags: vec![],
+                valley_prominence: None,
+            },
+        }];
+
+        assert!(should_extract(0, Some(&results)));
+    }
+
+    #[test]
+    fn should_extract_full_extraction_with_review() {
+        use crate::ingestion::landscape::{ChunkLandscapeResult, LandscapeMetrics};
+
+        let results = vec![ChunkLandscapeResult {
+            chunk_index: 0,
+            parent_alignment: Some(0.1),
+            extraction_method: ExtractionMethod::FullExtractionWithReview,
+            metrics: LandscapeMetrics {
+                adjacent_similarity: None,
+                sibling_outlier_score: None,
+                graph_novelty: None,
+                flags: vec![],
+                valley_prominence: None,
+            },
+        }];
+
+        assert!(should_extract(0, Some(&results)));
+    }
+
+    #[test]
+    fn should_not_extract_embedding_linkage() {
+        use crate::ingestion::landscape::{ChunkLandscapeResult, LandscapeMetrics};
+
+        let results = vec![ChunkLandscapeResult {
+            chunk_index: 0,
+            parent_alignment: Some(0.9),
+            extraction_method: ExtractionMethod::EmbeddingLinkage,
+            metrics: LandscapeMetrics {
+                adjacent_similarity: None,
+                sibling_outlier_score: None,
+                graph_novelty: None,
+                flags: vec![],
+                valley_prominence: None,
+            },
+        }];
+
+        assert!(!should_extract(0, Some(&results)));
+    }
+
+    #[test]
+    fn should_not_extract_delta_check() {
+        use crate::ingestion::landscape::{ChunkLandscapeResult, LandscapeMetrics};
+
+        let results = vec![ChunkLandscapeResult {
+            chunk_index: 0,
+            parent_alignment: Some(0.7),
+            extraction_method: ExtractionMethod::DeltaCheck,
+            metrics: LandscapeMetrics {
+                adjacent_similarity: None,
+                sibling_outlier_score: None,
+                graph_novelty: None,
+                flags: vec![],
+                valley_prominence: None,
+            },
+        }];
+
+        assert!(!should_extract(0, Some(&results)));
+    }
+
+    #[test]
+    fn should_extract_missing_index() {
+        // Index not in landscape results — extract
+        assert!(should_extract(5, Some(&[])));
     }
 }

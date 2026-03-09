@@ -1,14 +1,14 @@
-//! Voyage rerank-2.5 integration.
+//! Reranker implementations — cross-encoder reranking of RRF results.
 //!
-//! Cross-encoder reranking of top-k RRF results using the
-//! Voyage rerank API. $0.05/M tokens, first 200M free.
+//! Supports Voyage, Jina, Cohere, and any OpenAI-compatible rerank
+//! endpoint via the generic `HttpReranker`.
 
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the reranker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerankConfig {
-    /// API key for Voyage rerank.
+    /// API key for the rerank provider.
     pub api_key: String,
     /// Base URL (default: <https://api.voyageai.com/v1>).
     pub base_url: String,
@@ -80,6 +80,111 @@ impl Reranker for NoopReranker {
     }
 }
 
+/// HTTP-based reranker that calls an OpenAI-compatible rerank endpoint.
+///
+/// Works with Voyage, Jina, Cohere, and other providers that accept
+/// a POST request with `query` and `documents` fields and return
+/// scored results.
+pub struct HttpReranker {
+    /// The HTTP client.
+    client: reqwest::Client,
+    /// Configuration for the reranker.
+    config: RerankConfig,
+}
+
+/// Request body for the rerank API.
+#[derive(Debug, Serialize)]
+struct RerankRequest<'a> {
+    /// The model to use for reranking.
+    model: &'a str,
+    /// The query to rerank against.
+    query: &'a str,
+    /// The documents to rerank.
+    documents: &'a [String],
+    /// Maximum number of results to return.
+    top_k: usize,
+}
+
+/// A single result from the rerank API response.
+#[derive(Debug, Deserialize)]
+struct RerankApiResult {
+    /// Original index of the document.
+    index: usize,
+    /// Relevance score assigned by the model.
+    relevance_score: f64,
+}
+
+/// Response body from the rerank API.
+#[derive(Debug, Deserialize)]
+struct RerankResponse {
+    /// The reranked results.
+    #[serde(alias = "results")]
+    data: Vec<RerankApiResult>,
+}
+
+impl HttpReranker {
+    /// Create a new HTTP-based reranker.
+    pub fn new(config: RerankConfig) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            config,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Reranker for HttpReranker {
+    async fn rerank(
+        &self,
+        query: &str,
+        documents: &[String],
+    ) -> crate::error::Result<Vec<RerankedResult>> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let top_k = self.config.top_k.min(documents.len());
+        let url = format!("{}/rerank", self.config.base_url);
+        let body = RerankRequest {
+            model: &self.config.model,
+            query,
+            documents,
+            top_k,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| crate::error::Error::Search(format!("rerank HTTP error: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_else(|_| "unknown".into());
+            return Err(crate::error::Error::Search(format!(
+                "rerank API returned {status}: {body}"
+            )));
+        }
+
+        let parsed: RerankResponse = response.json().await.map_err(|e| {
+            crate::error::Error::Search(format!("rerank response parse error: {e}"))
+        })?;
+
+        Ok(parsed
+            .data
+            .into_iter()
+            .map(|r| RerankedResult {
+                index: r.index,
+                relevance_score: r.relevance_score,
+            })
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +229,29 @@ mod tests {
         let results = results.unwrap_or_default();
 
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn noop_reranker_single_doc() {
+        let reranker = NoopReranker;
+        let docs = vec!["only doc".to_string()];
+
+        let results = reranker.rerank("query", &docs).await.ok();
+        let results = results.unwrap_or_default();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].index, 0);
+        assert!((results[0].relevance_score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn http_reranker_creates_with_config() {
+        let config = RerankConfig {
+            api_key: "test-key".to_string(),
+            base_url: "http://localhost:9999".to_string(),
+            model: "test-model".to_string(),
+            top_k: 5,
+        };
+        let _reranker = HttpReranker::new(config);
     }
 }

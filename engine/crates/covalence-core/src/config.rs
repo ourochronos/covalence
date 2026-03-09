@@ -90,40 +90,96 @@ pub struct Config {
 }
 
 /// Configuration for the embedding subsystem.
+///
+/// Supports per-table embedding dimensions for matryoshka models
+/// (e.g. OpenAI `text-embedding-3-large`). The API request uses
+/// `max_dim()` and results are truncated + renormalized per table.
 #[derive(Debug, Clone)]
 pub struct EmbeddingConfig {
     /// Model name (e.g. `text-embedding-3-large`).
     pub model: String,
 
-    /// Vector dimensions for chunk/source/article embeddings.
-    ///
-    /// Always sent to the embedding API as the `dimensions`
-    /// parameter so models that support truncation (e.g. OpenAI
-    /// `text-embedding-3-*`) produce vectors at the correct size.
-    /// Must match the DB column dimension.
-    ///
-    /// Env: `COVALENCE_EMBED_DIM`. Default: `1024`.
-    pub dimensions: usize,
-
     /// Maximum number of texts to embed in a single API call.
     pub batch_size: usize,
 
-    /// Vector dimensions for node (entity) embeddings.
-    ///
-    /// Node embeddings are generated from the entity's canonical name
-    /// and description. This may differ from chunk embedding
-    /// dimensions to save storage.
-    pub node_embed_dim: usize,
+    /// Per-table embedding dimensions.
+    pub table_dims: TableDimensions,
+}
+
+/// Per-table embedding dimensions. Each table can have a different
+/// vector dimension to optimize quality vs. storage/performance.
+///
+/// Models with matryoshka support (OpenAI `text-embedding-3-*`,
+/// Jina v3) produce vectors that can be truncated to fewer
+/// dimensions while preserving quality. Tables with fewer records
+/// or richer content benefit from higher dimensionality.
+#[derive(Debug, Clone)]
+pub struct TableDimensions {
+    /// Source-level embeddings (full document).
+    /// Fewest records, richest content.
+    /// Env: `COVALENCE_EMBED_DIM_SOURCE`. Default: `2048`.
+    pub source: usize,
+
+    /// Chunk-level embeddings (paragraphs/sections).
+    /// Most records, searched frequently.
+    /// Env: `COVALENCE_EMBED_DIM_CHUNK`. Default: `1024`.
+    pub chunk: usize,
+
+    /// Article-level embeddings (compiled summaries).
+    /// Env: `COVALENCE_EMBED_DIM_ARTICLE`. Default: `1024`.
+    pub article: usize,
+
+    /// Node-level embeddings (entity name + description).
+    /// Short text, used in resolution lookups.
+    /// Env: `COVALENCE_EMBED_DIM_NODE`. Default: `256`.
+    pub node: usize,
+
+    /// Node alias embeddings (alternate names).
+    /// Must match node dimension for cosine comparisons.
+    /// Env: `COVALENCE_EMBED_DIM_ALIAS`. Default: `256`.
+    pub alias: usize,
+}
+
+impl Default for TableDimensions {
+    fn default() -> Self {
+        Self {
+            source: 2048,
+            chunk: 1024,
+            article: 1024,
+            node: 256,
+            alias: 256,
+        }
+    }
+}
+
+impl TableDimensions {
+    /// The maximum dimension across all tables. Used as the API
+    /// request dimension — results are truncated per table.
+    pub fn max_dim(&self) -> usize {
+        self.source
+            .max(self.chunk)
+            .max(self.article)
+            .max(self.node)
+            .max(self.alias)
+    }
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
             model: "text-embedding-3-large".to_string(),
-            dimensions: 1024,
             batch_size: 64,
-            node_embed_dim: 256,
+            table_dims: TableDimensions::default(),
         }
+    }
+}
+
+impl EmbeddingConfig {
+    /// The maximum dimension across all tables.
+    ///
+    /// Sent to the embedding API as the `dimensions` parameter.
+    pub fn max_dim(&self) -> usize {
+        self.table_dims.max_dim()
     }
 }
 
@@ -223,11 +279,23 @@ impl Config {
             chat_base_url: optional_env("COVALENCE_CHAT_BASE_URL"),
             chunk_size: env_parse("COVALENCE_CHUNK_SIZE", 1000)?,
             chunk_overlap: env_parse("COVALENCE_CHUNK_OVERLAP", 200)?,
-            embedding: EmbeddingConfig {
-                model: embed_model,
-                dimensions: env_parse("COVALENCE_EMBED_DIM", 1024)?,
-                batch_size: env_parse("COVALENCE_EMBED_BATCH", 64)?,
-                node_embed_dim: env_parse("COVALENCE_NODE_EMBED_DIM", 256)?,
+            embedding: {
+                // Per-table dimension config. Legacy COVALENCE_EMBED_DIM
+                // is used as fallback for chunk/article/source if the
+                // per-table vars are not set.
+                let legacy_dim: usize = env_parse("COVALENCE_EMBED_DIM", 1024)?;
+                let legacy_node: usize = env_parse("COVALENCE_NODE_EMBED_DIM", 256)?;
+                EmbeddingConfig {
+                    model: embed_model,
+                    batch_size: env_parse("COVALENCE_EMBED_BATCH", 64)?,
+                    table_dims: TableDimensions {
+                        source: env_parse("COVALENCE_EMBED_DIM_SOURCE", 2048)?,
+                        chunk: env_parse("COVALENCE_EMBED_DIM_CHUNK", legacy_dim)?,
+                        article: env_parse("COVALENCE_EMBED_DIM_ARTICLE", legacy_dim)?,
+                        node: env_parse("COVALENCE_EMBED_DIM_NODE", legacy_node)?,
+                        alias: env_parse("COVALENCE_EMBED_DIM_ALIAS", legacy_node)?,
+                    },
+                }
             },
             extract_concurrency: env_parse("COVALENCE_EXTRACT_CONCURRENCY", 8)?,
             entity_extractor: env_or("COVALENCE_ENTITY_EXTRACTOR", "llm"),

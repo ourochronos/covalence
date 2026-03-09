@@ -5,7 +5,9 @@ use axum::extract::State;
 use chrono::DateTime;
 
 use crate::error::ApiError;
-use crate::handlers::dto::{SearchRequest, SearchResultResponse};
+use crate::handlers::dto::{
+    FeedbackResponse, SearchFeedbackRequest, SearchRequest, SearchResultResponse,
+};
 use crate::state::AppState;
 
 /// Execute a multi-dimensional fused search.
@@ -85,4 +87,28 @@ pub async fn search(
             })
             .collect(),
     ))
+}
+
+/// Submit search feedback.
+#[utoipa::path(
+    post,
+    path = "/search/feedback",
+    request_body = SearchFeedbackRequest,
+    responses(
+        (status = 200, description = "Feedback recorded", body = FeedbackResponse),
+    ),
+    tag = "search"
+)]
+pub async fn search_feedback(
+    State(state): State<AppState>,
+    Json(req): Json<SearchFeedbackRequest>,
+) -> Result<Json<FeedbackResponse>, ApiError> {
+    let feedback = covalence_core::models::trace::SearchFeedback::new(
+        req.query,
+        req.result_id,
+        req.relevance,
+        req.comment,
+    );
+    state.admin_service.submit_feedback(feedback).await?;
+    Ok(Json(FeedbackResponse { recorded: true }))
 }

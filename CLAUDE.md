@@ -101,7 +101,7 @@ These must not conflict. The existing Covalence instance runs in production.
 - **No computed/derived state stored in PG.** Topological confidence, PageRank, communities are computed by the sidecar or at query time.
 - **No circular crate dependencies.** `covalence-api` depends on `covalence-core`, never the reverse.
 - **No graph algorithms in SQL.** Graph traversal goes through petgraph. PG has a `graph_traverse()` fallback only for when the sidecar is unavailable.
-- **No hardcoded embedding dimensions.** Dimensions are configured via `COVALENCE_EMBED_DIM` (default 1024) and `COVALENCE_NODE_EMBED_DIM` (default 256), not scattered as magic numbers.
+- **No hardcoded embedding dimensions.** Per-table dimensions are configured via `COVALENCE_EMBED_DIM_SOURCE` (default 2048), `COVALENCE_EMBED_DIM_CHUNK` (default 1024), `COVALENCE_EMBED_DIM_NODE` (default 256), etc. Legacy `COVALENCE_EMBED_DIM` is supported as fallback. Embeddings are generated at max dimension and truncated + renormalized per table (matryoshka property).
 - **No conflation of UUID with NodeIndex.** UUIDs are PG identifiers. NodeIndex is petgraph-internal. The `index: HashMap<Uuid, NodeIndex>` map bridges them.
 
 ## Patterns to Follow
@@ -119,7 +119,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 406 passing tests (378 core + 28 eval), 11 ignored integration tests
+# Current: 475 passing tests (432 core + 43 eval), 11 ignored integration tests
 
 # Integration tests (requires running PG on port 5435)
 cd engine && cargo test --workspace -- --ignored
@@ -180,4 +180,4 @@ To add a new ADR:
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–4 complete.** 406 tests passing. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13), search dimension fix (#14). See GitHub issues for ongoing enhancements.
+Current phase: **M0-M11 + Waves 1–5 complete.** 475 tests passing. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), spec alignment (search pipeline, ingestion, epistemic, API curation, PII detection, evaluation harness). See GitHub issues for ongoing enhancements.

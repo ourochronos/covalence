@@ -4,8 +4,17 @@
 //! mentioned in the query. This improves recall for entity-centric
 //! queries by embedding graph knowledge into the query vector.
 //!
+//! Also provides spreading activation: given a set of seed node
+//! IDs (e.g. top-K search results), collect their 1-hop neighbors
+//! as additional candidate IDs weighted by edge confidence.
+//!
 //! Example: "Tim Cook" -> "Tim Cook (CEO of Apple, announced Vision Pro)"
 //! Cost: one graph lookup per entity (~1ms). No LLM call.
+
+use std::collections::HashMap;
+
+use petgraph::visit::EdgeRef;
+use uuid::Uuid;
 
 use crate::graph::sidecar::SharedGraph;
 
@@ -20,6 +29,94 @@ pub struct ExpandedQuery {
     pub matched_entities: Vec<String>,
     /// Number of relationships added as context.
     pub relationships_added: usize,
+}
+
+/// Result of spreading activation from seed nodes.
+#[derive(Debug, Clone)]
+pub struct SpreadingResult {
+    /// Node IDs discovered via spreading activation.
+    pub expanded_ids: Vec<Uuid>,
+    /// Activation weights per discovered ID (higher = closer
+    /// to seed nodes, weighted by edge confidence).
+    pub weights: HashMap<Uuid, f64>,
+    /// Number of seed nodes that contributed.
+    pub seeds_used: usize,
+}
+
+/// Default maximum neighbors to return per seed node.
+const MAX_NEIGHBORS_PER_SEED: usize = 5;
+
+/// Perform spreading activation from seed node IDs.
+///
+/// For each seed, collects 1-hop neighbors in the graph sidecar
+/// weighted by edge confidence. Neighbors already in the seed
+/// set are excluded. Returns the union of discovered neighbors
+/// with their activation weights.
+pub async fn spreading_activation(
+    seed_ids: &[Uuid],
+    graph: &SharedGraph,
+    max_per_seed: Option<usize>,
+) -> SpreadingResult {
+    if seed_ids.is_empty() {
+        return SpreadingResult {
+            expanded_ids: Vec::new(),
+            weights: HashMap::new(),
+            seeds_used: 0,
+        };
+    }
+
+    let max_n = max_per_seed.unwrap_or(MAX_NEIGHBORS_PER_SEED);
+    let graph_read = graph.read().await;
+    let seed_set: std::collections::HashSet<Uuid> = seed_ids.iter().copied().collect();
+
+    let mut weights: HashMap<Uuid, f64> = HashMap::new();
+    let mut seeds_used = 0usize;
+
+    for &seed_id in seed_ids {
+        let Some(idx) = graph_read.node_index(seed_id) else {
+            continue;
+        };
+        seeds_used += 1;
+
+        // Collect neighbors sorted by edge confidence descending.
+        let mut neighbors: Vec<(Uuid, f64)> = Vec::new();
+
+        for edge in graph_read.graph().edges(idx) {
+            let target_meta = &graph_read.graph()[edge.target()];
+            let edge_meta = &graph_read.graph()[edge.id()];
+            if !seed_set.contains(&target_meta.id) {
+                neighbors.push((target_meta.id, edge_meta.confidence));
+            }
+        }
+
+        for edge in graph_read
+            .graph()
+            .edges_directed(idx, petgraph::Direction::Incoming)
+        {
+            let source_meta = &graph_read.graph()[edge.source()];
+            let edge_meta = &graph_read.graph()[edge.id()];
+            if !seed_set.contains(&source_meta.id) {
+                neighbors.push((source_meta.id, edge_meta.confidence));
+            }
+        }
+
+        // Sort by confidence descending and take top-N.
+        neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        neighbors.truncate(max_n);
+
+        for (nid, conf) in neighbors {
+            let entry = weights.entry(nid).or_insert(0.0);
+            *entry += conf;
+        }
+    }
+
+    let expanded_ids: Vec<Uuid> = weights.keys().copied().collect();
+
+    SpreadingResult {
+        expanded_ids,
+        weights,
+        seeds_used,
+    }
 }
 
 /// Maximum relationships to include per matched entity.
@@ -219,5 +316,139 @@ mod tests {
         // "AI" is only 2 chars, should be skipped
         assert!(result.matched_entities.is_empty());
         assert_eq!(result.expanded, "Tell me about AI");
+    }
+
+    #[tokio::test]
+    async fn spreading_activation_empty_seeds() {
+        let graph = empty_shared_graph();
+        let result = spreading_activation(&[], &graph, None).await;
+        assert!(result.expanded_ids.is_empty());
+        assert_eq!(result.seeds_used, 0);
+    }
+
+    #[tokio::test]
+    async fn spreading_activation_no_match_in_graph() {
+        let graph = empty_shared_graph();
+        let fake_id = Uuid::new_v4();
+        let result = spreading_activation(&[fake_id], &graph, None).await;
+        assert!(result.expanded_ids.is_empty());
+        assert_eq!(result.seeds_used, 0);
+    }
+
+    #[tokio::test]
+    async fn spreading_activation_finds_neighbors() {
+        use crate::graph::sidecar::{EdgeMeta, NodeMeta};
+        use uuid::Uuid;
+
+        let graph = empty_shared_graph();
+        let a_id = Uuid::new_v4();
+        let b_id = Uuid::new_v4();
+        let c_id = Uuid::new_v4();
+
+        {
+            let mut g = graph.write().await;
+            g.add_node(NodeMeta {
+                id: a_id,
+                node_type: "entity".into(),
+                canonical_name: "NodeA".into(),
+                clearance_level: 0,
+            })
+            .ok();
+            g.add_node(NodeMeta {
+                id: b_id,
+                node_type: "entity".into(),
+                canonical_name: "NodeB".into(),
+                clearance_level: 0,
+            })
+            .ok();
+            g.add_node(NodeMeta {
+                id: c_id,
+                node_type: "entity".into(),
+                canonical_name: "NodeC".into(),
+                clearance_level: 0,
+            })
+            .ok();
+            g.add_edge(
+                a_id,
+                b_id,
+                EdgeMeta {
+                    id: Uuid::new_v4(),
+                    rel_type: "related_to".into(),
+                    weight: 1.0,
+                    confidence: 0.8,
+                    causal_level: None,
+                    clearance_level: 0,
+                },
+            )
+            .ok();
+            g.add_edge(
+                a_id,
+                c_id,
+                EdgeMeta {
+                    id: Uuid::new_v4(),
+                    rel_type: "related_to".into(),
+                    weight: 1.0,
+                    confidence: 0.6,
+                    causal_level: None,
+                    clearance_level: 0,
+                },
+            )
+            .ok();
+        }
+
+        // Seed with node A — should find B and C as neighbors.
+        let result = spreading_activation(&[a_id], &graph, None).await;
+        assert_eq!(result.seeds_used, 1);
+        assert_eq!(result.expanded_ids.len(), 2);
+        assert!(result.weights.contains_key(&b_id));
+        assert!(result.weights.contains_key(&c_id));
+        assert!((result.weights[&b_id] - 0.8).abs() < 1e-10);
+        assert!((result.weights[&c_id] - 0.6).abs() < 1e-10);
+    }
+
+    #[tokio::test]
+    async fn spreading_excludes_seed_nodes() {
+        use crate::graph::sidecar::{EdgeMeta, NodeMeta};
+        use uuid::Uuid;
+
+        let graph = empty_shared_graph();
+        let a_id = Uuid::new_v4();
+        let b_id = Uuid::new_v4();
+
+        {
+            let mut g = graph.write().await;
+            g.add_node(NodeMeta {
+                id: a_id,
+                node_type: "entity".into(),
+                canonical_name: "NodeA".into(),
+                clearance_level: 0,
+            })
+            .ok();
+            g.add_node(NodeMeta {
+                id: b_id,
+                node_type: "entity".into(),
+                canonical_name: "NodeB".into(),
+                clearance_level: 0,
+            })
+            .ok();
+            g.add_edge(
+                a_id,
+                b_id,
+                EdgeMeta {
+                    id: Uuid::new_v4(),
+                    rel_type: "link".into(),
+                    weight: 1.0,
+                    confidence: 0.9,
+                    causal_level: None,
+                    clearance_level: 0,
+                },
+            )
+            .ok();
+        }
+
+        // Both A and B are seeds — no new neighbors.
+        let result = spreading_activation(&[a_id, b_id], &graph, None).await;
+        assert!(result.expanded_ids.is_empty());
+        assert_eq!(result.seeds_used, 2);
     }
 }

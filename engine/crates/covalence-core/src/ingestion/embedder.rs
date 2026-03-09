@@ -17,6 +17,27 @@ pub trait Embedder: Send + Sync {
     fn model_name(&self) -> &str;
 }
 
+/// Truncate an embedding vector to `target_dim` dimensions and
+/// L2-normalize the result.
+///
+/// For matryoshka-style models (OpenAI `text-embedding-3-*`, Jina v3),
+/// the first N dimensions capture progressively less information,
+/// so truncation + renormalization preserves quality.
+///
+/// Returns the original vector unchanged if it is already at or
+/// below the target dimension.
+pub fn truncate_embedding(embedding: &[f64], target_dim: usize) -> Vec<f64> {
+    if embedding.len() <= target_dim {
+        return embedding.to_vec();
+    }
+    let truncated = &embedding[..target_dim];
+    let norm: f64 = truncated.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if norm < 1e-12 {
+        return truncated.to_vec();
+    }
+    truncated.iter().map(|v| v / norm).collect()
+}
+
 /// A mock embedder that returns zero vectors of a configured dimension.
 pub struct MockEmbedder {
     dim: usize,
@@ -75,5 +96,36 @@ mod tests {
         let embedder = MockEmbedder::new(2048);
         assert_eq!(embedder.dimension(), 2048);
         assert_eq!(embedder.model_name(), "mock");
+    }
+
+    #[test]
+    fn truncate_embedding_reduces_dims() {
+        let v = vec![0.6, 0.8, 0.1, 0.2];
+        let t = truncate_embedding(&v, 2);
+        assert_eq!(t.len(), 2);
+        // Should be L2-normalized
+        let norm: f64 = t.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn truncate_embedding_noop_when_at_target() {
+        let v = vec![0.5, 0.5];
+        let t = truncate_embedding(&v, 2);
+        assert_eq!(t, v);
+    }
+
+    #[test]
+    fn truncate_embedding_noop_when_below_target() {
+        let v = vec![1.0];
+        let t = truncate_embedding(&v, 5);
+        assert_eq!(t, v);
+    }
+
+    #[test]
+    fn truncate_embedding_zero_vector() {
+        let v = vec![0.0, 0.0, 0.0, 0.0];
+        let t = truncate_embedding(&v, 2);
+        assert_eq!(t, vec![0.0, 0.0]);
     }
 }

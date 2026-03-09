@@ -15,7 +15,8 @@ use crate::models::node_alias::NodeAlias;
 use crate::models::source::Source;
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{
-    AuditLogRepo, ChunkRepo, EdgeRepo, ExtractionRepo, NodeAliasRepo, NodeRepo, SourceRepo,
+    AuditLogRepo, ChunkRepo, EdgeRepo, ExtractionRepo, NodeAliasRepo, NodeLandmarkRepo, NodeRepo,
+    SourceRepo,
 };
 use crate::types::ids::{AliasId, AuditLogId, EdgeId, NodeId};
 
@@ -240,6 +241,135 @@ impl NodeService {
         AuditLogRepo::create(&*self.repo, &audit).await?;
 
         Ok(audit_id)
+    }
+
+    /// Apply a correction to a node's fields.
+    ///
+    /// Updates any supplied fields (canonical_name, node_type,
+    /// description, confidence) and records an audit log entry.
+    pub async fn correct(
+        &self,
+        id: NodeId,
+        canonical_name: Option<String>,
+        node_type: Option<String>,
+        description: Option<String>,
+        confidence: Option<f64>,
+    ) -> Result<AuditLogId> {
+        let mut node = NodeRepo::get(&*self.repo, id)
+            .await?
+            .ok_or(Error::NotFound {
+                entity_type: "node",
+                id: id.to_string(),
+            })?;
+
+        let mut changes = serde_json::Map::new();
+
+        if let Some(ref name) = canonical_name {
+            changes.insert(
+                "canonical_name".into(),
+                serde_json::json!({
+                    "old": node.canonical_name,
+                    "new": name,
+                }),
+            );
+            node.canonical_name = name.clone();
+        }
+        if let Some(ref nt) = node_type {
+            changes.insert(
+                "node_type".into(),
+                serde_json::json!({
+                    "old": node.node_type,
+                    "new": nt,
+                }),
+            );
+            node.node_type = nt.clone();
+        }
+        if let Some(ref desc) = description {
+            changes.insert(
+                "description".into(),
+                serde_json::json!({
+                    "old": node.description,
+                    "new": desc,
+                }),
+            );
+            node.description = Some(desc.clone());
+        }
+        if let Some(conf) = confidence {
+            changes.insert("confidence".into(), serde_json::json!({ "new": conf }));
+            // Store as a simple belief opinion.
+            node.confidence_breakdown =
+                crate::types::opinion::Opinion::new(conf, 0.0, 1.0 - conf, 0.5);
+        }
+
+        NodeRepo::update(&*self.repo, &node).await?;
+
+        // Update sidecar.
+        {
+            let mut g = self.graph.write().await;
+            let _ = g.remove_node(id.into_uuid());
+            let _ = g.add_node(NodeMeta {
+                id: id.into_uuid(),
+                node_type: node.node_type.clone(),
+                canonical_name: node.canonical_name.clone(),
+                clearance_level: node.clearance_level.as_i32(),
+            });
+        }
+
+        let audit = AuditLog::new(
+            AuditAction::NodeCorrect,
+            "api:correct".to_string(),
+            serde_json::Value::Object(changes),
+        )
+        .with_target("node", id.into_uuid());
+        let audit_id = audit.id;
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        Ok(audit_id)
+    }
+
+    /// Add a free-text annotation to a node's properties.
+    ///
+    /// Appends to the `annotations` array in the node's JSONB
+    /// properties field.
+    pub async fn annotate(&self, id: NodeId, text: String) -> Result<AuditLogId> {
+        let mut node = NodeRepo::get(&*self.repo, id)
+            .await?
+            .ok_or(Error::NotFound {
+                entity_type: "node",
+                id: id.to_string(),
+            })?;
+
+        // Ensure properties is an object and append annotation.
+        if let serde_json::Value::Object(ref mut map) = node.properties {
+            let annotations = map
+                .entry("annotations")
+                .or_insert_with(|| serde_json::Value::Array(vec![]));
+            if let serde_json::Value::Array(arr) = annotations {
+                arr.push(serde_json::json!({
+                    "text": text,
+                    "created_at": chrono::Utc::now().to_rfc3339(),
+                }));
+            }
+        }
+
+        NodeRepo::update(&*self.repo, &node).await?;
+
+        let audit = AuditLog::new(
+            AuditAction::NodeAnnotate,
+            "api:annotate".to_string(),
+            serde_json::json!({ "text": text }),
+        )
+        .with_target("node", id.into_uuid());
+        let audit_id = audit.id;
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        Ok(audit_id)
+    }
+
+    /// List landmark nodes ordered by mention count (proxy for
+    /// betweenness centrality).
+    pub async fn list_landmarks(&self, limit: usize) -> Result<Vec<Node>> {
+        NodeLandmarkRepo::list_landmarks(&*self.repo, limit as i64).await
     }
 
     /// Split a node into multiple new nodes per the given specs.

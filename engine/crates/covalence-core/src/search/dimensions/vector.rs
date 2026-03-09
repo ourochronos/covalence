@@ -1,14 +1,16 @@
 //! Vector search dimension — multi-granularity semantic similarity via pgvector.
 //!
 //! Searches chunks, nodes, sources, and articles by embedding cosine
-//! distance. Each table is queried independently so that a dimension
-//! mismatch in one table does not prevent results from the others.
+//! distance. Each table is queried independently with a per-table
+//! truncated query embedding to match column dimensions.
 
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{DimensionKind, SearchDimension, SearchQuery};
+use crate::config::TableDimensions;
 use crate::error::Result;
+use crate::ingestion::embedder::truncate_embedding;
 use crate::search::SearchResult;
 
 /// Semantic similarity search using pgvector cosine distance.
@@ -16,28 +18,24 @@ use crate::search::SearchResult;
 /// Queries the `chunks`, `nodes`, `sources`, and `articles` tables
 /// for the closest embeddings to the query vector using the `<=>`
 /// (cosine distance) operator. Each table is queried independently
-/// so that a dimension mismatch in one table does not prevent
-/// results from the others. Results from all granularities are
-/// merged and re-ranked.
+/// with its own truncated embedding to match the column dimension.
+/// Results from all granularities are merged and re-ranked.
 pub struct VectorDimension {
     pool: PgPool,
+    table_dims: TableDimensions,
 }
 
 impl VectorDimension {
-    /// Create a new vector search dimension.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    /// Create a new vector search dimension with per-table
+    /// embedding dimensions.
+    pub fn new(pool: PgPool, table_dims: TableDimensions) -> Self {
+        Self { pool, table_dims }
     }
 
     /// Query a single table for embedding similarity, returning
     /// an empty vec (with a warning log) on error rather than
     /// propagating the failure.
-    async fn query_table(
-        &self,
-        table: &str,
-        pgvec: &str,
-        limit: i64,
-    ) -> Vec<(Uuid, f64)> {
+    async fn query_table(&self, table: &str, pgvec: &str, limit: i64) -> Vec<(Uuid, f64)> {
         let sql = format!(
             "SELECT id, \
              (1.0 - (embedding <=> $1::halfvec))::float8 AS score \
@@ -63,6 +61,27 @@ impl VectorDimension {
             }
         }
     }
+
+    /// Format an embedding as a pgvector literal, truncated to
+    /// the target dimension for the given table.
+    fn pgvec_for_table(&self, embedding: &[f64], table: &str) -> String {
+        let target_dim = match table {
+            "chunks" => self.table_dims.chunk,
+            "nodes" => self.table_dims.node,
+            "sources" => self.table_dims.source,
+            "articles" => self.table_dims.article,
+            _ => self.table_dims.chunk,
+        };
+        let truncated = truncate_embedding(embedding, target_dim);
+        format!(
+            "[{}]",
+            truncated
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
 }
 
 impl SearchDimension for VectorDimension {
@@ -76,27 +95,22 @@ impl SearchDimension for VectorDimension {
             "vector search query embedding"
         );
 
-        // Format embedding as pgvector literal: '[0.1,0.2,...]'
-        let pgvec = format!(
-            "[{}]",
-            embedding
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-
         let limit = query.limit as i64;
+
+        // Format per-table pgvec literals (truncated to column dim).
+        let pgvec_chunk = self.pgvec_for_table(embedding, "chunks");
+        let pgvec_node = self.pgvec_for_table(embedding, "nodes");
+        let pgvec_source = self.pgvec_for_table(embedding, "sources");
+        let pgvec_article = self.pgvec_for_table(embedding, "articles");
 
         // Query each table independently so a dimension mismatch
         // in one table does not prevent results from others.
-        let (chunk_rows, node_rows, source_rows, article_rows) =
-            tokio::join!(
-                self.query_table("chunks", &pgvec, limit),
-                self.query_table("nodes", &pgvec, limit),
-                self.query_table("sources", &pgvec, limit),
-                self.query_table("articles", &pgvec, limit),
-            );
+        let (chunk_rows, node_rows, source_rows, article_rows) = tokio::join!(
+            self.query_table("chunks", &pgvec_chunk, limit),
+            self.query_table("nodes", &pgvec_node, limit),
+            self.query_table("sources", &pgvec_source, limit),
+            self.query_table("articles", &pgvec_article, limit),
+        );
 
         // Merge and re-rank by score descending.
         let mut combined: Vec<(Uuid, f64, &str)> = Vec::new();
@@ -112,10 +126,7 @@ impl SearchDimension for VectorDimension {
         for (id, score) in article_rows {
             combined.push((id, score, "article"));
         }
-        combined.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         combined.truncate(query.limit);
 
         let results = combined

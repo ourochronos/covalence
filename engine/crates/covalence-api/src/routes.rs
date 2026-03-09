@@ -28,15 +28,21 @@ pub fn router(state: AppState) -> Router {
         .route("/sources/{id}/chunks", get(sources::get_source_chunks))
         // Search
         .route("/search", post(search::search))
+        .route("/search/feedback", post(search::search_feedback))
         // Nodes
         .route("/nodes/resolve", post(nodes::resolve_node))
         .route("/nodes/merge", post(nodes::merge_nodes))
+        .route("/nodes/landmarks", get(nodes::list_landmarks))
         .route("/nodes/{id}", get(nodes::get_node))
         .route("/nodes/{id}/neighborhood", get(nodes::get_neighborhood))
         .route("/nodes/{id}/provenance", get(nodes::get_provenance))
         .route("/nodes/{id}/split", post(nodes::split_node))
+        .route("/nodes/{id}/correct", post(nodes::correct_node))
+        .route("/nodes/{id}/annotate", post(nodes::annotate_node))
         // Edges
         .route("/edges/{id}", get(edges::get_edge))
+        .route("/edges/{id}", delete(edges::delete_edge))
+        .route("/edges/{id}/correct", post(edges::correct_edge))
         // Graph
         .route("/graph/stats", get(admin::graph_stats))
         .route("/graph/communities", get(admin::graph_communities))
@@ -54,6 +60,8 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/consolidate", post(admin::trigger_consolidation))
         .route("/admin/health", get(admin::health))
         .route("/admin/metrics", get(admin::metrics))
+        .route("/admin/traces", get(admin::list_traces))
+        .route("/admin/traces/{id}/replay", post(admin::replay_trace))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,

@@ -21,6 +21,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         sources::delete_source,
         // Search
         search::search,
+        search::search_feedback,
         // Nodes
         nodes::get_node,
         nodes::get_neighborhood,
@@ -28,8 +29,13 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         nodes::resolve_node,
         nodes::merge_nodes,
         nodes::split_node,
+        nodes::correct_node,
+        nodes::annotate_node,
+        nodes::list_landmarks,
         // Edges
         edges::get_edge,
+        edges::correct_edge,
+        edges::delete_edge,
         // Graph
         admin::graph_stats,
         admin::graph_communities,
@@ -45,6 +51,8 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::trigger_consolidation,
         admin::health,
         admin::metrics,
+        admin::list_traces,
+        admin::replay_trace,
     ),
     components(schemas(
         dto::CreateSourceRequest,
@@ -76,6 +84,15 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::ConsolidateResponse,
         dto::HealthResponse,
         dto::MetricsResponse,
+        dto::CorrectNodeRequest,
+        dto::CorrectEdgeRequest,
+        dto::DeleteEdgeParams,
+        dto::AnnotateNodeRequest,
+        dto::SearchFeedbackRequest,
+        dto::CurationResponse,
+        dto::FeedbackResponse,
+        dto::SearchTraceResponse,
+        dto::TraceReplayResponse,
         mcp::McpTool,
         mcp::McpToolCall,
         mcp::McpToolResult,

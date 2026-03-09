@@ -9,3 +9,4 @@ pub mod node;
 pub mod node_alias;
 pub mod search;
 pub mod source;
+pub mod trace;

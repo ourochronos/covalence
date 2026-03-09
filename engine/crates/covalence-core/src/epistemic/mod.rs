@@ -19,7 +19,11 @@ pub mod delta;
 pub mod forgetting;
 pub mod fusion;
 pub mod invalidation;
+pub mod propagation;
 
 pub use invalidation::{
     ConflictCheck, ConflictType, EdgeConflict, InvalidationAction, InvalidationReason,
+};
+pub use propagation::{
+    ClaimAttack, ClaimInput, PropagationConfig, PropagationResult, propagate_confidence,
 };

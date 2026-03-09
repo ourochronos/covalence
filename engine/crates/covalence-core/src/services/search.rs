@@ -2,19 +2,28 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::config::TableDimensions;
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::ingestion::embedder::Embedder;
+use crate::search::abstention::{AbstentionCheck, AbstentionConfig, check_abstention};
+use crate::search::cache::{CacheConfig, QueryCache};
+use crate::search::context::{AssembledContext, ContextConfig, RawContextItem, assemble_context};
 use crate::search::dimensions::{
     GlobalDimension, GraphDimension, LexicalDimension, SearchDimension, SearchQuery,
     StructuralDimension, TemporalDimension, VectorDimension,
 };
+use crate::search::expansion::spreading_activation;
 use crate::search::fusion::{self, FusedResult};
+use crate::search::rerank::{NoopReranker, Reranker};
+use crate::search::skewroute::select_strategy;
 use crate::search::strategy::SearchStrategy;
+use crate::search::trace::QueryTrace;
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{ArticleRepo, ChunkRepo, NodeRepo, SourceRepo};
 use crate::types::ids::{ArticleId, ChunkId, NodeId};
@@ -30,48 +39,120 @@ pub struct SearchFilters {
     pub date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 }
 
+/// Wrapper around fused results that includes search metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResponse {
+    /// The fused search results.
+    pub results: Vec<FusedResult>,
+    /// Abstention check result (if context was insufficient).
+    pub abstention: Option<AbstentionCheck>,
+    /// Query execution trace.
+    pub trace: QueryTrace,
+}
+
 /// Service for orchestrating multi-dimensional search and RRF fusion.
+///
+/// Integrates the full search pipeline: cache lookup, adaptive
+/// strategy selection, dimension search, RRF fusion, abstention
+/// detection, query expansion, reranking, and trace recording.
 pub struct SearchService {
     repo: Arc<PgRepo>,
     embedder: Option<Arc<dyn Embedder>>,
+    graph: SharedGraph,
     vector: VectorDimension,
     lexical: LexicalDimension,
     temporal: TemporalDimension,
     graph_dim: GraphDimension,
     structural: StructuralDimension,
     global: GlobalDimension,
+    reranker: Arc<dyn Reranker>,
+    cache: Option<QueryCache>,
+    abstention_config: AbstentionConfig,
 }
 
 impl SearchService {
-    /// Create a new search service.
+    /// Create a new search service with default table dimensions.
     pub fn new(repo: Arc<PgRepo>, graph: SharedGraph) -> Self {
         Self::with_embedder(repo, graph, None)
     }
 
-    /// Create a new search service with an optional embedder for vector search.
+    /// Create a new search service with an optional embedder for
+    /// vector search.
     pub fn with_embedder(
         repo: Arc<PgRepo>,
         graph: SharedGraph,
         embedder: Option<Arc<dyn Embedder>>,
     ) -> Self {
+        Self::with_config(repo, graph, embedder, TableDimensions::default())
+    }
+
+    /// Create a new search service with per-table embedding
+    /// dimensions.
+    pub fn with_config(
+        repo: Arc<PgRepo>,
+        graph: SharedGraph,
+        embedder: Option<Arc<dyn Embedder>>,
+        table_dims: TableDimensions,
+    ) -> Self {
         let pool = repo.pool().clone();
+        let graph_clone = Arc::clone(&graph);
         Self {
             repo,
             embedder,
-            vector: VectorDimension::new(pool.clone()),
+            vector: VectorDimension::new(pool.clone(), table_dims),
             lexical: LexicalDimension::new(pool.clone()),
             temporal: TemporalDimension::new(pool.clone()),
             graph_dim: GraphDimension::new(Arc::clone(&graph)),
-            structural: StructuralDimension::new(graph),
-            global: GlobalDimension::new(pool),
+            structural: StructuralDimension::new(Arc::clone(&graph)),
+            global: GlobalDimension::new(pool.clone()),
+            graph: graph_clone,
+            reranker: Arc::new(NoopReranker),
+            cache: None,
+            abstention_config: AbstentionConfig::default(),
         }
+    }
+
+    /// Enable the semantic query cache with the given config.
+    ///
+    /// When enabled, semantically similar queries within the TTL
+    /// window will return cached results instead of re-executing
+    /// the full search pipeline.
+    pub fn with_cache(mut self, config: CacheConfig) -> Self {
+        let pool = self.repo.pool().clone();
+        self.cache = Some(QueryCache::new(pool, config));
+        self
+    }
+
+    /// Set a custom reranker implementation.
+    ///
+    /// By default, `NoopReranker` is used which preserves the
+    /// original RRF ordering. Provide a cross-encoder reranker
+    /// (e.g. Voyage rerank-2.5) for improved result relevance.
+    pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
+        self.reranker = reranker;
+        self
+    }
+
+    /// Set a custom abstention config.
+    pub fn with_abstention_config(mut self, config: AbstentionConfig) -> Self {
+        self.abstention_config = config;
+        self
     }
 
     /// Execute a fused search across all dimensions.
     ///
-    /// Each dimension independently ranks candidates, then results are
-    /// combined via Reciprocal Rank Fusion with strategy-derived weights.
-    /// Optional filters narrow results after fusion and enrichment.
+    /// Pipeline:
+    /// 1. Check semantic query cache (if enabled)
+    /// 2. Embed the query for vector search
+    /// 3. Auto-select strategy if not specified (SkewRoute)
+    /// 4. Run all 6 dimensions concurrently
+    /// 5. RRF fusion
+    /// 6. Abstention detection
+    /// 7. Query expansion (spreading activation from top-K)
+    /// 8. Enrichment (node/article/chunk metadata)
+    /// 9. Reranking
+    /// 10. Post-fusion filtering and truncation
+    /// 11. Cache population + trace recording
     pub async fn search(
         &self,
         query: &str,
@@ -79,15 +160,20 @@ impl SearchService {
         limit: usize,
         filters: Option<SearchFilters>,
     ) -> Result<Vec<FusedResult>> {
+        let start = Instant::now();
         let time_range = filters.as_ref().and_then(|f| f.date_range);
 
-        // Embed the query for vector search.
+        // --- Step 1: Embed the query ---
         let query_embedding = if let Some(ref embedder) = self.embedder {
             match embedder.embed(&[query.to_string()]).await {
                 Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
                 Ok(_) => None,
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to embed query, vector search disabled");
+                    tracing::warn!(
+                        error = %e,
+                        "failed to embed query, \
+                         vector search disabled"
+                    );
                     None
                 }
             }
@@ -101,16 +187,75 @@ impl SearchService {
             "query embedding status"
         );
 
+        // --- Step 2: Cache lookup ---
+        if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
+            let strategy_str = strategy_name(&strategy);
+            match cache.lookup(emb, strategy_str).await {
+                Ok(Some(cached_results)) => {
+                    tracing::debug!("cache hit for query");
+                    let mut trace = QueryTrace::new(query, &strategy);
+                    trace.cache_hit = true;
+                    trace.final_count = cached_results.len();
+                    trace.set_duration(start.elapsed());
+                    trace.emit();
+                    return Ok(cached_results);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "cache lookup failed, proceeding \
+                         without cache"
+                    );
+                }
+            }
+        }
+
+        // --- Step 3: Adaptive strategy selection ---
+        let effective_strategy = if strategy == SearchStrategy::Balanced {
+            // Run a quick vector-only probe for SkewRoute
+            // if we have an embedding.
+            if let Some(ref emb) = query_embedding {
+                let probe_query = SearchQuery {
+                    text: query.to_string(),
+                    strategy: SearchStrategy::Balanced,
+                    limit: 20,
+                    time_range,
+                    embedding: Some(emb.clone()),
+                    ..SearchQuery::default()
+                };
+                match self.vector.search(&probe_query).await {
+                    Ok(results) => {
+                        let scores: Vec<f64> = results.iter().map(|r| r.score).collect();
+                        let selected = select_strategy(&scores);
+                        if selected != SearchStrategy::Balanced {
+                            tracing::debug!(
+                                ?selected,
+                                "skewroute auto-selected \
+                                     strategy"
+                            );
+                        }
+                        selected
+                    }
+                    Err(_) => strategy.clone(),
+                }
+            } else {
+                strategy.clone()
+            }
+        } else {
+            strategy.clone()
+        };
+
+        // --- Step 4: Run all 6 dimensions concurrently ---
         let search_query = SearchQuery {
             text: query.to_string(),
-            strategy: strategy.clone(),
+            strategy: effective_strategy.clone(),
             limit,
             time_range,
-            embedding: query_embedding,
+            embedding: query_embedding.clone(),
             ..SearchQuery::default()
         };
 
-        // Run all 6 dimensions concurrently.
         let (vec_r, lex_r, tmp_r, grp_r, str_r, glb_r) = tokio::join!(
             self.vector.search(&search_query),
             self.lexical.search(&search_query),
@@ -120,9 +265,11 @@ impl SearchService {
             self.global.search(&search_query),
         );
 
-        // Collect successful results, skipping failed dimensions.
+        // --- Step 5: Collect and fuse ---
+        let mut trace = QueryTrace::new(query, &effective_strategy);
+
         let dimensions: [(&str, std::result::Result<Vec<fusion::SearchResult>, _>, f64); 6] = {
-            let w = strategy.weights();
+            let w = effective_strategy.weights();
             [
                 ("vector", vec_r, w.vector),
                 ("lexical", lex_r, w.lexical),
@@ -135,9 +282,6 @@ impl SearchService {
 
         let mut ranked_lists = Vec::new();
         let mut weights = Vec::new();
-
-        // Collect snippets per entity ID for post-fusion enrichment.
-        // Also track result types per ID for type-aware enrichment.
         let mut snippets: HashMap<Uuid, String> = HashMap::new();
         let mut result_types: HashMap<Uuid, String> = HashMap::new();
 
@@ -150,6 +294,7 @@ impl SearchService {
                         weight,
                         "search dimension returned results"
                     );
+                    trace.record_dimension(name, results.len());
                     for r in &results {
                         if let Some(s) = &r.snippet {
                             snippets.entry(r.id).or_insert_with(|| s.clone());
@@ -167,13 +312,72 @@ impl SearchService {
                         error = %e,
                         "search dimension failed, skipping"
                     );
+                    trace.record_dimension(name, 0);
                 }
             }
         }
 
         let mut fused = fusion::rrf_fuse(&ranked_lists, &weights, fusion::DEFAULT_K);
+        trace.fused_count = fused.len();
 
-        // Enrich each result based on its result_type.
+        // --- Step 6: Abstention detection ---
+        let scores: Vec<f64> = fused.iter().map(|r| r.fused_score).collect();
+        let abstention_check = check_abstention(&scores, &self.abstention_config);
+        if abstention_check.should_abstain {
+            trace.abstained = true;
+            tracing::info!(
+                reason = ?abstention_check.reason,
+                "search abstention triggered"
+            );
+        }
+
+        // --- Step 7: Query expansion (spreading activation) ---
+        if !fused.is_empty() {
+            let top_k = 5.min(fused.len());
+            let seed_ids: Vec<Uuid> = fused[..top_k].iter().map(|r| r.id).collect();
+            let spread = spreading_activation(&seed_ids, &self.graph, None).await;
+            if !spread.expanded_ids.is_empty() {
+                tracing::debug!(
+                    expanded = spread.expanded_ids.len(),
+                    seeds = spread.seeds_used,
+                    "spreading activation found neighbors"
+                );
+                // Merge expanded IDs as low-score entries if
+                // they aren't already in fused results.
+                let existing: std::collections::HashSet<Uuid> =
+                    fused.iter().map(|r| r.id).collect();
+                for eid in &spread.expanded_ids {
+                    if !existing.contains(eid) {
+                        let w = spread.weights.get(eid).copied().unwrap_or(0.0);
+                        // Use a small fraction of the lowest
+                        // fused score scaled by activation
+                        // weight so expanded items rank below
+                        // direct hits.
+                        let base = fused.last().map(|r| r.fused_score * 0.5).unwrap_or(0.01);
+                        fused.push(FusedResult {
+                            id: *eid,
+                            fused_score: base * w.min(1.0),
+                            confidence: None,
+                            entity_type: None,
+                            name: None,
+                            snippet: None,
+                            source_uri: None,
+                            result_type: None,
+                            dimension_scores: HashMap::new(),
+                            dimension_ranks: HashMap::new(),
+                        });
+                    }
+                }
+                // Re-sort after expansion merge.
+                fused.sort_by(|a, b| {
+                    b.fused_score
+                        .partial_cmp(&a.fused_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+
+        // --- Step 8: Enrichment ---
         for result in &mut fused {
             result.snippet = snippets.remove(&result.id);
             let rtype = result_types.get(&result.id).map(|s| s.as_str());
@@ -210,8 +414,8 @@ impl SearchService {
                     }
                 }
                 _ => {
-                    // Chunk or unknown — try chunk lookup for source_uri,
-                    // then node lookup for backward compat.
+                    // Chunk or unknown — try chunk lookup for
+                    // source_uri, then node lookup for compat.
                     if let Ok(Some(chunk)) =
                         ChunkRepo::get(&*self.repo, ChunkId::from_uuid(result.id)).await
                     {
@@ -234,7 +438,8 @@ impl SearchService {
         }
 
         // Parent-context injection: for paragraph-level chunks,
-        // prepend truncated parent (section) content to the snippet.
+        // prepend truncated parent (section) content to the
+        // snippet.
         for result in &mut fused {
             let is_chunk = result.result_type.as_deref().is_none_or(|rt| rt == "chunk");
             if !is_chunk {
@@ -255,7 +460,9 @@ impl SearchService {
                         };
                         let prefix = format!("[{}: {}]", parent.level, parent_ctx);
                         result.snippet = Some(match result.snippet.take() {
-                            Some(s) => format!("{} {}", prefix, s),
+                            Some(s) => {
+                                format!("{} {}", prefix, s)
+                            }
                             None => prefix,
                         });
                     }
@@ -263,7 +470,41 @@ impl SearchService {
             }
         }
 
-        // Apply post-fusion filters.
+        // --- Step 9: Reranking ---
+        let documents: Vec<String> = fused
+            .iter()
+            .map(|r| {
+                r.snippet
+                    .clone()
+                    .or_else(|| r.name.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        if !documents.is_empty() {
+            match self.reranker.rerank(query, &documents).await {
+                Ok(reranked) => {
+                    let mut reordered = Vec::with_capacity(fused.len());
+                    for rr in &reranked {
+                        if rr.index < fused.len() {
+                            reordered.push(fused[rr.index].clone());
+                        }
+                    }
+                    if reordered.len() == fused.len() {
+                        fused = reordered;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "reranking failed, \
+                         keeping RRF order"
+                    );
+                }
+            }
+        }
+
+        // --- Step 10: Post-fusion filters ---
         if let Some(ref f) = filters {
             if let Some(min_conf) = f.min_confidence {
                 fused.retain(|r| r.confidence.is_some_and(|c| c >= min_conf));
@@ -274,6 +515,207 @@ impl SearchService {
         }
 
         fused.truncate(limit);
+
+        // --- Step 11: Cache population + trace ---
+        trace.final_count = fused.len();
+        trace.set_duration(start.elapsed());
+        trace.emit();
+
+        if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
+            let strategy_str = strategy_name(&effective_strategy);
+            if let Err(e) = cache.store(query, emb, strategy_str, &fused).await {
+                tracing::warn!(
+                    error = %e,
+                    "failed to store search results in cache"
+                );
+            }
+        }
+
         Ok(fused)
+    }
+
+    /// Execute a search and return the full response including
+    /// abstention status and execution trace.
+    ///
+    /// This is the richer variant of [`search`] that returns
+    /// metadata alongside results. The `search` method remains
+    /// the primary API for backward compatibility.
+    pub async fn search_with_metadata(
+        &self,
+        query: &str,
+        strategy: SearchStrategy,
+        limit: usize,
+        filters: Option<SearchFilters>,
+    ) -> Result<SearchResponse> {
+        let start = Instant::now();
+        let time_range = filters.as_ref().and_then(|f| f.date_range);
+
+        // Embed the query.
+        let query_embedding = if let Some(ref embedder) = self.embedder {
+            match embedder.embed(&[query.to_string()]).await {
+                Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // Adaptive strategy.
+        let effective_strategy = if strategy == SearchStrategy::Balanced {
+            if let Some(ref emb) = query_embedding {
+                let probe_query = SearchQuery {
+                    text: query.to_string(),
+                    strategy: SearchStrategy::Balanced,
+                    limit: 20,
+                    time_range,
+                    embedding: Some(emb.clone()),
+                    ..SearchQuery::default()
+                };
+                match self.vector.search(&probe_query).await {
+                    Ok(results) => {
+                        let scores: Vec<f64> = results.iter().map(|r| r.score).collect();
+                        select_strategy(&scores)
+                    }
+                    Err(_) => strategy.clone(),
+                }
+            } else {
+                strategy.clone()
+            }
+        } else {
+            strategy.clone()
+        };
+
+        let search_query = SearchQuery {
+            text: query.to_string(),
+            strategy: effective_strategy.clone(),
+            limit,
+            time_range,
+            embedding: query_embedding,
+            ..SearchQuery::default()
+        };
+
+        let (vec_r, lex_r, tmp_r, grp_r, str_r, glb_r) = tokio::join!(
+            self.vector.search(&search_query),
+            self.lexical.search(&search_query),
+            self.temporal.search(&search_query),
+            self.graph_dim.search(&search_query),
+            self.structural.search(&search_query),
+            self.global.search(&search_query),
+        );
+
+        let mut trace = QueryTrace::new(query, &effective_strategy);
+        let w = effective_strategy.weights();
+        let dimensions = [
+            ("vector", vec_r, w.vector),
+            ("lexical", lex_r, w.lexical),
+            ("temporal", tmp_r, w.temporal),
+            ("graph", grp_r, w.graph),
+            ("structural", str_r, w.structural),
+            ("global", glb_r, w.global),
+        ];
+
+        let mut ranked_lists = Vec::new();
+        let mut dim_weights = Vec::new();
+
+        for (name, result, weight) in dimensions {
+            match result {
+                Ok(results) => {
+                    trace.record_dimension(name, results.len());
+                    ranked_lists.push(results);
+                    dim_weights.push(weight);
+                }
+                Err(_) => {
+                    trace.record_dimension(name, 0);
+                }
+            }
+        }
+
+        let mut fused = fusion::rrf_fuse(&ranked_lists, &dim_weights, fusion::DEFAULT_K);
+        trace.fused_count = fused.len();
+
+        // Abstention.
+        let scores: Vec<f64> = fused.iter().map(|r| r.fused_score).collect();
+        let abstention_check = check_abstention(&scores, &self.abstention_config);
+        if abstention_check.should_abstain {
+            trace.abstained = true;
+        }
+
+        // Truncate and finalize.
+        fused.truncate(limit);
+        trace.final_count = fused.len();
+        trace.set_duration(start.elapsed());
+        trace.emit();
+
+        Ok(SearchResponse {
+            results: fused,
+            abstention: if abstention_check.should_abstain {
+                Some(abstention_check)
+            } else {
+                None
+            },
+            trace,
+        })
+    }
+
+    /// Assemble fused results into a context string suitable
+    /// for LLM generation.
+    ///
+    /// Applies deduplication (cosine > 0.95), source diversity
+    /// (max 3 per source), and token budget (8K default).
+    /// Returns an `AssembledContext` with numbered references.
+    pub async fn assemble_context(
+        &self,
+        results: &[FusedResult],
+        config: Option<ContextConfig>,
+    ) -> AssembledContext {
+        let config = config.unwrap_or_default();
+
+        let raw_items: Vec<RawContextItem> = results
+            .iter()
+            .map(|r| {
+                let content = r
+                    .snippet
+                    .clone()
+                    .or_else(|| r.name.clone())
+                    .unwrap_or_default();
+                // Rough token estimate: ~4 chars per token.
+                let token_count = content.len().div_ceil(4);
+                RawContextItem {
+                    content,
+                    source_id: r.source_uri.clone().or_else(|| r.entity_type.clone()),
+                    source_title: r.name.clone(),
+                    score: r.fused_score,
+                    token_count,
+                    embedding: None,
+                    parent_context: None,
+                }
+            })
+            .collect();
+
+        assemble_context(raw_items, &config)
+    }
+
+    /// Format an assembled context into a single string with
+    /// numbered references suitable for LLM prompts.
+    pub fn format_context(context: &AssembledContext) -> String {
+        let mut out = String::new();
+        for item in &context.items {
+            out.push_str(&format!("[{}] {}\n\n", item.ref_number, item.content));
+        }
+        out
+    }
+}
+
+/// Map a strategy to its string name for cache keying and
+/// trace recording.
+fn strategy_name(strategy: &SearchStrategy) -> &'static str {
+    match strategy {
+        SearchStrategy::Balanced => "balanced",
+        SearchStrategy::Precise => "precise",
+        SearchStrategy::Exploratory => "exploratory",
+        SearchStrategy::Recent => "recent",
+        SearchStrategy::GraphFirst => "graph_first",
+        SearchStrategy::Global => "global",
+        SearchStrategy::Custom(_) => "custom",
     }
 }

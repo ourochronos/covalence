@@ -108,7 +108,8 @@ impl AppState {
                 config.resolve_trigram_threshold,
                 emb,
                 config.resolve_vector_threshold,
-            ),
+            )
+            .with_node_embed_dim(config.embedding.table_dims.node),
             None => PgResolver::with_threshold(Arc::clone(&repo), config.resolve_trigram_threshold),
         });
 
@@ -123,12 +124,14 @@ impl AppState {
                 resolver,
                 Some(pg_resolver),
             )
+            .with_table_dims(config.embedding.table_dims.clone())
             .with_extract_concurrency(config.extract_concurrency),
         );
-        let search_service = Arc::new(SearchService::with_embedder(
+        let search_service = Arc::new(SearchService::with_config(
             Arc::clone(&repo),
             Arc::clone(&graph),
             embedder,
+            config.embedding.table_dims.clone(),
         ));
         let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));

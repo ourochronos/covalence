@@ -299,6 +299,38 @@ Two parallel implementation tracks:
 ### Issue #11 — Fine-Tune Relationship Extraction *(deferred)*
 Requires #5 GLiNER2 sidecar running in production + sufficient training data (~10K+ examples). Will be revisited once the two-pass extraction pipeline has accumulated enough labeled data for distillation.
 
+## Wave 5 — Spec Alignment + Per-Table Dimensions *(complete)*
+
+Comprehensive spec audit and implementation of all remaining gaps, plus per-table embedding dimension tiering.
+
+### Spec Gap Closure *(complete)*
+- [x] Full search pipeline: semantic cache (pgvector), abstention detection, spreading activation, reranking (noop + HTTP), query traces
+- [x] Ingestion: landscape gating (should_extract), source update classes (detect_source_update, content_overlap), PII detection (regex-based)
+- [x] Epistemic: 5-stage confidence propagation pipeline with convergence guard
+- [x] Consolidation: community summary generation (k-core + concatenation)
+- [x] API: knowledge curation endpoints (correct, annotate, feedback), search trace API
+- [x] Storage: search_traces + search_feedback tables (migration 005), graph_traverse + temporal_search stored procedures (migration 006)
+- [x] Evaluation: RAGAS metric traits (Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall), regression gate
+- [x] Models: SearchTrace, SearchFeedback, audit types for curation
+
+### Issue #20 — Per-Table Embedding Dimension Tiering *(complete)*
+- [x] `TableDimensions` config struct (source=2048, chunk=1024, article=1024, node=256, alias=256)
+- [x] Per-table env vars: `COVALENCE_EMBED_DIM_SOURCE`, `_CHUNK`, `_ARTICLE`, `_NODE`, `_ALIAS`
+- [x] Legacy fallback: `COVALENCE_EMBED_DIM` → chunk/article, `COVALENCE_NODE_EMBED_DIM` → node/alias
+- [x] Embedder generates at `max_dim()`, `truncate_embedding()` + L2-renormalize per table
+- [x] VectorDimension: per-table pgvec truncation in search queries
+- [x] SourceService: chunk, source, node embeddings truncated to target table dim
+- [x] PgResolver: vector match queries truncated to node dim
+- [x] Migration 007: column retypes to per-table dimensions + HNSW index recreation
+- [x] Provider docs updated with per-table dimension guidance
+
+### Documentation Updates
+- [x] CLAUDE.md: test counts (475), embedding dimension docs, milestone status
+- [x] MILESTONES.md: Wave 5 section
+- [x] providers.md: per-table dimension config reference
+
+**Note:** 475 tests passing (432 core + 43 eval), clippy clean, fmt clean.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)

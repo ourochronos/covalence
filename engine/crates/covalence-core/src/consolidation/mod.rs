@@ -25,6 +25,7 @@ pub use ontology::{
 };
 pub use scheduler::ConsolidationScheduler;
 pub use summary::{
-    CommunitySummary, CommunitySummaryInput, ConcatSummaryGenerator, SummaryGenerator,
+    CommunitySummary, CommunitySummaryInput, CommunitySummaryNode, ConcatSummaryGenerator,
+    SummaryGenerator, generate_community_summaries,
 };
 pub use topic::{SourceNodes, cluster_sources_by_community};

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use sqlx::Row;
 
 use crate::error::{Error, Result};
-use crate::ingestion::embedder::Embedder;
+use crate::ingestion::embedder::{Embedder, truncate_embedding};
 use crate::ingestion::extractor::ExtractedEntity;
 use crate::ingestion::resolver::{EntityResolver, MatchType, ResolvedEntity};
 use crate::storage::postgres::PgRepo;
@@ -47,6 +47,8 @@ pub struct PgResolver {
     embedder: Option<Arc<dyn Embedder>>,
     /// Minimum cosine similarity to accept a vector match.
     vector_threshold: f32,
+    /// Target dimension for node embeddings (for truncation).
+    node_embed_dim: usize,
 }
 
 impl PgResolver {
@@ -58,6 +60,7 @@ impl PgResolver {
             threshold: DEFAULT_FUZZY_THRESHOLD,
             embedder: None,
             vector_threshold: DEFAULT_VECTOR_THRESHOLD,
+            node_embed_dim: 256,
         }
     }
 
@@ -68,6 +71,7 @@ impl PgResolver {
             threshold,
             embedder: None,
             vector_threshold: DEFAULT_VECTOR_THRESHOLD,
+            node_embed_dim: 256,
         }
     }
 
@@ -87,7 +91,14 @@ impl PgResolver {
             threshold,
             embedder: Some(embedder),
             vector_threshold,
+            node_embed_dim: 256,
         }
+    }
+
+    /// Set the target dimension for node embeddings.
+    pub fn with_node_embed_dim(mut self, dim: usize) -> Self {
+        self.node_embed_dim = dim;
+        self
     }
 
     /// Try exact case-insensitive match on canonical name.
@@ -148,8 +159,10 @@ impl PgResolver {
             None => return Ok(None),
         };
 
-        // Convert to f32 for halfvec cast in the query.
-        let embedding_f32: Vec<f32> = embedding.iter().map(|&v| v as f32).collect();
+        // Truncate to node embedding dimension and convert to f32
+        // for halfvec cast in the query.
+        let truncated = truncate_embedding(&embedding, self.node_embed_dim);
+        let embedding_f32: Vec<f32> = truncated.iter().map(|&v| v as f32).collect();
 
         // Query closest node by cosine distance, filtering to
         // nodes that have embeddings.

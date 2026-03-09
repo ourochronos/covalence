@@ -12,6 +12,7 @@ use crate::models::extraction::Extraction;
 use crate::models::node::Node;
 use crate::models::node_alias::NodeAlias;
 use crate::models::source::Source;
+use crate::models::trace::{SearchFeedback, SearchTrace};
 use crate::types::ids::{
     AliasId, ArticleId, AuditLogId, ChunkId, EdgeId, ExtractionId, NodeId, SourceId,
 };
@@ -245,4 +246,32 @@ pub trait AuditLogRepo: Send + Sync {
 
     /// List recent audit log entries.
     fn list_recent(&self, limit: i64) -> impl Future<Output = Result<Vec<AuditLog>>> + Send;
+}
+
+/// Repository for [`SearchTrace`] entities.
+pub trait SearchTraceRepo: Send + Sync {
+    /// Insert a new search trace.
+    fn create(&self, trace: &SearchTrace) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get a search trace by ID.
+    fn get(&self, id: uuid::Uuid) -> impl Future<Output = Result<Option<SearchTrace>>> + Send;
+
+    /// List recent search traces.
+    fn list_recent(&self, limit: i64) -> impl Future<Output = Result<Vec<SearchTrace>>> + Send;
+}
+
+/// Repository for [`SearchFeedback`] entities.
+pub trait SearchFeedbackRepo: Send + Sync {
+    /// Insert a new search feedback entry.
+    fn create(&self, feedback: &SearchFeedback) -> impl Future<Output = Result<()>> + Send;
+
+    /// List recent search feedback entries.
+    fn list_recent(&self, limit: i64) -> impl Future<Output = Result<Vec<SearchFeedback>>> + Send;
+}
+
+/// Repository for node landmark queries.
+pub trait NodeLandmarkRepo: Send + Sync {
+    /// List nodes ordered by mention count descending (proxy for
+    /// betweenness centrality).
+    fn list_landmarks(&self, limit: i64) -> impl Future<Output = Result<Vec<Node>>> + Send;
 }

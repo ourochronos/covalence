@@ -10,12 +10,19 @@ pub mod error;
 pub mod extractor_eval;
 pub mod fixtures;
 pub mod metrics;
+pub mod ragas;
+pub mod regression;
 pub mod search_eval;
 
 pub use chunker_eval::ChunkerEval;
 pub use error::{EvalError, Result};
 pub use extractor_eval::ExtractorEval;
 pub use metrics::{ChunkerMetrics, ExtractorMetrics, SearchMetrics};
+pub use ragas::{
+    AnswerRelevancy, ContextPrecision, ContextRecall, Faithfulness, RagasScore, StubRagas,
+    evaluate_ragas,
+};
+pub use regression::{MetricComparison, RegressionGate, RegressionResult};
 pub use search_eval::SearchEval;
 
 /// Trait for evaluating a pipeline layer.

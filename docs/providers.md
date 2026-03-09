@@ -27,18 +27,28 @@ Covalence uses external providers for embeddings and (optionally) LLM-based enti
 
 ### Dimensionality control
 
-Models with Matryoshka embedding support (OpenAI `text-embedding-3-*`, Jina v3) allow truncating the output vector to fewer dimensions via the `dimensions` API parameter. Covalence always sends `COVALENCE_EMBED_DIM` as this parameter. For models that don't support it (Voyage, Ollama), set `COVALENCE_EMBED_DIM` to match the model's native output dimension.
+Covalence supports **per-table embedding dimensions** to optimize quality vs. storage/performance at each granularity. Models with Matryoshka embedding support (OpenAI `text-embedding-3-*`, Jina v3) allow truncating the output vector to fewer dimensions. Covalence requests embeddings at the maximum configured dimension and truncates + renormalizes per table.
 
-| Model | Native dims | Recommended `COVALENCE_EMBED_DIM` |
+| Model | Native dims | Recommended config |
 |---|---|---|
-| `text-embedding-3-large` | 3072 | 1024 (default) |
-| `text-embedding-3-small` | 1536 | 512 or 1024 |
-| `voyage-3` | 1024 | 1024 |
-| `voyage-context-3` | 1024 | 1024 |
-| `jina-embeddings-v3` | 1024 | 1024 |
-| Ollama (nomic-embed-text) | 768 | 768 |
+| `text-embedding-3-large` | 3072 | `SOURCE=2048, CHUNK=1024, NODE=256` (defaults) |
+| `text-embedding-3-small` | 1536 | `SOURCE=1024, CHUNK=512, NODE=256` |
+| `voyage-3` | 1024 | `SOURCE=1024, CHUNK=1024, NODE=256` |
+| `voyage-context-3` | 1024 | `SOURCE=1024, CHUNK=1024, NODE=256` |
+| `jina-embeddings-v3` | 1024 | `SOURCE=1024, CHUNK=1024, NODE=256` |
+| Ollama (nomic-embed-text) | 768 | `SOURCE=768, CHUNK=768, NODE=256` |
 
-**Important:** `COVALENCE_EMBED_DIM` must match the DB column dimension. After changing it, run migration 004 or manually `ALTER TABLE ... ALTER COLUMN embedding TYPE halfvec(N)` on all embedding columns.
+**Default per-table dimensions:**
+
+| Table | Dimension | Rationale |
+|---|---|---|
+| `sources` | 2048 | Fewest records, richest content — max fidelity is cheap |
+| `chunks` | 1024 | Most records, searched frequently — good quality/performance balance |
+| `articles` | 1024 | Searched alongside chunks, should match |
+| `nodes` | 256 | Short text (name + description), used in resolution lookups |
+| `node_aliases` | 256 | Must match nodes for cosine comparisons |
+
+**Important:** Per-table dimensions must match the DB column dimensions. After changing, run migration 007 or manually `ALTER TABLE ... ALTER COLUMN embedding TYPE halfvec(N)` on each table. The legacy `COVALENCE_EMBED_DIM` env var is still supported as the fallback for chunk and article dimensions.
 
 ## Per-Cloud Quickstart
 
@@ -147,9 +157,14 @@ COVALENCE_CHAT_MODEL=               # Leave empty to disable LLM extraction
 | `OPENAI_API_KEY` | API key for embedding provider | _(none — embeddings disabled)_ |
 | `OPENAI_BASE_URL` | Base URL for embedding API | `https://api.openai.com/v1` |
 | `COVALENCE_EMBED_MODEL` | Embedding model name | `text-embedding-3-large` |
-| `COVALENCE_EMBED_DIM` | Output vector dimensions (sent as `dimensions` param) | `1024` |
+| `COVALENCE_EMBED_DIM` | Legacy: fallback dimension for chunk/article | `1024` |
+| `COVALENCE_EMBED_DIM_SOURCE` | Source-level embedding dimensions | `2048` |
+| `COVALENCE_EMBED_DIM_CHUNK` | Chunk-level embedding dimensions | `1024` (falls back to `COVALENCE_EMBED_DIM`) |
+| `COVALENCE_EMBED_DIM_ARTICLE` | Article-level embedding dimensions | `1024` (falls back to `COVALENCE_EMBED_DIM`) |
+| `COVALENCE_EMBED_DIM_NODE` | Node-level embedding dimensions | `256` (falls back to `COVALENCE_NODE_EMBED_DIM`) |
+| `COVALENCE_EMBED_DIM_ALIAS` | Alias-level embedding dimensions | `256` (falls back to `COVALENCE_NODE_EMBED_DIM`) |
 | `COVALENCE_EMBED_BATCH` | Max texts per API call | `64` |
-| `COVALENCE_NODE_EMBED_DIM` | Node-level embedding dimensions | `256` |
+| `COVALENCE_NODE_EMBED_DIM` | Legacy: fallback dimension for node/alias | `256` |
 
 ### Chat / Entity Extraction
 

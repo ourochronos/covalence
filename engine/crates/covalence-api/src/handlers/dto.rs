@@ -335,6 +335,103 @@ pub struct MetricsResponse {
     pub source_count: i64,
 }
 
+// --- Knowledge Curation ---
+
+/// Request body for correcting a node.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CorrectNodeRequest {
+    /// New canonical name (optional).
+    pub canonical_name: Option<String>,
+    /// New node type (optional).
+    pub node_type: Option<String>,
+    /// New description (optional).
+    pub description: Option<String>,
+    /// New confidence value 0.0–1.0 (optional).
+    pub confidence: Option<f64>,
+}
+
+/// Request body for correcting an edge.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CorrectEdgeRequest {
+    /// New relationship type (optional).
+    pub rel_type: Option<String>,
+    /// New confidence value 0.0–1.0 (optional).
+    pub confidence: Option<f64>,
+}
+
+/// Query parameter for edge deletion reason.
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct DeleteEdgeParams {
+    /// Reason for deleting the edge (required).
+    pub reason: String,
+}
+
+/// Request body for annotating a node.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AnnotateNodeRequest {
+    /// Free-text annotation to append.
+    pub text: String,
+}
+
+/// Request body for search feedback.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SearchFeedbackRequest {
+    /// The query text that was searched.
+    pub query: String,
+    /// The result entity ID being rated.
+    pub result_id: Uuid,
+    /// Relevance rating (0.0 to 1.0).
+    pub relevance: f64,
+    /// Optional free-text comment.
+    pub comment: Option<String>,
+}
+
+/// Generic response for curation operations.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CurationResponse {
+    /// Whether the operation succeeded.
+    pub success: bool,
+    /// The audit log entry ID for the operation.
+    pub audit_log_id: Uuid,
+}
+
+/// Generic response for feedback submission.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FeedbackResponse {
+    /// Whether the feedback was recorded.
+    pub recorded: bool,
+}
+
+// --- Search Traces ---
+
+/// Response for a search trace entry.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SearchTraceResponse {
+    /// Trace ID.
+    pub id: Uuid,
+    /// The query text.
+    pub query_text: String,
+    /// The search strategy used.
+    pub strategy: String,
+    /// Per-dimension result counts.
+    pub dimension_counts: serde_json::Value,
+    /// Total results returned.
+    pub result_count: i32,
+    /// Execution time in milliseconds.
+    pub execution_ms: i32,
+    /// When the trace was recorded.
+    pub created_at: String,
+}
+
+/// Response for a trace replay.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TraceReplayResponse {
+    /// The trace that was replayed.
+    pub trace_id: Uuid,
+    /// New search results from replay.
+    pub results: Vec<SearchResultResponse>,
+}
+
 // --- Audit ---
 
 /// Response for an audit log entry.

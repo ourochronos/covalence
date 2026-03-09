@@ -6,8 +6,9 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    MergeNodesRequest, MergeNodesResponse, NeighborhoodParams, NodeResponse, ProvenanceResponse,
-    ResolveNodeRequest, SplitNodeRequest, SplitNodeResponse,
+    AnnotateNodeRequest, CorrectNodeRequest, CurationResponse, MergeNodesRequest,
+    MergeNodesResponse, NeighborhoodParams, NodeResponse, ProvenanceResponse, ResolveNodeRequest,
+    SplitNodeRequest, SplitNodeResponse,
 };
 use crate::state::AppState;
 
@@ -165,6 +166,91 @@ pub async fn split_node(
     Ok(Json(SplitNodeResponse {
         node_ids: ids.into_iter().map(|n| n.into_uuid()).collect(),
     }))
+}
+
+/// Correct a node's fields.
+#[utoipa::path(
+    post,
+    path = "/nodes/{id}/correct",
+    params(("id" = Uuid, Path, description = "Node ID")),
+    request_body = CorrectNodeRequest,
+    responses(
+        (status = 200, description = "Node corrected", body = CurationResponse),
+        (status = 404, description = "Node not found"),
+    ),
+    tag = "nodes"
+)]
+pub async fn correct_node(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<CorrectNodeRequest>,
+) -> Result<Json<CurationResponse>, ApiError> {
+    let audit_id = state
+        .node_service
+        .correct(
+            id.into(),
+            req.canonical_name,
+            req.node_type,
+            req.description,
+            req.confidence,
+        )
+        .await?;
+    Ok(Json(CurationResponse {
+        success: true,
+        audit_log_id: audit_id.into_uuid(),
+    }))
+}
+
+/// Add a free-text annotation to a node.
+#[utoipa::path(
+    post,
+    path = "/nodes/{id}/annotate",
+    params(("id" = Uuid, Path, description = "Node ID")),
+    request_body = AnnotateNodeRequest,
+    responses(
+        (status = 200, description = "Annotation added", body = CurationResponse),
+        (status = 404, description = "Node not found"),
+    ),
+    tag = "nodes"
+)]
+pub async fn annotate_node(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<AnnotateNodeRequest>,
+) -> Result<Json<CurationResponse>, ApiError> {
+    let audit_id = state.node_service.annotate(id.into(), req.text).await?;
+    Ok(Json(CurationResponse {
+        success: true,
+        audit_log_id: audit_id.into_uuid(),
+    }))
+}
+
+/// List landmark nodes (highest centrality).
+#[utoipa::path(
+    get,
+    path = "/nodes/landmarks",
+    params(
+        ("limit" = Option<usize>, Query, description = "Max results"),
+    ),
+    responses(
+        (status = 200, description = "Landmark nodes", body = Vec<NodeResponse>),
+    ),
+    tag = "nodes"
+)]
+pub async fn list_landmarks(
+    State(state): State<AppState>,
+    Query(params): Query<LandmarkParams>,
+) -> Result<Json<Vec<NodeResponse>>, ApiError> {
+    let limit = params.limit.unwrap_or(10);
+    let nodes = state.node_service.list_landmarks(limit).await?;
+    Ok(Json(nodes.into_iter().map(node_to_response).collect()))
+}
+
+/// Query parameters for landmark listing.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+pub struct LandmarkParams {
+    /// Maximum number of landmark nodes to return.
+    pub limit: Option<usize>,
 }
 
 fn node_to_response(node: covalence_core::models::node::Node) -> NodeResponse {

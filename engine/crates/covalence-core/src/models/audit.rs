@@ -31,6 +31,16 @@ pub enum AuditAction {
     EdgeCreate,
     /// Confidence was recalculated for an entity.
     ConfidenceUpdate,
+    /// A node was corrected via manual curation.
+    NodeCorrect,
+    /// An edge was corrected via manual curation.
+    EdgeCorrect,
+    /// An edge was deleted via manual curation.
+    EdgeDelete,
+    /// A node was annotated with free-text.
+    NodeAnnotate,
+    /// Search feedback was submitted.
+    SearchFeedback,
 }
 
 impl AuditAction {
@@ -48,6 +58,11 @@ impl AuditAction {
             Self::SourceIngest => "SOURCE_INGEST",
             Self::EdgeCreate => "EDGE_CREATE",
             Self::ConfidenceUpdate => "CONFIDENCE_UPDATE",
+            Self::NodeCorrect => "NODE_CORRECT",
+            Self::EdgeCorrect => "EDGE_CORRECT",
+            Self::EdgeDelete => "EDGE_DELETE",
+            Self::NodeAnnotate => "NODE_ANNOTATE",
+            Self::SearchFeedback => "SEARCH_FEEDBACK",
         }
     }
 
@@ -65,6 +80,11 @@ impl AuditAction {
             "SOURCE_INGEST" => Some(Self::SourceIngest),
             "EDGE_CREATE" => Some(Self::EdgeCreate),
             "CONFIDENCE_UPDATE" => Some(Self::ConfidenceUpdate),
+            "NODE_CORRECT" => Some(Self::NodeCorrect),
+            "EDGE_CORRECT" => Some(Self::EdgeCorrect),
+            "EDGE_DELETE" => Some(Self::EdgeDelete),
+            "NODE_ANNOTATE" => Some(Self::NodeAnnotate),
+            "SEARCH_FEEDBACK" => Some(Self::SearchFeedback),
             _ => None,
         }
     }

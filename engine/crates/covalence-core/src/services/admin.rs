@@ -10,9 +10,10 @@ use petgraph::visit::EdgeRef;
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::graph::sync::full_reload;
-use crate::models::audit::AuditLog;
+use crate::models::audit::{AuditAction, AuditLog};
+use crate::models::trace::{SearchFeedback, SearchTrace};
 use crate::storage::postgres::PgRepo;
-use crate::storage::traits::{AuditLogRepo, SourceRepo};
+use crate::storage::traits::{AuditLogRepo, SearchFeedbackRepo, SearchTraceRepo, SourceRepo};
 
 /// Graph statistics snapshot.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -161,5 +162,35 @@ impl AdminService {
     /// List recent audit log entries.
     pub async fn audit_log(&self, limit: i64) -> Result<Vec<AuditLog>> {
         AuditLogRepo::list_recent(&*self.repo, limit).await
+    }
+
+    /// List recent search traces.
+    pub async fn list_traces(&self, limit: i64) -> Result<Vec<SearchTrace>> {
+        SearchTraceRepo::list_recent(&*self.repo, limit).await
+    }
+
+    /// Get a single search trace by ID.
+    pub async fn get_trace(&self, id: uuid::Uuid) -> Result<Option<SearchTrace>> {
+        SearchTraceRepo::get(&*self.repo, id).await
+    }
+
+    /// Submit search feedback and log to audit.
+    pub async fn submit_feedback(&self, feedback: SearchFeedback) -> Result<()> {
+        let result_id = feedback.result_id;
+        let query_text = feedback.query_text.clone();
+        SearchFeedbackRepo::create(&*self.repo, &feedback).await?;
+
+        let audit = AuditLog::new(
+            AuditAction::SearchFeedback,
+            "api:feedback".to_string(),
+            serde_json::json!({
+                "query_text": query_text,
+                "result_id": result_id,
+                "relevance": feedback.relevance,
+            }),
+        );
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        Ok(())
     }
 }

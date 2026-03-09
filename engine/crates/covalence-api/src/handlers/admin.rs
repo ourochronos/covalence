@@ -8,7 +8,7 @@ use crate::error::ApiError;
 use crate::handlers::dto::{
     AuditLogResponse, CommunityResponse, ConsolidateResponse, DomainLinkResponse, DomainResponse,
     GraphStatsResponse, HealthResponse, MetricsResponse, PaginationParams, PublishResponse,
-    ReloadResponse, TopologyResponse,
+    ReloadResponse, SearchTraceResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -214,5 +214,93 @@ pub async fn metrics(State(state): State<AppState>) -> Result<Json<MetricsRespon
         graph_nodes: m.graph_nodes,
         graph_edges: m.graph_edges,
         source_count: m.source_count,
+    }))
+}
+
+/// List recent search traces.
+#[utoipa::path(
+    get,
+    path = "/admin/traces",
+    params(PaginationParams),
+    responses(
+        (status = 200, description = "Search traces", body = Vec<SearchTraceResponse>),
+    ),
+    tag = "admin"
+)]
+pub async fn list_traces(
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<SearchTraceResponse>>, ApiError> {
+    let traces = state.admin_service.list_traces(params.limit()).await?;
+    Ok(Json(
+        traces
+            .into_iter()
+            .map(|t| SearchTraceResponse {
+                id: t.id,
+                query_text: t.query_text,
+                strategy: t.strategy,
+                dimension_counts: t.dimension_counts,
+                result_count: t.result_count,
+                execution_ms: t.execution_ms,
+                created_at: t.created_at.to_rfc3339(),
+            })
+            .collect(),
+    ))
+}
+
+/// Replay a traced search query.
+#[utoipa::path(
+    post,
+    path = "/admin/traces/{id}/replay",
+    params(("id" = Uuid, Path, description = "Trace ID to replay")),
+    responses(
+        (status = 200, description = "Replay results", body = TraceReplayResponse),
+        (status = 404, description = "Trace not found"),
+    ),
+    tag = "admin"
+)]
+pub async fn replay_trace(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TraceReplayResponse>, ApiError> {
+    let trace =
+        state
+            .admin_service
+            .get_trace(id)
+            .await?
+            .ok_or(covalence_core::error::Error::NotFound {
+                entity_type: "search_trace",
+                id: id.to_string(),
+            })?;
+
+    let strategy = match trace.strategy.as_str() {
+        "precise" => covalence_core::search::strategy::SearchStrategy::Precise,
+        "exploratory" => covalence_core::search::strategy::SearchStrategy::Exploratory,
+        "recent" => covalence_core::search::strategy::SearchStrategy::Recent,
+        "graph_first" => covalence_core::search::strategy::SearchStrategy::GraphFirst,
+        _ => covalence_core::search::strategy::SearchStrategy::Balanced,
+    };
+
+    let results = state
+        .search_service
+        .search(&trace.query_text, strategy, 10, None)
+        .await?;
+
+    Ok(Json(TraceReplayResponse {
+        trace_id: id,
+        results: results
+            .into_iter()
+            .map(|r| crate::handlers::dto::SearchResultResponse {
+                id: r.id,
+                fused_score: r.fused_score,
+                confidence: r.confidence,
+                entity_type: r.entity_type,
+                name: r.name,
+                snippet: r.snippet,
+                source_uri: r.source_uri,
+                dimension_scores: r.dimension_scores,
+                dimension_ranks: r.dimension_ranks,
+            })
+            .collect(),
     }))
 }

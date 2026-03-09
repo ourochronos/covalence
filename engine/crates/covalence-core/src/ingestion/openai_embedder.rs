@@ -30,7 +30,7 @@ impl OpenAiEmbedder {
             base_url: base.trim_end_matches('/').to_string(),
             api_key,
             model: config.model.clone(),
-            dimensions: config.dimensions,
+            dimensions: config.max_dim(),
             batch_size: config.batch_size,
         }
     }
@@ -177,7 +177,7 @@ mod tests {
         let embedder = OpenAiEmbedder::new(&config, "sk-test".to_string(), None);
         assert_eq!(embedder.base_url, "https://api.openai.com/v1");
         assert_eq!(embedder.model, "text-embedding-3-large");
-        assert_eq!(embedder.dimensions, 1024);
+        assert_eq!(embedder.dimensions, 2048); // max_dim() of default config
         assert_eq!(embedder.batch_size, 64);
     }
 

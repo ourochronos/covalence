@@ -14,5 +14,5 @@ pub use article::ArticleService;
 pub use consolidation::GraphDeepConsolidator;
 pub use edge::EdgeService;
 pub use node::NodeService;
-pub use search::{SearchFilters, SearchService};
+pub use search::{SearchFilters, SearchResponse, SearchService};
 pub use source::SourceService;
