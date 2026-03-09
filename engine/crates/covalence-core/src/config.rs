@@ -26,6 +26,13 @@ pub struct Config {
     /// Voyage base URL.
     pub voyage_base_url: Option<String>,
 
+    /// Embedding provider: `"openai"` (default) or `"voyage"`.
+    ///
+    /// When set to `"voyage"` or when `VOYAGE_API_KEY` is present,
+    /// the Voyage AI embedder is used instead of OpenAI.
+    /// Env: `COVALENCE_EMBED_PROVIDER`.
+    pub embed_provider: String,
+
     /// Embedding model identifier.
     pub embed_model: String,
 
@@ -241,6 +248,7 @@ impl std::fmt::Debug for Config {
                 &self.voyage_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .field("voyage_base_url", &self.voyage_base_url)
+            .field("embed_provider", &self.embed_provider)
             .field("embed_model", &self.embed_model)
             .field("chat_model", &self.chat_model)
             .field("chunk_size", &self.chunk_size)
@@ -263,6 +271,7 @@ impl Config {
     ///
     /// Call `dotenvy::dotenv().ok()` before this to load `.env` files.
     pub fn from_env() -> Result<Self> {
+        let embed_provider = env_or("COVALENCE_EMBED_PROVIDER", "openai");
         let embed_model = env_or("COVALENCE_EMBED_MODEL", "text-embedding-3-large");
 
         Ok(Self {
@@ -273,6 +282,7 @@ impl Config {
             openai_base_url: optional_env("OPENAI_BASE_URL"),
             voyage_api_key: optional_env("VOYAGE_API_KEY"),
             voyage_base_url: optional_env("VOYAGE_BASE_URL"),
+            embed_provider,
             embed_model: embed_model.clone(),
             chat_model: env_or("COVALENCE_CHAT_MODEL", "gpt-4o"),
             chat_api_key: optional_env("COVALENCE_CHAT_API_KEY"),
@@ -394,7 +404,10 @@ mod tests {
         let key = "COVALENCE_TEST_PARSEF64_EMPTY_12345";
         // SAFETY: test-only, single-threaded test runner.
         unsafe { std::env::set_var(key, "") };
-        assert!((env_parse_f64(key, 3.14).unwrap() - 3.14).abs() < 1e-10);
+        assert!(
+            (env_parse_f64(key, std::f64::consts::PI).unwrap() - std::f64::consts::PI).abs()
+                < 1e-10
+        );
         unsafe { std::env::remove_var(key) };
     }
 }

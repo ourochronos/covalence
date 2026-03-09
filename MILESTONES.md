@@ -331,8 +331,38 @@ Comprehensive spec audit and implementation of all remaining gaps, plus per-tabl
 
 **Note:** 475 tests passing (432 core + 43 eval), clippy clean, fmt clean.
 
+## Wave 6 — Voyage AI + Observability + Graph Disambiguation *(complete)*
+
+### Voyage AI Provider Switch (#22)
+- [x] `embed_provider` config field (`COVALENCE_EMBED_PROVIDER`)
+- [x] VoyageEmbedder: `input_type` hints, `output_dimension` in API body
+- [x] Default model updated to `voyage-3-large`
+- [x] Auto-activate `HttpReranker` with `rerank-2.5` when Voyage key present
+- [x] Provider selection logic in `state.rs` (Voyage vs OpenAI)
+
+### Epistemic Observability (#21)
+- [x] `NodeExplanation` struct with SL opinion breakdown + provenance stats
+- [x] `NodeService::explain()` method
+- [x] `GET /nodes/:id?explain=true` API endpoint with `NodeDetailResponse`
+- [x] OpenAPI schemas registered
+- [x] Local LLM quickstart docs (`docs/local-llm.md`)
+- [x] Spec status updates (Implemented/Deferred)
+
+### Graph Context Disambiguation
+- [x] `graph_context_supports_match()` in `PgResolver`
+- [x] 5th-tier entity resolution: type mismatch + no neighborhood overlap → reject
+- [x] Graph wired into resolver via `with_graph()` builder
+
+### Documentation
+- [x] providers.md: Voyage quickstart, `COVALENCE_EMBED_PROVIDER`, updated Voyage section
+- [x] CLAUDE.md: test counts (476), Wave 6 status
+- [x] MILESTONES.md: Wave 6 section
+
+**Note:** 476 tests passing (433 core + 43 eval), clippy clean, fmt clean.
+
 ## Future
 
+- Late chunking integration (Voyage `context` field for context-aware chunk embeddings)
 - Federation protocol (clearance-based egress, ZK edges)
 - Multi-tenant support
 - Cross-encoder reranking (ColBERT via BGE-M3)

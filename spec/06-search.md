@@ -1,6 +1,6 @@
 # 06 — Search & Retrieval
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Overview
 

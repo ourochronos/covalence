@@ -1,10 +1,10 @@
 //! Voyage AI embedding client.
 //!
-//! Implements the `Embedder` trait using the Voyage AI API
-//! (voyage-context-3). Voyage's API is OpenAI-compatible with
-//! extensions for contextualized chunk embeddings.
+//! Implements the `Embedder` trait using the Voyage AI API.
+//! Voyage's API is OpenAI-compatible with extensions for
+//! contextualized chunk embeddings and `input_type` hints.
 //!
-//! Default model: `voyage-context-3` (2048 dimensions).
+//! Default model: `voyage-3-large` (2048 dimensions).
 //! Supports Matryoshka truncation to 512d or 1024d.
 
 use serde::Deserialize;
@@ -19,12 +19,19 @@ pub struct VoyageConfig {
     pub api_key: String,
     /// Base URL (default: `https://api.voyageai.com/v1`).
     pub base_url: String,
-    /// Model name (default: `voyage-context-3`).
+    /// Model name (default: `voyage-3-large`).
     pub model: String,
     /// Output dimensionality (default: 2048).
     pub dimensions: usize,
     /// Maximum batch size (Voyage allows up to 128).
     pub batch_size: usize,
+    /// Input type hint for the Voyage API.
+    ///
+    /// Use `"document"` when embedding content for storage (ingestion)
+    /// and `"query"` when embedding search queries. This helps the
+    /// model produce better representations for asymmetric retrieval.
+    /// Defaults to `"document"`.
+    pub input_type: String,
 }
 
 impl Default for VoyageConfig {
@@ -32,9 +39,10 @@ impl Default for VoyageConfig {
         Self {
             api_key: String::new(),
             base_url: "https://api.voyageai.com/v1".to_string(),
-            model: "voyage-context-3".to_string(),
+            model: "voyage-3-large".to_string(),
             dimensions: 2048,
             batch_size: 128,
+            input_type: "document".to_string(),
         }
     }
 }
@@ -80,6 +88,8 @@ impl Embedder for VoyageEmbedder {
             let body = serde_json::json!({
                 "model": self.config.model,
                 "input": batch,
+                "input_type": self.config.input_type,
+                "output_dimension": self.config.dimensions,
             });
 
             let resp = self
@@ -128,23 +138,34 @@ mod tests {
     #[test]
     fn voyage_config_defaults() {
         let config = VoyageConfig::default();
-        assert_eq!(config.model, "voyage-context-3");
+        assert_eq!(config.model, "voyage-3-large");
         assert_eq!(config.dimensions, 2048);
         assert_eq!(config.batch_size, 128);
         assert_eq!(config.base_url, "https://api.voyageai.com/v1");
+        assert_eq!(config.input_type, "document");
         assert!(config.api_key.is_empty());
     }
 
     #[test]
     fn voyage_embedder_metadata() {
         let config = VoyageConfig {
-            model: "voyage-context-3".to_string(),
+            model: "voyage-3-large".to_string(),
             dimensions: 1024,
             ..VoyageConfig::default()
         };
         let embedder = VoyageEmbedder::new(config);
         assert_eq!(embedder.dimension(), 1024);
-        assert_eq!(embedder.model_name(), "voyage-context-3");
+        assert_eq!(embedder.model_name(), "voyage-3-large");
+    }
+
+    #[test]
+    fn voyage_config_input_type_override() {
+        let config = VoyageConfig {
+            input_type: "query".to_string(),
+            ..VoyageConfig::default()
+        };
+        assert_eq!(config.input_type, "query");
+        assert_eq!(config.model, "voyage-3-large");
     }
 
     #[tokio::test]
@@ -169,7 +190,7 @@ mod tests {
                     "object": "embedding"
                 }
             ],
-            "model": "voyage-context-3",
+            "model": "voyage-3-large",
             "usage": {
                 "prompt_tokens": 4,
                 "total_tokens": 4

@@ -11,7 +11,10 @@ use covalence_core::graph::{GraphSidecar, SharedGraph};
 use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
-use covalence_core::ingestion::{GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver};
+use covalence_core::ingestion::{
+    GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver, VoyageConfig, VoyageEmbedder,
+};
+use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
     AdminService, ArticleService, EdgeService, NodeService, SearchService, SourceService,
 };
@@ -65,13 +68,53 @@ impl AppState {
             }
         }
 
-        let embedder: Option<Arc<dyn Embedder>> = config.openai_api_key.as_ref().map(|key| {
-            Arc::new(OpenAiEmbedder::new(
-                &config.embedding,
-                key.clone(),
-                config.openai_base_url.clone(),
-            )) as Arc<dyn Embedder>
-        });
+        // Determine the embedding provider. Voyage is used when
+        // explicitly configured or when a Voyage API key is present.
+        let use_voyage = config.embed_provider == "voyage" || config.voyage_api_key.is_some();
+
+        #[allow(clippy::type_complexity)]
+        let (embedder, reranker): (Option<Arc<dyn Embedder>>, Option<Arc<dyn Reranker>>) =
+            if use_voyage {
+                let emb = config.voyage_api_key.as_ref().map(|key| {
+                    let voyage_cfg = VoyageConfig {
+                        api_key: key.clone(),
+                        base_url: config
+                            .voyage_base_url
+                            .clone()
+                            .unwrap_or_else(|| "https://api.voyageai.com/v1".to_string()),
+                        model: config.embed_model.clone(),
+                        dimensions: config.embedding.max_dim(),
+                        input_type: "document".to_string(),
+                        ..VoyageConfig::default()
+                    };
+                    Arc::new(VoyageEmbedder::new(voyage_cfg)) as Arc<dyn Embedder>
+                });
+
+                // Auto-activate the HTTP reranker with Voyage credentials.
+                let rnk = config.voyage_api_key.as_ref().map(|key| {
+                    let rerank_cfg = RerankConfig {
+                        api_key: key.clone(),
+                        base_url: config
+                            .voyage_base_url
+                            .clone()
+                            .unwrap_or_else(|| "https://api.voyageai.com/v1".to_string()),
+                        model: "rerank-2.5".to_string(),
+                        ..RerankConfig::default()
+                    };
+                    Arc::new(HttpReranker::new(rerank_cfg)) as Arc<dyn Reranker>
+                });
+
+                (emb, rnk)
+            } else {
+                let emb = config.openai_api_key.as_ref().map(|key| {
+                    Arc::new(OpenAiEmbedder::new(
+                        &config.embedding,
+                        key.clone(),
+                        config.openai_base_url.clone(),
+                    )) as Arc<dyn Embedder>
+                });
+                (emb, None)
+            };
 
         let extractor: Option<Arc<dyn Extractor>> = if config.entity_extractor == "gliner2" {
             let base_url = config
@@ -109,7 +152,8 @@ impl AppState {
                 emb,
                 config.resolve_vector_threshold,
             )
-            .with_node_embed_dim(config.embedding.table_dims.node),
+            .with_node_embed_dim(config.embedding.table_dims.node)
+            .with_graph(Arc::clone(&graph)),
             None => PgResolver::with_threshold(Arc::clone(&repo), config.resolve_trigram_threshold),
         });
 
@@ -127,12 +171,16 @@ impl AppState {
             .with_table_dims(config.embedding.table_dims.clone())
             .with_extract_concurrency(config.extract_concurrency),
         );
-        let search_service = Arc::new(SearchService::with_config(
+        let search = SearchService::with_config(
             Arc::clone(&repo),
             Arc::clone(&graph),
             embedder,
             config.embedding.table_dims.clone(),
-        ));
+        );
+        let search_service = Arc::new(match reranker {
+            Some(rnk) => search.with_reranker(rnk),
+            None => search,
+        });
         let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
         let article_service = Arc::new(ArticleService::new(Arc::clone(&repo)));

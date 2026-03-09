@@ -6,19 +6,22 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AnnotateNodeRequest, CorrectNodeRequest, CurationResponse, MergeNodesRequest,
-    MergeNodesResponse, NeighborhoodParams, NodeResponse, ProvenanceResponse, ResolveNodeRequest,
-    SplitNodeRequest, SplitNodeResponse,
+    AnnotateNodeRequest, CorrectNodeRequest, CurationResponse, GetNodeParams, MergeNodesRequest,
+    MergeNodesResponse, NeighborhoodParams, NodeDetailResponse, NodeExplanation, NodeResponse,
+    ProvenanceResponse, ResolveNodeRequest, SplitNodeRequest, SplitNodeResponse,
 };
 use crate::state::AppState;
 
-/// Get a node by ID.
+/// Get a node by ID, optionally with confidence explanation.
 #[utoipa::path(
     get,
     path = "/nodes/{id}",
-    params(("id" = Uuid, Path, description = "Node ID")),
+    params(
+        ("id" = Uuid, Path, description = "Node ID"),
+        GetNodeParams,
+    ),
     responses(
-        (status = 200, description = "Node found", body = NodeResponse),
+        (status = 200, description = "Node found", body = NodeDetailResponse),
         (status = 404, description = "Node not found"),
     ),
     tag = "nodes"
@@ -26,7 +29,8 @@ use crate::state::AppState;
 pub async fn get_node(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<NodeResponse>, ApiError> {
+    Query(params): Query<GetNodeParams>,
+) -> Result<Json<NodeDetailResponse>, ApiError> {
     let node =
         state
             .node_service
@@ -37,7 +41,28 @@ pub async fn get_node(
                 id: id.to_string(),
             })?;
 
-    Ok(Json(node_to_response(node)))
+    let explanation = if params.explain.unwrap_or(false) {
+        state
+            .node_service
+            .explain(id.into())
+            .await?
+            .map(|e| NodeExplanation {
+                belief: e.belief,
+                disbelief: e.disbelief,
+                uncertainty: e.uncertainty,
+                base_rate: e.base_rate,
+                projected_probability: e.projected_probability,
+                source_count: e.source_count,
+                extraction_count: e.extraction_count,
+            })
+    } else {
+        None
+    };
+
+    Ok(Json(NodeDetailResponse {
+        node: node_to_response(node),
+        explanation,
+    }))
 }
 
 /// Get the neighborhood of a node.

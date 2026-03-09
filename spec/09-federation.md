@@ -1,6 +1,6 @@
 # 09 — Federation & Compartmentalization
 
-**Status:** Draft
+**Status:** Deferred
 
 ## Overview
 

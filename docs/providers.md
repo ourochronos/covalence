@@ -64,20 +64,23 @@ COVALENCE_CHAT_MODEL=gpt-4o
 # OPENAI_BASE_URL not needed — defaults to https://api.openai.com/v1
 ```
 
-### Voyage AI (embeddings) + OpenAI (extraction)
+### Voyage AI (recommended — embeddings + reranking) + OpenAI (extraction)
 
-Voyage for high-quality contextual embeddings, OpenAI for chat extraction.
+Voyage for high-quality embeddings with automatic reranking, OpenAI for chat extraction.
 
 ```bash
-OPENAI_API_KEY=voyage-...          # Voyage API key (uses OpenAI-compatible endpoint)
-OPENAI_BASE_URL=https://api.voyageai.com/v1
-COVALENCE_EMBED_MODEL=voyage-context-3
-COVALENCE_EMBED_DIM=1024
+VOYAGE_API_KEY=pa-...              # Voyage API key (native provider)
+COVALENCE_EMBED_MODEL=voyage-3-large
+# COVALENCE_EMBED_PROVIDER=voyage  # Auto-detected when VOYAGE_API_KEY is set
 
 COVALENCE_CHAT_MODEL=gpt-4o
 COVALENCE_CHAT_API_KEY=sk-...      # Separate OpenAI key for chat
 COVALENCE_CHAT_BASE_URL=https://api.openai.com/v1
 ```
+
+When `VOYAGE_API_KEY` is set (or `COVALENCE_EMBED_PROVIDER=voyage`), Covalence automatically:
+- Uses the native Voyage AI embedder with `input_type` hints
+- Activates the Voyage `rerank-2.5` reranker in the search pipeline
 
 ### AWS Bedrock
 
@@ -154,8 +157,9 @@ COVALENCE_CHAT_MODEL=               # Leave empty to disable LLM extraction
 
 | Variable | Description | Default |
 |---|---|---|
-| `OPENAI_API_KEY` | API key for embedding provider | _(none — embeddings disabled)_ |
-| `OPENAI_BASE_URL` | Base URL for embedding API | `https://api.openai.com/v1` |
+| `COVALENCE_EMBED_PROVIDER` | Embedding provider: `openai` or `voyage` | `openai` (auto-detected if `VOYAGE_API_KEY` set) |
+| `OPENAI_API_KEY` | API key for embedding provider (OpenAI mode) | _(none — embeddings disabled)_ |
+| `OPENAI_BASE_URL` | Base URL for embedding API (OpenAI mode) | `https://api.openai.com/v1` |
 | `COVALENCE_EMBED_MODEL` | Embedding model name | `text-embedding-3-large` |
 | `COVALENCE_EMBED_DIM` | Legacy: fallback dimension for chunk/article | `1024` |
 | `COVALENCE_EMBED_DIM_SOURCE` | Source-level embedding dimensions | `2048` |
@@ -207,9 +211,9 @@ COVALENCE_CHAT_MODEL=               # Leave empty to disable LLM extraction
 | `COVALENCE_RRF_K` | Reciprocal Rank Fusion k parameter | `60.0` |
 | `COVALENCE_DEFAULT_LIMIT` | Default search result limit | `10` |
 
-### Voyage AI (reserved)
+### Voyage AI
 
 | Variable | Description | Default |
 |---|---|---|
-| `VOYAGE_API_KEY` | Voyage API key (reserved for future use) | _(none)_ |
-| `VOYAGE_BASE_URL` | Voyage base URL (reserved for future use) | _(none)_ |
+| `VOYAGE_API_KEY` | Voyage API key (auto-activates Voyage provider + reranker) | _(none)_ |
+| `VOYAGE_BASE_URL` | Voyage base URL | `https://api.voyageai.com/v1` |

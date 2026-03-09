@@ -119,7 +119,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 475 passing tests (432 core + 43 eval), 11 ignored integration tests
+# Current: 476 passing tests (433 core + 43 eval), 11 ignored integration tests
 
 # Integration tests (requires running PG on port 5435)
 cd engine && cargo test --workspace -- --ignored
@@ -180,4 +180,4 @@ To add a new ADR:
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–5 complete.** 475 tests passing. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), spec alignment (search pipeline, ingestion, epistemic, API curation, PII detection, evaluation harness). See GitHub issues for ongoing enhancements.
+Current phase: **M0-M11 + Waves 1–6 complete.** 476 tests passing. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability with `?explain=true` (#21), graph context disambiguation in entity resolution, spec status updates. See GitHub issues for ongoing enhancements.

@@ -1,6 +1,6 @@
 # 07 — Epistemic Model
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Overview
 

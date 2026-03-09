@@ -47,6 +47,28 @@ pub struct SplitSpec {
     pub edge_ids: Vec<EdgeId>,
 }
 
+/// Epistemic confidence explanation for a node.
+///
+/// Contains the Subjective Logic opinion breakdown and provenance
+/// statistics used to derive the node's confidence score.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NodeExplanation {
+    /// Degree of positive evidence.
+    pub belief: f64,
+    /// Degree of negative evidence.
+    pub disbelief: f64,
+    /// Degree of ignorance.
+    pub uncertainty: f64,
+    /// Prior probability absent evidence.
+    pub base_rate: f64,
+    /// Projected probability: `belief + base_rate * uncertainty`.
+    pub projected_probability: f64,
+    /// Number of distinct sources contributing to this node.
+    pub source_count: usize,
+    /// Number of extraction records for this node.
+    pub extraction_count: usize,
+}
+
 /// Service for graph node operations.
 pub struct NodeService {
     repo: Arc<PgRepo>,
@@ -117,6 +139,40 @@ impl NodeService {
             chunks,
             sources,
         })
+    }
+
+    /// Build a confidence explanation for a node.
+    ///
+    /// Returns the Subjective Logic opinion breakdown, projected
+    /// probability, count of contributing sources, and count of
+    /// extraction records. Returns `None` if the node does not exist.
+    pub async fn explain(&self, id: NodeId) -> Result<Option<NodeExplanation>> {
+        let node = match NodeRepo::get(&*self.repo, id).await? {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+
+        let opinion = node.confidence_breakdown.unwrap_or_default();
+
+        let extractions =
+            ExtractionRepo::list_active_for_entity(&*self.repo, "node", id.into_uuid()).await?;
+
+        let mut source_ids = std::collections::HashSet::new();
+        for ext in &extractions {
+            if let Some(chunk) = ChunkRepo::get(&*self.repo, ext.chunk_id).await? {
+                source_ids.insert(chunk.source_id);
+            }
+        }
+
+        Ok(Some(NodeExplanation {
+            belief: opinion.belief,
+            disbelief: opinion.disbelief,
+            uncertainty: opinion.uncertainty,
+            base_rate: opinion.base_rate,
+            projected_probability: opinion.projected_probability(),
+            source_count: source_ids.len(),
+            extraction_count: extractions.len(),
+        }))
     }
 
     /// Resolve a name to a node (case-insensitive).

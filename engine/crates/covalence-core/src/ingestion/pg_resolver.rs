@@ -1,8 +1,14 @@
 //! PostgreSQL-backed entity and relationship-type resolver.
 //!
 //! Resolves extracted entities against the knowledge graph using a
-//! four-tier strategy: exact name match, alias match, vector cosine
-//! similarity, then fuzzy trigram similarity via `pg_trgm`.
+//! five-tier strategy: exact name match, alias match, vector cosine
+//! similarity, fuzzy trigram similarity via `pg_trgm`, and graph
+//! context disambiguation. When a vector or fuzzy match produces a
+//! candidate whose `node_type` differs from the extracted entity type,
+//! the resolver checks the candidate's 1-hop neighborhood in the
+//! graph sidecar. If no neighbor shares the extracted entity type,
+//! the match is rejected — e.g., "Apple" in a food context won't
+//! resolve to Apple Inc. in a tech graph.
 //!
 //! Also resolves relationship type labels so that synonymous edge
 //! types (e.g. "author_of" / "is_author_of" / "wrote") converge on
@@ -13,6 +19,8 @@ use std::sync::Arc;
 use sqlx::Row;
 
 use crate::error::{Error, Result};
+use crate::graph::SharedGraph;
+use crate::graph::traversal::bfs_neighborhood;
 use crate::ingestion::embedder::{Embedder, truncate_embedding};
 use crate::ingestion::extractor::ExtractedEntity;
 use crate::ingestion::resolver::{EntityResolver, MatchType, ResolvedEntity};
@@ -33,9 +41,12 @@ const DEFAULT_VECTOR_THRESHOLD: f32 = 0.85;
 /// 2. **Alias match** — case-insensitive lookup in `node_aliases`.
 /// 3. **Vector match** — cosine similarity between the entity name
 ///    embedding and existing node embeddings (requires an embedder).
+///    **Graph context:** if the candidate's `node_type` differs from
+///    the entity type and no 1-hop neighbor shares the entity type,
+///    the match is rejected.
 /// 4. **Fuzzy match** — `pg_trgm` similarity on
 ///    `nodes.canonical_name`, preferring nodes with matching
-///    `node_type`.
+///    `node_type`. Same graph context disambiguation as vector.
 /// 5. **New** — no match found; the entity should be created.
 pub struct PgResolver {
     /// Shared reference to the PostgreSQL repository.
@@ -49,6 +60,13 @@ pub struct PgResolver {
     vector_threshold: f32,
     /// Target dimension for node embeddings (for truncation).
     node_embed_dim: usize,
+    /// Optional graph sidecar for context disambiguation.
+    ///
+    /// When available, vector and fuzzy match candidates whose
+    /// `node_type` differs from the extracted entity type are
+    /// checked against the candidate's 1-hop neighborhood. If no
+    /// neighbor shares the entity type, the match is rejected.
+    graph: Option<SharedGraph>,
 }
 
 impl PgResolver {
@@ -61,6 +79,7 @@ impl PgResolver {
             embedder: None,
             vector_threshold: DEFAULT_VECTOR_THRESHOLD,
             node_embed_dim: 256,
+            graph: None,
         }
     }
 
@@ -72,6 +91,7 @@ impl PgResolver {
             embedder: None,
             vector_threshold: DEFAULT_VECTOR_THRESHOLD,
             node_embed_dim: 256,
+            graph: None,
         }
     }
 
@@ -92,12 +112,26 @@ impl PgResolver {
             embedder: Some(embedder),
             vector_threshold,
             node_embed_dim: 256,
+            graph: None,
         }
     }
 
     /// Set the target dimension for node embeddings.
     pub fn with_node_embed_dim(mut self, dim: usize) -> Self {
         self.node_embed_dim = dim;
+        self
+    }
+
+    /// Attach a graph sidecar for context disambiguation.
+    ///
+    /// When set, the resolver checks the 1-hop neighborhood of
+    /// vector and fuzzy match candidates. If the candidate's
+    /// `node_type` differs from the extracted entity type and no
+    /// 1-hop neighbor shares the entity type, the match is
+    /// rejected — preventing "Apple (fruit)" from resolving to
+    /// "Apple Inc." in a technology graph.
+    pub fn with_graph(mut self, graph: SharedGraph) -> Self {
+        self.graph = Some(graph);
         self
     }
 
@@ -229,6 +263,60 @@ impl PgResolver {
         }))
     }
 
+    /// Check whether a candidate match is contextually compatible
+    /// with the extracted entity by examining the graph neighborhood.
+    ///
+    /// Returns `true` if the match should be accepted, `false` if
+    /// the graph context suggests a different entity.
+    ///
+    /// When no graph is available, always returns `true`.
+    async fn graph_context_supports_match(
+        &self,
+        candidate_id: NodeId,
+        candidate_type: &str,
+        entity: &ExtractedEntity,
+    ) -> bool {
+        // No graph → no disambiguation, accept the match.
+        let graph = match &self.graph {
+            Some(g) => g,
+            None => return true,
+        };
+
+        // If types already match, no disambiguation needed.
+        if candidate_type.eq_ignore_ascii_case(&entity.entity_type) {
+            return true;
+        }
+
+        // Check the candidate's 1-hop neighborhood for type overlap.
+        let g = graph.read().await;
+        let neighbors = bfs_neighborhood(&g, candidate_id.into_uuid(), 1, None);
+
+        // If the candidate has no neighbors, we can't disambiguate.
+        if neighbors.is_empty() {
+            return true;
+        }
+
+        // Check if any neighbor shares the entity type being resolved.
+        for (neighbor_id, _hops) in &neighbors {
+            if let Some(meta) = g.get_node(*neighbor_id) {
+                if meta.node_type.eq_ignore_ascii_case(&entity.entity_type) {
+                    return true;
+                }
+            }
+        }
+
+        // Type mismatch + no neighborhood overlap → reject.
+        tracing::debug!(
+            candidate = %candidate_id.into_uuid(),
+            candidate_type,
+            entity_name = %entity.name,
+            entity_type = %entity.entity_type,
+            neighbor_count = neighbors.len(),
+            "graph context disambiguation rejected match"
+        );
+        false
+    }
+
     /// Resolve a relationship type label against existing edge types.
     ///
     /// Strategy:
@@ -289,7 +377,8 @@ impl PgResolver {
 impl EntityResolver for PgResolver {
     /// Resolve an extracted entity against the knowledge graph.
     ///
-    /// Tries exact → alias → vector → fuzzy trigram.
+    /// Tries exact → alias → vector (+ graph context) → fuzzy
+    /// trigram (+ graph context).
     /// Returns `MatchType::New` if nothing matches.
     async fn resolve(&self, entity: &ExtractedEntity) -> Result<ResolvedEntity> {
         // 1. Exact canonical name match (fastest path).
@@ -302,14 +391,43 @@ impl EntityResolver for PgResolver {
             return Ok(resolved);
         }
 
-        // 3. Vector cosine similarity match.
+        // 3. Vector cosine similarity match + graph context.
         if let Some(resolved) = self.try_vector_match(entity).await? {
-            return Ok(resolved);
+            if let Some(nid) = resolved.node_id {
+                // Fetch the candidate's type for disambiguation.
+                let candidate_type = NodeRepo::get(self.repo.as_ref(), nid)
+                    .await?
+                    .map(|n| n.node_type)
+                    .unwrap_or_default();
+                if self
+                    .graph_context_supports_match(nid, &candidate_type, entity)
+                    .await
+                {
+                    return Ok(resolved);
+                }
+                // Graph context rejected — fall through to fuzzy.
+            } else {
+                return Ok(resolved);
+            }
         }
 
-        // 4. Fuzzy trigram match.
+        // 4. Fuzzy trigram match + graph context.
         if let Some(resolved) = self.try_fuzzy_match(entity).await? {
-            return Ok(resolved);
+            if let Some(nid) = resolved.node_id {
+                let candidate_type = NodeRepo::get(self.repo.as_ref(), nid)
+                    .await?
+                    .map(|n| n.node_type)
+                    .unwrap_or_default();
+                if self
+                    .graph_context_supports_match(nid, &candidate_type, entity)
+                    .await
+                {
+                    return Ok(resolved);
+                }
+                // Graph context rejected — treat as new.
+            } else {
+                return Ok(resolved);
+            }
         }
 
         // 5. No match — new entity.

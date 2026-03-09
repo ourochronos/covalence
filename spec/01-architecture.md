@@ -1,6 +1,6 @@
 # 01 — Architecture
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Overview
 

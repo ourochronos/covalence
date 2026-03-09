@@ -1,6 +1,6 @@
 # 04 — Graph Compute Layer
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Overview
 

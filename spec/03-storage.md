@@ -1,6 +1,6 @@
 # 03 — Storage
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Overview
 

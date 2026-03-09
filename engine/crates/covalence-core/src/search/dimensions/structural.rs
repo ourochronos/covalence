@@ -218,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn structural_dimension_boosts_matching_nodes() {
-        let (graph, center, leaves) = make_star_graph();
+        let (graph, _center, leaves) = make_star_graph();
         let dim = StructuralDimension::new(graph);
         // Query "Leaf0" should boost that leaf's score.
         let query = SearchQuery {

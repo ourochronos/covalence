@@ -185,7 +185,7 @@ mod tests {
         let id = Uuid::new_v4();
         let list = vec![make_result(id, 1.0, 1, "vector")];
 
-        let small_k = rrf_fuse(&[list.clone()], &[1.0], 1.0);
+        let small_k = rrf_fuse(std::slice::from_ref(&list), &[1.0], 1.0);
         let large_k = rrf_fuse(&[list], &[1.0], 1000.0);
 
         // Smaller K gives higher score: 1/(1+1) = 0.5 vs 1/(1000+1).

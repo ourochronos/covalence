@@ -1,6 +1,6 @@
 # 08 — API Surface
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Overview
 

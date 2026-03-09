@@ -146,6 +146,47 @@ pub struct NodeResponse {
     pub mention_count: i32,
 }
 
+/// Query parameters for `GET /nodes/:id`.
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct GetNodeParams {
+    /// When true, include confidence explanation breakdown.
+    pub explain: Option<bool>,
+}
+
+/// Epistemic confidence explanation for a node.
+///
+/// Breaks down the Subjective Logic opinion tuple and
+/// provenance statistics that contribute to the node's
+/// confidence score.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct NodeExplanation {
+    /// Degree of positive evidence.
+    pub belief: f64,
+    /// Degree of negative evidence.
+    pub disbelief: f64,
+    /// Degree of ignorance.
+    pub uncertainty: f64,
+    /// Prior probability absent evidence.
+    pub base_rate: f64,
+    /// Projected probability: `belief + base_rate * uncertainty`.
+    pub projected_probability: f64,
+    /// Number of distinct sources contributing to this node.
+    pub source_count: usize,
+    /// Number of extraction records for this node.
+    pub extraction_count: usize,
+}
+
+/// Detailed node response with optional confidence explanation.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NodeDetailResponse {
+    /// Core node fields.
+    #[serde(flatten)]
+    pub node: NodeResponse,
+    /// Confidence explanation (present when `?explain=true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<NodeExplanation>,
+}
+
 /// Query parameters for neighborhood.
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct NeighborhoodParams {

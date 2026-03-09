@@ -1,6 +1,6 @@
 # 05 — Ingestion Pipeline
 
-**Status:** Draft
+**Status:** Implemented
 
 This is the primary focus area. The ingestion pipeline transforms raw unstructured sources into structured graph elements with embeddings at multiple granularities.
 

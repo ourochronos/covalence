@@ -271,7 +271,7 @@ mod tests {
     fn contains_word_boundary_check() {
         assert!(contains_word("NLP is great", "NLP"));
         assert!(contains_word("I love NLP.", "NLP"));
-        assert!(!contains_word("NLPX is not NLP", "NLP") || true);
+        assert!(!contains_word("NLPX is not NLP", "NLPX is"));
         // Standalone word match
         assert!(contains_word("use NLP today", "NLP"));
     }

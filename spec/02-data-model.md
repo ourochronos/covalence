@@ -1,6 +1,6 @@
 # 02 — Data Model
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Design Decision: Hybrid Property Graph + Provenance View
 
