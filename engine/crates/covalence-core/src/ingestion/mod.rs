@@ -33,7 +33,7 @@ pub use llm_extractor::LlmExtractor;
 pub use normalize::normalize;
 pub use openai_embedder::OpenAiEmbedder;
 pub use parser::{ParsedDocument, parse};
-pub use pg_resolver::PgResolver;
+pub use pg_resolver::{PgResolver, normalize_rel_type};
 pub use resolver::{EntityResolver, MatchType, MockResolver, ResolvedEntity};
 pub use takedown::TakedownResult;
 pub use voyage::{VoyageConfig, VoyageEmbedder};

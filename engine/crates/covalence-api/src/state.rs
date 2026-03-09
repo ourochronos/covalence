@@ -68,14 +68,20 @@ impl AppState {
             })
         };
 
+        let pg_resolver = Arc::new(PgResolver::with_threshold(
+            Arc::clone(&repo),
+            config.resolve_trigram_threshold,
+        ));
+
         let resolver: Option<Arc<dyn EntityResolver>> =
-            Some(Arc::new(PgResolver::new(Arc::clone(&repo))));
+            Some(Arc::clone(&pg_resolver) as Arc<dyn EntityResolver>);
 
         let source_service = Arc::new(SourceService::with_full_pipeline(
             Arc::clone(&repo),
             embedder.clone(),
             extractor,
             resolver,
+            Some(pg_resolver),
         ));
         let search_service = Arc::new(SearchService::with_embedder(
             Arc::clone(&repo),

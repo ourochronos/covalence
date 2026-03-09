@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::ingestion::coreference::CorefResolver;
 use crate::ingestion::embedder::Embedder;
 use crate::ingestion::extractor::Extractor;
+use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
 use crate::models::chunk::{Chunk, ChunkLevel as ModelChunkLevel};
 use crate::models::edge::Edge;
@@ -35,6 +36,9 @@ pub struct SourceService {
     embedder: Option<Arc<dyn Embedder>>,
     extractor: Option<Arc<dyn Extractor>>,
     resolver: Option<Arc<dyn EntityResolver>>,
+    /// Resolver for normalizing relationship type labels via
+    /// trigram similarity against existing edge types.
+    rel_type_resolver: Option<Arc<PgResolver>>,
 }
 
 impl SourceService {
@@ -45,6 +49,7 @@ impl SourceService {
             embedder: None,
             extractor: None,
             resolver: None,
+            rel_type_resolver: None,
         }
     }
 
@@ -59,6 +64,7 @@ impl SourceService {
             embedder,
             extractor,
             resolver: None,
+            rel_type_resolver: None,
         }
     }
 
@@ -68,12 +74,14 @@ impl SourceService {
         embedder: Option<Arc<dyn Embedder>>,
         extractor: Option<Arc<dyn Extractor>>,
         resolver: Option<Arc<dyn EntityResolver>>,
+        rel_type_resolver: Option<Arc<PgResolver>>,
     ) -> Self {
         Self {
             repo,
             embedder,
             extractor,
             resolver,
+            rel_type_resolver,
         }
     }
 
@@ -243,7 +251,15 @@ impl SourceService {
                         None => continue,
                     };
 
-                    let mut edge = Edge::new(source_id, target_id, rel.rel_type.clone());
+                    // Resolve the relationship type against existing
+                    // edge types to unify synonymous labels.
+                    let resolved_rel_type = if let Some(ref rtr) = self.rel_type_resolver {
+                        rtr.resolve_rel_type(&rel.rel_type).await?
+                    } else {
+                        rel.rel_type.clone()
+                    };
+
+                    let mut edge = Edge::new(source_id, target_id, resolved_rel_type);
                     edge.confidence = rel.confidence;
                     EdgeRepo::create(&*self.repo, &edge).await?;
 

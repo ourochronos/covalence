@@ -40,6 +40,11 @@ pub struct Config {
 
     /// Search behavior configuration.
     pub search: SearchConfig,
+
+    /// Trigram similarity threshold for entity and relationship
+    /// resolution (0.0–1.0). Values below this are not considered
+    /// matches.
+    pub resolve_trigram_threshold: f32,
 }
 
 /// Configuration for the embedding subsystem.
@@ -128,6 +133,7 @@ impl std::fmt::Debug for Config {
             .field("embedding", &self.embedding)
             .field("consolidation", &self.consolidation)
             .field("search", &self.search)
+            .field("resolve_trigram_threshold", &self.resolve_trigram_threshold)
             .finish()
     }
 }
@@ -163,6 +169,7 @@ impl Config {
                 rrf_k: env_parse_f64("COVALENCE_RRF_K", 60.0)?,
                 default_limit: env_parse("COVALENCE_DEFAULT_LIMIT", 10)?,
             },
+            resolve_trigram_threshold: env_parse("COVALENCE_RESOLVE_TRIGRAM_THRESHOLD", 0.4)?,
         })
     }
 }
