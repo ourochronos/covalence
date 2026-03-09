@@ -1,4 +1,9 @@
 //! Structural search dimension — centrality-based node ranking.
+//!
+//! Combines PageRank centrality with query-text relevance so that
+//! structurally important nodes that are also related to the query
+//! are ranked highest. When no query text is provided, falls back
+//! to pure PageRank ordering.
 
 use uuid::Uuid;
 
@@ -8,10 +13,13 @@ use crate::graph::SharedGraph;
 use crate::graph::algorithms::pagerank;
 use crate::search::SearchResult;
 
-/// Structural importance search using PageRank.
+/// Structural importance search using PageRank with query relevance.
 ///
-/// Computes PageRank over the full in-memory graph and returns the
-/// top-k nodes by score, normalized to `[0, 1]`.
+/// Computes PageRank over the full in-memory graph and boosts scores
+/// for nodes whose canonical name matches the query text. When query
+/// text is provided, nodes that do not match any query term are
+/// penalized (but not removed) so that structurally important
+/// query-relevant nodes float to the top.
 pub struct StructuralDimension {
     graph: SharedGraph,
 }
@@ -22,11 +30,32 @@ const DAMPING: f64 = 0.85;
 /// Default PageRank iteration count.
 const ITERATIONS: usize = 20;
 
+/// Relevance multiplier for nodes matching the query text.
+const RELEVANCE_BOOST: f64 = 2.0;
+
+/// Penalty multiplier for non-matching nodes when a query is present.
+const NON_MATCH_PENALTY: f64 = 0.1;
+
 impl StructuralDimension {
     /// Create a new structural search dimension.
     pub fn new(graph: SharedGraph) -> Self {
         Self { graph }
     }
+}
+
+/// Check whether a node's canonical name matches any query term.
+///
+/// Performs case-insensitive substring matching in both directions:
+/// the term may be a substring of the name, or the name may be a
+/// substring of a term.
+fn name_matches_query(name: &str, terms: &[String]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let name_lower = name.to_lowercase();
+    terms
+        .iter()
+        .any(|term| name_lower.contains(term.as_str()) || term.contains(name_lower.as_str()))
 }
 
 impl SearchDimension for StructuralDimension {
@@ -46,9 +75,32 @@ impl SearchDimension for StructuralDimension {
             return Ok(Vec::new());
         }
 
+        // Parse query terms for relevance filtering.
+        let terms: Vec<String> = query
+            .text
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .collect();
+        let has_query = !terms.is_empty();
+
         let mut scored: Vec<(Uuid, f64)> = scores
             .into_iter()
-            .map(|(id, s)| (id, s / max_score))
+            .map(|(id, s)| {
+                let normalized = s / max_score;
+                if !has_query {
+                    return (id, normalized);
+                }
+                // Look up canonical name from the sidecar.
+                let matches = sidecar
+                    .get_node(id)
+                    .is_some_and(|meta| name_matches_query(&meta.canonical_name, &terms));
+                let boosted = if matches {
+                    normalized * RELEVANCE_BOOST
+                } else {
+                    normalized * NON_MATCH_PENALTY
+                };
+                (id, boosted)
+            })
             .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -136,18 +188,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn structural_dimension_returns_ranked_nodes() {
+    async fn structural_dimension_returns_ranked_nodes_no_query() {
         let (graph, center, leaves) = make_star_graph();
         let dim = StructuralDimension::new(graph);
+        // No query text — pure PageRank ordering.
         let query = SearchQuery {
             limit: 10,
             ..SearchQuery::default()
         };
         let results = dim.search(&query).await.unwrap();
         assert_eq!(results.len(), 5); // center + 4 leaves
-        // Top result should be the center (highest PageRank in star).
+        // Top result should be the center (highest PageRank).
         assert_eq!(results[0].id, center);
-        // All scores should be in [0, 1].
+        // All scores should be in [0, 1] (no boost applied).
         for r in &results {
             assert!(r.score >= 0.0 && r.score <= 1.0);
         }
@@ -161,6 +214,39 @@ mod tests {
         for s in &leaf_scores[1..] {
             assert!((s - leaf_scores[0]).abs() < 1e-6);
         }
+    }
+
+    #[tokio::test]
+    async fn structural_dimension_boosts_matching_nodes() {
+        let (graph, center, leaves) = make_star_graph();
+        let dim = StructuralDimension::new(graph);
+        // Query "Leaf0" should boost that leaf's score.
+        let query = SearchQuery {
+            text: "Leaf0".to_string(),
+            limit: 10,
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query).await.unwrap();
+        assert_eq!(results.len(), 5);
+
+        // The matching leaf should score higher than a
+        // non-matching leaf.
+        let leaf0 = leaves[0];
+        let leaf1 = leaves[1];
+        let leaf0_score = results
+            .iter()
+            .find(|r| r.id == leaf0)
+            .map(|r| r.score)
+            .unwrap_or(0.0);
+        let leaf1_score = results
+            .iter()
+            .find(|r| r.id == leaf1)
+            .map(|r| r.score)
+            .unwrap_or(0.0);
+        assert!(
+            leaf0_score > leaf1_score,
+            "matching leaf should score higher"
+        );
     }
 
     #[tokio::test]
@@ -183,5 +269,25 @@ mod tests {
         };
         let results = dim.search(&query).await.unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn name_matches_query_basic() {
+        let terms = vec!["rust".to_string(), "language".to_string()];
+        assert!(name_matches_query("Rust", &terms));
+        assert!(name_matches_query("rust programming", &terms));
+        assert!(!name_matches_query("Python", &terms));
+    }
+
+    #[test]
+    fn name_matches_query_empty_terms() {
+        assert!(!name_matches_query("Rust", &[]));
+    }
+
+    #[test]
+    fn name_matches_query_reverse_substring() {
+        // Short canonical name is substring of a longer query term.
+        let terms = vec!["rustlang".to_string()];
+        assert!(name_matches_query("Rust", &terms));
     }
 }
