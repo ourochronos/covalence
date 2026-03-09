@@ -148,6 +148,27 @@ impl SourceRepo for PgRepo {
             .await?;
         Ok(row.get("count"))
     }
+
+    async fn update_embedding(&self, id: SourceId, embedding: &[f32]) -> Result<()> {
+        let pgvec = format!(
+            "[{}]",
+            embedding
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        sqlx::query(
+            "UPDATE sources SET embedding = $2::halfvec \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&pgvec)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
@@ -170,5 +191,6 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
         update_class: row.get("update_class"),
         supersedes_id: row.get("supersedes_id"),
         content_version: row.get("content_version"),
+        embedding: None, // Loaded separately; halfvec is not directly mapped.
     }
 }

@@ -1,9 +1,12 @@
 //! Stage 4: Hierarchical chunking.
 //!
 //! Decomposes normalized Markdown into a chunk tree:
-//! document → section → paragraph.
+//! section → paragraph.
 //! Primary boundaries from heading structure (structural),
 //! with paragraph splitting for oversized sections.
+//!
+//! Document-level embedding is stored on the [`Source`] record
+//! directly, so there is no document-level chunk.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,8 +14,6 @@ use uuid::Uuid;
 /// Granularity level of a chunk output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChunkLevel {
-    /// Entire document.
-    Document,
     /// Section delimited by headings.
     Section,
     /// Paragraph within a section.
@@ -24,7 +25,7 @@ pub enum ChunkLevel {
 pub struct ChunkOutput {
     /// Unique identifier for this chunk.
     pub id: Uuid,
-    /// Parent chunk identifier (None for document-level).
+    /// Parent chunk identifier (None for top-level sections).
     pub parent_id: Option<Uuid>,
     /// Text content of the chunk.
     pub text: String,
@@ -32,27 +33,22 @@ pub struct ChunkOutput {
     pub level: ChunkLevel,
     /// Heading path from document root to this chunk.
     pub heading_path: Vec<String>,
+    /// Length of any contextual prefix prepended before embedding.
+    pub context_prefix_len: usize,
 }
 
 /// Split a Markdown document into hierarchical chunks.
 ///
 /// Sections are split on `# ` headings. Sections exceeding
-/// `max_chunk_size` bytes are further split into paragraphs by `\n\n`.
+/// `max_chunk_size` bytes are further split into paragraphs
+/// by `\n\n`. No document-level chunk is created; the
+/// document embedding lives on the source record.
 pub fn chunk_document(markdown: &str, max_chunk_size: usize) -> Vec<ChunkOutput> {
     let mut chunks = Vec::new();
 
     if markdown.trim().is_empty() {
         return chunks;
     }
-
-    let doc_id = Uuid::new_v4();
-    chunks.push(ChunkOutput {
-        id: doc_id,
-        parent_id: None,
-        text: markdown.to_string(),
-        level: ChunkLevel::Document,
-        heading_path: vec![],
-    });
 
     let sections = split_sections(markdown);
 
@@ -67,10 +63,11 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize) -> Vec<ChunkOutput>
         let section_id = Uuid::new_v4();
         chunks.push(ChunkOutput {
             id: section_id,
-            parent_id: Some(doc_id),
+            parent_id: None,
             text: section_text.to_string(),
             level: ChunkLevel::Section,
             heading_path: heading_path.clone(),
+            context_prefix_len: 0,
         });
 
         if section_text.len() > max_chunk_size {
@@ -91,6 +88,7 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize) -> Vec<ChunkOutput>
                         text: para.to_string(),
                         level: ChunkLevel::Paragraph,
                         heading_path: heading_path.clone(),
+                        context_prefix_len: 0,
                     });
                 }
             }
@@ -144,8 +142,18 @@ mod tests {
     fn single_section() {
         let md = "# Title\n\nSome content here.";
         let chunks = chunk_document(md, 500);
-        assert!(chunks.iter().any(|c| c.level == ChunkLevel::Document));
         assert!(chunks.iter().any(|c| c.level == ChunkLevel::Section));
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn no_document_level_chunk() {
+        let md = "# Title\n\nSome content here.";
+        let chunks = chunk_document(md, 500);
+        // Document-level chunks should never appear.
+        for c in &chunks {
+            assert!(c.level == ChunkLevel::Section || c.level == ChunkLevel::Paragraph);
+        }
     }
 
     #[test]
@@ -186,18 +194,37 @@ mod tests {
     }
 
     #[test]
-    fn parent_child_hierarchy() {
+    fn sections_have_no_parent() {
         let md = "# Title\n\nContent.";
         let chunks = chunk_document(md, 500);
-        let doc = chunks
-            .iter()
-            .find(|c| c.level == ChunkLevel::Document)
-            .unwrap();
         let section = chunks
             .iter()
             .find(|c| c.level == ChunkLevel::Section)
             .unwrap();
-        assert_eq!(doc.parent_id, None);
-        assert_eq!(section.parent_id, Some(doc.id));
+        assert_eq!(section.parent_id, None);
+    }
+
+    #[test]
+    fn paragraph_parent_is_section() {
+        let long_section = format!("# Big\n\n{}\n\n{}", "a".repeat(100), "b".repeat(100));
+        let chunks = chunk_document(&long_section, 50);
+        let section = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::Section)
+            .unwrap();
+        let para = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::Paragraph)
+            .unwrap();
+        assert_eq!(para.parent_id, Some(section.id));
+    }
+
+    #[test]
+    fn context_prefix_len_defaults_to_zero() {
+        let md = "# Title\n\nContent.";
+        let chunks = chunk_document(md, 500);
+        for c in &chunks {
+            assert_eq!(c.context_prefix_len, 0);
+        }
     }
 }

@@ -169,6 +169,7 @@ mod tests {
             text: text.to_string(),
             level: crate::ingestion::chunker::ChunkLevel::Paragraph,
             heading_path: vec![],
+            context_prefix_len: 0,
         }
     }
 

@@ -163,6 +163,8 @@ pub struct Source {
     pub supersedes_id: Option<SourceId>,
     /// Version counter, increments on update.
     pub content_version: i32,
+    /// Document-level embedding vector (replaces doc-level chunk).
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl Source {
@@ -188,6 +190,7 @@ impl Source {
             update_class: None,
             supersedes_id: None,
             content_version: 1,
+            embedding: None,
         }
     }
 

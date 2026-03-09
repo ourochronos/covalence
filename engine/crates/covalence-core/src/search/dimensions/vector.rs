@@ -67,6 +67,20 @@ impl SearchDimension for VectorDimension {
         .fetch_all(&self.pool)
         .await?;
 
+        // Search sources by embedding similarity.
+        let source_rows = sqlx::query_as::<_, (Uuid, f64)>(
+            "SELECT id, \
+             1.0 - (embedding <=> $1::halfvec) AS score \
+             FROM sources \
+             WHERE embedding IS NOT NULL \
+             ORDER BY embedding <=> $1::halfvec \
+             LIMIT $2",
+        )
+        .bind(&pgvec)
+        .bind(query.limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
         // Search articles by embedding similarity.
         let article_rows = sqlx::query_as::<_, (Uuid, f64)>(
             "SELECT id, \
@@ -85,6 +99,9 @@ impl SearchDimension for VectorDimension {
         let mut combined: Vec<(Uuid, f64, &str)> = Vec::new();
         for (id, score) in chunk_rows {
             combined.push((id, score, "chunk"));
+        }
+        for (id, score) in source_rows {
+            combined.push((id, score, "source"));
         }
         for (id, score) in node_rows {
             combined.push((id, score, "node"));
