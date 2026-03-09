@@ -35,9 +35,14 @@ pub struct SourceService {
     embedder: Option<Arc<dyn Embedder>>,
     extractor: Option<Arc<dyn Extractor>>,
     resolver: Option<Arc<dyn EntityResolver>>,
+    /// Maximum number of concurrent LLM extraction calls.
+    extract_concurrency: usize,
 }
 
 impl SourceService {
+    /// Default extraction concurrency when not configured.
+    const DEFAULT_EXTRACT_CONCURRENCY: usize = 8;
+
     /// Create a new source service.
     pub fn new(repo: Arc<PgRepo>) -> Self {
         Self {
@@ -45,6 +50,7 @@ impl SourceService {
             embedder: None,
             extractor: None,
             resolver: None,
+            extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
         }
     }
 
@@ -59,6 +65,7 @@ impl SourceService {
             embedder,
             extractor,
             resolver: None,
+            extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
         }
     }
 
@@ -74,7 +81,14 @@ impl SourceService {
             embedder,
             extractor,
             resolver,
+            extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
         }
+    }
+
+    /// Set the maximum number of concurrent LLM extraction calls.
+    pub fn with_extract_concurrency(mut self, concurrency: usize) -> Self {
+        self.extract_concurrency = concurrency;
+        self
     }
 
     /// Ingest new content through the pipeline: hash, parse, normalize,
@@ -196,13 +210,36 @@ impl SourceService {
 
         // Stages 6-7: Extract entities + resolve + create nodes/edges
         if let Some(ref extractor) = self.extractor {
-            // Build a name -> NodeId map for edge creation
+            // Phase 1: Run LLM extraction calls concurrently,
+            // bounded by a semaphore to limit parallelism.
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
+            let extraction_futures: Vec<_> = chunk_outputs
+                .iter()
+                .map(|co| {
+                    let sem = Arc::clone(&semaphore);
+                    let ext = Arc::clone(extractor);
+                    let text = co.text.clone();
+                    let chunk_uuid = co.id;
+                    async move {
+                        let _permit = sem.acquire().await.map_err(|_| {
+                            Error::Ingestion("extraction semaphore closed".to_string())
+                        })?;
+                        let result = ext.extract(&text).await?;
+                        Ok::<_, Error>((chunk_uuid, result))
+                    }
+                })
+                .collect();
+
+            let extraction_results = futures::future::join_all(extraction_futures).await;
+
+            // Phase 2: Process extraction results sequentially —
+            // entity resolution and dedup depend on ordering.
             let mut name_to_node: std::collections::HashMap<String, NodeId> =
                 std::collections::HashMap::new();
 
-            for co in &chunk_outputs {
-                let chunk_id = id_map[&co.id];
-                let extraction = extractor.extract(&co.text).await?;
+            for extraction_result in extraction_results {
+                let (chunk_uuid, extraction) = extraction_result?;
+                let chunk_id = id_map[&chunk_uuid];
 
                 // Process extracted entities
                 for entity in &extraction.entities {

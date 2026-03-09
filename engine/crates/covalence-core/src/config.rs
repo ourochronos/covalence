@@ -48,6 +48,11 @@ pub struct Config {
     /// Embedding-specific configuration.
     pub embedding: EmbeddingConfig,
 
+    /// Maximum number of concurrent LLM extraction calls during
+    /// ingestion. Controls how many chunks are sent to the
+    /// extractor in parallel.
+    pub extract_concurrency: usize,
+
     /// Consolidation scheduling configuration.
     pub consolidation: ConsolidationConfig,
 
@@ -141,6 +146,7 @@ impl std::fmt::Debug for Config {
             .field("chunk_size", &self.chunk_size)
             .field("chunk_overlap", &self.chunk_overlap)
             .field("embedding", &self.embedding)
+            .field("extract_concurrency", &self.extract_concurrency)
             .field("consolidation", &self.consolidation)
             .field("search", &self.search)
             .finish()
@@ -173,6 +179,7 @@ impl Config {
                 dimensions: env_parse("COVALENCE_EMBED_DIM", 2048)?,
                 batch_size: env_parse("COVALENCE_EMBED_BATCH", 64)?,
             },
+            extract_concurrency: env_parse("COVALENCE_EXTRACT_CONCURRENCY", 8)?,
             consolidation: ConsolidationConfig {
                 batch_interval_secs: env_parse("COVALENCE_BATCH_INTERVAL", 300)?,
                 deep_interval_secs: env_parse("COVALENCE_DEEP_INTERVAL", 86_400)?,
