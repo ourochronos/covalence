@@ -52,7 +52,7 @@ impl LayerEvaluator for ChunkerEval {
     type Metrics = ChunkerMetrics;
 
     fn evaluate(&self, input: &Self::Input) -> Self::Output {
-        let chunks = chunk_document(&input.text, self.max_chunk_size);
+        let chunks = chunk_document(&input.text, self.max_chunk_size, 0);
         ChunkerOutput {
             chunks,
             source_len: input.text.len(),
