@@ -53,6 +53,13 @@ pub struct EmbeddingConfig {
 
     /// Maximum number of texts to embed in a single API call.
     pub batch_size: usize,
+
+    /// Vector dimensions for node (entity) embeddings.
+    ///
+    /// Node embeddings are generated from the entity's canonical name
+    /// and description. This may differ from chunk embedding
+    /// dimensions to save storage.
+    pub node_embed_dim: usize,
 }
 
 impl Default for EmbeddingConfig {
@@ -61,6 +68,7 @@ impl Default for EmbeddingConfig {
             model: "voyage-context-3".to_string(),
             dimensions: 2048,
             batch_size: 64,
+            node_embed_dim: 256,
         }
     }
 }
@@ -153,6 +161,7 @@ impl Config {
                 model: embed_model,
                 dimensions: env_parse("COVALENCE_EMBED_DIM", 2048)?,
                 batch_size: env_parse("COVALENCE_EMBED_BATCH", 64)?,
+                node_embed_dim: env_parse("COVALENCE_NODE_EMBED_DIM", 256)?,
             },
             consolidation: ConsolidationConfig {
                 batch_interval_secs: env_parse("COVALENCE_BATCH_INTERVAL", 300)?,

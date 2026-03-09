@@ -109,6 +109,28 @@ impl NodeRepo for PgRepo {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn update_embedding(&self, id: NodeId, embedding: &[f64]) -> Result<()> {
+        // Format as pgvector literal and cast to halfvec.
+        let pgvec = format!(
+            "[{}]",
+            embedding
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        sqlx::query(
+            "UPDATE nodes \
+             SET embedding = $1::halfvec \
+             WHERE id = $2",
+        )
+        .bind(&pgvec)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn list_by_type(&self, node_type: &str, limit: i64, offset: i64) -> Result<Vec<Node>> {
         let rows = sqlx::query(
             "SELECT id, canonical_name, node_type, description,
