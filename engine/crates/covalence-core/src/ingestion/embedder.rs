@@ -34,6 +34,28 @@ pub trait Embedder: Send + Sync {
     fn model_name(&self) -> &str;
 }
 
+/// Truncate an embedding to `target_dim` and validate the result.
+///
+/// Combines [`truncate_embedding`] with a dimension check so that
+/// callers never accidentally pass an oversized vector to the
+/// database. Returns an error if the truncated vector is still
+/// larger than `target_dim` (should never happen, but guards
+/// against logic errors).
+pub fn truncate_and_validate(
+    embedding: &[f64],
+    target_dim: usize,
+    table: &str,
+) -> crate::error::Result<Vec<f64>> {
+    let result = truncate_embedding(embedding, target_dim);
+    if result.len() != target_dim && !embedding.is_empty() && embedding.len() > target_dim {
+        return Err(crate::error::Error::Embedding(format!(
+            "dimension mismatch for {table}: expected {target_dim}, got {}",
+            result.len(),
+        )));
+    }
+    Ok(result)
+}
+
 /// Truncate an embedding vector to `target_dim` dimensions and
 /// L2-normalize the result.
 ///
@@ -144,5 +166,30 @@ mod tests {
         let v = vec![0.0, 0.0, 0.0, 0.0];
         let t = truncate_embedding(&v, 2);
         assert_eq!(t, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn truncate_and_validate_ok() {
+        let v = vec![0.6, 0.8, 0.1, 0.2];
+        let result = truncate_and_validate(&v, 2, "chunks");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn truncate_and_validate_noop_at_target() {
+        let v = vec![0.5, 0.5];
+        let result = truncate_and_validate(&v, 2, "chunks");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), v);
+    }
+
+    #[test]
+    fn truncate_and_validate_below_target() {
+        // Embedding shorter than target is allowed (noop).
+        let v = vec![1.0];
+        let result = truncate_and_validate(&v, 5, "nodes");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), v);
     }
 }

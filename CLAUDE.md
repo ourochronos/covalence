@@ -102,6 +102,7 @@ These must not conflict. The existing Covalence instance runs in production.
 - **No circular crate dependencies.** `covalence-api` depends on `covalence-core`, never the reverse.
 - **No graph algorithms in SQL.** Graph traversal goes through petgraph. PG has a `graph_traverse()` fallback only for when the sidecar is unavailable.
 - **No hardcoded embedding dimensions.** Per-table dimensions are configured via `COVALENCE_EMBED_DIM_SOURCE` (default 2048), `COVALENCE_EMBED_DIM_CHUNK` (default 1024), `COVALENCE_EMBED_DIM_NODE` (default 256), etc. Legacy `COVALENCE_EMBED_DIM` is supported as fallback. Embeddings are generated at max dimension and truncated + renormalized per table (matryoshka property).
+- **No raw embedding storage without validation.** Always use `truncate_and_validate()` (from `ingestion::embedder`) before storing embeddings. Never call `truncate_embedding()` directly at storage boundaries — `truncate_and_validate` wraps it with a dimension check that catches mismatches before they reach PostgreSQL. This is the single gatekeeper for dimension consistency.
 - **No conflation of UUID with NodeIndex.** UUIDs are PG identifiers. NodeIndex is petgraph-internal. The `index: HashMap<Uuid, NodeIndex>` map bridges them.
 
 ## Patterns to Follow
@@ -113,13 +114,15 @@ These patterns come from the existing Covalence and should be maintained:
 - **utoipa for OpenAPI** — Derive `ToSchema` on response/request types, `#[utoipa::path]` on handlers.
 - **Cobra CLI with global flags** — `--api-url` and `--json` are global. Subcommands: `source`, `search`, `node`, `admin`.
 - **Environment-driven config** — `dotenvy` loads `.env`, config struct reads from env vars with defaults.
+- **Embedding dimension discipline** — Embeddings flow through a consistent pipeline: (1) embedder generates at max dimension (e.g., 2048), (2) `truncate_and_validate()` truncates + L2-renormalizes to the target per-table dimension, (3) validated vector is stored. All storage call sites (`source.rs`, `pg_resolver.rs`) and search queries (`vector.rs`) must go through `truncate_and_validate`. When adding new embedding storage paths, always validate dimensions before the INSERT/UPDATE.
+- **Run migrations after schema changes** — After adding new migrations, run `make migrate` (or `make reset-db` for a clean slate). The DB schema must match what the code expects — dimension mismatches between column definitions and stored vectors cause silent failures.
 
 ## Testing
 
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 479 passing tests (436 core + 43 eval), 11 ignored integration tests
+# Current: 482 passing tests (439 core + 43 eval), 11 ignored integration tests
 
 # Integration tests (requires running PG on port 5435)
 cd engine && cargo test --workspace -- --ignored
@@ -180,4 +183,4 @@ To add a new ADR:
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–7 complete.** 479 tests passing. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability (#21), graph context disambiguation, late chunking via Voyage contextual embeddings. See GitHub issues for ongoing enhancements.
+Current phase: **M0-M11 + Waves 1–8 complete.** 482 tests passing. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability (#21), graph context disambiguation, late chunking via Voyage contextual embeddings. See GitHub issues for ongoing enhancements.

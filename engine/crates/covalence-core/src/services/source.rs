@@ -8,7 +8,7 @@ use crate::config::TableDimensions;
 use crate::error::{Error, Result};
 use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::CorefResolver;
-use crate::ingestion::embedder::{Embedder, truncate_embedding};
+use crate::ingestion::embedder::{Embedder, truncate_and_validate};
 use crate::ingestion::extractor::Extractor;
 use crate::ingestion::landscape::ExtractionMethod;
 use crate::ingestion::pg_resolver::PgResolver;
@@ -289,14 +289,14 @@ impl SourceService {
 
             for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
                 let chunk_id = id_map[&co.id];
-                let truncated = truncate_embedding(emb, self.table_dims.chunk);
+                let truncated = truncate_and_validate(emb, self.table_dims.chunk, "chunks")?;
                 ChunkRepo::update_embedding(&*self.repo, chunk_id, &truncated).await?;
             }
 
             // Embed the full normalized text for source-level search
             let source_embeddings = embedder.embed(std::slice::from_ref(&normalized)).await?;
             if let Some(emb) = source_embeddings.first() {
-                let truncated = truncate_embedding(emb, self.table_dims.source);
+                let truncated = truncate_and_validate(emb, self.table_dims.source, "sources")?;
                 let emb_f32: Vec<f32> = truncated.iter().map(|&v| v as f32).collect();
                 SourceRepo::update_embedding(&*self.repo, source.id, &emb_f32).await?;
             }
@@ -467,7 +467,8 @@ impl SourceService {
                     if !texts.is_empty() {
                         let embeddings = embedder.embed(&texts).await?;
                         for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
-                            let truncated = truncate_embedding(emb, self.table_dims.node);
+                            let truncated =
+                                truncate_and_validate(emb, self.table_dims.node, "nodes")?;
                             NodeRepo::update_embedding(&*self.repo, *nid, &truncated).await?;
                         }
                     }

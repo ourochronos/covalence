@@ -21,7 +21,7 @@ use sqlx::Row;
 use crate::error::{Error, Result};
 use crate::graph::SharedGraph;
 use crate::graph::traversal::bfs_neighborhood;
-use crate::ingestion::embedder::{Embedder, truncate_embedding};
+use crate::ingestion::embedder::{Embedder, truncate_and_validate};
 use crate::ingestion::extractor::ExtractedEntity;
 use crate::ingestion::resolver::{EntityResolver, MatchType, ResolvedEntity};
 use crate::storage::postgres::PgRepo;
@@ -195,7 +195,8 @@ impl PgResolver {
 
         // Truncate to node embedding dimension and convert to f32
         // for halfvec cast in the query.
-        let truncated = truncate_embedding(&embedding, self.node_embed_dim);
+        let truncated = truncate_and_validate(&embedding, self.node_embed_dim, "nodes")
+            .map_err(|e| Error::EntityResolution(format!("node dimension mismatch: {e}")))?;
         let embedding_f32: Vec<f32> = truncated.iter().map(|&v| v as f32).collect();
 
         // Query closest node by cosine distance, filtering to

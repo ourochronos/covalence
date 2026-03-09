@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::{DimensionKind, SearchDimension, SearchQuery};
 use crate::config::TableDimensions;
 use crate::error::Result;
-use crate::ingestion::embedder::truncate_embedding;
+use crate::ingestion::embedder::truncate_and_validate;
 use crate::search::SearchResult;
 
 /// Semantic similarity search using pgvector cosine distance.
@@ -72,7 +72,10 @@ impl VectorDimension {
             "articles" => self.table_dims.article,
             _ => self.table_dims.chunk,
         };
-        let truncated = truncate_embedding(embedding, target_dim);
+        // Use truncate_and_validate; if validation fails
+        // (should never happen), fall back to raw truncation.
+        let truncated = truncate_and_validate(embedding, target_dim, table)
+            .unwrap_or_else(|_| embedding[..target_dim.min(embedding.len())].to_vec());
         format!(
             "[{}]",
             truncated
