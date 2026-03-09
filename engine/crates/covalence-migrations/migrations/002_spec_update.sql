@@ -1,20 +1,20 @@
 -- Spec update: bi-temporal edges, 2048d embeddings, landscape analysis, query cache
 
 -- 1. Edge bi-temporal columns
-ALTER TABLE edges ADD COLUMN valid_from TIMESTAMPTZ;
-ALTER TABLE edges ADD COLUMN valid_until TIMESTAMPTZ;
-ALTER TABLE edges ADD COLUMN invalid_at TIMESTAMPTZ;
-ALTER TABLE edges ADD COLUMN invalidated_by UUID REFERENCES edges(id);
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS valid_until TIMESTAMPTZ;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS invalid_at TIMESTAMPTZ;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS invalidated_by UUID REFERENCES edges(id);
 
-CREATE INDEX idx_edges_valid_from ON edges(valid_from) WHERE valid_from IS NOT NULL;
-CREATE INDEX idx_edges_invalid_at ON edges(invalid_at) WHERE invalid_at IS NOT NULL;
-CREATE INDEX idx_edges_active ON edges(source_node_id, target_node_id, rel_type) WHERE invalid_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_edges_valid_from ON edges(valid_from) WHERE valid_from IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_edges_invalid_at ON edges(invalid_at) WHERE invalid_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_edges_active ON edges(source_node_id, target_node_id, rel_type) WHERE invalid_at IS NULL;
 
 DROP INDEX IF EXISTS idx_edges_temporal;
 
 -- 2. Embedding dimension 768 -> 2048
--- NOTE: Dimension (2048) must match COVALENCE_EMBED_DIM (default 2048).
--- If using a different dimension, adjust these ALTER statements before running.
+-- NOTE: Migration 004 retypes these to 1024. This step is still needed
+-- for fresh databases that start from migration 001 (halfvec(768)).
 DROP INDEX IF EXISTS idx_chunks_embedding;
 ALTER TABLE chunks ALTER COLUMN embedding TYPE halfvec(2048);
 CREATE INDEX idx_chunks_embedding ON chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
@@ -32,15 +32,15 @@ ALTER TABLE node_aliases ALTER COLUMN alias_embedding TYPE halfvec(2048);
 CREATE INDEX idx_aliases_embedding ON node_aliases USING hnsw (alias_embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
 
 -- 3. Chunk landscape fields
-ALTER TABLE chunks ADD COLUMN parent_alignment FLOAT;
-ALTER TABLE chunks ADD COLUMN extraction_method TEXT;
-ALTER TABLE chunks ADD COLUMN landscape_metrics JSONB;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS parent_alignment FLOAT;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS extraction_method TEXT;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS landscape_metrics JSONB;
 
-CREATE INDEX idx_chunks_extraction_method ON chunks(extraction_method) WHERE extraction_method IS NOT NULL AND extraction_method != 'embedding_linkage';
-CREATE INDEX idx_chunks_parent_alignment ON chunks(parent_alignment) WHERE parent_alignment IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_chunks_extraction_method ON chunks(extraction_method) WHERE extraction_method IS NOT NULL AND extraction_method != 'embedding_linkage';
+CREATE INDEX IF NOT EXISTS idx_chunks_parent_alignment ON chunks(parent_alignment) WHERE parent_alignment IS NOT NULL;
 
 -- 4. Model calibrations table
-CREATE TABLE model_calibrations (
+CREATE TABLE IF NOT EXISTS model_calibrations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     model_name TEXT NOT NULL UNIQUE,
     parent_child_p25 FLOAT NOT NULL,
@@ -53,7 +53,7 @@ CREATE TABLE model_calibrations (
 );
 
 -- 5. Query cache table
-CREATE TABLE query_cache (
+CREATE TABLE IF NOT EXISTS query_cache (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     query_text TEXT NOT NULL,
     query_embedding halfvec(2048) NOT NULL,
@@ -62,4 +62,4 @@ CREATE TABLE query_cache (
     hit_count INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_query_cache_embedding ON query_cache USING hnsw (query_embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
+CREATE INDEX IF NOT EXISTS idx_query_cache_embedding ON query_cache USING hnsw (query_embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
