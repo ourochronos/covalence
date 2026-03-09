@@ -47,5 +47,8 @@ async-trait = "0.1"
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }
 
+# Async utilities
+futures = "0.3"
+
 # Config
 dotenvy = "0.15"

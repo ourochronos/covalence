@@ -71,12 +71,15 @@ impl AppState {
         let resolver: Option<Arc<dyn EntityResolver>> =
             Some(Arc::new(PgResolver::new(Arc::clone(&repo))));
 
-        let source_service = Arc::new(SourceService::with_full_pipeline(
-            Arc::clone(&repo),
-            embedder.clone(),
-            extractor,
-            resolver,
-        ));
+        let source_service = Arc::new(
+            SourceService::with_full_pipeline(
+                Arc::clone(&repo),
+                embedder.clone(),
+                extractor,
+                resolver,
+            )
+            .with_extract_concurrency(config.extract_concurrency),
+        );
         let search_service = Arc::new(SearchService::with_embedder(
             Arc::clone(&repo),
             Arc::clone(&graph),
