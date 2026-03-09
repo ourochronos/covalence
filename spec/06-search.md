@@ -81,6 +81,8 @@ ORDER BY rank DESC
 LIMIT $k;
 ```
 
+**Snippet generation:** Chunk results include highlighted snippets via PostgreSQL `ts_headline()` configured with `MaxWords=35`, `MinWords=15`, `ShortWord=3`. The tsvector strategies (`plainto_tsquery` and `websearch_to_tsquery`) both generate these snippets. The trigram ILIKE fallback cannot use `ts_headline` and instead extracts a context window around the match (content prefix).
+
 **Features:**
 - Handles exact phrase matching that vectors miss
 - Trigram similarity on node names for fuzzy entity lookup
@@ -133,6 +135,8 @@ Find related content by walking the graph from seed nodes.
 3. Fall back to BFS/DFS with hop-decay if PPR is unavailable
 4. Score by: PPR score (or hop_distance × edge_weight × topological_confidence)
 ```
+
+**Auto-seed detection:** When no explicit seed nodes are provided in the query, the graph dimension auto-detects seeds by matching query terms against node `canonical_name` values in the in-memory graph sidecar. The matching is bidirectional and case-insensitive: a query term that is a substring of a node name matches, and a node name that is a substring of a query term also matches (e.g., query "explain ai techniques" matches a node named "AI"). At most 10 auto-seeds are returned (`MAX_AUTO_SEEDS = 10`). Query-relevant nodes (those matched as seeds) receive a 2x structural boost, while non-matching traversal results get a 0.1x penalty to keep seed-adjacent content prioritized.
 
 **PersonalizedPageRank (preferred):** PPR propagates relevance from seed nodes through the graph, naturally decaying with distance but following high-weight edges. Unlike BFS with fixed hop-decay, PPR discovers relevant nodes that are structurally distant but well-connected to the query context. This is the HippoRAG 2 insight: associative recall through a knowledge graph mirrors how hippocampal indexing works in biological memory.
 

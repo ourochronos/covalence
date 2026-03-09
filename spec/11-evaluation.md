@@ -82,11 +82,23 @@ For embedding model migration specifically:
 - If recall improves > 2%, proceed with migration
 - If recall degrades, skip this model version
 
+## Current Implementation
+
+The `covalence-eval` crate (`engine/crates/covalence-eval/`) implements a fixture-based evaluation harness with three layer evaluators:
+
+- **`ChunkerEval`** — Evaluates chunking quality against expected chunk outputs
+- **`ExtractorEval`** — Evaluates entity/relationship extraction against expected extraction results
+- **`SearchEval`** — Evaluates search result quality against expected result sets
+
+All evaluators implement the `LayerEvaluator` trait, which takes typed inputs, produces outputs, and scores them against expected baselines. Test fixtures live in the `fixtures` module. Metrics types are `ChunkerMetrics`, `ExtractorMetrics`, and `SearchMetrics`.
+
+RAGAS integration (reference-free faithfulness, answer relevancy, context precision/recall) is planned but not yet implemented. The current harness focuses on deterministic, fixture-based evaluation of individual pipeline layers rather than end-to-end LLM-judged metrics.
+
 ## Tools
 
-- **RAGAS** (docs.ragas.io) — Reference-free evaluation of faithfulness, answer relevancy, context precision/recall
+- **RAGAS** (docs.ragas.io) — Reference-free evaluation of faithfulness, answer relevancy, context precision/recall (future integration)
 - **GraphRAG-Bench** (arXiv:2506.05690) — Graph-specific benchmark suite
-- **Custom harness** — Rust test binary that runs queries against the engine, collects metrics, outputs JSON report
+- **Custom harness** — `covalence-eval` binary that runs layer evaluations against fixtures, producing typed metrics
 
 ## Prompt Ablation Testing
 

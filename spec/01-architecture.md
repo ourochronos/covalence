@@ -94,6 +94,16 @@ Stateless compute except for the in-memory graph sidecar.
 
 The online tier handles individual source ingestion. The batch tier produces compiled articles — right-sized summaries (200–4000 tokens) that serve as optimal retrieval units. The deep tier performs structural maintenance and principled forgetting.
 
+### Evaluation Layer (`covalence-eval`)
+
+Layer-by-layer evaluation harness for the pipeline. Provides the `LayerEvaluator` trait with typed inputs, outputs, and metrics. Current evaluators:
+
+- **ChunkerEval** — Evaluates chunking quality (boundary detection, token counts)
+- **ExtractorEval** — Evaluates entity/relationship extraction (precision, recall)
+- **SearchEval** — Evaluates search result quality (relevance, ranking)
+
+The eval crate produces a `covalence-eval` binary for running evaluations from the command line. See [11-evaluation](11-evaluation.md) for methodology.
+
 ### API Layer (Axum + MCP)
 
 Thin routing layer. No business logic.

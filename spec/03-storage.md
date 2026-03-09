@@ -39,6 +39,8 @@ CREATE TABLE sources (
     update_class TEXT,                         -- 'append_only', 'versioned', 'correction', 'refactor', 'takedown'
     supersedes_id UUID REFERENCES sources(id),
     content_version INT NOT NULL DEFAULT 1,
+    -- Document-level embedding (replaces doc-level chunk embedding, see migration 003)
+    embedding halfvec(2048),
     UNIQUE(content_hash)
 );
 
@@ -47,6 +49,9 @@ CREATE INDEX idx_sources_ingested ON sources(ingested_at);
 CREATE INDEX idx_sources_metadata ON sources USING GIN(metadata);
 CREATE INDEX idx_sources_clearance ON sources(clearance_level);
 CREATE INDEX idx_sources_supersedes ON sources(supersedes_id);
+CREATE INDEX idx_sources_embedding ON sources
+    USING hnsw (embedding halfvec_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
 ```
 
 ### `chunks`
@@ -314,7 +319,7 @@ CREATE INDEX idx_articles_tsv ON articles USING GIN(body_tsv);
 
 ## Vector Dimensions
 
-**Decision: Single embedding model for v1.** Use one model across all tables (chunks, nodes, articles, aliases). The dimension (1536 in the schema above) is set once via the initial migration.
+**Decision: Single embedding model, two output dimensions.** Use one model (Voyage voyage-context-3) across all tables, but with Matryoshka truncation for node embeddings. Chunk, article, and source embeddings use 2048 dimensions (`COVALENCE_EMBED_DIM`, default 2048). Node embeddings use 256 dimensions (`COVALENCE_NODE_EMBED_DIM`, default 256) via Matryoshka truncation to save storage on entity-level embeddings. Both are configurable via environment variables. The database column type (`halfvec(2048)`) accommodates the full dimension; shorter embeddings are stored with trailing zeros or in a truncated form depending on the pgvector version.
 
 | Model | Dimensions | Notes |
 |-------|-----------|-------|
@@ -322,17 +327,16 @@ CREATE INDEX idx_articles_tsv ON articles USING GIN(body_tsv);
 | OpenAI text-embedding-3-small | 1536 | Fallback. Good quality, cheapest at scale ($0.02/M tokens). No contextualized embeddings — requires landscape analysis to compensate. |
 | BAAI/bge-base-en-v1.5 | 768 | Local inference only. Insufficient dimensionality for hierarchical comparison. |
 | Jina jina-embeddings-v3 | 1024 | Late chunking via `late_chunking: true` param. Lower quality than Voyage. ColBERT mode available. |
+| BAAI/bge-small-en-v1.5 | 384 | Fast, good for prototyping |
+| Topology-derived (spectral/Node2Vec) | configurable | Zero API cost, graph-only (future) |
 
 **Matryoshka multi-resolution:** voyage-context-3 supports Matryoshka truncation — the first N dimensions of the embedding are a valid lower-dimensional embedding. This enables multi-resolution storage strategies:
 
-- **Full 2048d** — stored in `landscape_metrics` or a secondary column for precise parent-child alignment analysis and cluster detection
-- **1024d** — primary HNSW index for search (faster, smaller index, minimal quality loss)
-- **512d** — optional fast-filter index for candidate generation before re-scoring at higher dimensionality
+- **Full 2048d** — chunks, articles, sources (primary search targets)
+- **256d** — node embeddings via `COVALENCE_NODE_EMBED_DIM` (entity-level, lower storage cost)
+- **512d–1024d** — optional fast-filter index for candidate generation before re-scoring at higher dimensionality
 
-For v1, store full 2048d and use it for everything. Multi-resolution optimization is a v2 concern.
-| BAAI/bge-small-en-v1.5 | 384 | Fast, good for prototyping |
-| OpenAI text-embedding-3-small | 1536 | Highest quality, API cost |
-| Topology-derived (spectral/Node2Vec) | configurable | Zero API cost, graph-only (future) |
+For v1, chunks/articles/sources store full 2048d; node embeddings use 256d Matryoshka truncation. Further multi-resolution optimization is a v2 concern.
 
 **Model migration:** Changing embedding models requires a full re-embedding job (batch all chunks/nodes/articles through the new model, rebuild HNSW indexes). This is a batch operation, not a hot swap. Multi-model support (searching across different embedding dimensions) is explicitly out of scope for v1.
 
@@ -347,8 +351,10 @@ For v1, store full 2048d and use it for everything. Multi-resolution optimizatio
 ## Migration Strategy
 
 - Use `sqlx` migrate (embedded migrations, run at startup)
-- Migrations are numbered sequentially: `001_initial_schema.sql`, `002_add_articles.sql`, etc.
+- Migrations are numbered sequentially: `001_initial_schema.sql`, `002_spec_update.sql`, `003_source_embedding.sql`, etc.
 - Destructive migrations (drop column, change type) require a two-phase approach: add new → migrate data → drop old
+
+**Migration 003 (`003_source_embedding.sql`):** Adds `embedding halfvec(2048)` to the `sources` table with an HNSW index. Document-level chunks previously duplicated the full source text and produced low-quality embeddings for large documents. This migration moves the document-level embedding onto the source record itself, avoiding both the duplication and the quality issue.
 
 ## Stored Procedures
 

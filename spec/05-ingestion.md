@@ -77,6 +77,30 @@ enum SourceType {
 }
 ```
 
+### Stage 1.5: Format Conversion
+
+Before parsing, raw source content passes through a pluggable converter that produces Markdown. The `SourceConverter` trait defines the interface:
+
+```rust
+#[async_trait]
+pub trait SourceConverter: Send + Sync {
+    /// Convert raw bytes to Markdown.
+    async fn convert(&self, content: &[u8], content_type: &str) -> Result<String>;
+    /// MIME types this converter handles.
+    fn supported_types(&self) -> &[&str];
+}
+```
+
+A `ConverterRegistry` dispatches to the first registered converter whose `supported_types()` matches the incoming MIME type (parameters like `charset=utf-8` are stripped before matching). Built-in converters:
+
+| Converter | Content Types | Behavior |
+|-----------|--------------|----------|
+| `MarkdownConverter` | `text/markdown`, `text/x-markdown` | UTF-8 passthrough (invalid bytes replaced with U+FFFD) |
+| `PlainTextConverter` | `text/plain` | Wraps body under an `# Untitled Document` heading |
+| `HtmlConverter` | `text/html`, `application/xhtml+xml` | State-machine tag stripping: `<h1>`–`<h6>` → `#`–`######`, `<p>` → blank line, `<br>` → newline, `<li>` → bullet, `<script>`/`<style>` blocks removed entirely, common HTML entities decoded |
+
+Custom converters can be registered via `ConverterRegistry::register()`. The registry is attached to the source service with `SourceService::with_converter_registry()`, which enables the conversion step during `ingest()`. When no registry is configured, raw content is passed directly to the parser.
+
 ### Stage 2: Parse + Extract Metadata
 
 Convert raw format into structured representation, preserving all available structure.
@@ -141,17 +165,14 @@ Revenue increased 15% year-over-year...
 Decompose the normalized Markdown into a chunk tree:
 
 ```
-Document (level 0)
-├── Section "Introduction" (level 1)    — split at ## headings
-│   ├── Paragraph 1 (level 2)          — split at blank lines
-│   │   ├── Sentence 1 (level 3)       — split at sentence boundaries
-│   │   └── Sentence 2 (level 3)
-│   └── Paragraph 2 (level 2)
-│       └── ...
-├── Section "Methods" (level 1)
-│   └── ...
+Section "Introduction"        — split at # headings
+├── Paragraph 1               — split at \n\n when section exceeds max size
+└── Paragraph 2
+Section "Methods"
 └── ...
 ```
+
+There is no document-level chunk. The document embedding lives on the `Source` record directly (migration 003 added the `embedding` column to `sources`). This avoids a redundant chunk that would duplicate the source's metadata and embedding.
 
 **Chunking strategy (hybrid):**
 
@@ -205,15 +226,20 @@ The `structural_hierarchy` field is critical — it captures the Markdown headin
 
 Each chunk stores its `parent_chunk_id`. At retrieval time, when a sentence-level chunk matches, the system can walk up to retrieve the full paragraph or section for context (parent-child retrieval pattern).
 
-**Chunk overlap (boundary information preservation):**
+**Chunk overlap (overlapping window):**
 
-With voyage-context-3's contextualized embeddings, each chunk already captures document-level context — reducing the traditional need for overlap. However, for the lexical search dimension (tsvector) and for entity extraction, information that spans a chunk boundary can be lost.
+The chunker uses a configurable overlapping window to preserve boundary context:
 
-Policy:
-- **Paragraph-level chunks:** No overlap. Semantic boundaries are natural paragraph breaks.
-- **Sentence-level chunks (within paragraphs):** 1-sentence overlap with the preceding chunk. This preserves cross-sentence references ("The company" in sentence N+1 refers to the entity named in sentence N).
-- **Structural chunks (sections):** No overlap. The parent-child hierarchy provides context.
-- **Overlap stored as metadata:** `overlap_tokens: Int` on each chunk. Overlap content is NOT deduplicated in embeddings (voyage-context-3 handles this natively via document context). Overlap IS excluded from token counting for extraction cost estimates.
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `COVALENCE_CHUNK_SIZE` | `1000` | Maximum chunk size in bytes before paragraph splitting |
+| `COVALENCE_CHUNK_OVERLAP` | `200` | Characters from the end of the previous paragraph prepended to the next |
+
+When a section exceeds `COVALENCE_CHUNK_SIZE`, it is split into paragraph chunks at `\n\n` boundaries. Each paragraph chunk after the first receives the last `COVALENCE_CHUNK_OVERLAP` characters of the preceding paragraph as a prefix (separated by `\n\n`). The `ChunkOutput::context_prefix_len` field records how many leading bytes are overlap context, so consumers can trim them from snippets or highlighting.
+
+Overlap resets at section boundaries — the first paragraph of a new section never carries context from the previous section. This prevents cross-section leaking where unrelated content bleeds through heading boundaries.
+
+Section-level chunks never have overlap; only paragraph-level children produced by size-triggered splitting carry the overlap prefix.
 
 ### Stage 5: Embed + Contextual Prefix
 
@@ -234,10 +260,11 @@ Embedded text: prefix + content
 The prefix is generated once per document (or per top-level section) and prepended to all child chunks before embedding. This is cheaper than embedding the full parent — one LLM call per section, not per chunk.
 
 **Embedding operations:**
-- Batch embedding calls to minimize API round-trips (100+ chunks per batch)
-- Use the configured embedding provider (OpenAI, local model, etc.)
+- Batch embedding calls to minimize API round-trips (configurable batch size via `COVALENCE_EMBED_BATCH`, default `64`)
+- Use the configured embedding provider (OpenAI-compatible endpoint)
+- The `OpenAiEmbedder` passes the configured `dimensions` parameter in each API request, so models like `text-embedding-3-large` truncate output to match the DB schema dimension (`COVALENCE_EMBED_DIM`, default `2048`). When dimensions are not supported by the provider, the parameter is omitted.
 - Store embeddings in the `chunks.embedding` column
-- Optionally generate node-level embeddings from description or aggregated chunk embeddings
+- The full normalized document text is also embedded and stored on the `Source` record directly (see below)
 
 ### Stage 6: Embedding Landscape Analysis
 
@@ -523,6 +550,28 @@ These metrics are useful for:
 
 Extraction is **graduated, not binary.** Every chunk contributes to the graph — the extraction method from Stage 6 determines how.
 
+**Parallel extraction with bounded concurrency:**
+
+LLM extraction calls for individual chunks run concurrently, bounded by a tokio `Semaphore` to prevent overwhelming the API. The concurrency limit is controlled by `COVALENCE_EXTRACT_CONCURRENCY` (default `8`). All chunk extractions for a source are dispatched in parallel (up to the semaphore limit), then the results are processed sequentially: entity resolution and edge creation happen one extraction at a time so that dedup decisions (`name_to_node` map, advisory locks) see a consistent view of prior results. This two-phase approach — concurrent LLM calls, sequential graph writes — maximizes throughput while preserving dedup safety.
+
+**Extractor backend selection:**
+
+The entity extractor backend is configured via `COVALENCE_ENTITY_EXTRACTOR`:
+
+| Value | Backend | Description |
+|-------|---------|-------------|
+| `llm` (default) | `LlmExtractor` | OpenAI-compatible chat completions endpoint; uses the model from `COVALENCE_CHAT_MODEL` |
+| `gliner2` | `GlinerExtractor` | GLiNER2 HTTP sidecar for fast, local NER without LLM API calls |
+
+Both backends implement the same `Extractor` trait and produce identical `ExtractionResult` structs (entities + relationships). The GLiNER2 sidecar is configured via:
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `COVALENCE_EXTRACT_URL` | `http://localhost:8432` | Base URL of the GLiNER2 sidecar |
+| `COVALENCE_GLINER_THRESHOLD` | `0.5` | Minimum confidence threshold; entities below this are discarded by the sidecar |
+
+The GLiNER2 backend extracts entities from a fixed label set (`person`, `organization`, `location`, `concept`, `event`, `technology`) and optionally returns relationships if the sidecar supports them. It does not generate entity descriptions (those come from the LLM path or from batch consolidation).
+
 #### 7.1: Embedding Linkage (All Chunks)
 
 Every chunk, regardless of extraction method, gets embedding linkage. This is the baseline that ensures the graph is never hollow:
@@ -729,7 +778,13 @@ For chunks classified as `FullExtractionWithReview` or any chunk where the initi
 }
 ```
 
-### Stage 7.5: Type Normalization (Emergent Ontology)
+### Stage 7.5: Node Embedding
+
+After all entities for a source have been extracted and resolved, the pipeline batch-embeds their descriptions so that nodes are searchable via vector similarity. Each entity is embedded using the text `"{canonical_name}: {description}"` (or just the canonical name when no description is available). The resulting vectors are stored in `nodes.embedding`.
+
+Node embeddings use a separate dimension configured by `COVALENCE_NODE_EMBED_DIM` (default `256`), which is typically smaller than the chunk embedding dimension to save storage. The same `OpenAiEmbedder` is used, with the `dimensions` parameter in the API request controlling truncation.
+
+### Stage 7.6: Type Normalization (Emergent Ontology)
 
 Before entity resolution, normalize extracted entity types and relationship types against the graph's emergent schema. This prevents drift without requiring a formal ontology.
 
@@ -788,15 +843,31 @@ Match extracted entities against existing nodes in the graph. Uses a three-phase
 
 Embedding linkage (Stage 7.1) already identified the top-k nearest existing nodes for each chunk. The `is_existing_match` flag from the extraction prompt (Stage 7.3) further narrows candidates. This replaces traditional blocking strategies and naturally avoids O(n²) pairwise comparisons.
 
-**Phase 2: Multi-Signal Pairwise Resolution**
+**Phase 2: 4-Tier Pairwise Resolution (`PgResolver`)**
 
-For each extracted entity, compare against candidates from Phase 1:
+For each extracted entity, the `PgResolver` attempts resolution in strict order, stopping at the first match:
 
-1. **Extraction-provided match** — If the LLM set `is_existing_match: true` and provided a `canonical_name` matching an existing node, short-circuit to merge. The LLM already had the existing node's context in the prompt.
-2. **Exact name match** — Direct lookup on `nodes.canonical_name` and `node_aliases.alias`
-3. **Fuzzy name match** — Trigram similarity (`pg_trgm`) for near-matches
-4. **Vector similarity** — Embed the entity name/description, compare against existing node embeddings and alias embeddings
-5. **Graph context disambiguation** — If two candidates have similar names but different graph neighborhoods, they're likely different entities. "Apple" near tech entities ≠ "Apple" near food entities. Use the 1-hop neighborhood embedding centroid as a disambiguation signal.
+1. **Exact canonical name** — Case-insensitive lookup on `nodes.canonical_name`. Fastest path.
+2. **Alias match** — Case-insensitive lookup in `node_aliases`. Returns the aliased node's canonical name. On a fuzzy match (tier 4), an alias is automatically created so future lookups short-circuit to this tier.
+3. **Vector cosine similarity** — Embed the entity name via the configured embedder, query the closest node by `embedding <=> $1::halfvec`. Accept the match only when similarity meets or exceeds `COVALENCE_RESOLVE_VECTOR_THRESHOLD` (default `0.85`). This step requires an embedder; when none is configured it is gracefully skipped.
+4. **Fuzzy trigram** — `pg_trgm` `similarity(canonical_name, $1)` against all nodes, preferring nodes whose `node_type` matches the extracted entity type. Minimum threshold: `COVALENCE_RESOLVE_TRIGRAM_THRESHOLD` (default `0.4`).
+
+If all four tiers miss, the entity is classified as `MatchType::New` and a new node is created.
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `COVALENCE_RESOLVE_VECTOR_THRESHOLD` | `0.85` | Minimum cosine similarity for vector-based entity matching |
+| `COVALENCE_RESOLVE_TRIGRAM_THRESHOLD` | `0.4` | Minimum trigram similarity for fuzzy entity matching |
+
+**Relationship Type Resolution:**
+
+`PgResolver` also resolves relationship type labels via `resolve_rel_type()` so that synonymous edge types converge on the canonical (most frequently used) form:
+
+1. **Exact match** — If the normalized `rel_type` already exists among edges (case-insensitive), return the stored spelling.
+2. **Fuzzy trigram** — Find the closest existing `rel_type` by `pg_trgm` similarity above the configured threshold, weighted by usage frequency. Return the canonical form.
+3. **No match** — Return the input as-is (it is a genuinely new relationship type).
+
+A companion `normalize_rel_type()` helper applies lowercase, unifies separators (spaces and hyphens become underscores), collapses multiple underscores, and strips semantically empty prefixes (`is_`, `has_`, `was_`). This normalization runs before both exact and fuzzy lookups so that `"is_author_of"`, `"authored-by"`, and `"author of"` converge.
 
 **Phase 3: Transitive Closure**
 
