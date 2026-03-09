@@ -17,7 +17,9 @@ use crate::models::node::Node;
 use crate::models::node_alias::NodeAlias;
 use crate::models::source::{Source, SourceType};
 use crate::storage::postgres::PgRepo;
-use crate::storage::traits::{ChunkRepo, EdgeRepo, ExtractionRepo, NodeAliasRepo, SourceRepo};
+use crate::storage::traits::{
+    ChunkRepo, EdgeRepo, ExtractionRepo, NodeAliasRepo, NodeRepo, SourceRepo,
+};
 use crate::types::clearance::ClearanceLevel;
 use crate::types::ids::{AliasId, ChunkId, NodeId, SourceId};
 
@@ -302,6 +304,42 @@ impl SourceService {
                         rel.confidence,
                     );
                     ExtractionRepo::create(&*self.repo, &ext_record).await?;
+                }
+            }
+
+            // Stage 7.5: Embed node descriptions.
+            //
+            // After all entities for this source have been extracted
+            // and resolved, batch-embed their descriptions so that
+            // nodes are searchable via vector similarity.
+            if let Some(ref embedder) = self.embedder {
+                let node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
+
+                if !node_ids.is_empty() {
+                    // Fetch current node data for embedding text.
+                    let mut texts: Vec<String> = Vec::with_capacity(node_ids.len());
+                    let mut valid_ids: Vec<NodeId> = Vec::with_capacity(node_ids.len());
+
+                    for &nid in &node_ids {
+                        if let Some(node) = NodeRepo::get(&*self.repo, nid).await? {
+                            let text = match &node.description {
+                                Some(desc) if !desc.is_empty() => {
+                                    format!("{}: {}", node.canonical_name, desc)
+                                }
+                                _ => node.canonical_name.clone(),
+                            };
+                            texts.push(text);
+                            valid_ids.push(nid);
+                        }
+                    }
+
+                    if !texts.is_empty() {
+                        let embeddings = embedder.embed(&texts).await?;
+
+                        for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
+                            NodeRepo::update_embedding(&*self.repo, *nid, emb).await?;
+                        }
+                    }
                 }
             }
         }

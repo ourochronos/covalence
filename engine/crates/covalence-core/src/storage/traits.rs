@@ -114,6 +114,13 @@ pub trait NodeRepo: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> impl Future<Output = Result<Vec<Node>>> + Send;
+
+    /// Update the embedding vector for a node.
+    fn update_embedding(
+        &self,
+        id: NodeId,
+        embedding: &[f64],
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Edge`] entities.
