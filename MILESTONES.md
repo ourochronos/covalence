@@ -203,6 +203,33 @@ Bring-up bugs found during initial deployment:
 
 **Note:** 301+ tests passing, clippy clean, fmt clean.
 
+## Wave 1 Enhancements *(complete)*
+
+Four parallel implementation tracks:
+
+### Issue #8 — Wire Search Dimensions *(complete)*
+- [x] Graph dimension: auto-detects seed nodes from query via case-insensitive canonical_name matching
+- [x] Structural dimension: query-relevant nodes get 2x boost, non-matching get 0.1x penalty
+- [x] Lexical dimension: ts_headline snippet generation, improved trigram fallback snippets
+
+### Issue #2 — Overlapping Window Chunking *(complete)*
+- [x] Configurable `COVALENCE_CHUNK_SIZE` (default 1000) and `COVALENCE_CHUNK_OVERLAP` (default 200)
+- [x] `context_prefix_len` field on ChunkOutput for snippet trimming
+- [x] Overlap resets at section boundaries (no cross-section leaking)
+
+### Issue #1 — Parallel LLM Extraction *(complete)*
+- [x] Semaphore-bounded concurrent extraction via `futures::join_all`
+- [x] `COVALENCE_EXTRACT_CONCURRENCY` (default 8)
+- [x] Sequential entity/edge processing preserved for dedup safety
+
+### Issue #4 — Evaluation Harness *(complete)*
+- [x] New `covalence-eval` crate with `LayerEvaluator` trait
+- [x] ChunkerEval, ExtractorEval, SearchEval implementations
+- [x] CLI: `covalence-eval --layer {chunker,extractor,search} --input <path>`
+- [x] Sample fixture with test document, gold entities, and test queries
+
+**Note:** 345 tests passing (317 core + 28 eval), clippy clean, fmt clean.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)
