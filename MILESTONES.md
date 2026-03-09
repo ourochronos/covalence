@@ -275,6 +275,30 @@ Two parallel implementation tracks:
 
 **Note:** 372 tests passing (344 core + 28 eval), clippy clean, fmt clean.
 
+## Wave 4 Enhancements *(complete)*
+
+Two parallel implementation tracks:
+
+### Issue #5 — GLiNER2 Sidecar Extractor *(complete)*
+- [x] `GlinerExtractor` implementing `Extractor` trait (HTTP sidecar at configurable URL)
+- [x] `COVALENCE_ENTITY_EXTRACTOR` config (`"llm"` default, `"gliner2"` for sidecar)
+- [x] `COVALENCE_EXTRACT_URL` (default `http://localhost:8432`)
+- [x] `COVALENCE_GLINER_THRESHOLD` (default 0.5)
+- [x] Pluggable backend selection in `AppState::new()`
+
+### Issue #6 — Format Converters *(complete)*
+- [x] `SourceConverter` trait + `ConverterRegistry` with dispatch
+- [x] `MarkdownConverter` — UTF-8 passthrough
+- [x] `PlainTextConverter` — heading-wrapped plain text
+- [x] `HtmlConverter` — state-machine HTML→Markdown (headings, lists, entities, script/style removal)
+- [x] Stage 1.5 in `SourceService::ingest()` for pre-parser conversion
+- [x] `SourceService::with_converter_registry()` builder
+
+**Note:** 405 tests passing (377 core + 28 eval), clippy clean, fmt clean.
+
+### Issue #11 — Fine-Tune Relationship Extraction *(deferred)*
+Requires #5 GLiNER2 sidecar running in production + sufficient training data (~10K+ examples). Will be revisited once the two-pass extraction pipeline has accumulated enough labeled data for distillation.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)
