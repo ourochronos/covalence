@@ -1,0 +1,33 @@
+{
+  "document": "# Rust Programming Language\n\nRust is a systems programming language developed by Mozilla Research. It was first released in 2015 and designed by Graydon Hoare. Rust focuses on safety, concurrency, and performance.\n\n# Ownership Model\n\nRust uses an ownership model with borrowing and lifetimes to guarantee memory safety without a garbage collector. Each value in Rust has a single owner, and when the owner goes out of scope, the value is dropped.\n\n# Cargo Package Manager\n\nCargo is the official package manager and build system for Rust. It manages dependencies, compiles packages, and distributes them via crates.io, the Rust community registry.",
+  "expected_entities": [
+    {"name": "Rust", "entity_type": "technology"},
+    {"name": "Mozilla Research", "entity_type": "organization"},
+    {"name": "Graydon Hoare", "entity_type": "person"},
+    {"name": "Cargo", "entity_type": "tool"},
+    {"name": "crates.io", "entity_type": "platform"}
+  ],
+  "expected_relationships": [
+    {"source": "Mozilla Research", "target": "Rust", "rel_type": "developed"},
+    {"source": "Graydon Hoare", "target": "Rust", "rel_type": "designed"},
+    {"source": "Cargo", "target": "Rust", "rel_type": "build_system_for"},
+    {"source": "Cargo", "target": "crates.io", "rel_type": "distributes_via"}
+  ],
+  "queries": [
+    {
+      "query": "Who designed Rust?",
+      "expected_ids": ["graydon-hoare", "rust", "mozilla-research"],
+      "relevance_grades": [3, 2, 1]
+    },
+    {
+      "query": "How does Rust manage memory?",
+      "expected_ids": ["ownership-model", "rust"],
+      "relevance_grades": [3, 1]
+    },
+    {
+      "query": "What is Cargo?",
+      "expected_ids": ["cargo", "crates-io", "rust"],
+      "relevance_grades": [3, 2, 1]
+    }
+  ]
+}

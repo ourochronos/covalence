@@ -4,6 +4,7 @@ members = [
     "crates/covalence-core",
     "crates/covalence-api",
     "crates/covalence-migrations",
+    "crates/covalence-eval",
 ]
 
 [workspace.package]
