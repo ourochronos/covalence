@@ -189,6 +189,20 @@ Schema, model, and pipeline updates to align with the updated spec (graphrag-spe
 
 **Note:** 286+ tests passing, clippy clean. All changes are backward-compatible with existing M0-M10 functionality.
 
+## Post-M11 — Bug Fixes (Issue #10) *(complete)*
+
+Bring-up bugs found during initial deployment:
+
+- [x] `env_or()` empty string fallthrough — now filters empty strings like `optional_env()`
+- [x] `env_parse` / `env_parse_f64` same fix applied
+- [x] Separate chat API config (`COVALENCE_CHAT_API_KEY`, `COVALENCE_CHAT_BASE_URL`) to avoid sharing Voyage embedder config with LLM extractor
+- [x] Extraction column names fixed (`extraction_method`, `is_superseded`) to match migration 002 schema
+- [x] Source URI populated in search results (`source_uri` field on `FusedResult` + `SearchResultResponse`)
+- [x] Noisy year entities filtered during extraction (bare numbers/year ranges rejected)
+- [x] Migration 002 dimension note added (documents 2048 dependency on `COVALENCE_EMBED_DIM`)
+
+**Note:** 301+ tests passing, clippy clean, fmt clean.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)

@@ -44,6 +44,8 @@ pub struct FusedResult {
     pub name: Option<String>,
     /// Best available text snippet.
     pub snippet: Option<String>,
+    /// Source URI (for chunk results).
+    pub source_uri: Option<String>,
     /// The type of result: "chunk", "node", or "article".
     pub result_type: Option<String>,
     /// Per-dimension scores (original scores, not RRF contributions).
@@ -79,6 +81,7 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
                 entity_type: None,
                 name: None,
                 snippet: None,
+                source_uri: None,
                 result_type: None,
                 dimension_scores: HashMap::new(),
                 dimension_ranks: HashMap::new(),

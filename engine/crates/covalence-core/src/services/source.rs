@@ -354,7 +354,7 @@ impl SourceService {
         sqlx::query(
             "INSERT INTO extractions (
                 id, chunk_id, entity_type, entity_id,
-                method, confidence, superseded
+                extraction_method, confidence, is_superseded
             ) VALUES ($1, $2, $3, $4, $5, $6, false)",
         )
         .bind(ext_id)

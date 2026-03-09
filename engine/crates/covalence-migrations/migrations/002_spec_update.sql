@@ -13,6 +13,8 @@ CREATE INDEX idx_edges_active ON edges(source_node_id, target_node_id, rel_type)
 DROP INDEX IF EXISTS idx_edges_temporal;
 
 -- 2. Embedding dimension 768 -> 2048
+-- NOTE: Dimension (2048) must match COVALENCE_EMBED_DIM (default 2048).
+-- If using a different dimension, adjust these ALTER statements before running.
 DROP INDEX IF EXISTS idx_chunks_embedding;
 ALTER TABLE chunks ALTER COLUMN embedding TYPE halfvec(2048);
 CREATE INDEX idx_chunks_embedding ON chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);

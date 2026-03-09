@@ -122,6 +122,8 @@ pub struct SearchResultResponse {
     pub name: Option<String>,
     /// Best available text snippet.
     pub snippet: Option<String>,
+    /// Source URI (for chunk results).
+    pub source_uri: Option<String>,
     /// Per-dimension scores.
     pub dimension_scores: std::collections::HashMap<String, f64>,
     /// Per-dimension ranks.

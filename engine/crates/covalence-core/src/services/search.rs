@@ -16,7 +16,7 @@ use crate::search::dimensions::{
 use crate::search::fusion::{self, FusedResult};
 use crate::search::strategy::SearchStrategy;
 use crate::storage::postgres::PgRepo;
-use crate::storage::traits::{ArticleRepo, ChunkRepo, NodeRepo};
+use crate::storage::traits::{ArticleRepo, ChunkRepo, NodeRepo, SourceRepo};
 use crate::types::ids::{ArticleId, ChunkId, NodeId};
 
 /// Post-fusion filters for narrowing search results.
@@ -198,7 +198,17 @@ impl SearchService {
                     }
                 }
                 _ => {
-                    // Chunk or unknown — try node lookup for backward compat.
+                    // Chunk or unknown — try chunk lookup for source_uri,
+                    // then node lookup for backward compat.
+                    if let Ok(Some(chunk)) =
+                        ChunkRepo::get(&*self.repo, ChunkId::from_uuid(result.id)).await
+                    {
+                        if let Ok(Some(source)) =
+                            SourceRepo::get(&*self.repo, chunk.source_id).await
+                        {
+                            result.source_uri = source.uri;
+                        }
+                    }
                     if let Ok(Some(node)) =
                         NodeRepo::get(&*self.repo, NodeId::from_uuid(result.id)).await
                     {

@@ -175,5 +175,5 @@ To add a new ADR:
 
 ## Milestones
 
-See `MILESTONES.md` for the phased roadmap (M0–M10).
-Current phase: **M3-M6 largely complete** (M0-M2 complete, M3 search nearly complete with confidence in results, M4 ingestion complete with real OpenAI embedder, M5 confidence integration done, M6 LLM extractor done but entity resolution not end-to-end, M7 epistemic largely implemented, M9 API mostly wired + MCP tool interface, M10 algorithms done)
+See `MILESTONES.md` for the phased roadmap (M0–M11).
+Current phase: **M0-M11 complete.** All milestones delivered. 301+ tests passing. Bug fixes from initial bring-up (issue #10) applied. See GitHub issues for ongoing enhancements.

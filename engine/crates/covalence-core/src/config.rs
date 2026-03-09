@@ -32,6 +32,12 @@ pub struct Config {
     /// Chat/completion model identifier.
     pub chat_model: String,
 
+    /// Separate API key for chat/extraction (falls back to OPENAI_API_KEY).
+    pub chat_api_key: Option<String>,
+
+    /// Separate base URL for chat/extraction (falls back to OPENAI_BASE_URL).
+    pub chat_base_url: Option<String>,
+
     /// Embedding-specific configuration.
     pub embedding: EmbeddingConfig,
 
@@ -149,6 +155,8 @@ impl Config {
             voyage_base_url: optional_env("VOYAGE_BASE_URL"),
             embed_model: embed_model.clone(),
             chat_model: env_or("COVALENCE_CHAT_MODEL", "gpt-4o"),
+            chat_api_key: optional_env("COVALENCE_CHAT_API_KEY"),
+            chat_base_url: optional_env("COVALENCE_CHAT_BASE_URL"),
             embedding: EmbeddingConfig {
                 model: embed_model,
                 dimensions: env_parse("COVALENCE_EMBED_DIM", 2048)?,
@@ -173,7 +181,10 @@ fn require_env(key: &str) -> Result<String> {
 }
 
 fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 fn optional_env(key: &str) -> Option<String> {
@@ -181,19 +192,68 @@ fn optional_env(key: &str) -> Option<String> {
 }
 
 fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> Result<T> {
-    match std::env::var(key) {
-        Ok(v) => v
+    match std::env::var(key).ok().filter(|v| !v.is_empty()) {
+        Some(v) => v
             .parse::<T>()
             .map_err(|_| Error::Config(format!("invalid value for {key}: {v}"))),
-        Err(_) => Ok(default),
+        None => Ok(default),
     }
 }
 
 fn env_parse_f64(key: &str, default: f64) -> Result<f64> {
-    match std::env::var(key) {
-        Ok(v) => v
+    match std::env::var(key).ok().filter(|v| !v.is_empty()) {
+        Some(v) => v
             .parse::<f64>()
             .map_err(|_| Error::Config(format!("invalid float value for {key}: {v}"))),
-        Err(_) => Ok(default),
+        None => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_or_returns_default_when_unset() {
+        let key = "COVALENCE_TEST_UNSET_12345";
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::remove_var(key) };
+        assert_eq!(env_or(key, "fallback"), "fallback");
+    }
+
+    #[test]
+    fn env_or_returns_default_when_empty() {
+        let key = "COVALENCE_TEST_EMPTY_12345";
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::set_var(key, "") };
+        assert_eq!(env_or(key, "fallback"), "fallback");
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn env_or_returns_value_when_set() {
+        let key = "COVALENCE_TEST_SET_12345";
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::set_var(key, "custom") };
+        assert_eq!(env_or(key, "fallback"), "custom");
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn env_parse_returns_default_when_empty() {
+        let key = "COVALENCE_TEST_PARSE_EMPTY_12345";
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::set_var(key, "") };
+        assert_eq!(env_parse::<usize>(key, 42).unwrap(), 42);
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn env_parse_f64_returns_default_when_empty() {
+        let key = "COVALENCE_TEST_PARSEF64_EMPTY_12345";
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::set_var(key, "") };
+        assert!((env_parse_f64(key, 3.14).unwrap() - 3.14).abs() < 1e-10);
+        unsafe { std::env::remove_var(key) };
     }
 }

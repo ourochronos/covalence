@@ -134,6 +134,25 @@ fn default_confidence() -> f64 {
     0.5
 }
 
+/// Returns true if the entity name is a noisy hub candidate that
+/// should be filtered out (bare years, pure numbers, etc.).
+fn is_noisy_entity(name: &str) -> bool {
+    let trimmed = name.trim();
+    // Reject bare numbers (e.g. "2024", "42")
+    if trimmed.parse::<i64>().is_ok() {
+        return true;
+    }
+    // Reject bare year ranges like "2023-2024"
+    if trimmed.len() <= 9
+        && trimmed
+            .split('-')
+            .all(|part| part.trim().parse::<i64>().is_ok())
+    {
+        return true;
+    }
+    false
+}
+
 #[async_trait::async_trait]
 impl Extractor for LlmExtractor {
     async fn extract(&self, text: &str) -> Result<ExtractionResult> {
@@ -203,6 +222,7 @@ fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
     let entities = raw
         .entities
         .into_iter()
+        .filter(|e| !is_noisy_entity(&e.name))
         .map(|e| ExtractedEntity {
             name: e.name,
             entity_type: e.entity_type,
@@ -358,5 +378,31 @@ mod tests {
         let result = extractor.extract("   ").await.unwrap();
         assert!(result.entities.is_empty());
         assert!(result.relationships.is_empty());
+    }
+
+    #[test]
+    fn noisy_entity_filter() {
+        assert!(is_noisy_entity("2024"));
+        assert!(is_noisy_entity("2023"));
+        assert!(is_noisy_entity("42"));
+        assert!(is_noisy_entity("2023-2024"));
+        assert!(!is_noisy_entity("GraphRAG"));
+        assert!(!is_noisy_entity("Alice"));
+        assert!(!is_noisy_entity("ISO-8601"));
+        assert!(!is_noisy_entity("GPT-4o"));
+    }
+
+    #[test]
+    fn noisy_year_entities_filtered_from_extraction() {
+        let json = r#"{
+            "entities": [
+                {"name": "GraphRAG", "entity_type": "concept", "confidence": 0.9},
+                {"name": "2024", "entity_type": "event", "confidence": 0.7},
+                {"name": "2023", "entity_type": "event", "confidence": 0.6}
+            ]
+        }"#;
+        let result = parse_extraction_json(json).unwrap();
+        assert_eq!(result.entities.len(), 1);
+        assert_eq!(result.entities[0].name, "GraphRAG");
     }
 }

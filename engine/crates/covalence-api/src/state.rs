@@ -59,11 +59,19 @@ impl AppState {
         let extractor: Option<Arc<dyn Extractor>> = if config.chat_model.is_empty() {
             None
         } else {
-            config.openai_api_key.as_ref().map(|key| {
+            // Use dedicated chat API key/URL, falling back to the shared OpenAI config.
+            let chat_key = config
+                .chat_api_key
+                .as_ref()
+                .or(config.openai_api_key.as_ref());
+            // Chat base URL: use dedicated, else None (LlmExtractor defaults to OpenAI).
+            // Do NOT fall back to OPENAI_BASE_URL since it may be a non-chat provider (e.g. Voyage).
+            let chat_base = config.chat_base_url.clone();
+            chat_key.map(|key| {
                 Arc::new(LlmExtractor::new(
                     config.chat_model.clone(),
                     key.clone(),
-                    config.openai_base_url.clone(),
+                    chat_base,
                 )) as Arc<dyn Extractor>
             })
         };
