@@ -101,7 +101,7 @@ These must not conflict. The existing Covalence instance runs in production.
 - **No computed/derived state stored in PG.** Topological confidence, PageRank, communities are computed by the sidecar or at query time.
 - **No circular crate dependencies.** `covalence-api` depends on `covalence-core`, never the reverse.
 - **No graph algorithms in SQL.** Graph traversal goes through petgraph. PG has a `graph_traverse()` fallback only for when the sidecar is unavailable.
-- **No hardcoded embedding dimensions.** Dimensions are configured via `COVALENCE_EMBED_DIM` (default 2048) and `COVALENCE_NODE_EMBED_DIM` (default 256), not scattered as magic numbers.
+- **No hardcoded embedding dimensions.** Dimensions are configured via `COVALENCE_EMBED_DIM` (default 1024) and `COVALENCE_NODE_EMBED_DIM` (default 256), not scattered as magic numbers.
 - **No conflation of UUID with NodeIndex.** UUIDs are PG identifiers. NodeIndex is petgraph-internal. The `index: HashMap<Uuid, NodeIndex>` map bridges them.
 
 ## Patterns to Follow

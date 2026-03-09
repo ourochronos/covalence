@@ -92,12 +92,17 @@ pub struct Config {
 /// Configuration for the embedding subsystem.
 #[derive(Debug, Clone)]
 pub struct EmbeddingConfig {
-    /// Model name (e.g. `bge-base-en-v1.5`).
+    /// Model name (e.g. `text-embedding-3-large`).
     pub model: String,
 
-    /// Expected vector dimensions. Used for DB column sizing and
-    /// validation. Only sent to the embedding API when
-    /// `send_dimensions` is `true`.
+    /// Vector dimensions for chunk/source/article embeddings.
+    ///
+    /// Always sent to the embedding API as the `dimensions`
+    /// parameter so models that support truncation (e.g. OpenAI
+    /// `text-embedding-3-*`) produce vectors at the correct size.
+    /// Must match the DB column dimension.
+    ///
+    /// Env: `COVALENCE_EMBED_DIM`. Default: `1024`.
     pub dimensions: usize,
 
     /// Maximum number of texts to embed in a single API call.
@@ -109,24 +114,15 @@ pub struct EmbeddingConfig {
     /// and description. This may differ from chunk embedding
     /// dimensions to save storage.
     pub node_embed_dim: usize,
-
-    /// Whether to send the `dimensions` parameter in embedding API
-    /// requests. Enable for models that support dimension truncation
-    /// (e.g. OpenAI `text-embedding-3-*`). Disable for models that
-    /// return a fixed native dimension (e.g. Voyage).
-    ///
-    /// Env: `COVALENCE_EMBED_SEND_DIM`. Default: `false`.
-    pub send_dimensions: bool,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            model: "voyage-context-3".to_string(),
-            dimensions: 2048,
+            model: "text-embedding-3-large".to_string(),
+            dimensions: 1024,
             batch_size: 64,
             node_embed_dim: 256,
-            send_dimensions: false,
         }
     }
 }
@@ -211,7 +207,7 @@ impl Config {
     ///
     /// Call `dotenvy::dotenv().ok()` before this to load `.env` files.
     pub fn from_env() -> Result<Self> {
-        let embed_model = env_or("COVALENCE_EMBED_MODEL", "bge-base-en-v1.5");
+        let embed_model = env_or("COVALENCE_EMBED_MODEL", "text-embedding-3-large");
 
         Ok(Self {
             database_url: require_env("DATABASE_URL")?,
@@ -229,10 +225,9 @@ impl Config {
             chunk_overlap: env_parse("COVALENCE_CHUNK_OVERLAP", 200)?,
             embedding: EmbeddingConfig {
                 model: embed_model,
-                dimensions: env_parse("COVALENCE_EMBED_DIM", 2048)?,
+                dimensions: env_parse("COVALENCE_EMBED_DIM", 1024)?,
                 batch_size: env_parse("COVALENCE_EMBED_BATCH", 64)?,
                 node_embed_dim: env_parse("COVALENCE_NODE_EMBED_DIM", 256)?,
-                send_dimensions: env_parse("COVALENCE_EMBED_SEND_DIM", false)?,
             },
             extract_concurrency: env_parse("COVALENCE_EXTRACT_CONCURRENCY", 8)?,
             entity_extractor: env_or("COVALENCE_ENTITY_EXTRACTOR", "llm"),

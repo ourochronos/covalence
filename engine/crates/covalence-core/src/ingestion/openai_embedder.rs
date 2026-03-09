@@ -17,8 +17,6 @@ pub struct OpenAiEmbedder {
     model: String,
     dimensions: usize,
     batch_size: usize,
-    /// Whether to include `dimensions` in the API request body.
-    send_dimensions: bool,
 }
 
 impl OpenAiEmbedder {
@@ -34,7 +32,6 @@ impl OpenAiEmbedder {
             model: config.model.clone(),
             dimensions: config.dimensions,
             batch_size: config.batch_size,
-            send_dimensions: config.send_dimensions,
         }
     }
 }
@@ -76,11 +73,7 @@ impl Embedder for OpenAiEmbedder {
             let body = EmbedRequest {
                 model: &self.model,
                 input: batch,
-                dimensions: if self.send_dimensions {
-                    Some(self.dimensions)
-                } else {
-                    None
-                },
+                dimensions: Some(self.dimensions),
             };
 
             let resp = self
@@ -183,10 +176,9 @@ mod tests {
         let config = EmbeddingConfig::default();
         let embedder = OpenAiEmbedder::new(&config, "sk-test".to_string(), None);
         assert_eq!(embedder.base_url, "https://api.openai.com/v1");
-        assert_eq!(embedder.model, "voyage-context-3");
-        assert_eq!(embedder.dimensions, 2048);
+        assert_eq!(embedder.model, "text-embedding-3-large");
+        assert_eq!(embedder.dimensions, 1024);
         assert_eq!(embedder.batch_size, 64);
-        assert!(!embedder.send_dimensions);
     }
 
     #[test]
