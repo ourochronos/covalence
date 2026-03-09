@@ -253,6 +253,28 @@ Three parallel implementation tracks:
 
 **Note:** 359 tests passing (331 core + 28 eval), clippy clean, fmt clean.
 
+## Wave 3 Enhancements *(complete)*
+
+Two parallel implementation tracks:
+
+### Issue #9 Phase 2 — Vector-Based Entity Resolution *(complete)*
+- [x] Four-tier resolution strategy: exact → alias → vector cosine → fuzzy trigram
+- [x] `PgResolver::with_embedder()` constructor (embedder + vector_threshold)
+- [x] `try_vector_match()` — embeds entity name, queries closest node by cosine distance
+- [x] `COVALENCE_RESOLVE_VECTOR_THRESHOLD` config (default 0.85)
+- [x] Falls back gracefully when no embedder is configured
+
+### Issue #12 — Emergent Ontology Clustering *(complete)*
+- [x] `consolidation::ontology` module with greedy agglomerative clustering
+- [x] `OntologyCluster` type with `ClusterLevel` (Entity, EntityType, RelationType)
+- [x] `cluster_labels()` — core clustering by cosine similarity of embeddings
+- [x] `build_entity_clusters()` — cluster node canonical names from PG
+- [x] `build_type_clusters()` — cluster entity type labels
+- [x] `build_rel_type_clusters()` — cluster relationship type labels
+- [x] Incremental centroid updates, canonical label = highest mention count
+
+**Note:** 372 tests passing (344 core + 28 eval), clippy clean, fmt clean.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)
