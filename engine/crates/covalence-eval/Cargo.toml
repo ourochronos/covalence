@@ -1,0 +1,22 @@
+[package]
+name = "covalence-eval"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Layer-by-layer evaluation harness for the Covalence pipeline"
+
+[[bin]]
+name = "covalence-eval"
+path = "src/main.rs"
+
+[dependencies]
+covalence-core = { path = "../covalence-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
