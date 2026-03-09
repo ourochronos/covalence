@@ -5,6 +5,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
+use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::CorefResolver;
 use crate::ingestion::embedder::Embedder;
 use crate::ingestion::extractor::Extractor;
@@ -44,6 +45,11 @@ pub struct SourceService {
     /// Resolver for normalizing relationship type labels via
     /// trigram similarity against existing edge types.
     rel_type_resolver: Option<Arc<PgResolver>>,
+    /// Optional format converter registry for pre-processing
+    /// content before the parser stage. When set, incoming
+    /// content is run through the matching converter to produce
+    /// Markdown before parsing.
+    converter_registry: Option<ConverterRegistry>,
 }
 
 impl SourceService {
@@ -59,6 +65,7 @@ impl SourceService {
             resolver: None,
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver: None,
+            converter_registry: None,
         }
     }
 
@@ -75,6 +82,7 @@ impl SourceService {
             resolver: None,
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver: None,
+            converter_registry: None,
         }
     }
 
@@ -93,7 +101,19 @@ impl SourceService {
             resolver,
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver,
+            converter_registry: None,
         }
+    }
+
+    /// Attach a converter registry for pre-processing content
+    /// before the parser stage.
+    ///
+    /// When set, the `ingest` method will run incoming content
+    /// through the matching converter to produce Markdown before
+    /// passing it to the parser.
+    pub fn with_converter_registry(mut self, registry: ConverterRegistry) -> Self {
+        self.converter_registry = Some(registry);
+        self
     }
 
     /// Set the maximum number of concurrent LLM extraction calls.
@@ -125,8 +145,22 @@ impl SourceService {
         let st = SourceType::from_str_opt(source_type)
             .ok_or_else(|| Error::InvalidInput(format!("unknown source type: {source_type}")))?;
 
+        // Stage 1.5: Convert content if a converter registry is
+        // configured. This transforms non-Markdown formats (HTML,
+        // plain text, etc.) into Markdown before the parser stage.
+        let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
+            if let Some(ref registry) = self.converter_registry {
+                let converted = registry.convert(content, mime).await?;
+                (
+                    std::borrow::Cow::Owned(converted.into_bytes()),
+                    "text/markdown",
+                )
+            } else {
+                (std::borrow::Cow::Borrowed(content), mime)
+            };
+
         // Stage 2: Parse
-        let parsed = crate::ingestion::parser::parse(content, mime)?;
+        let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
 
         // Stage 3: Normalize
         let normalized = crate::ingestion::normalize::normalize(&parsed.body);

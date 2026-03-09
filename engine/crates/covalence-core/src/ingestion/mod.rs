@@ -5,6 +5,7 @@
 
 pub mod accept;
 pub mod chunker;
+pub mod converter;
 pub mod coreference;
 pub mod embedder;
 pub mod extractor;
@@ -21,6 +22,9 @@ pub mod voyage;
 
 pub use accept::{AcceptResult, compute_content_hash};
 pub use chunker::{ChunkLevel, ChunkOutput, chunk_document};
+pub use converter::{
+    ConverterRegistry, HtmlConverter, MarkdownConverter, PlainTextConverter, SourceConverter,
+};
 pub use coreference::{CorefLink, CorefResolver};
 pub use embedder::{Embedder, MockEmbedder};
 pub use extractor::{
