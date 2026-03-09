@@ -7,6 +7,9 @@ use std::collections::HashSet;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
+use crate::consolidation::batch::BatchJob;
+use crate::consolidation::graph_batch::GraphBatchConsolidator;
+use crate::consolidation::{BatchConsolidator, BatchStatus};
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::graph::sync::full_reload;
@@ -142,9 +145,35 @@ impl AdminService {
         }
     }
 
-    /// Trigger batch consolidation.
-    // TODO: Wire to consolidation::batch module.
+    /// Trigger batch consolidation over all sources.
+    ///
+    /// Collects all source IDs, constructs a `BatchJob`, and runs
+    /// it through the `GraphBatchConsolidator`.
     pub async fn trigger_consolidation(&self) -> Result<()> {
+        let sources = SourceRepo::list(&*self.repo, 1000, 0).await?;
+        if sources.is_empty() {
+            return Ok(());
+        }
+        let source_ids: Vec<_> = sources.iter().map(|s| s.id).collect();
+        let mut job = BatchJob {
+            id: uuid::Uuid::new_v4(),
+            source_ids,
+            status: BatchStatus::Pending,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        };
+        let consolidator = GraphBatchConsolidator::new(
+            Arc::clone(&self.repo),
+            Arc::clone(&self.graph),
+            None,
+            None,
+        );
+        consolidator.run_batch(&mut job).await?;
+        tracing::info!(
+            job_id = %job.id,
+            status = ?job.status,
+            "batch consolidation completed"
+        );
         Ok(())
     }
 

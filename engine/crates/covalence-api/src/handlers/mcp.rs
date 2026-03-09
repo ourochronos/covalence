@@ -106,7 +106,7 @@ async fn dispatch(state: &AppState, call: &McpToolCall) -> Result<serde_json::Va
         "traverse" => dispatch_traverse(state, &call.arguments).await,
         "resolve_entity" => dispatch_resolve_entity(state, &call.arguments).await,
         "list_communities" => dispatch_list_communities(state).await,
-        "get_contradictions" => dispatch_get_contradictions(&call.arguments),
+        "get_contradictions" => dispatch_get_contradictions(state, &call.arguments).await,
         "memory_store" => dispatch_memory_store(state, &call.arguments).await,
         "memory_recall" => dispatch_memory_recall(state, &call.arguments).await,
         "memory_forget" => dispatch_memory_forget(state, &call.arguments).await,
@@ -315,9 +315,35 @@ async fn dispatch_list_communities(state: &AppState) -> Result<serde_json::Value
     ))
 }
 
-fn dispatch_get_contradictions(_args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    // TODO: Implement contradiction detection
-    Ok(json!({ "contradictions": [] }))
+async fn dispatch_get_contradictions(
+    state: &AppState,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let graph = state.graph.read().await;
+    let contentions = covalence_core::consolidation::contention::detect_contentions(graph.graph());
+
+    let node_filter = args
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<Uuid>().ok());
+
+    let filtered: Vec<_> = match node_filter {
+        Some(nid) => contentions
+            .into_iter()
+            .filter(|c| c.node_a == nid || c.node_b == nid)
+            .collect(),
+        None => contentions,
+    };
+
+    Ok(json!({
+        "contradictions": filtered.iter().map(|c| json!({
+            "node_a": c.node_a,
+            "node_b": c.node_b,
+            "edge_id": c.edge_id,
+            "rel_type": c.rel_type,
+            "confidence": c.confidence,
+        })).collect::<Vec<_>>()
+    }))
 }
 
 async fn dispatch_memory_store(
@@ -331,10 +357,24 @@ async fn dispatch_memory_store(
 
     let topic = args.get("topic").and_then(|v| v.as_str());
 
-    // TODO: wire to SourceService.ingest with source_type = "observation"
-    let id = uuid::Uuid::new_v4();
-    let _ = (content, topic, state);
-    Ok(json!({ "id": id.to_string(), "status": "stored" }))
+    let metadata = match topic {
+        Some(t) => json!({ "topic": t }),
+        None => json!({}),
+    };
+
+    let source_id = state
+        .source_service
+        .ingest(
+            content.as_bytes(),
+            "observation",
+            "text/plain",
+            None,
+            metadata,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(json!({ "id": source_id.into_uuid().to_string(), "status": "stored" }))
 }
 
 async fn dispatch_memory_recall(
@@ -352,11 +392,32 @@ async fn dispatch_memory_recall(
         .map(|v| v as usize)
         .unwrap_or(10);
 
-    let topic = args.get("topic").and_then(|v| v.as_str());
+    let _topic = args.get("topic").and_then(|v| v.as_str());
 
-    // TODO: wire to SearchService.search with memory filters
-    let _ = (query, limit, topic, state);
-    Ok(json!([]))
+    let results = state
+        .search_service
+        .search(
+            query,
+            covalence_core::search::strategy::SearchStrategy::Balanced,
+            limit,
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(json!(
+        results
+            .into_iter()
+            .map(|r| json!({
+                "id": r.id,
+                "content": r.snippet.unwrap_or_default(),
+                "relevance": r.fused_score,
+                "confidence": r.confidence.unwrap_or(1.0),
+                "entity_type": r.entity_type,
+                "name": r.name,
+            }))
+            .collect::<Vec<_>>()
+    ))
 }
 
 async fn dispatch_memory_forget(
@@ -365,9 +426,17 @@ async fn dispatch_memory_forget(
 ) -> Result<serde_json::Value, String> {
     let id = parse_uuid_arg(args, "id")?;
 
-    // TODO: wire to SourceService.delete
-    let _ = state;
-    Ok(json!({ "deleted": true, "id": id.to_string() }))
+    let result = state
+        .source_service
+        .delete(id.into())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(json!({
+        "deleted": result.deleted,
+        "id": id.to_string(),
+        "chunks_deleted": result.chunks_deleted,
+    }))
 }
 
 /// Parse a UUID from a named argument.

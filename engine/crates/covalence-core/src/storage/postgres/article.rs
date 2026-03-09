@@ -125,6 +125,27 @@ impl ArticleRepo for PgRepo {
 
         Ok(rows.iter().map(article_from_row).collect())
     }
+
+    async fn update_embedding(&self, id: ArticleId, embedding: &[f64]) -> Result<()> {
+        // Format as pgvector literal and cast to halfvec.
+        let pgvec = format!(
+            "[{}]",
+            embedding
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        sqlx::query(
+            "UPDATE articles SET embedding = $2::halfvec \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&pgvec)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 fn article_from_row(row: &sqlx::postgres::PgRow) -> Article {

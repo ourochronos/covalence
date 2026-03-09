@@ -183,6 +183,13 @@ pub trait ArticleRepo: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> impl Future<Output = Result<Vec<Article>>> + Send;
+
+    /// Update the embedding vector for an article.
+    fn update_embedding(
+        &self,
+        id: ArticleId,
+        embedding: &[f64],
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Extraction`] provenance links.

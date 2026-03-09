@@ -10,6 +10,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
+use crate::config::TableDimensions;
 use crate::consolidation::batch::{BatchConsolidator, BatchJob, BatchStatus};
 use crate::consolidation::compiler::{ArticleCompiler, CompilationInput, ConcatCompiler};
 use crate::consolidation::contention::{Contention, detect_contentions};
@@ -17,6 +18,7 @@ use crate::consolidation::topic::{SourceNodes, cluster_sources_by_community};
 use crate::error::Result;
 use crate::graph::sidecar::SharedGraph;
 use crate::ingestion::embedder::Embedder;
+use crate::ingestion::embedder::truncate_and_validate;
 use crate::models::article::Article;
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{ArticleRepo, ChunkRepo};
@@ -38,6 +40,8 @@ pub struct GraphBatchConsolidator {
     compiler: Arc<dyn ArticleCompiler>,
     /// Optional embedder for article embedding storage.
     embedder: Option<Arc<dyn Embedder>>,
+    /// Per-table embedding dimensions for truncation.
+    table_dims: TableDimensions,
 }
 
 impl GraphBatchConsolidator {
@@ -55,7 +59,14 @@ impl GraphBatchConsolidator {
             graph,
             compiler,
             embedder,
+            table_dims: TableDimensions::default(),
         }
+    }
+
+    /// Set per-table embedding dimensions.
+    pub fn with_table_dims(mut self, dims: TableDimensions) -> Self {
+        self.table_dims = dims;
+        self
     }
 
     /// Build `SourceNodes` entries for the given source IDs by
@@ -166,9 +177,11 @@ impl GraphBatchConsolidator {
         // Embed the article summary if an embedder is available
         if let Some(ref embedder) = self.embedder {
             let texts = vec![output.summary];
-            let _embeddings = embedder.embed(&texts).await?;
-            // TODO: store article embedding via UPDATE when
-            // ArticleRepo supports embedding storage
+            let embeddings = embedder.embed(&texts).await?;
+            if let Some(emb) = embeddings.first() {
+                let truncated = truncate_and_validate(emb, self.table_dims.article, "articles")?;
+                ArticleRepo::update_embedding(&*self.repo, article.id, &truncated).await?;
+            }
         }
 
         Ok(article)
