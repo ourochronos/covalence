@@ -95,7 +95,9 @@ pub struct EmbeddingConfig {
     /// Model name (e.g. `bge-base-en-v1.5`).
     pub model: String,
 
-    /// Vector dimensions produced by the model.
+    /// Expected vector dimensions. Used for DB column sizing and
+    /// validation. Only sent to the embedding API when
+    /// `send_dimensions` is `true`.
     pub dimensions: usize,
 
     /// Maximum number of texts to embed in a single API call.
@@ -107,6 +109,14 @@ pub struct EmbeddingConfig {
     /// and description. This may differ from chunk embedding
     /// dimensions to save storage.
     pub node_embed_dim: usize,
+
+    /// Whether to send the `dimensions` parameter in embedding API
+    /// requests. Enable for models that support dimension truncation
+    /// (e.g. OpenAI `text-embedding-3-*`). Disable for models that
+    /// return a fixed native dimension (e.g. Voyage).
+    ///
+    /// Env: `COVALENCE_EMBED_SEND_DIM`. Default: `false`.
+    pub send_dimensions: bool,
 }
 
 impl Default for EmbeddingConfig {
@@ -116,6 +126,7 @@ impl Default for EmbeddingConfig {
             dimensions: 2048,
             batch_size: 64,
             node_embed_dim: 256,
+            send_dimensions: false,
         }
     }
 }
@@ -221,6 +232,7 @@ impl Config {
                 dimensions: env_parse("COVALENCE_EMBED_DIM", 2048)?,
                 batch_size: env_parse("COVALENCE_EMBED_BATCH", 64)?,
                 node_embed_dim: env_parse("COVALENCE_NODE_EMBED_DIM", 256)?,
+                send_dimensions: env_parse("COVALENCE_EMBED_SEND_DIM", false)?,
             },
             extract_concurrency: env_parse("COVALENCE_EXTRACT_CONCURRENCY", 8)?,
             entity_extractor: env_or("COVALENCE_ENTITY_EXTRACTOR", "llm"),
