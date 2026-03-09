@@ -63,6 +63,13 @@ pub struct Config {
     /// resolution (0.0–1.0). Values below this are not considered
     /// matches.
     pub resolve_trigram_threshold: f32,
+
+    /// Cosine similarity threshold for vector-based entity
+    /// resolution (0.0–1.0). During ingestion, if exact and alias
+    /// matches fail, the resolver compares the entity name embedding
+    /// against existing node embeddings. A match is accepted when
+    /// similarity exceeds this threshold.
+    pub resolve_vector_threshold: f32,
 }
 
 /// Configuration for the embedding subsystem.
@@ -163,6 +170,7 @@ impl std::fmt::Debug for Config {
             .field("consolidation", &self.consolidation)
             .field("search", &self.search)
             .field("resolve_trigram_threshold", &self.resolve_trigram_threshold)
+            .field("resolve_vector_threshold", &self.resolve_vector_threshold)
             .finish()
     }
 }
@@ -205,6 +213,7 @@ impl Config {
                 default_limit: env_parse("COVALENCE_DEFAULT_LIMIT", 10)?,
             },
             resolve_trigram_threshold: env_parse("COVALENCE_RESOLVE_TRIGRAM_THRESHOLD", 0.4)?,
+            resolve_vector_threshold: env_parse("COVALENCE_RESOLVE_VECTOR_THRESHOLD", 0.85_f32)?,
         })
     }
 }

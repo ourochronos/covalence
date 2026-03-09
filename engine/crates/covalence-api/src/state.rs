@@ -76,10 +76,15 @@ impl AppState {
             })
         };
 
-        let pg_resolver = Arc::new(PgResolver::with_threshold(
-            Arc::clone(&repo),
-            config.resolve_trigram_threshold,
-        ));
+        let pg_resolver = Arc::new(match embedder.clone() {
+            Some(emb) => PgResolver::with_embedder(
+                Arc::clone(&repo),
+                config.resolve_trigram_threshold,
+                emb,
+                config.resolve_vector_threshold,
+            ),
+            None => PgResolver::with_threshold(Arc::clone(&repo), config.resolve_trigram_threshold),
+        });
 
         let resolver: Option<Arc<dyn EntityResolver>> =
             Some(Arc::clone(&pg_resolver) as Arc<dyn EntityResolver>);

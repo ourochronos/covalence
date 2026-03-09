@@ -1,8 +1,8 @@
 //! PostgreSQL-backed entity and relationship-type resolver.
 //!
 //! Resolves extracted entities against the knowledge graph using a
-//! three-tier strategy: exact name match, alias match, then fuzzy
-//! trigram similarity via `pg_trgm`.
+//! four-tier strategy: exact name match, alias match, vector cosine
+//! similarity, then fuzzy trigram similarity via `pg_trgm`.
 //!
 //! Also resolves relationship type labels so that synonymous edge
 //! types (e.g. "author_of" / "is_author_of" / "wrote") converge on
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use sqlx::Row;
 
 use crate::error::{Error, Result};
+use crate::ingestion::embedder::Embedder;
 use crate::ingestion::extractor::ExtractedEntity;
 use crate::ingestion::resolver::{EntityResolver, MatchType, ResolvedEntity};
 use crate::storage::postgres::PgRepo;
@@ -22,21 +23,30 @@ use crate::types::ids::NodeId;
 /// Default minimum trigram similarity score for fuzzy matching.
 const DEFAULT_FUZZY_THRESHOLD: f32 = 0.4;
 
+/// Default cosine similarity threshold for vector-based matching.
+const DEFAULT_VECTOR_THRESHOLD: f32 = 0.85;
+
 /// Entity and relationship-type resolver backed by PostgreSQL.
 ///
 /// Resolution strategy for entities (in order of preference):
 /// 1. **Exact match** — case-insensitive canonical name lookup.
 /// 2. **Alias match** — case-insensitive lookup in `node_aliases`.
-/// 3. **Fuzzy match** — `pg_trgm` similarity on
+/// 3. **Vector match** — cosine similarity between the entity name
+///    embedding and existing node embeddings (requires an embedder).
+/// 4. **Fuzzy match** — `pg_trgm` similarity on
 ///    `nodes.canonical_name`, preferring nodes with matching
 ///    `node_type`.
-/// 4. **New** — no match found; the entity should be created.
+/// 5. **New** — no match found; the entity should be created.
 pub struct PgResolver {
     /// Shared reference to the PostgreSQL repository.
     repo: Arc<PgRepo>,
     /// Minimum trigram similarity score (0.0–1.0) required to
     /// accept a fuzzy match.
     threshold: f32,
+    /// Optional embedder for generating entity name embeddings.
+    embedder: Option<Arc<dyn Embedder>>,
+    /// Minimum cosine similarity to accept a vector match.
+    vector_threshold: f32,
 }
 
 impl PgResolver {
@@ -46,12 +56,38 @@ impl PgResolver {
         Self {
             repo,
             threshold: DEFAULT_FUZZY_THRESHOLD,
+            embedder: None,
+            vector_threshold: DEFAULT_VECTOR_THRESHOLD,
         }
     }
 
     /// Create a new resolver with a custom trigram threshold.
     pub fn with_threshold(repo: Arc<PgRepo>, threshold: f32) -> Self {
-        Self { repo, threshold }
+        Self {
+            repo,
+            threshold,
+            embedder: None,
+            vector_threshold: DEFAULT_VECTOR_THRESHOLD,
+        }
+    }
+
+    /// Create a resolver with an embedder for vector-based matching.
+    ///
+    /// When an embedder is provided, the resolver will embed entity
+    /// names and compare them against existing node embeddings using
+    /// cosine similarity before falling back to trigram matching.
+    pub fn with_embedder(
+        repo: Arc<PgRepo>,
+        threshold: f32,
+        embedder: Arc<dyn Embedder>,
+        vector_threshold: f32,
+    ) -> Self {
+        Self {
+            repo,
+            threshold,
+            embedder: Some(embedder),
+            vector_threshold,
+        }
     }
 
     /// Try exact case-insensitive match on canonical name.
@@ -85,6 +121,62 @@ impl PgResolver {
                 canonical_name,
                 match_type: MatchType::Exact,
             }));
+        }
+
+        Ok(None)
+    }
+
+    /// Try vector cosine similarity match against node embeddings.
+    ///
+    /// Embeds the entity name via the configured embedder, then
+    /// queries the closest node by cosine distance. Accepts the match
+    /// only when similarity meets or exceeds `vector_threshold`.
+    async fn try_vector_match(&self, entity: &ExtractedEntity) -> Result<Option<ResolvedEntity>> {
+        let embedder = match &self.embedder {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Embed the entity name.
+        let embeddings = embedder
+            .embed(std::slice::from_ref(&entity.name))
+            .await
+            .map_err(|e| Error::EntityResolution(format!("failed to embed entity name: {e}")))?;
+
+        let embedding = match embeddings.into_iter().next() {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        // Convert to f32 for halfvec cast in the query.
+        let embedding_f32: Vec<f32> = embedding.iter().map(|&v| v as f32).collect();
+
+        // Query closest node by cosine distance, filtering to
+        // nodes that have embeddings.
+        let row = sqlx::query(
+            "SELECT id, canonical_name, \
+                    1.0 - (embedding <=> $1::halfvec) AS sim \
+             FROM nodes \
+             WHERE embedding IS NOT NULL \
+             ORDER BY embedding <=> $1::halfvec \
+             LIMIT 1",
+        )
+        .bind(&embedding_f32)
+        .fetch_optional(self.repo.pool())
+        .await
+        .map_err(|e| Error::EntityResolution(format!("vector match query failed: {e}")))?;
+
+        if let Some(r) = row {
+            let sim: f64 = r.get("sim");
+            if sim as f32 >= self.vector_threshold {
+                let id: NodeId = r.get("id");
+                let canonical_name: String = r.get("canonical_name");
+                return Ok(Some(ResolvedEntity {
+                    node_id: Some(id),
+                    canonical_name,
+                    match_type: MatchType::Vector,
+                }));
+            }
         }
 
         Ok(None)
@@ -184,7 +276,7 @@ impl PgResolver {
 impl EntityResolver for PgResolver {
     /// Resolve an extracted entity against the knowledge graph.
     ///
-    /// Tries exact match, then alias match, then fuzzy match.
+    /// Tries exact → alias → vector → fuzzy trigram.
     /// Returns `MatchType::New` if nothing matches.
     async fn resolve(&self, entity: &ExtractedEntity) -> Result<ResolvedEntity> {
         // 1. Exact canonical name match (fastest path).
@@ -197,12 +289,17 @@ impl EntityResolver for PgResolver {
             return Ok(resolved);
         }
 
-        // 3. Fuzzy trigram match.
+        // 3. Vector cosine similarity match.
+        if let Some(resolved) = self.try_vector_match(entity).await? {
+            return Ok(resolved);
+        }
+
+        // 4. Fuzzy trigram match.
         if let Some(resolved) = self.try_fuzzy_match(entity).await? {
             return Ok(resolved);
         }
 
-        // 4. No match — new entity.
+        // 5. No match — new entity.
         Ok(ResolvedEntity {
             node_id: None,
             canonical_name: entity.name.clone(),
@@ -291,6 +388,32 @@ mod tests {
             // Ensures with_threshold signature is correct at compile
             // time.
             let _: fn(Arc<PgRepo>, f32) -> PgResolver = PgResolver::with_threshold;
+        }
+    }
+
+    /// Verify the default vector threshold is reasonable.
+    #[test]
+    fn vector_threshold_default_is_reasonable() {
+        assert!((0.7..=0.95).contains(&DEFAULT_VECTOR_THRESHOLD));
+    }
+
+    /// Verify MatchType::Vector variant round-trips correctly.
+    #[test]
+    fn vector_match_type_round_trips() {
+        let resolved = ResolvedEntity {
+            node_id: None,
+            canonical_name: "test".to_string(),
+            match_type: MatchType::Vector,
+        };
+        assert_eq!(resolved.match_type, MatchType::Vector);
+    }
+
+    /// Verify with_embedder constructor compiles correctly.
+    #[test]
+    fn with_embedder_constructor_compiles() {
+        fn _check_api() {
+            let _: fn(Arc<PgRepo>, f32, Arc<dyn Embedder>, f32) -> PgResolver =
+                PgResolver::with_embedder;
         }
     }
 
