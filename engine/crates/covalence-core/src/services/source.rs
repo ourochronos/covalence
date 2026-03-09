@@ -116,7 +116,7 @@ impl SourceService {
         SourceRepo::create(&*self.repo, &source).await?;
 
         // Stage 4: Chunk
-        let chunk_outputs = crate::ingestion::chunker::chunk_document(&normalized, 1000);
+        let chunk_outputs = crate::ingestion::chunker::chunk_document(&normalized, 1000, 200);
 
         // Build a map from chunker UUIDs to ChunkIds for parent references
         let mut id_map = std::collections::HashMap::new();

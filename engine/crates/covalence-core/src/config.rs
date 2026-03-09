@@ -32,6 +32,13 @@ pub struct Config {
     /// Chat/completion model identifier.
     pub chat_model: String,
 
+    /// Maximum chunk size in bytes before paragraph splitting.
+    pub chunk_size: usize,
+
+    /// Number of characters from the end of the previous chunk to
+    /// prepend as overlap context to the next chunk.
+    pub chunk_overlap: usize,
+
     /// Embedding-specific configuration.
     pub embedding: EmbeddingConfig,
 
@@ -125,6 +132,8 @@ impl std::fmt::Debug for Config {
             .field("voyage_base_url", &self.voyage_base_url)
             .field("embed_model", &self.embed_model)
             .field("chat_model", &self.chat_model)
+            .field("chunk_size", &self.chunk_size)
+            .field("chunk_overlap", &self.chunk_overlap)
             .field("embedding", &self.embedding)
             .field("consolidation", &self.consolidation)
             .field("search", &self.search)
@@ -149,6 +158,8 @@ impl Config {
             voyage_base_url: optional_env("VOYAGE_BASE_URL"),
             embed_model: embed_model.clone(),
             chat_model: env_or("COVALENCE_CHAT_MODEL", "gpt-4o"),
+            chunk_size: env_parse("COVALENCE_CHUNK_SIZE", 1000)?,
+            chunk_overlap: env_parse("COVALENCE_CHUNK_OVERLAP", 200)?,
             embedding: EmbeddingConfig {
                 model: embed_model,
                 dimensions: env_parse("COVALENCE_EMBED_DIM", 2048)?,
