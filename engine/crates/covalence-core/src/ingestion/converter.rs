@@ -295,6 +295,134 @@ fn collapse_newlines(text: &str) -> String {
     result.trim().to_string()
 }
 
+/// Linearize markdown pipe tables into natural language sentences.
+///
+/// Converts tables like:
+/// ```text
+/// | Model | Developer | Year |
+/// |-------|-----------|------|
+/// | GraphRAG | Microsoft | 2024 |
+/// ```
+/// Into:
+/// ```text
+/// Model: GraphRAG, Developer: Microsoft, Year: 2024.
+/// ```
+///
+/// Preserves all non-table content unchanged. Tables without headers
+/// use generic "Column 1", "Column 2", etc.
+pub fn linearize_tables(markdown: &str) -> String {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut result = String::with_capacity(markdown.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        // Detect a table: a pipe-delimited row followed by a
+        // separator row (pipes + dashes/colons).
+        if is_table_row(lines[i]) && i + 1 < lines.len() && is_separator_row(lines[i + 1]) {
+            let headers = parse_table_row(lines[i]);
+            i += 2; // skip header + separator
+
+            // Process data rows.
+            while i < lines.len() && is_table_row(lines[i]) {
+                let cells = parse_table_row(lines[i]);
+                let pairs: Vec<String> = headers
+                    .iter()
+                    .zip(cells.iter())
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(h, v)| format!("{h}: {v}"))
+                    .collect();
+                if !pairs.is_empty() {
+                    result.push_str(&pairs.join(", "));
+                    result.push_str(".\n");
+                }
+                i += 1;
+            }
+        } else if is_table_row(lines[i]) && !is_separator_row(lines[i]) {
+            // Table without headers — use generic column names.
+            // Peek ahead to see if multiple pipe rows follow.
+            let first_row = parse_table_row(lines[i]);
+            let col_count = first_row.len();
+
+            // Check if next line is also a table row (headerless table).
+            if i + 1 < lines.len() && is_table_row(lines[i + 1]) && !is_separator_row(lines[i + 1])
+            {
+                let headers: Vec<String> = (1..=col_count).map(|n| format!("Column {n}")).collect();
+
+                // Linearize all consecutive rows including the first.
+                while i < lines.len() && is_table_row(lines[i]) && !is_separator_row(lines[i]) {
+                    let cells = parse_table_row(lines[i]);
+                    let pairs: Vec<String> = headers
+                        .iter()
+                        .zip(cells.iter())
+                        .filter(|(_, v)| !v.is_empty())
+                        .map(|(h, v)| format!("{h}: {v}"))
+                        .collect();
+                    if !pairs.is_empty() {
+                        result.push_str(&pairs.join(", "));
+                        result.push_str(".\n");
+                    }
+                    i += 1;
+                }
+            } else {
+                // Single pipe row — not really a table, keep as-is.
+                result.push_str(lines[i]);
+                result.push('\n');
+                i += 1;
+            }
+        } else {
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+        }
+    }
+
+    // Trim trailing newline added by line-by-line processing if
+    // the original didn't end with one.
+    if !markdown.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
+/// Check if a line looks like a markdown table row (starts/ends with `|`
+/// or contains at least 2 `|` characters).
+fn is_table_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Must have at least 2 pipe characters to be a table row.
+    trimmed.matches('|').count() >= 2
+}
+
+/// Check if a line is a table separator row (only `|`, `-`, `:`, and
+/// spaces).
+fn is_separator_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || !trimmed.contains('-') {
+        return false;
+    }
+    trimmed
+        .chars()
+        .all(|c| c == '|' || c == '-' || c == ':' || c == ' ')
+}
+
+/// Parse a pipe-delimited table row into trimmed cell values.
+fn parse_table_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    // Strip leading and trailing pipes.
+    let inner = trimmed
+        .strip_prefix('|')
+        .unwrap_or(trimmed)
+        .strip_suffix('|')
+        .unwrap_or(trimmed);
+    inner
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
 /// Registry of format converters, dispatching by content type.
 ///
 /// On creation, registers the built-in converters ([`MarkdownConverter`],
@@ -353,7 +481,10 @@ impl ConverterRegistry {
                 .iter()
                 .any(|&t| t.eq_ignore_ascii_case(base_type))
             {
-                return converter.convert(content, base_type).await;
+                let md = converter.convert(content, base_type).await?;
+                // Post-process: linearize markdown tables into
+                // natural language sentences for better NER/embedding.
+                return Ok(linearize_tables(&md));
             }
         }
 
@@ -703,5 +834,150 @@ mod tests {
             .await
             .expect("front converter should win");
         assert_eq!(result, "FRONT");
+    }
+
+    // --- Table linearization tests ---
+
+    #[test]
+    fn linearize_basic_table() {
+        let input = "\
+| Model | Developer | Year |
+|-------|-----------|------|
+| GraphRAG | Microsoft Research | 2024 |
+| HDBSCAN | Campello et al. | 2013 |";
+        let result = linearize_tables(input);
+        assert_eq!(
+            result,
+            "Model: GraphRAG, Developer: Microsoft Research, Year: 2024.\n\
+             Model: HDBSCAN, Developer: Campello et al., Year: 2013."
+        );
+    }
+
+    #[test]
+    fn linearize_preserves_non_table_content() {
+        let input = "\
+# Heading
+
+Some paragraph text.
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+More text after.";
+        let result = linearize_tables(input);
+        assert!(result.contains("# Heading"));
+        assert!(result.contains("Some paragraph text."));
+        assert!(result.contains("A: 1, B: 2."));
+        assert!(result.contains("More text after."));
+    }
+
+    #[test]
+    fn linearize_empty_cells_skipped() {
+        let input = "\
+| Name | Value |
+|------|-------|
+| foo |  |
+| bar | 42 |";
+        let result = linearize_tables(input);
+        assert!(result.contains("Name: foo."));
+        assert!(result.contains("Name: bar, Value: 42."));
+    }
+
+    #[test]
+    fn linearize_no_table() {
+        let input = "Just plain markdown\nwith no tables.";
+        let result = linearize_tables(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn linearize_two_column_key_value() {
+        let input = "\
+| Key | Value |
+|-----|-------|
+| name | Covalence |
+| version | 0.1.0 |
+| language | Rust |";
+        let result = linearize_tables(input);
+        assert!(result.contains("Key: name, Value: Covalence."));
+        assert!(result.contains("Key: version, Value: 0.1.0."));
+        assert!(result.contains("Key: language, Value: Rust."));
+    }
+
+    #[test]
+    fn linearize_adjacent_tables() {
+        let input = "\
+| A | B |
+|---|---|
+| 1 | 2 |
+
+| X | Y |
+|---|---|
+| 3 | 4 |";
+        let result = linearize_tables(input);
+        assert!(result.contains("A: 1, B: 2."));
+        assert!(result.contains("X: 3, Y: 4."));
+    }
+
+    #[test]
+    fn linearize_colon_separator() {
+        // Separator with colons for alignment.
+        let input = "\
+| Left | Center | Right |
+|:-----|:------:|------:|
+| a | b | c |";
+        let result = linearize_tables(input);
+        assert!(result.contains("Left: a, Center: b, Right: c."));
+    }
+
+    #[test]
+    fn is_separator_row_positive() {
+        assert!(is_separator_row("|---|---|"));
+        assert!(is_separator_row("| --- | --- |"));
+        assert!(is_separator_row("|:---|:---:|---:|"));
+        assert!(is_separator_row("| :--- | :---: | ---: |"));
+    }
+
+    #[test]
+    fn is_separator_row_negative() {
+        assert!(!is_separator_row("| a | b |"));
+        assert!(!is_separator_row(""));
+        assert!(!is_separator_row("| | |"));
+    }
+
+    #[test]
+    fn parse_table_row_strips_pipes() {
+        let cells = parse_table_row("| foo | bar | baz |");
+        assert_eq!(cells, vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn linearize_large_table() {
+        let mut input = String::from("| ID | Name |\n|---|---|\n");
+        for i in 0..50 {
+            input.push_str(&format!("| {i} | item-{i} |\n"));
+        }
+        let result = linearize_tables(&input);
+        assert!(result.contains("ID: 0, Name: item-0."));
+        assert!(result.contains("ID: 49, Name: item-49."));
+        // No pipe characters should remain in linearized output.
+        for line in result.lines() {
+            if line.contains("ID:") {
+                assert!(!line.contains('|'));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_linearizes_tables_in_markdown() {
+        let registry = ConverterRegistry::new();
+        let md_with_table = b"# Test\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let result = registry
+            .convert(md_with_table, "text/markdown")
+            .await
+            .expect("should convert");
+        assert!(result.contains("A: 1, B: 2."));
+        assert!(result.contains("# Test"));
     }
 }

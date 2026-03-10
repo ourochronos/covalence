@@ -26,7 +26,7 @@ pub use accept::{AcceptResult, compute_content_hash};
 pub use chunker::{ChunkLevel, ChunkOutput, chunk_document};
 pub use converter::{
     ConverterRegistry, HtmlConverter, MarkdownConverter, PlainTextConverter, ReaderLmConverter,
-    SourceConverter,
+    SourceConverter, linearize_tables,
 };
 pub use coreference::{CorefLink, CorefResolver};
 pub use embedder::{Embedder, MockEmbedder};
