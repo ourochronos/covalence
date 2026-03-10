@@ -221,6 +221,11 @@ pub struct SearchConfig {
 
     /// Default result limit when unspecified by the caller.
     pub default_limit: usize,
+
+    /// Minimum fused score for the top result before abstention
+    /// triggers. RRF with k=60 produces scores ~0.001-0.01.
+    /// Env: `COVALENCE_SEARCH_ABSTENTION_THRESHOLD`. Default: `0.001`.
+    pub abstention_threshold: f64,
 }
 
 impl Default for SearchConfig {
@@ -228,6 +233,7 @@ impl Default for SearchConfig {
         Self {
             rrf_k: 60.0,
             default_limit: 10,
+            abstention_threshold: 0.001,
         }
     }
 }
@@ -319,6 +325,10 @@ impl Config {
             search: SearchConfig {
                 rrf_k: env_parse_f64("COVALENCE_RRF_K", 60.0)?,
                 default_limit: env_parse("COVALENCE_DEFAULT_LIMIT", 10)?,
+                abstention_threshold: env_parse_f64(
+                    "COVALENCE_SEARCH_ABSTENTION_THRESHOLD",
+                    0.001,
+                )?,
             },
             resolve_trigram_threshold: env_parse("COVALENCE_RESOLVE_TRIGRAM_THRESHOLD", 0.4)?,
             resolve_vector_threshold: env_parse("COVALENCE_RESOLVE_VECTOR_THRESHOLD", 0.85_f32)?,

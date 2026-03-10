@@ -289,16 +289,67 @@ impl SourceService {
 
             for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
                 let chunk_id = id_map[&co.id];
-                let truncated = truncate_and_validate(emb, self.table_dims.chunk, "chunks")?;
-                ChunkRepo::update_embedding(&*self.repo, chunk_id, &truncated).await?;
+                match truncate_and_validate(emb, self.table_dims.chunk, "chunks") {
+                    Ok(truncated) => {
+                        if let Err(e) =
+                            ChunkRepo::update_embedding(&*self.repo, chunk_id, &truncated).await
+                        {
+                            tracing::warn!(
+                                chunk_id = %chunk_id,
+                                error = %e,
+                                "failed to store chunk embedding"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            chunk_id = %chunk_id,
+                            error = %e,
+                            "chunk embedding dimension mismatch"
+                        );
+                    }
+                }
             }
 
-            // Embed the full normalized text for source-level search
-            let source_embeddings = embedder.embed(std::slice::from_ref(&normalized)).await?;
-            if let Some(emb) = source_embeddings.first() {
-                let truncated = truncate_and_validate(emb, self.table_dims.source, "sources")?;
-                let emb_f32: Vec<f32> = truncated.iter().map(|&v| v as f32).collect();
-                SourceRepo::update_embedding(&*self.repo, source.id, &emb_f32).await?;
+            // Embed the full normalized text for source-level search.
+            // Failures are logged but don't abort ingestion — the
+            // source will still be searchable via lexical/graph dims.
+            match embedder.embed(std::slice::from_ref(&normalized)).await {
+                Ok(source_embeddings) => {
+                    if let Some(emb) = source_embeddings.first() {
+                        match truncate_and_validate(emb, self.table_dims.source, "sources") {
+                            Ok(truncated) => {
+                                let emb_f32: Vec<f32> =
+                                    truncated.iter().map(|&v| v as f32).collect();
+                                if let Err(e) =
+                                    SourceRepo::update_embedding(&*self.repo, source.id, &emb_f32)
+                                        .await
+                                {
+                                    tracing::warn!(
+                                        source_id = %source.id,
+                                        error = %e,
+                                        "failed to store source embedding"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    source_id = %source.id,
+                                    error = %e,
+                                    "source embedding dimension mismatch"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        source_id = %source.id,
+                        error = %e,
+                        "failed to embed source, \
+                         source will lack vector search"
+                    );
+                }
             }
 
             // Stage 5.5: Embedding landscape analysis.
@@ -363,34 +414,59 @@ impl SourceService {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
 
             // Determine which chunks should go through LLM
-            // extraction based on landscape analysis
-            let extraction_futures: Vec<_> = chunk_outputs
+            // extraction based on landscape analysis.
+            //
+            // Process in batches to limit memory pressure on large
+            // documents. Each batch runs up to `extract_concurrency`
+            // concurrent LLM calls, and results are collected before
+            // the next batch starts.
+            let extractable: Vec<_> = chunk_outputs
                 .iter()
                 .enumerate()
                 .filter(|(i, _co)| should_extract(*i, landscape_results.as_deref()))
-                .map(|(_i, co)| {
-                    let sem = Arc::clone(&semaphore);
-                    let ext = Arc::clone(extractor);
-                    let text = co.text.clone();
-                    let chunk_uuid = co.id;
-                    async move {
-                        let _permit = sem.acquire().await.map_err(|_| {
-                            Error::Ingestion("extraction semaphore closed".to_string())
-                        })?;
-                        let result = ext.extract(&text).await?;
-                        Ok::<_, Error>((chunk_uuid, result))
-                    }
-                })
+                .map(|(_i, co)| co)
                 .collect();
 
-            let extraction_results = futures::future::join_all(extraction_futures).await;
+            let batch_size = self.extract_concurrency * 2;
+            let mut extraction_results: Vec<Result<(uuid::Uuid, _)>> = Vec::new();
+
+            for batch in extractable.chunks(batch_size) {
+                let batch_futures: Vec<_> = batch
+                    .iter()
+                    .map(|co| {
+                        let sem = Arc::clone(&semaphore);
+                        let ext = Arc::clone(extractor);
+                        let text = co.text.clone();
+                        let chunk_uuid = co.id;
+                        async move {
+                            let _permit = sem.acquire().await.map_err(|_| {
+                                Error::Ingestion("extraction semaphore closed".to_string())
+                            })?;
+                            let result = ext.extract(&text).await?;
+                            Ok::<_, Error>((chunk_uuid, result))
+                        }
+                    })
+                    .collect();
+
+                let batch_results = futures::future::join_all(batch_futures).await;
+                extraction_results.extend(batch_results);
+            }
 
             // Phase 2: Process extraction results sequentially
             let mut name_to_node: std::collections::HashMap<String, NodeId> =
                 std::collections::HashMap::new();
 
             for extraction_result in extraction_results {
-                let (chunk_uuid, extraction) = extraction_result?;
+                let (chunk_uuid, extraction) = match extraction_result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "extraction failed for chunk, skipping"
+                        );
+                        continue;
+                    }
+                };
                 let chunk_id = id_map[&chunk_uuid];
 
                 for entity in &extraction.entities {
@@ -444,6 +520,11 @@ impl SourceService {
             }
 
             // Stage 7.5: Embed node descriptions
+            //
+            // Only embeds nodes that don't already have an embedding,
+            // avoiding redundant API calls for resolved existing nodes.
+            // Embedding failures are logged as warnings and skipped
+            // rather than aborting the entire ingestion.
             if let Some(ref embedder) = self.embedder {
                 let node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
 
@@ -451,7 +532,22 @@ impl SourceService {
                     let mut texts: Vec<String> = Vec::with_capacity(node_ids.len());
                     let mut valid_ids: Vec<NodeId> = Vec::with_capacity(node_ids.len());
 
+                    // Collect nodes that need embedding. Skip nodes
+                    // that already have one from a prior ingestion.
+                    let has_embedding_ids: Vec<uuid::Uuid> = sqlx::query_scalar::<_, uuid::Uuid>(
+                        "SELECT id FROM nodes \
+                             WHERE id = ANY($1) \
+                             AND embedding IS NOT NULL",
+                    )
+                    .bind(node_ids.iter().map(|n| n.into_uuid()).collect::<Vec<_>>())
+                    .fetch_all(self.repo.pool())
+                    .await
+                    .unwrap_or_default();
+
                     for &nid in &node_ids {
+                        if has_embedding_ids.contains(&nid.into_uuid()) {
+                            continue;
+                        }
                         if let Some(node) = NodeRepo::get(&*self.repo, nid).await? {
                             let text = match &node.description {
                                 Some(desc) if !desc.is_empty() => {
@@ -465,11 +561,44 @@ impl SourceService {
                     }
 
                     if !texts.is_empty() {
-                        let embeddings = embedder.embed(&texts).await?;
-                        for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
-                            let truncated =
-                                truncate_and_validate(emb, self.table_dims.node, "nodes")?;
-                            NodeRepo::update_embedding(&*self.repo, *nid, &truncated).await?;
+                        match embedder.embed(&texts).await {
+                            Ok(embeddings) => {
+                                for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
+                                    match truncate_and_validate(emb, self.table_dims.node, "nodes")
+                                    {
+                                        Ok(truncated) => {
+                                            if let Err(e) = NodeRepo::update_embedding(
+                                                &*self.repo,
+                                                *nid,
+                                                &truncated,
+                                            )
+                                            .await
+                                            {
+                                                tracing::warn!(
+                                                    node_id = %nid,
+                                                    error = %e,
+                                                    "failed to store node embedding"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                node_id = %nid,
+                                                error = %e,
+                                                "node embedding dimension mismatch"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    node_count = valid_ids.len(),
+                                    error = %e,
+                                    "failed to embed node descriptions, \
+                                     nodes will lack vector search"
+                                );
+                            }
                         }
                     }
                 }

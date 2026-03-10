@@ -18,7 +18,10 @@ pub struct AbstentionConfig {
 impl Default for AbstentionConfig {
     fn default() -> Self {
         Self {
-            min_relevance_score: 0.3,
+            // RRF with k=60 produces scores in the 0.001-0.01 range.
+            // A threshold of 0.001 means "at least one dimension
+            // ranked this result in top 60."
+            min_relevance_score: 0.001,
             min_results: 1,
         }
     }
@@ -113,19 +116,20 @@ mod tests {
     #[test]
     fn abstention_low_score() {
         let config = AbstentionConfig::default();
-        let check = check_abstention(&[0.1, 0.05], &config);
+        let check = check_abstention(&[0.0005, 0.0002], &config);
         assert!(check.should_abstain);
-        assert_eq!(check.top_score, Some(0.1));
+        assert_eq!(check.top_score, Some(0.0005));
         assert!(check.reason.as_deref().unwrap().contains("below threshold"));
     }
 
     #[test]
     fn abstention_sufficient() {
         let config = AbstentionConfig::default();
-        let check = check_abstention(&[0.5, 0.3], &config);
+        // RRF scores in the 0.002-0.005 range are typical good results.
+        let check = check_abstention(&[0.005, 0.003], &config);
         assert!(!check.should_abstain);
         assert!(check.reason.is_none());
-        assert_eq!(check.top_score, Some(0.5));
+        assert_eq!(check.top_score, Some(0.005));
         assert_eq!(check.result_count, 2);
     }
 

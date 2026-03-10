@@ -171,12 +171,17 @@ impl AppState {
             .with_table_dims(config.embedding.table_dims.clone())
             .with_extract_concurrency(config.extract_concurrency),
         );
+        let abstention_config = covalence_core::search::abstention::AbstentionConfig {
+            min_relevance_score: config.search.abstention_threshold,
+            ..Default::default()
+        };
         let search = SearchService::with_config(
             Arc::clone(&repo),
             Arc::clone(&graph),
             embedder,
             config.embedding.table_dims.clone(),
-        );
+        )
+        .with_abstention_config(abstention_config);
         let search_service = Arc::new(match reranker {
             Some(rnk) => search.with_reranker(rnk),
             None => search,
