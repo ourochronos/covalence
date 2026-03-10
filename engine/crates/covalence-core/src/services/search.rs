@@ -28,6 +28,13 @@ use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{ArticleRepo, ChunkRepo, NodeRepo, SourceRepo};
 use crate::types::ids::{ArticleId, ChunkId, NodeId};
 
+/// Demotion factor applied to bare entity nodes in content-focused
+/// search strategies. Entity nodes (e.g., "GraphRAG" with no content)
+/// rank high on lexical + graph + structural dimensions but provide
+/// no useful content to the user. This factor pushes them below
+/// chunks and articles without removing them entirely.
+const ENTITY_DEMOTION_FACTOR: f64 = 0.3;
+
 /// Post-fusion filters for narrowing search results.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchFilters {
@@ -470,6 +477,45 @@ impl SearchService {
             }
         }
 
+        // --- Step 8b: Entity demotion ---
+        // Entity-only nodes (bare names like "GraphRAG" with no
+        // content) rank high on lexical + graph + structural
+        // dimensions but provide no useful content. Demote them
+        // for content-focused strategies so chunks and articles
+        // surface first. Graph-focused strategies skip demotion.
+        let demote_entities = !matches!(
+            effective_strategy,
+            SearchStrategy::Exploratory | SearchStrategy::GraphFirst | SearchStrategy::Global
+        );
+        if demote_entities {
+            let mut demoted_count = 0usize;
+            for result in &mut fused {
+                let is_bare_entity = result.result_type.as_deref() == Some("node")
+                    && result
+                        .entity_type
+                        .as_deref()
+                        .is_none_or(|t| t != "community_summary" && t != "article");
+                if is_bare_entity {
+                    result.fused_score *= ENTITY_DEMOTION_FACTOR;
+                    demoted_count += 1;
+                }
+            }
+            if demoted_count > 0 {
+                tracing::debug!(
+                    demoted_count,
+                    factor = ENTITY_DEMOTION_FACTOR,
+                    "demoted bare entity nodes in search results"
+                );
+                trace.entities_demoted = demoted_count;
+                // Re-sort after demotion.
+                fused.sort_by(|a, b| {
+                    b.fused_score
+                        .partial_cmp(&a.fused_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+
         // --- Step 9: Reranking ---
         let documents: Vec<String> = fused
             .iter()
@@ -517,6 +563,10 @@ impl SearchService {
         fused.truncate(limit);
 
         // --- Step 11: Cache population + trace ---
+        for result in &fused {
+            let rtype = result.result_type.as_deref().unwrap_or("unknown");
+            trace.record_result_type(rtype);
+        }
         trace.final_count = fused.len();
         trace.set_duration(start.elapsed());
         trace.emit();

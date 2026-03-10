@@ -31,6 +31,12 @@ pub struct QueryTrace {
     pub abstained: bool,
     /// Wall-clock execution time in milliseconds.
     pub execution_ms: u64,
+    /// Number of entity nodes demoted in content-focused strategies.
+    #[serde(default)]
+    pub entities_demoted: usize,
+    /// Per-result-type counts in the final result set.
+    #[serde(default)]
+    pub result_type_counts: HashMap<String, usize>,
 }
 
 impl QueryTrace {
@@ -54,6 +60,8 @@ impl QueryTrace {
             cache_hit: false,
             abstained: false,
             execution_ms: 0,
+            entities_demoted: 0,
+            result_type_counts: HashMap::new(),
         }
     }
 
@@ -67,6 +75,14 @@ impl QueryTrace {
         self.execution_ms = duration.as_millis() as u64;
     }
 
+    /// Record a per-result-type count.
+    pub fn record_result_type(&mut self, result_type: &str) {
+        *self
+            .result_type_counts
+            .entry(result_type.to_string())
+            .or_insert(0) += 1;
+    }
+
     /// Log this trace via the `tracing` crate at info level.
     pub fn emit(&self) {
         tracing::info!(
@@ -76,6 +92,7 @@ impl QueryTrace {
             final_count = self.final_count,
             cache_hit = self.cache_hit,
             abstained = self.abstained,
+            entities_demoted = self.entities_demoted,
             execution_ms = self.execution_ms,
             "search trace"
         );
