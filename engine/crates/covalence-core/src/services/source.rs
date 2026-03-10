@@ -54,6 +54,10 @@ pub struct SourceService {
     converter_registry: Option<ConverterRegistry>,
     /// Per-table embedding dimensions for truncation.
     table_dims: TableDimensions,
+    /// Maximum chunk size in bytes before paragraph splitting.
+    chunk_size: usize,
+    /// Overlap characters from the end of the previous chunk.
+    chunk_overlap: usize,
 }
 
 impl SourceService {
@@ -71,6 +75,8 @@ impl SourceService {
             rel_type_resolver: None,
             converter_registry: None,
             table_dims: TableDimensions::default(),
+            chunk_size: 1000,
+            chunk_overlap: 200,
         }
     }
 
@@ -89,6 +95,8 @@ impl SourceService {
             rel_type_resolver: None,
             converter_registry: None,
             table_dims: TableDimensions::default(),
+            chunk_size: 1000,
+            chunk_overlap: 200,
         }
     }
 
@@ -109,6 +117,8 @@ impl SourceService {
             rel_type_resolver,
             converter_registry: None,
             table_dims: TableDimensions::default(),
+            chunk_size: 1000,
+            chunk_overlap: 200,
         }
     }
 
@@ -126,6 +136,13 @@ impl SourceService {
     /// Set per-table embedding dimensions.
     pub fn with_table_dims(mut self, dims: TableDimensions) -> Self {
         self.table_dims = dims;
+        self
+    }
+
+    /// Set chunk size and overlap.
+    pub fn with_chunk_config(mut self, size: usize, overlap: usize) -> Self {
+        self.chunk_size = size;
+        self.chunk_overlap = overlap;
         self
     }
 
@@ -223,7 +240,11 @@ impl SourceService {
         }
 
         // Stage 4: Chunk
-        let chunk_outputs = crate::ingestion::chunker::chunk_document(&normalized, 1000, 200);
+        let chunk_outputs = crate::ingestion::chunker::chunk_document(
+            &normalized,
+            self.chunk_size,
+            self.chunk_overlap,
+        );
 
         // Build a map from chunker UUIDs to ChunkIds
         let mut id_map = std::collections::HashMap::new();

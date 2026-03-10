@@ -169,6 +169,7 @@ impl AppState {
                 Some(pg_resolver),
             )
             .with_table_dims(config.embedding.table_dims.clone())
+            .with_chunk_config(config.chunk_size, config.chunk_overlap)
             .with_extract_concurrency(config.extract_concurrency),
         );
         let abstention_config = covalence_core::search::abstention::AbstentionConfig {
