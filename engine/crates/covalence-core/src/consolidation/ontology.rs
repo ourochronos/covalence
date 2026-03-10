@@ -273,6 +273,135 @@ pub async fn build_rel_type_clusters(
     cluster_labels(&labels, &embeddings, threshold, ClusterLevel::RelationType)
 }
 
+/// Apply discovered clusters: store definitions in
+/// `ontology_clusters` and write canonical labels back to
+/// nodes/edges.
+///
+/// Existing clusters at the same level are cleared first to
+/// ensure idempotent application.
+pub async fn apply_clusters(
+    pool: &PgPool,
+    clusters: &[OntologyCluster],
+    threshold: f64,
+) -> Result<()> {
+    if clusters.is_empty() {
+        return Ok(());
+    }
+
+    // Group by level for targeted clearing.
+    let levels: Vec<&str> = clusters
+        .iter()
+        .map(|c| match c.level {
+            ClusterLevel::Entity => "entity",
+            ClusterLevel::EntityType => "entity_type",
+            ClusterLevel::RelationType => "rel_type",
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Clear existing clusters at these levels.
+    for level in &levels {
+        // Unlink nodes from clusters being cleared.
+        if *level == "entity" {
+            sqlx::query(
+                "UPDATE nodes SET cluster_id = NULL \
+                 WHERE cluster_id IN (\
+                     SELECT id FROM ontology_clusters WHERE level = $1\
+                 )",
+            )
+            .bind(level)
+            .execute(pool)
+            .await
+            .map_err(Error::Database)?;
+        }
+
+        sqlx::query("DELETE FROM ontology_clusters WHERE level = $1")
+            .bind(level)
+            .execute(pool)
+            .await
+            .map_err(Error::Database)?;
+    }
+
+    // Insert cluster definitions and apply canonical labels.
+    for cluster in clusters {
+        let level_str = match cluster.level {
+            ClusterLevel::Entity => "entity",
+            ClusterLevel::EntityType => "entity_type",
+            ClusterLevel::RelationType => "rel_type",
+        };
+
+        let member_labels_json = serde_json::to_value(&cluster.member_labels)
+            .unwrap_or(serde_json::Value::Array(vec![]));
+
+        sqlx::query(
+            "INSERT INTO ontology_clusters \
+                 (id, level, canonical_label, member_labels, member_count, threshold) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(cluster.id)
+        .bind(level_str)
+        .bind(&cluster.canonical_label)
+        .bind(&member_labels_json)
+        .bind(cluster.member_count as i32)
+        .bind(threshold)
+        .execute(pool)
+        .await
+        .map_err(Error::Database)?;
+
+        // Write back canonical labels to the source tables.
+        match cluster.level {
+            ClusterLevel::Entity => {
+                // Link nodes whose canonical_name matches any
+                // member label to this cluster.
+                for label in &cluster.member_labels {
+                    sqlx::query(
+                        "UPDATE nodes SET cluster_id = $1 \
+                         WHERE canonical_name = $2",
+                    )
+                    .bind(cluster.id)
+                    .bind(label)
+                    .execute(pool)
+                    .await
+                    .map_err(Error::Database)?;
+                }
+            }
+            ClusterLevel::EntityType => {
+                // Set canonical_type for all nodes whose node_type
+                // is a member of this cluster.
+                for label in &cluster.member_labels {
+                    sqlx::query(
+                        "UPDATE nodes SET canonical_type = $1 \
+                         WHERE node_type = $2",
+                    )
+                    .bind(&cluster.canonical_label)
+                    .bind(label)
+                    .execute(pool)
+                    .await
+                    .map_err(Error::Database)?;
+                }
+            }
+            ClusterLevel::RelationType => {
+                // Set canonical_rel_type for all edges whose
+                // rel_type is a member of this cluster.
+                for label in &cluster.member_labels {
+                    sqlx::query(
+                        "UPDATE edges SET canonical_rel_type = $1 \
+                         WHERE rel_type = $2",
+                    )
+                    .bind(&cluster.canonical_label)
+                    .bind(label)
+                    .execute(pool)
+                    .await
+                    .map_err(Error::Database)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -68,7 +68,9 @@ pub struct Config {
 
     /// Which entity extractor backend to use.
     ///
-    /// Supported values: `"llm"` (default), `"gliner2"`.
+    /// Supported values: `"llm"` (default), `"gliner2"`, `"two_pass"`.
+    /// `two_pass` uses GLiNER for entities then targeted LLM for
+    /// relationships only.
     pub entity_extractor: String,
 
     /// Base URL for the extraction sidecar (used by `gliner2` backend).

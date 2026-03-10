@@ -79,14 +79,19 @@ pub async fn sync_loop(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
 /// Used on startup and for admin-triggered full reloads.
 pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
     // Fetch all nodes
-    let node_rows = sqlx::query("SELECT id, node_type, canonical_name, clearance_level FROM nodes")
-        .fetch_all(pool)
-        .await?;
+    let node_rows = sqlx::query(
+        "SELECT id, COALESCE(canonical_type, node_type) AS node_type, \
+         canonical_name, clearance_level FROM nodes",
+    )
+    .fetch_all(pool)
+    .await?;
 
     // Fetch all edges
     let edge_rows = sqlx::query(
-        "SELECT id, source_node_id, target_node_id, rel_type, weight, confidence, \
-         clearance_level, properties->>'causal_level' as causal_level \
+        "SELECT id, source_node_id, target_node_id, \
+         COALESCE(canonical_rel_type, rel_type) AS rel_type, \
+         weight, confidence, clearance_level, \
+         properties->>'causal_level' as causal_level \
          FROM edges",
     )
     .fetch_all(pool)

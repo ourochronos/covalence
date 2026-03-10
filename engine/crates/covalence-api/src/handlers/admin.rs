@@ -7,7 +7,8 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::handlers::dto::{
     AuditLogResponse, CommunityResponse, ConsolidateResponse, DomainLinkResponse, DomainResponse,
-    GraphStatsResponse, HealthResponse, MetricsResponse, PaginationParams, PublishResponse,
+    GraphStatsResponse, HealthResponse, MetricsResponse, OntologyClusterItem,
+    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
     ReloadResponse, SearchTraceResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
@@ -246,6 +247,59 @@ pub async fn list_traces(
             })
             .collect(),
     ))
+}
+
+/// Run ontology clustering.
+#[utoipa::path(
+    post,
+    path = "/admin/ontology/cluster",
+    request_body = OntologyClusterRequest,
+    responses(
+        (status = 200, description = "Clustering results", body = OntologyClusterResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn cluster_ontology(
+    State(state): State<AppState>,
+    Json(req): Json<OntologyClusterRequest>,
+) -> Result<Json<OntologyClusterResponse>, ApiError> {
+    let threshold = req.threshold.unwrap_or(0.85);
+    let dry_run = req.dry_run.unwrap_or(true);
+    let level = req.level.as_deref().and_then(|l| match l {
+        "entity" => Some(covalence_core::consolidation::ClusterLevel::Entity),
+        "entity_type" => Some(covalence_core::consolidation::ClusterLevel::EntityType),
+        "rel_type" => Some(covalence_core::consolidation::ClusterLevel::RelationType),
+        _ => None,
+    });
+
+    let clusters = state
+        .admin_service
+        .cluster_ontology(level, threshold, dry_run)
+        .await?;
+
+    let items: Vec<OntologyClusterItem> = clusters
+        .iter()
+        .map(|c| {
+            let level_str = match c.level {
+                covalence_core::consolidation::ClusterLevel::Entity => "entity",
+                covalence_core::consolidation::ClusterLevel::EntityType => "entity_type",
+                covalence_core::consolidation::ClusterLevel::RelationType => "rel_type",
+            };
+            OntologyClusterItem {
+                id: c.id,
+                level: level_str.to_string(),
+                canonical_label: c.canonical_label.clone(),
+                member_labels: c.member_labels.clone(),
+                member_count: c.member_count,
+            }
+        })
+        .collect();
+
+    Ok(Json(OntologyClusterResponse {
+        applied: !dry_run,
+        cluster_count: items.len(),
+        clusters: items,
+    }))
 }
 
 /// Replay a traced search query.

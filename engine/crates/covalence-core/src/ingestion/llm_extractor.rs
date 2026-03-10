@@ -39,6 +39,33 @@ Rules:
 - Confidence should reflect how clearly the text supports the extraction.
 - Return valid JSON only, no markdown fences or extra text."#;
 
+/// System prompt for relationship-only extraction (used in two-pass mode).
+///
+/// Receives pre-identified entities from the first pass (e.g., GLiNER)
+/// and focuses the LLM on finding relationships between them only.
+const SYSTEM_PROMPT_RELATIONSHIPS: &str = r#"You are a relationship extractor. The following entities have been identified in the text below.
+
+Given the text, extract only the relationships between these entities. Do not add new entities.
+
+Return a JSON object with this exact schema:
+{
+  "relationships": [
+    {
+      "source_name": "source entity name (must match an entity above)",
+      "target_name": "target entity name (must match an entity above)",
+      "rel_type": "relationship type (e.g. works_at, is_part_of, created, located_in)",
+      "description": "brief description or null",
+      "confidence": 0.0-1.0
+    }
+  ]
+}
+
+Rules:
+- Only extract relationships clearly supported by the text.
+- source_name and target_name MUST match entity names from the provided list.
+- Confidence should reflect how clearly the text supports the relationship.
+- Return valid JSON only, no markdown fences or extra text."#;
+
 /// An extractor that calls an OpenAI-compatible chat completions endpoint.
 pub struct LlmExtractor {
     client: reqwest::Client,
@@ -60,6 +87,115 @@ impl LlmExtractor {
             model,
         }
     }
+}
+
+impl LlmExtractor {
+    /// Extract only relationships given pre-identified entities.
+    ///
+    /// Used by `TwoPassExtractor` after GLiNER provides the entity
+    /// list. The LLM receives the entity names and focuses on
+    /// finding relationships between them — cheaper, faster, and
+    /// less prone to hallucination than full extraction.
+    pub async fn extract_relationships(
+        &self,
+        text: &str,
+        entities: &[ExtractedEntity],
+    ) -> Result<Vec<ExtractedRelationship>> {
+        if text.trim().is_empty() || entities.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build the entity list for the prompt.
+        let entity_list: String = entities
+            .iter()
+            .map(|e| format!("- {} ({})", e.name, e.entity_type))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let user_content = format!("Entities:\n{entity_list}\n\nText:\n{text}");
+
+        let body = ChatRequest {
+            model: &self.model,
+            messages: vec![
+                ChatMessage {
+                    role: "system",
+                    content: SYSTEM_PROMPT_RELATIONSHIPS,
+                },
+                ChatMessage {
+                    role: "user",
+                    content: &user_content,
+                },
+            ],
+            response_format: ResponseFormat {
+                r#type: "json_object",
+            },
+            temperature: 0.0,
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Ingestion(format!("relationship extraction request failed: {e}"))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(Error::Ingestion(format!(
+                "relationship extraction API returned {status}: {body_text}"
+            )));
+        }
+
+        let chat_resp: ChatResponse = resp
+            .json()
+            .await
+            .map_err(|e| Error::Ingestion(format!("failed to parse relationship response: {e}")))?;
+
+        let content = chat_resp
+            .choices
+            .first()
+            .and_then(|c| c.message.content.as_deref())
+            .unwrap_or("{}");
+
+        let raw: RawRelationshipResult =
+            serde_json::from_str(content).unwrap_or(RawRelationshipResult {
+                relationships: Vec::new(),
+            });
+
+        // Build a set of known entity names for validation.
+        let known_names: std::collections::HashSet<&str> =
+            entities.iter().map(|e| e.name.as_str()).collect();
+
+        let relationships = raw
+            .relationships
+            .into_iter()
+            .filter(|r| {
+                known_names.contains(r.source_name.as_str())
+                    && known_names.contains(r.target_name.as_str())
+            })
+            .map(|r| ExtractedRelationship {
+                source_name: r.source_name,
+                target_name: r.target_name,
+                rel_type: r.rel_type,
+                description: r.description,
+                confidence: r.confidence.clamp(0.0, 1.0),
+            })
+            .collect();
+
+        Ok(relationships)
+    }
+}
+
+/// Relationship-only extraction result (no entities).
+#[derive(Deserialize)]
+struct RawRelationshipResult {
+    #[serde(default)]
+    relationships: Vec<RawRelationship>,
 }
 
 /// Chat message in the request.

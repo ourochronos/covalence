@@ -12,7 +12,8 @@ use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
-    GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver, VoyageConfig, VoyageEmbedder,
+    GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver, TwoPassExtractor, VoyageConfig,
+    VoyageEmbedder,
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
@@ -125,6 +126,28 @@ impl AppState {
                 Arc::new(GlinerExtractor::new(base_url, config.gliner_threshold))
                     as Arc<dyn Extractor>,
             )
+        } else if config.entity_extractor == "two_pass" {
+            // Two-pass: GLiNER for entities, LLM for relationships.
+            let gliner_url = config
+                .extract_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:8432".to_string());
+            let gliner = Arc::new(GlinerExtractor::new(gliner_url, config.gliner_threshold));
+
+            let chat_key = config
+                .chat_api_key
+                .as_ref()
+                .or(config.openai_api_key.as_ref());
+            let chat_base = config.chat_base_url.clone();
+
+            chat_key.map(|key| {
+                let llm = Arc::new(LlmExtractor::new(
+                    config.chat_model.clone(),
+                    key.clone(),
+                    chat_base,
+                ));
+                Arc::new(TwoPassExtractor::new(gliner, llm)) as Arc<dyn Extractor>
+            })
         } else if config.chat_model.is_empty() {
             None
         } else {
@@ -179,7 +202,7 @@ impl AppState {
         let search = SearchService::with_config(
             Arc::clone(&repo),
             Arc::clone(&graph),
-            embedder,
+            embedder.clone(),
             config.embedding.table_dims.clone(),
         )
         .with_abstention_config(abstention_config);
@@ -190,7 +213,9 @@ impl AppState {
         let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
         let article_service = Arc::new(ArticleService::new(Arc::clone(&repo)));
-        let admin_service = Arc::new(AdminService::new(Arc::clone(&repo), Arc::clone(&graph)));
+        let admin_service = Arc::new(
+            AdminService::new(Arc::clone(&repo), Arc::clone(&graph)).with_embedder(embedder),
+        );
 
         Ok(Self {
             config,

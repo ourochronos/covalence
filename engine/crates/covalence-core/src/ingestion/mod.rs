@@ -19,6 +19,7 @@ pub mod pg_resolver;
 pub mod pii;
 pub mod resolver;
 pub mod takedown;
+pub mod two_pass_extractor;
 pub mod voyage;
 
 pub use accept::{AcceptResult, compute_content_hash};
@@ -44,4 +45,5 @@ pub use pg_resolver::{PgResolver, normalize_rel_type};
 pub use pii::{PiiDetector, PiiMatch, RegexPiiDetector};
 pub use resolver::{EntityResolver, MatchType, MockResolver, ResolvedEntity};
 pub use takedown::TakedownResult;
+pub use two_pass_extractor::TwoPassExtractor;
 pub use voyage::{VoyageConfig, VoyageEmbedder};

@@ -9,10 +9,15 @@ use petgraph::visit::EdgeRef;
 
 use crate::consolidation::batch::BatchJob;
 use crate::consolidation::graph_batch::GraphBatchConsolidator;
+use crate::consolidation::ontology::{
+    self, ClusterLevel, OntologyCluster, build_entity_clusters, build_rel_type_clusters,
+    build_type_clusters,
+};
 use crate::consolidation::{BatchConsolidator, BatchStatus};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::graph::SharedGraph;
 use crate::graph::sync::full_reload;
+use crate::ingestion::Embedder;
 use crate::models::audit::{AuditAction, AuditLog};
 use crate::models::trace::{SearchFeedback, SearchTrace};
 use crate::storage::postgres::PgRepo;
@@ -97,12 +102,23 @@ fn count_weak_components(
 pub struct AdminService {
     repo: Arc<PgRepo>,
     graph: SharedGraph,
+    embedder: Option<Arc<dyn Embedder>>,
 }
 
 impl AdminService {
     /// Create a new admin service.
     pub fn new(repo: Arc<PgRepo>, graph: SharedGraph) -> Self {
-        Self { repo, graph }
+        Self {
+            repo,
+            graph,
+            embedder: None,
+        }
+    }
+
+    /// Set the embedder for ontology clustering.
+    pub fn with_embedder(mut self, embedder: Option<Arc<dyn Embedder>>) -> Self {
+        self.embedder = embedder;
+        self
     }
 
     /// Get graph statistics from the sidecar.
@@ -201,6 +217,57 @@ impl AdminService {
     /// Get a single search trace by ID.
     pub async fn get_trace(&self, id: uuid::Uuid) -> Result<Option<SearchTrace>> {
         SearchTraceRepo::get(&*self.repo, id).await
+    }
+
+    /// Run ontology clustering at the specified level(s).
+    ///
+    /// When `dry_run` is true, returns discovered clusters without
+    /// writing them back to the database. When false, stores cluster
+    /// definitions and updates canonical labels on nodes/edges, then
+    /// reloads the graph sidecar.
+    pub async fn cluster_ontology(
+        &self,
+        level: Option<ClusterLevel>,
+        threshold: f64,
+        dry_run: bool,
+    ) -> Result<Vec<OntologyCluster>> {
+        let embedder = self.embedder.as_ref().ok_or_else(|| {
+            Error::Config("no embedder configured for ontology clustering".into())
+        })?;
+
+        let pool = self.repo.pool();
+        let mut all_clusters = Vec::new();
+
+        let do_entity = level.is_none() || level == Some(ClusterLevel::Entity);
+        let do_type = level.is_none() || level == Some(ClusterLevel::EntityType);
+        let do_rel = level.is_none() || level == Some(ClusterLevel::RelationType);
+
+        if do_entity {
+            let c = build_entity_clusters(pool, embedder.as_ref(), threshold).await?;
+            tracing::info!(count = c.len(), "entity name clusters discovered");
+            all_clusters.extend(c);
+        }
+        if do_type {
+            let c = build_type_clusters(pool, embedder.as_ref(), threshold).await?;
+            tracing::info!(count = c.len(), "entity type clusters discovered");
+            all_clusters.extend(c);
+        }
+        if do_rel {
+            let c = build_rel_type_clusters(pool, embedder.as_ref(), threshold).await?;
+            tracing::info!(count = c.len(), "relationship type clusters discovered");
+            all_clusters.extend(c);
+        }
+
+        if !dry_run && !all_clusters.is_empty() {
+            ontology::apply_clusters(pool, &all_clusters, threshold).await?;
+            tracing::info!(
+                total = all_clusters.len(),
+                "ontology clusters applied, reloading graph"
+            );
+            full_reload(self.repo.pool(), self.graph.clone()).await?;
+        }
+
+        Ok(all_clusters)
     }
 
     /// Submit search feedback and log to audit.

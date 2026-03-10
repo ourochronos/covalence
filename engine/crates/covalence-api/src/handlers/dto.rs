@@ -473,6 +473,47 @@ pub struct TraceReplayResponse {
     pub results: Vec<SearchResultResponse>,
 }
 
+// --- Ontology ---
+
+/// Request body for ontology clustering.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OntologyClusterRequest {
+    /// Clustering level: `entity`, `entity_type`, `rel_type`, or
+    /// null for all levels.
+    pub level: Option<String>,
+    /// Cosine similarity threshold (default 0.85).
+    pub threshold: Option<f64>,
+    /// If true, return clusters without writing them to the
+    /// database (default true).
+    pub dry_run: Option<bool>,
+}
+
+/// A single ontology cluster in the response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OntologyClusterItem {
+    /// Cluster ID.
+    pub id: Uuid,
+    /// Cluster level.
+    pub level: String,
+    /// Canonical (most frequent) label.
+    pub canonical_label: String,
+    /// All member labels in the cluster.
+    pub member_labels: Vec<String>,
+    /// Total mention count.
+    pub member_count: usize,
+}
+
+/// Response for ontology clustering.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OntologyClusterResponse {
+    /// Whether results were applied to the database.
+    pub applied: bool,
+    /// Number of clusters discovered.
+    pub cluster_count: usize,
+    /// The discovered clusters.
+    pub clusters: Vec<OntologyClusterItem>,
+}
+
 // --- Audit ---
 
 /// Response for an audit log entry.

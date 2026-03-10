@@ -58,6 +58,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/graph/reload", post(admin::reload_graph))
         .route("/admin/publish/{source_id}", post(admin::publish_source))
         .route("/admin/consolidate", post(admin::trigger_consolidation))
+        .route("/admin/ontology/cluster", post(admin::cluster_ontology))
         .route("/admin/health", get(admin::health))
         .route("/admin/metrics", get(admin::metrics))
         .route("/admin/traces", get(admin::list_traces))
