@@ -309,6 +309,14 @@ impl SourceService {
         // Store all chunks in a single batch INSERT
         ChunkRepo::batch_create(&*self.repo, &chunks).await?;
 
+        // Track chunks that contain example/hypothetical markers.
+        // Entities extracted from these chunks get dampened confidence.
+        let example_chunks: std::collections::HashSet<uuid::Uuid> = chunk_outputs
+            .iter()
+            .filter(|co| has_example_markers(&co.text))
+            .map(|co| co.id)
+            .collect();
+
         // Stage 5: Embed chunks
         //
         // Uses contextual chunk embeddings when supported (e.g.,
@@ -503,6 +511,10 @@ impl SourceService {
                 };
                 let chunk_id = id_map[&chunk_uuid];
 
+                // Dampen confidence for entities/edges from
+                // chunks that contain example/hypothetical markers.
+                let is_example_chunk = example_chunks.contains(&chunk_uuid);
+
                 for entity in &extraction.entities {
                     let node_id = self.resolve_and_store_entity(entity, chunk_id).await?;
                     name_to_node.insert(entity.name.to_lowercase(), node_id);
@@ -532,6 +544,17 @@ impl SourceService {
                         None => continue,
                     };
 
+                    // Filter self-loops: extraction noise where an
+                    // entity relates to itself.
+                    if source_id == target_id {
+                        tracing::debug!(
+                            rel_type = %rel.rel_type,
+                            entity = %rel.source_name,
+                            "skipping self-loop edge"
+                        );
+                        continue;
+                    }
+
                     let resolved_rel_type = if let Some(ref rtr) = self.rel_type_resolver {
                         rtr.resolve_rel_type(&rel.rel_type).await?
                     } else {
@@ -539,7 +562,13 @@ impl SourceService {
                     };
 
                     let mut edge = Edge::new(source_id, target_id, resolved_rel_type);
-                    edge.confidence = rel.confidence;
+                    let conf = if is_example_chunk {
+                        // Halve confidence for edges from example chunks.
+                        (rel.confidence * 0.5).clamp(0.0, 1.0)
+                    } else {
+                        rel.confidence
+                    };
+                    edge.confidence = conf;
                     EdgeRepo::create(&*self.repo, &edge).await?;
 
                     let ext_record = Extraction::new(
@@ -547,7 +576,7 @@ impl SourceService {
                         ExtractedEntityType::Edge,
                         edge.id.into_uuid(),
                         "llm".to_string(),
-                        rel.confidence,
+                        conf,
                     );
                     ExtractionRepo::create(&*self.repo, &ext_record).await?;
                 }
@@ -1133,11 +1162,42 @@ fn detect_chunk_content_types(text: &str) -> serde_json::Value {
         }
     }
 
+    // Detect example/hypothetical context markers.
+    let contains_example = has_example_markers(text);
+
     serde_json::json!({
         "contains_table": contains_table,
         "contains_code": contains_code,
         "contains_list": contains_list,
+        "contains_example": contains_example,
     })
+}
+
+/// Check whether text contains markers indicating illustrative
+/// examples, hypothetical scenarios, or placeholder content.
+///
+/// When a chunk is tagged as containing examples, extracted
+/// entities are given reduced confidence to limit their
+/// influence on the knowledge graph.
+fn has_example_markers(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let markers = [
+        "for example",
+        "for instance",
+        "e.g.",
+        "e.g.,",
+        "suppose ",
+        "consider the case",
+        "hypothetical",
+        "as an illustration",
+        "imagine that",
+        "let's say",
+        "assume that",
+        "in this scenario",
+        "a simple example",
+        "toy example",
+    ];
+    markers.iter().any(|m| lower.contains(m))
 }
 
 /// Sanitize a string for use as an ltree label.
@@ -1451,5 +1511,41 @@ mod tests {
         let meta = detect_chunk_content_types(text);
         assert_eq!(meta["contains_table"], false);
         assert_eq!(meta["contains_code"], true);
+    }
+
+    #[test]
+    fn detect_example_marker_for_example() {
+        let text = "For example, Alice sends a message to Bob.";
+        assert!(has_example_markers(text));
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_example"], true);
+    }
+
+    #[test]
+    fn detect_example_marker_suppose() {
+        let text = "Suppose we have a network of three nodes.";
+        assert!(has_example_markers(text));
+    }
+
+    #[test]
+    fn detect_example_marker_eg() {
+        let text = "Various types exist (e.g., person, location, event).";
+        assert!(has_example_markers(text));
+    }
+
+    #[test]
+    fn detect_no_example_in_factual_text() {
+        let text = "HDBSCAN uses hierarchical density-based clustering \
+                    to find natural groups in data.";
+        assert!(!has_example_markers(text));
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_example"], false);
+    }
+
+    #[test]
+    fn detect_example_hypothetical() {
+        let text = "In this hypothetical scenario, the agent trusts \
+                    only verified peers.";
+        assert!(has_example_markers(text));
     }
 }

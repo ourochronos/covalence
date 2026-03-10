@@ -37,6 +37,7 @@ Rules:
 - Only extract entities and relationships clearly supported by the text.
 - Use consistent entity names (match the text exactly).
 - Confidence should reflect how clearly the text supports the extraction.
+- Do NOT extract entities from illustrative examples, hypothetical scenarios, or placeholder text (e.g. "suppose Alice sends a message to Bob", "for example, John works at Google"). These are not real facts.
 - Return valid JSON only, no markdown fences or extra text."#;
 
 /// System prompt for relationship-only extraction (used in two-pass mode).
@@ -270,8 +271,17 @@ fn default_confidence() -> f64 {
     0.5
 }
 
+/// Common placeholder names used in examples and documentation.
+/// These are almost never real entities worth extracting.
+const PLACEHOLDER_NAMES: &[&str] = &[
+    "alice", "bob", "charlie", "dave", "eve", "frank", "grace", "john", "jane", "jane doe",
+    "john doe", "user", "user a", "user b", "player 1", "player 2", "person a", "person b",
+    "agent a", "agent b", "node a", "node b", "foo", "bar", "baz",
+];
+
 /// Returns true if the entity name is a noisy hub candidate that
-/// should be filtered out (bare years, pure numbers, etc.).
+/// should be filtered out (bare years, pure numbers, placeholder
+/// names from examples, etc.).
 fn is_noisy_entity(name: &str) -> bool {
     let trimmed = name.trim();
     // Reject bare numbers (e.g. "2024", "42")
@@ -284,6 +294,11 @@ fn is_noisy_entity(name: &str) -> bool {
             .split('-')
             .all(|part| part.trim().parse::<i64>().is_ok())
     {
+        return true;
+    }
+    // Reject common placeholder names from examples.
+    let lower = trimmed.to_lowercase();
+    if PLACEHOLDER_NAMES.contains(&lower.as_str()) {
         return true;
     }
     false
@@ -394,9 +409,9 @@ mod tests {
         let json = serde_json::json!({
             "entities": [
                 {
-                    "name": "Alice",
+                    "name": "Marie Curie",
                     "entity_type": "person",
-                    "description": "A software engineer",
+                    "description": "A physicist",
                     "confidence": 0.95
                 },
                 {
@@ -408,10 +423,10 @@ mod tests {
             ],
             "relationships": [
                 {
-                    "source_name": "Alice",
+                    "source_name": "Marie Curie",
                     "target_name": "Acme Corp",
                     "rel_type": "works_at",
-                    "description": "Alice works at Acme Corp",
+                    "description": "Marie Curie works at Acme Corp",
                     "confidence": 0.9
                 }
             ]
@@ -419,7 +434,7 @@ mod tests {
 
         let result = parse_extraction_json(&json.to_string()).unwrap();
         assert_eq!(result.entities.len(), 2);
-        assert_eq!(result.entities[0].name, "Alice");
+        assert_eq!(result.entities[0].name, "Marie Curie");
         assert_eq!(result.entities[0].entity_type, "person");
         assert_eq!(result.entities[0].confidence, 0.95);
         assert_eq!(result.entities[1].name, "Acme Corp");
@@ -436,7 +451,7 @@ mod tests {
 
     #[test]
     fn parse_partial_json_uses_defaults() {
-        let json = r#"{"entities": [{"name": "Bob", "entity_type": "person"}]}"#;
+        let json = r#"{"entities": [{"name": "Einstein", "entity_type": "person"}]}"#;
         let result = parse_extraction_json(json).unwrap();
         assert_eq!(result.entities.len(), 1);
         assert_eq!(result.entities[0].confidence, 0.5);
@@ -518,23 +533,33 @@ mod tests {
 
     #[test]
     fn noisy_entity_filter() {
+        // Bare numbers and year ranges.
         assert!(is_noisy_entity("2024"));
         assert!(is_noisy_entity("2023"));
         assert!(is_noisy_entity("42"));
         assert!(is_noisy_entity("2023-2024"));
+        // Placeholder names from examples.
+        assert!(is_noisy_entity("Alice"));
+        assert!(is_noisy_entity("Bob"));
+        assert!(is_noisy_entity("john"));
+        assert!(is_noisy_entity("Jane Doe"));
+        assert!(is_noisy_entity("foo"));
+        // Real entities should pass through.
         assert!(!is_noisy_entity("GraphRAG"));
-        assert!(!is_noisy_entity("Alice"));
         assert!(!is_noisy_entity("ISO-8601"));
         assert!(!is_noisy_entity("GPT-4o"));
+        assert!(!is_noisy_entity("Anthropic"));
+        assert!(!is_noisy_entity("HDBSCAN"));
     }
 
     #[test]
-    fn noisy_year_entities_filtered_from_extraction() {
+    fn noisy_entities_filtered_from_extraction() {
         let json = r#"{
             "entities": [
                 {"name": "GraphRAG", "entity_type": "concept", "confidence": 0.9},
                 {"name": "2024", "entity_type": "event", "confidence": 0.7},
-                {"name": "2023", "entity_type": "event", "confidence": 0.6}
+                {"name": "Alice", "entity_type": "person", "confidence": 0.8},
+                {"name": "Bob", "entity_type": "person", "confidence": 0.7}
             ]
         }"#;
         let result = parse_extraction_json(json).unwrap();

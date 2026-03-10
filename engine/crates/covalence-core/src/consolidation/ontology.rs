@@ -203,7 +203,7 @@ pub async fn build_entity_clusters(
     min_cluster_size: usize,
 ) -> Result<ClusterResult> {
     let rows = sqlx::query_as::<_, (String, i64)>(
-        "SELECT canonical_name, mention_count \
+        "SELECT canonical_name, mention_count::int8 \
          FROM nodes \
          WHERE canonical_name IS NOT NULL \
          GROUP BY canonical_name, mention_count \
