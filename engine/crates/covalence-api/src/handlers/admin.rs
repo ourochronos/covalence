@@ -7,9 +7,10 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::handlers::dto::{
     AuditLogResponse, CommunityResponse, ConsolidateResponse, DomainLinkResponse, DomainResponse,
-    GraphStatsResponse, HealthResponse, MetricsResponse, OntologyClusterItem,
-    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
-    ReloadResponse, SearchTraceResponse, TopologyResponse, TraceReplayResponse,
+    GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
+    KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem, OntologyClusterRequest,
+    OntologyClusterResponse, PaginationParams, PublishResponse, ReloadResponse,
+    SearchTraceResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -301,6 +302,52 @@ pub async fn cluster_ontology(
         cluster_count: items.len(),
         clusters: items,
         noise_labels: result.noise_labels,
+    }))
+}
+
+/// Detect knowledge gaps in the graph.
+#[utoipa::path(
+    get,
+    path = "/admin/knowledge-gaps",
+    params(KnowledgeGapParams),
+    responses(
+        (status = 200, description = "Knowledge gaps", body = KnowledgeGapsResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn knowledge_gaps(
+    State(state): State<AppState>,
+    Query(params): Query<KnowledgeGapParams>,
+) -> Result<Json<KnowledgeGapsResponse>, ApiError> {
+    let min_in_degree = params.min_in_degree.unwrap_or(3);
+    let min_label_length = params.min_label_length.unwrap_or(4);
+    let limit = params.limit.unwrap_or(20);
+    let exclude_types: Vec<String> = params
+        .exclude_types
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    let gaps = state
+        .admin_service
+        .knowledge_gaps(min_in_degree, min_label_length, &exclude_types, limit)
+        .await?;
+
+    let items: Vec<KnowledgeGapItem> = gaps
+        .into_iter()
+        .map(|g| KnowledgeGapItem {
+            node_id: g.node_id,
+            canonical_name: g.canonical_name,
+            node_type: g.node_type,
+            in_degree: g.in_degree,
+            out_degree: g.out_degree,
+            gap_score: g.gap_score,
+            referenced_by: g.referenced_by,
+        })
+        .collect();
+
+    Ok(Json(KnowledgeGapsResponse {
+        gap_count: items.len(),
+        gaps: items,
     }))
 }
 

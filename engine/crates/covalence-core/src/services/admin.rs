@@ -1,8 +1,7 @@
 //! Admin service — health checks, graph reload, consolidation, metrics.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-
-use std::collections::HashSet;
 
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -96,6 +95,82 @@ fn count_weak_components(
     }
 
     components
+}
+
+/// A knowledge gap — an entity frequently referenced but never explained.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KnowledgeGap {
+    /// Node UUID.
+    pub node_id: uuid::Uuid,
+    /// Canonical entity name.
+    pub canonical_name: String,
+    /// Entity type (e.g. "concept", "entity").
+    pub node_type: String,
+    /// Number of incoming edges (references to this entity).
+    pub in_degree: usize,
+    /// Number of outgoing edges (explanations from this entity).
+    pub out_degree: usize,
+    /// Gap score: in_degree - out_degree (higher = bigger gap).
+    pub gap_score: f64,
+    /// Source URIs that reference this entity.
+    pub referenced_by: Vec<String>,
+}
+
+/// Compute knowledge gap candidates from the graph sidecar.
+///
+/// Returns tuples of `(uuid, name, type, in_degree, out_degree)` for
+/// nodes whose in-degree exceeds `min_in_degree` and out-degree, with
+/// labels at least `min_label_length` characters and not in
+/// `exclude_types`. Results are sorted by gap score descending and
+/// truncated to `limit`.
+pub(crate) fn compute_gap_candidates(
+    graph: &petgraph::stable_graph::StableDiGraph<
+        crate::graph::sidecar::NodeMeta,
+        crate::graph::sidecar::EdgeMeta,
+    >,
+    min_in_degree: usize,
+    min_label_length: usize,
+    exclude_types: &[String],
+    limit: usize,
+) -> Vec<(uuid::Uuid, String, String, usize, usize)> {
+    let mut candidates: Vec<(uuid::Uuid, String, String, usize, usize)> = Vec::new();
+
+    for idx in graph.node_indices() {
+        let meta = &graph[idx];
+
+        if meta.canonical_name.len() < min_label_length {
+            continue;
+        }
+
+        if exclude_types.iter().any(|t| t == &meta.node_type) {
+            continue;
+        }
+
+        let in_deg = graph
+            .edges_directed(idx, petgraph::Direction::Incoming)
+            .count();
+        let out_deg = graph.edges(idx).count();
+
+        if in_deg >= min_in_degree && in_deg > out_deg {
+            candidates.push((
+                meta.id,
+                meta.canonical_name.clone(),
+                meta.node_type.clone(),
+                in_deg,
+                out_deg,
+            ));
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        let score_a = a.3 as f64 - a.4 as f64;
+        let score_b = b.3 as f64 - b.4 as f64;
+        score_b
+            .partial_cmp(&score_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    candidates.truncate(limit);
+    candidates
 }
 
 /// Service for administrative operations.
@@ -293,6 +368,76 @@ impl AdminService {
         Ok(combined)
     }
 
+    /// Identify knowledge gaps — entities with high in-degree but low
+    /// out-degree. These are concepts the system references frequently
+    /// but has no source material explaining.
+    ///
+    /// Gap score = `in_degree - out_degree`. Entities with zero
+    /// out-degree and high in-degree represent the biggest blind spots.
+    pub async fn knowledge_gaps(
+        &self,
+        min_in_degree: usize,
+        min_label_length: usize,
+        exclude_types: &[String],
+        limit: usize,
+    ) -> Result<Vec<KnowledgeGap>> {
+        // Phase 1: compute in/out degree from graph sidecar.
+        let g = self.graph.read().await;
+        let candidates = compute_gap_candidates(
+            g.graph(),
+            min_in_degree,
+            min_label_length,
+            exclude_types,
+            limit,
+        );
+        drop(g);
+
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Phase 2: batch-fetch source URIs for the gap nodes.
+        let node_ids: Vec<uuid::Uuid> = candidates.iter().map(|c| c.0).collect();
+        let rows = sqlx::query_as::<_, (uuid::Uuid, Option<String>, Option<String>)>(
+            "SELECT DISTINCT e.entity_id, s.uri, s.title \
+             FROM extractions e \
+             JOIN chunks c ON c.id = e.chunk_id \
+             JOIN sources s ON s.id = c.source_id \
+             WHERE e.entity_type = 'node' \
+               AND e.entity_id = ANY($1) \
+               AND e.is_superseded = false",
+        )
+        .bind(&node_ids)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let mut refs_map: HashMap<uuid::Uuid, Vec<String>> = HashMap::new();
+        for (node_id, uri, title) in rows {
+            let label = uri.or(title).unwrap_or_else(|| node_id.to_string());
+            refs_map.entry(node_id).or_default().push(label);
+        }
+
+        // Build final results.
+        let gaps = candidates
+            .into_iter()
+            .map(|(id, name, ntype, in_deg, out_deg)| {
+                let gap_score = in_deg as f64 - out_deg as f64;
+                let referenced_by = refs_map.remove(&id).unwrap_or_default();
+                KnowledgeGap {
+                    node_id: id,
+                    canonical_name: name,
+                    node_type: ntype,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    gap_score,
+                    referenced_by,
+                }
+            })
+            .collect();
+
+        Ok(gaps)
+    }
+
     /// Submit search feedback and log to audit.
     pub async fn submit_feedback(&self, feedback: SearchFeedback) -> Result<()> {
         let result_id = feedback.result_id;
@@ -311,5 +456,225 @@ impl AdminService {
         AuditLogRepo::create(&*self.repo, &audit).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::sidecar::{EdgeMeta, GraphSidecar, NodeMeta};
+
+    fn make_node(name: &str, ntype: &str) -> NodeMeta {
+        NodeMeta {
+            id: uuid::Uuid::new_v4(),
+            node_type: ntype.into(),
+            canonical_name: name.into(),
+            clearance_level: 0,
+        }
+    }
+
+    fn make_edge() -> EdgeMeta {
+        EdgeMeta {
+            id: uuid::Uuid::new_v4(),
+            rel_type: "related_to".into(),
+            weight: 1.0,
+            confidence: 0.9,
+            causal_level: None,
+            clearance_level: 0,
+        }
+    }
+
+    /// Build a graph with a clear knowledge gap: "Subjective Logic"
+    /// has 4 incoming edges (referenced by A, B, C, D) but 0
+    /// outgoing edges.
+    fn build_gap_graph() -> GraphSidecar {
+        let mut g = GraphSidecar::new();
+
+        let gap_node = make_node("Subjective Logic", "concept");
+        let gap_id = gap_node.id;
+        g.add_node(gap_node).unwrap();
+
+        // 4 nodes that reference the gap node.
+        for name in &[
+            "Epistemic Model",
+            "Opinion Fusion",
+            "Trust Framework",
+            "Dempster-Shafer",
+        ] {
+            let n = make_node(name, "concept");
+            let nid = n.id;
+            g.add_node(n).unwrap();
+            g.add_edge(nid, gap_id, make_edge()).unwrap();
+        }
+
+        // A well-explained node with both in and out edges.
+        let explained = make_node("Bayesian Inference", "concept");
+        let explained_id = explained.id;
+        g.add_node(explained).unwrap();
+        g.add_edge(explained_id, gap_id, make_edge()).unwrap();
+
+        // Give "Bayesian Inference" outgoing edges so it's NOT a gap.
+        let target = make_node("Probability Theory", "concept");
+        let target_id = target.id;
+        g.add_node(target).unwrap();
+        g.add_edge(explained_id, target_id, make_edge()).unwrap();
+
+        g
+    }
+
+    #[test]
+    fn detect_knowledge_gap() {
+        let g = build_gap_graph();
+        let candidates = compute_gap_candidates(
+            g.graph(),
+            3, // min_in_degree
+            4, // min_label_length
+            &[],
+            20,
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].1, "Subjective Logic");
+        assert_eq!(candidates[0].3, 5); // in_degree
+        assert_eq!(candidates[0].4, 0); // out_degree
+    }
+
+    #[test]
+    fn min_in_degree_filter() {
+        let g = build_gap_graph();
+
+        // Require 6 in-degree — no gaps qualify.
+        let candidates = compute_gap_candidates(g.graph(), 6, 4, &[], 20);
+        assert!(candidates.is_empty());
+
+        // Require 5 — exactly matches.
+        let candidates = compute_gap_candidates(g.graph(), 5, 4, &[], 20);
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn exclude_types_filter() {
+        let g = build_gap_graph();
+
+        // Exclude "concept" — no gaps.
+        let exclude = vec!["concept".to_string()];
+        let candidates = compute_gap_candidates(g.graph(), 3, 4, &exclude, 20);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn min_label_length_filter() {
+        let mut g = GraphSidecar::new();
+        let short = make_node("AI", "concept");
+        let short_id = short.id;
+        g.add_node(short).unwrap();
+
+        // 3 nodes referencing "AI".
+        for name in &["Machine Learning", "Deep Learning", "Neural Networks"] {
+            let n = make_node(name, "concept");
+            let nid = n.id;
+            g.add_node(n).unwrap();
+            g.add_edge(nid, short_id, make_edge()).unwrap();
+        }
+
+        // "AI" has 3 in-degree but name length < 4.
+        let candidates = compute_gap_candidates(g.graph(), 3, 4, &[], 20);
+        assert!(candidates.is_empty());
+
+        // With min_label_length=2, it shows up.
+        let candidates = compute_gap_candidates(g.graph(), 3, 2, &[], 20);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].1, "AI");
+    }
+
+    #[test]
+    fn limit_truncates_results() {
+        let mut g = GraphSidecar::new();
+
+        // Create 5 gap nodes each with 3 incoming edges.
+        for gap_name in &[
+            "Alpha Gap",
+            "Beta Gap",
+            "Gamma Gap",
+            "Delta Gap",
+            "Epsilon Gap",
+        ] {
+            let gap = make_node(gap_name, "concept");
+            let gap_id = gap.id;
+            g.add_node(gap).unwrap();
+            for i in 0..3 {
+                let src = make_node(&format!("{gap_name}-ref-{i}"), "entity");
+                let src_id = src.id;
+                g.add_node(src).unwrap();
+                g.add_edge(src_id, gap_id, make_edge()).unwrap();
+            }
+        }
+
+        let candidates = compute_gap_candidates(g.graph(), 3, 4, &[], 2);
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn sorted_by_gap_score_descending() {
+        let mut g = GraphSidecar::new();
+
+        // "Small Gap" has 3 in-degree.
+        let small = make_node("Small Gap Node", "concept");
+        let small_id = small.id;
+        g.add_node(small).unwrap();
+        for i in 0..3 {
+            let src = make_node(&format!("small-ref-{i}"), "entity");
+            let src_id = src.id;
+            g.add_node(src).unwrap();
+            g.add_edge(src_id, small_id, make_edge()).unwrap();
+        }
+
+        // "Big Gap" has 6 in-degree.
+        let big = make_node("Big Gap Node", "concept");
+        let big_id = big.id;
+        g.add_node(big).unwrap();
+        for i in 0..6 {
+            let src = make_node(&format!("big-ref-{i}"), "entity");
+            let src_id = src.id;
+            g.add_node(src).unwrap();
+            g.add_edge(src_id, big_id, make_edge()).unwrap();
+        }
+
+        let candidates = compute_gap_candidates(g.graph(), 3, 4, &[], 20);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].1, "Big Gap Node");
+        assert_eq!(candidates[1].1, "Small Gap Node");
+    }
+
+    #[test]
+    fn no_gap_when_out_degree_matches() {
+        let mut g = GraphSidecar::new();
+
+        // Node with 3 in and 3 out — not a gap.
+        let balanced = make_node("Balanced Node", "concept");
+        let balanced_id = balanced.id;
+        g.add_node(balanced).unwrap();
+
+        for i in 0..3 {
+            let src = make_node(&format!("src-{i}"), "entity");
+            let src_id = src.id;
+            g.add_node(src).unwrap();
+            g.add_edge(src_id, balanced_id, make_edge()).unwrap();
+
+            let tgt = make_node(&format!("tgt-{i}"), "entity");
+            let tgt_id = tgt.id;
+            g.add_node(tgt).unwrap();
+            g.add_edge(balanced_id, tgt_id, make_edge()).unwrap();
+        }
+
+        let candidates = compute_gap_candidates(g.graph(), 3, 4, &[], 20);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn empty_graph_returns_no_gaps() {
+        let g = GraphSidecar::new();
+        let candidates = compute_gap_candidates(g.graph(), 3, 4, &[], 20);
+        assert!(candidates.is_empty());
     }
 }

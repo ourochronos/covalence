@@ -526,6 +526,49 @@ pub struct OntologyClusterResponse {
     pub noise_labels: Vec<String>,
 }
 
+// --- Knowledge Gaps ---
+
+/// Query parameters for knowledge gap detection.
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct KnowledgeGapParams {
+    /// Minimum in-degree to qualify as a gap (default 3).
+    pub min_in_degree: Option<usize>,
+    /// Minimum label length to filter noise (default 4).
+    pub min_label_length: Option<usize>,
+    /// Comma-separated node types to exclude.
+    pub exclude_types: Option<String>,
+    /// Maximum number of gaps to return (default 20).
+    pub limit: Option<usize>,
+}
+
+/// A single knowledge gap entity.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct KnowledgeGapItem {
+    /// Node UUID.
+    pub node_id: Uuid,
+    /// Canonical entity name.
+    pub canonical_name: String,
+    /// Entity type.
+    pub node_type: String,
+    /// Number of incoming references.
+    pub in_degree: usize,
+    /// Number of outgoing edges.
+    pub out_degree: usize,
+    /// Gap score (in_degree - out_degree).
+    pub gap_score: f64,
+    /// Source URIs that reference this entity.
+    pub referenced_by: Vec<String>,
+}
+
+/// Response for knowledge gap detection.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct KnowledgeGapsResponse {
+    /// Number of gaps found.
+    pub gap_count: usize,
+    /// The knowledge gaps, sorted by gap score descending.
+    pub gaps: Vec<KnowledgeGapItem>,
+}
+
 // --- Audit ---
 
 /// Response for an audit log entry.

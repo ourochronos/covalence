@@ -53,6 +53,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::metrics,
         admin::list_traces,
         admin::replay_trace,
+        admin::knowledge_gaps,
     ),
     components(schemas(
         dto::CreateSourceRequest,
@@ -96,6 +97,9 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::FeedbackResponse,
         dto::SearchTraceResponse,
         dto::TraceReplayResponse,
+        dto::KnowledgeGapParams,
+        dto::KnowledgeGapItem,
+        dto::KnowledgeGapsResponse,
         mcp::McpTool,
         mcp::McpToolCall,
         mcp::McpToolResult,

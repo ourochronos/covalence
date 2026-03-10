@@ -63,6 +63,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/metrics", get(admin::metrics))
         .route("/admin/traces", get(admin::list_traces))
         .route("/admin/traces/{id}/replay", post(admin::replay_trace))
+        .route("/admin/knowledge-gaps", get(admin::knowledge_gaps))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
