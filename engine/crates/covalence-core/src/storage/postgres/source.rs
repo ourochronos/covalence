@@ -18,13 +18,13 @@ impl SourceRepo for PgRepo {
                 ingested_at, content_hash, metadata, raw_content,
                 trust_alpha, trust_beta, reliability_score,
                 clearance_level, update_class, supersedes_id,
-                content_version
+                content_version, normalized_content, normalized_hash
             ) VALUES (
                 $1, $2, $3, $4, $5, $6,
                 $7, $8, $9, $10,
                 $11, $12, $13,
                 $14, $15, $16,
-                $17
+                $17, $18, $19
             )",
         )
         .bind(source.id)
@@ -44,6 +44,8 @@ impl SourceRepo for PgRepo {
         .bind(&source.update_class)
         .bind(source.supersedes_id)
         .bind(source.content_version)
+        .bind(&source.normalized_content)
+        .bind(&source.normalized_hash)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -55,7 +57,8 @@ impl SourceRepo for PgRepo {
                     created_date, ingested_at, content_hash,
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
-                    supersedes_id, content_version
+                    supersedes_id, content_version,
+                    normalized_content, normalized_hash
              FROM sources WHERE id = $1",
         )
         .bind(id)
@@ -71,8 +74,26 @@ impl SourceRepo for PgRepo {
                     created_date, ingested_at, content_hash,
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
-                    supersedes_id, content_version
+                    supersedes_id, content_version,
+                    normalized_content, normalized_hash
              FROM sources WHERE content_hash = $1",
+        )
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| source_from_row(&r)))
+    }
+
+    async fn get_by_normalized_hash(&self, hash: &[u8]) -> Result<Option<Source>> {
+        let row = sqlx::query(
+            "SELECT id, source_type, uri, title, author,
+                    created_date, ingested_at, content_hash,
+                    metadata, raw_content, trust_alpha, trust_beta,
+                    reliability_score, clearance_level, update_class,
+                    supersedes_id, content_version,
+                    normalized_content, normalized_hash
+             FROM sources WHERE normalized_hash = $1",
         )
         .bind(hash)
         .fetch_optional(&self.pool)
@@ -90,7 +111,8 @@ impl SourceRepo for PgRepo {
                 trust_alpha = $11, trust_beta = $12,
                 reliability_score = $13, clearance_level = $14,
                 update_class = $15, supersedes_id = $16,
-                content_version = $17
+                content_version = $17,
+                normalized_content = $18, normalized_hash = $19
              WHERE id = $1",
         )
         .bind(source.id)
@@ -110,6 +132,8 @@ impl SourceRepo for PgRepo {
         .bind(&source.update_class)
         .bind(source.supersedes_id)
         .bind(source.content_version)
+        .bind(&source.normalized_content)
+        .bind(&source.normalized_hash)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -129,7 +153,8 @@ impl SourceRepo for PgRepo {
                     created_date, ingested_at, content_hash,
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
-                    supersedes_id, content_version
+                    supersedes_id, content_version,
+                    normalized_content, normalized_hash
              FROM sources
              ORDER BY ingested_at DESC
              LIMIT $1 OFFSET $2",
@@ -192,5 +217,7 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
         supersedes_id: row.get("supersedes_id"),
         content_version: row.get("content_version"),
         embedding: None, // Loaded separately; halfvec is not directly mapped.
+        normalized_content: row.get("normalized_content"),
+        normalized_hash: row.get("normalized_hash"),
     }
 }

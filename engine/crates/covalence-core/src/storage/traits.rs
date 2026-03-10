@@ -28,6 +28,12 @@ pub trait SourceRepo: Send + Sync {
     /// Get a source by content hash (for dedup).
     fn get_by_hash(&self, hash: &[u8]) -> impl Future<Output = Result<Option<Source>>> + Send;
 
+    /// Get a source by normalized content hash (for semantic dedup).
+    fn get_by_normalized_hash(
+        &self,
+        hash: &[u8],
+    ) -> impl Future<Output = Result<Option<Source>>> + Send;
+
     /// Update an existing source.
     fn update(&self, source: &Source) -> impl Future<Output = Result<()>> + Send;
 

@@ -37,6 +37,12 @@ pub struct ChunkOutput {
     /// copied from the preceding chunk. Zero for the first
     /// paragraph chunk and for non-paragraph chunks.
     pub context_prefix_len: usize,
+    /// Byte offset in the source normalized text where this
+    /// chunk starts (including overlap prefix).
+    pub byte_start: usize,
+    /// Byte offset in the source normalized text where this
+    /// chunk ends.
+    pub byte_end: usize,
 }
 
 /// Split a Markdown document into hierarchical chunks.
@@ -61,6 +67,9 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
 
     let sections = split_sections(markdown);
 
+    // Track position in the source text for byte offset computation.
+    let mut search_pos: usize = 0;
+
     for (heading, body) in &sections {
         let heading_path: Vec<String> = heading.iter().map(|s| s.to_string()).collect();
 
@@ -68,6 +77,14 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
         if section_text.is_empty() {
             continue;
         }
+
+        // Locate the section body in the original markdown.
+        let section_byte_start = markdown[search_pos..]
+            .find(section_text)
+            .map(|i| search_pos + i)
+            .unwrap_or(search_pos);
+        let section_byte_end = section_byte_start + section_text.len();
+        search_pos = section_byte_end;
 
         let section_id = Uuid::new_v4();
         chunks.push(ChunkOutput {
@@ -77,6 +94,8 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
             level: ChunkLevel::Section,
             heading_path: heading_path.clone(),
             context_prefix_len: 0,
+            byte_start: section_byte_start,
+            byte_end: section_byte_end,
         });
 
         if section_text.len() > max_chunk_size {
@@ -87,13 +106,38 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
 
             if paragraphs.len() > 1 {
                 let mut prev_text: Option<&str> = None;
+                // Track the byte offset of the end of the previous
+                // paragraph (used for overlap byte_start computation).
+                let mut prev_para_byte_end: usize = section_byte_start;
+                let mut para_search_pos: usize = section_byte_start;
+
                 for para in &paragraphs {
                     let para = para.trim();
                     if para.is_empty() {
                         continue;
                     }
 
+                    // Find this paragraph in the markdown.
+                    let para_byte_start = markdown[para_search_pos..]
+                        .find(para)
+                        .map(|i| para_search_pos + i)
+                        .unwrap_or(para_search_pos);
+                    let para_byte_end = para_byte_start + para.len();
+                    para_search_pos = para_byte_end;
+
                     let (text, prefix_len) = build_overlap_text(prev_text, para, overlap);
+
+                    // For overlap chunks, byte_start reaches back
+                    // into the previous paragraph by the overlap
+                    // suffix length. The overlap suffix + "\n\n" +
+                    // current paragraph forms a contiguous range in
+                    // the source text.
+                    let chunk_byte_start = if prefix_len > 0 {
+                        let overlap_suffix_len = prefix_len.saturating_sub(2);
+                        prev_para_byte_end.saturating_sub(overlap_suffix_len)
+                    } else {
+                        para_byte_start
+                    };
 
                     chunks.push(ChunkOutput {
                         id: Uuid::new_v4(),
@@ -102,8 +146,11 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
                         level: ChunkLevel::Paragraph,
                         heading_path: heading_path.clone(),
                         context_prefix_len: prefix_len,
+                        byte_start: chunk_byte_start,
+                        byte_end: para_byte_end,
                     });
 
+                    prev_para_byte_end = para_byte_end;
                     prev_text = Some(para);
                 }
             }
@@ -415,5 +462,89 @@ mod tests {
             .filter(|c| c.level == ChunkLevel::Paragraph)
             .collect();
         assert!(paragraphs.len() >= 2);
+    }
+
+    #[test]
+    fn byte_offsets_match_source_text() {
+        let md = "# Title\n\nSome content here.";
+        let chunks = chunk_document(md, 500, 0);
+        assert_eq!(chunks.len(), 1);
+        let section = &chunks[0];
+        // Section text should match the slice at the byte offsets.
+        assert_eq!(&md[section.byte_start..section.byte_end], section.text);
+    }
+
+    #[test]
+    fn byte_offsets_multiple_sections() {
+        let md = "# First\n\nContent 1.\n\n# Second\n\nContent 2.";
+        let chunks = chunk_document(md, 500, 0);
+        for chunk in &chunks {
+            assert_eq!(
+                &md[chunk.byte_start..chunk.byte_end],
+                chunk.text,
+                "byte offsets should reconstruct chunk text"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_offsets_paragraphs_without_overlap() {
+        let para_a = "a".repeat(100);
+        let para_b = "b".repeat(100);
+        let md = format!("# Section\n\n{para_a}\n\n{para_b}");
+        let chunks = chunk_document(&md, 50, 0);
+
+        for chunk in &chunks {
+            assert_eq!(
+                &md[chunk.byte_start..chunk.byte_end],
+                chunk.text,
+                "byte offsets should match for non-overlap chunks"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_offsets_paragraphs_with_overlap() {
+        let para_a = "a".repeat(100);
+        let para_b = "b".repeat(100);
+        let md = format!("# Section\n\n{para_a}\n\n{para_b}");
+        let chunks = chunk_document(&md, 50, 20);
+
+        let paragraphs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Paragraph)
+            .collect();
+        assert_eq!(paragraphs.len(), 2);
+
+        // First paragraph: no overlap.
+        assert_eq!(
+            &md[paragraphs[0].byte_start..paragraphs[0].byte_end],
+            paragraphs[0].text
+        );
+
+        // Second paragraph: overlap chunk spans from prev para
+        // into current para. The byte range in the source should
+        // match the full chunk text.
+        assert_eq!(
+            &md[paragraphs[1].byte_start..paragraphs[1].byte_end],
+            paragraphs[1].text,
+            "overlap chunk byte range should match chunk text"
+        );
+
+        // content_offset (context_prefix_len) should mark where
+        // unique content begins.
+        let unique = &paragraphs[1].text[paragraphs[1].context_prefix_len..];
+        assert_eq!(unique, para_b);
+    }
+
+    #[test]
+    fn byte_offsets_no_heading() {
+        let md = "Just plain text without any heading.";
+        let chunks = chunk_document(md, 500, 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            &md[chunks[0].byte_start..chunks[0].byte_end],
+            chunks[0].text
+        );
     }
 }

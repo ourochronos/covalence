@@ -165,6 +165,13 @@ pub struct Source {
     pub content_version: i32,
     /// Document-level embedding vector (replaces doc-level chunk).
     pub embedding: Option<Vec<f32>>,
+    /// Normalized content text (post-parse, post-normalize).
+    /// Chunking operates on this text; chunk byte offsets
+    /// reference positions within it.
+    pub normalized_content: Option<String>,
+    /// SHA-256 hash of `normalized_content` for fast change
+    /// detection during re-ingestion.
+    pub normalized_hash: Option<Vec<u8>>,
 }
 
 impl Source {
@@ -191,6 +198,8 @@ impl Source {
             supersedes_id: None,
             content_version: 1,
             embedding: None,
+            normalized_content: None,
+            normalized_hash: None,
         }
     }
 

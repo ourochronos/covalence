@@ -20,7 +20,8 @@ impl ChunkRepo for PgRepo {
                 structural_hierarchy,
                 clearance_level, parent_alignment,
                 extraction_method, landscape_metrics,
-                metadata, created_at
+                metadata, byte_start, byte_end,
+                content_offset, created_at
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6, $7,
@@ -28,7 +29,8 @@ impl ChunkRepo for PgRepo {
                 $10::ltree,
                 $11, $12,
                 $13, $14,
-                $15, $16
+                $15, $16, $17,
+                $18, $19
             )",
         )
         .bind(chunk.id)
@@ -46,6 +48,9 @@ impl ChunkRepo for PgRepo {
         .bind(&chunk.extraction_method)
         .bind(&chunk.landscape_metrics)
         .bind(&chunk.metadata)
+        .bind(chunk.byte_start)
+        .bind(chunk.byte_end)
+        .bind(chunk.content_offset)
         .bind(chunk.created_at)
         .execute(&self.pool)
         .await?;
@@ -88,6 +93,9 @@ impl ChunkRepo for PgRepo {
             .map(|c| c.landscape_metrics.as_ref())
             .collect();
         let metadatas: Vec<&serde_json::Value> = chunks.iter().map(|c| &c.metadata).collect();
+        let byte_starts: Vec<Option<i32>> = chunks.iter().map(|c| c.byte_start).collect();
+        let byte_ends: Vec<Option<i32>> = chunks.iter().map(|c| c.byte_end).collect();
+        let content_offsets: Vec<Option<i32>> = chunks.iter().map(|c| c.content_offset).collect();
         let created_ats: Vec<chrono::DateTime<chrono::Utc>> =
             chunks.iter().map(|c| c.created_at).collect();
 
@@ -99,7 +107,8 @@ impl ChunkRepo for PgRepo {
                 structural_hierarchy,
                 clearance_level, parent_alignment,
                 extraction_method, landscape_metrics,
-                metadata, created_at
+                metadata, byte_start, byte_end,
+                content_offset, created_at
             )
             SELECT * FROM UNNEST(
                 $1::uuid[], $2::uuid[], $3::uuid[],
@@ -108,7 +117,8 @@ impl ChunkRepo for PgRepo {
                 $9::int4[], $10::ltree[],
                 $11::int4[], $12::float8[],
                 $13::text[], $14::jsonb[],
-                $15::jsonb[], $16::timestamptz[]
+                $15::jsonb[], $16::int4[], $17::int4[],
+                $18::int4[], $19::timestamptz[]
             )",
         )
         .bind(&ids)
@@ -126,6 +136,9 @@ impl ChunkRepo for PgRepo {
         .bind(&extraction_methods)
         .bind(&landscape_metrics_vec)
         .bind(&metadatas)
+        .bind(&byte_starts)
+        .bind(&byte_ends)
+        .bind(&content_offsets)
         .bind(&created_ats)
         .execute(&self.pool)
         .await?;
@@ -141,7 +154,8 @@ impl ChunkRepo for PgRepo {
                     structural_hierarchy::text,
                     clearance_level, parent_alignment,
                     extraction_method, landscape_metrics,
-                    metadata, created_at
+                    metadata, byte_start, byte_end,
+                    content_offset, created_at
              FROM chunks WHERE id = $1",
         )
         .bind(id)
@@ -159,7 +173,8 @@ impl ChunkRepo for PgRepo {
                     structural_hierarchy::text,
                     clearance_level, parent_alignment,
                     extraction_method, landscape_metrics,
-                    metadata, created_at
+                    metadata, byte_start, byte_end,
+                    content_offset, created_at
              FROM chunks
              WHERE source_id = $1
              ORDER BY ordinal ASC",
@@ -179,7 +194,8 @@ impl ChunkRepo for PgRepo {
                     structural_hierarchy::text,
                     clearance_level, parent_alignment,
                     extraction_method, landscape_metrics,
-                    metadata, created_at
+                    metadata, byte_start, byte_end,
+                    content_offset, created_at
              FROM chunks
              WHERE parent_chunk_id = $1
              ORDER BY ordinal ASC",
@@ -271,6 +287,9 @@ fn chunk_from_row(row: &sqlx::postgres::PgRow) -> Chunk {
         extraction_method: row.get("extraction_method"),
         landscape_metrics: row.get("landscape_metrics"),
         metadata: row.get("metadata"),
+        byte_start: row.get("byte_start"),
+        byte_end: row.get("byte_end"),
+        content_offset: row.get("content_offset"),
         created_at: row.get("created_at"),
     }
 }

@@ -170,6 +170,8 @@ mod tests {
             level: crate::ingestion::chunker::ChunkLevel::Paragraph,
             heading_path: vec![],
             context_prefix_len: 0,
+            byte_start: 0,
+            byte_end: 0,
         }
     }
 

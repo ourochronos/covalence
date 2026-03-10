@@ -76,6 +76,16 @@ pub struct Chunk {
     pub landscape_metrics: Option<serde_json::Value>,
     /// Additional metadata (heading text, page number, speaker, etc.).
     pub metadata: serde_json::Value,
+    /// Byte offset in `Source.normalized_content` where this chunk
+    /// starts (including overlap prefix). `None` for legacy chunks.
+    pub byte_start: Option<i32>,
+    /// Byte offset in `Source.normalized_content` where this chunk
+    /// ends. `None` for legacy chunks.
+    pub byte_end: Option<i32>,
+    /// Number of overlap prefix bytes at the start of this chunk.
+    /// Unique content starts at `byte_start + content_offset`.
+    /// Zero for the first chunk in a section.
+    pub content_offset: Option<i32>,
     /// When this chunk was created.
     pub created_at: DateTime<Utc>,
 }
@@ -106,6 +116,9 @@ impl Chunk {
             extraction_method: None,
             landscape_metrics: None,
             metadata: serde_json::Value::Object(Default::default()),
+            byte_start: None,
+            byte_end: None,
+            content_offset: None,
             created_at: Utc::now(),
         }
     }

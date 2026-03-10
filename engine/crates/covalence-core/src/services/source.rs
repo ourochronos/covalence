@@ -275,6 +275,18 @@ impl SourceService {
         // Stage 3: Normalize
         let normalized = crate::ingestion::normalize::normalize(&parsed.body);
 
+        // Compute normalized content hash for semantic dedup.
+        let normalized_hash = Sha256::digest(normalized.as_bytes()).to_vec();
+
+        // Semantic dedup: if normalized content matches an existing
+        // source, skip re-processing. This catches cosmetic changes
+        // (whitespace, encoding) that don't affect content.
+        if let Some(existing) =
+            SourceRepo::get_by_normalized_hash(&*self.repo, &normalized_hash).await?
+        {
+            return Ok(existing.id);
+        }
+
         // Create source record
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
@@ -301,6 +313,8 @@ impl SourceService {
             .or_else(|| parsed.metadata.get("author").cloned());
         source.metadata = metadata;
         source.raw_content = String::from_utf8(content.to_vec()).ok();
+        source.normalized_content = Some(normalized.clone());
+        source.normalized_hash = Some(normalized_hash);
 
         // Apply supersession metadata if detected
         if let Some(ref info) = supersedes_info {
@@ -341,7 +355,11 @@ impl SourceService {
                     crate::ingestion::chunker::ChunkLevel::Paragraph => ModelChunkLevel::Paragraph,
                 };
 
-                let content_hash = Sha256::digest(co.text.as_bytes()).to_vec();
+                // Hash unique content only (excluding overlap prefix)
+                // so upstream paragraph changes don't cascade through
+                // every downstream chunk's hash.
+                let unique_content = &co.text[co.context_prefix_len..];
+                let content_hash = Sha256::digest(unique_content.as_bytes()).to_vec();
                 let token_count = co.text.split_whitespace().count() as i32;
                 let hierarchy = co
                     .heading_path
@@ -362,6 +380,9 @@ impl SourceService {
                     token_count,
                 );
                 chunk.id = chunk_id;
+                chunk.byte_start = Some(co.byte_start as i32);
+                chunk.byte_end = Some(co.byte_end as i32);
+                chunk.content_offset = Some(co.context_prefix_len as i32);
                 if let Some(parent_uuid) = co.parent_id {
                     if let Some(&pid) = id_map.get(&parent_uuid) {
                         chunk = chunk.with_parent(pid);
