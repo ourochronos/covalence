@@ -12,6 +12,11 @@ use crate::handlers::dto::{
 use crate::state::AppState;
 
 /// Ingest a new source.
+///
+/// Accepts either base64-encoded `content` or a `url` to fetch.
+/// When `url` is provided, the server fetches the content,
+/// auto-detects MIME type and source classification, and extracts
+/// metadata (title, author, date) from the response.
 #[utoipa::path(
     post,
     path = "/sources",
@@ -26,17 +31,8 @@ pub async fn create_source(
     State(state): State<AppState>,
     Json(req): Json<CreateSourceRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateSourceResponse>), ApiError> {
-    use base64::Engine;
-    let content = base64::engine::general_purpose::STANDARD
-        .decode(&req.content)
-        .map_err(|e| {
-            covalence_core::error::Error::InvalidInput(format!("invalid base64 content: {e}"))
-        })?;
-
-    let mime = req.mime.as_deref().unwrap_or("text/plain");
-
-    // Build metadata, merging format_origin and authors into the
-    // JSONB metadata object.
+    // Build metadata, merging format_origin, authors, title, and
+    // author into the JSONB metadata object.
     let mut metadata = req
         .metadata
         .unwrap_or(serde_json::Value::Object(Default::default()));
@@ -47,18 +43,53 @@ pub async fn create_source(
         if let Some(ref authors) = req.authors {
             map.insert("authors".to_string(), serde_json::json!(authors));
         }
+        if let Some(ref title) = req.title {
+            map.insert("title".to_string(), serde_json::json!(title));
+        }
+        if let Some(ref author) = req.author {
+            map.insert("author".to_string(), serde_json::json!(author));
+        }
     }
 
-    let id = state
-        .source_service
-        .ingest(
-            &content,
-            &req.source_type,
-            mime,
-            req.uri.as_deref(),
-            metadata,
+    let id = if let Some(ref url) = req.url {
+        // URL-based ingestion: fetch, detect, extract metadata.
+        state
+            .source_service
+            .ingest_url(
+                url,
+                req.source_type.as_deref(),
+                req.mime.as_deref(),
+                req.title.as_deref(),
+                req.author.as_deref(),
+                metadata,
+            )
+            .await?
+    } else if let Some(ref content_b64) = req.content {
+        // Direct content ingestion (existing flow).
+        use base64::Engine;
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(content_b64)
+            .map_err(|e| {
+                covalence_core::error::Error::InvalidInput(format!("invalid base64 content: {e}"))
+            })?;
+
+        let source_type = req.source_type.as_deref().ok_or_else(|| {
+            covalence_core::error::Error::InvalidInput(
+                "source_type is required when providing content directly".to_string(),
+            )
+        })?;
+        let mime = req.mime.as_deref().unwrap_or("text/plain");
+
+        state
+            .source_service
+            .ingest(&content, source_type, mime, req.uri.as_deref(), metadata)
+            .await?
+    } else {
+        return Err(covalence_core::error::Error::InvalidInput(
+            "either 'content' (base64) or 'url' must be provided".to_string(),
         )
-        .await?;
+        .into());
+    };
 
     Ok((
         axum::http::StatusCode::CREATED,

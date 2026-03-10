@@ -30,18 +30,36 @@ impl PaginationParams {
 // --- Sources ---
 
 /// Request body for source ingestion.
+///
+/// Supply either `content` (base64-encoded bytes) or `url` (fetched
+/// by the server). When `url` is provided, `source_type` and `mime`
+/// are auto-detected from the response if not explicitly set.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateSourceRequest {
-    /// Base64-encoded content bytes.
-    pub content: String,
-    /// Source type (document, web_page, conversation, code, api, manual,
-    /// tool_output, observation).
-    pub source_type: String,
+    /// Base64-encoded content bytes. Required unless `url` is provided.
+    pub content: Option<String>,
+    /// URL to fetch content from. The server performs the HTTP GET,
+    /// detects MIME type, auto-classifies source type from URL
+    /// patterns, and extracts metadata (title, author, date) from
+    /// the response.
+    pub url: Option<String>,
+    /// Source type (document, web_page, conversation, code, api,
+    /// manual, tool_output, observation). Auto-detected from URL
+    /// patterns when `url` is used and this field is omitted.
+    pub source_type: Option<String>,
     /// MIME type of the content (e.g. "text/markdown", "text/plain").
-    /// Defaults to "text/plain" if omitted.
+    /// Auto-detected from Content-Type header when `url` is used.
+    /// Defaults to "text/plain" for direct content upload.
     pub mime: Option<String>,
-    /// Optional URI of the original material.
+    /// Optional URI of the original material. When `url` is used,
+    /// the URL is stored as the URI automatically.
     pub uri: Option<String>,
+    /// Title for the source. Overrides auto-extracted title from
+    /// HTML `<title>` or markdown `# heading`.
+    pub title: Option<String>,
+    /// Author of the source. Overrides auto-extracted author from
+    /// HTML meta tags.
+    pub author: Option<String>,
     /// Optional metadata.
     pub metadata: Option<serde_json::Value>,
     /// Original file format before conversion (e.g. "pdf", "html",

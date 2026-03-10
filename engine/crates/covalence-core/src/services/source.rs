@@ -152,6 +152,64 @@ impl SourceService {
         self
     }
 
+    /// Ingest content from a URL through the full pipeline.
+    ///
+    /// Fetches the URL, detects MIME and source type, extracts
+    /// metadata (title, author, date) from the response, and
+    /// delegates to [`ingest`](Self::ingest).
+    ///
+    /// Caller-provided overrides (source_type, mime, title, author)
+    /// take precedence over auto-detected values.
+    pub async fn ingest_url(
+        &self,
+        url: &str,
+        source_type_override: Option<&str>,
+        mime_override: Option<&str>,
+        title_override: Option<&str>,
+        author_override: Option<&str>,
+        mut metadata: serde_json::Value,
+    ) -> Result<SourceId> {
+        let fetched = crate::ingestion::url_fetcher::fetch_url(url).await?;
+
+        let source_type = source_type_override.unwrap_or(&fetched.source_type);
+        let mime = mime_override.unwrap_or(&fetched.mime);
+
+        // Merge fetched metadata into the caller's metadata object.
+        // Caller-provided values take precedence.
+        if let serde_json::Value::Object(ref mut map) = metadata {
+            // Title: explicit override > fetched > existing metadata.
+            let title = title_override
+                .map(|s| s.to_string())
+                .or(fetched.metadata.title);
+            if let Some(ref t) = title {
+                map.entry("title".to_string())
+                    .or_insert_with(|| serde_json::json!(t));
+            }
+
+            // Author: explicit override > fetched > existing metadata.
+            let author = author_override
+                .map(|s| s.to_string())
+                .or(fetched.metadata.author);
+            if let Some(ref a) = author {
+                map.entry("author".to_string())
+                    .or_insert_with(|| serde_json::json!(a));
+            }
+
+            // Date: fetched date as fallback only.
+            if let Some(ref d) = fetched.metadata.date {
+                map.entry("fetched_date".to_string())
+                    .or_insert_with(|| serde_json::json!(d));
+            }
+
+            // Record the fetch URL in metadata.
+            map.entry("fetched_url".to_string())
+                .or_insert_with(|| serde_json::json!(url));
+        }
+
+        self.ingest(&fetched.bytes, source_type, mime, Some(url), metadata)
+            .await
+    }
+
     /// Ingest new content through the full pipeline.
     ///
     /// Stages: hash, dedup/supersede, parse, normalize, chunk, embed,
@@ -220,15 +278,26 @@ impl SourceService {
         // Create source record
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
-        source.title = parsed.title;
-        // Extract the primary author from metadata.authors if
-        // present, falling back to any author in parser metadata.
+        // Title priority: metadata.title override > parsed title.
+        source.title = metadata
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or(parsed.title);
+        // Author priority: metadata.authors[0] > metadata.author >
+        // parsed author.
         source.author = metadata
             .get("authors")
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
+            .or_else(|| {
+                metadata
+                    .get("author")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
             .or_else(|| parsed.metadata.get("author").cloned());
         source.metadata = metadata;
         source.raw_content = String::from_utf8(content.to_vec()).ok();

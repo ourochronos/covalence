@@ -21,6 +21,7 @@ pub mod resolver;
 pub mod sidecar_extractor;
 pub mod takedown;
 pub mod two_pass_extractor;
+pub mod url_fetcher;
 pub mod voyage;
 
 pub use accept::{AcceptResult, compute_content_hash};
@@ -49,4 +50,5 @@ pub use resolver::{EntityResolver, MatchType, MockResolver, ResolvedEntity};
 pub use sidecar_extractor::SidecarExtractor;
 pub use takedown::TakedownResult;
 pub use two_pass_extractor::TwoPassExtractor;
+pub use url_fetcher::{FetchResult, fetch_url};
 pub use voyage::{VoyageConfig, VoyageEmbedder};
