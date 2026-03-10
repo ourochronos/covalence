@@ -130,9 +130,12 @@ fn build_overlap_text(prev: Option<&str>, current: &str, overlap: usize) -> (Str
         _ => return (current.to_string(), 0),
     };
 
-    // Take the last `overlap` characters, snapping to a char
-    // boundary (safe because we index from a known char offset).
-    let start = prev.len().saturating_sub(overlap);
+    // Take the last `overlap` bytes, snapping backward to a
+    // valid UTF-8 char boundary so we never slice mid-character.
+    let mut start = prev.len().saturating_sub(overlap);
+    while start > 0 && !prev.is_char_boundary(start) {
+        start -= 1;
+    }
     let suffix = &prev[start..];
 
     // Separator between the overlap prefix and the actual content.
@@ -374,5 +377,43 @@ mod tests {
         // Second paragraph of Sec2 overlaps from Sec2's first
         // paragraph, NOT from Sec1's last paragraph.
         assert!(sec2_paragraphs[1].text.starts_with(&"c".repeat(20)));
+    }
+
+    #[test]
+    fn multibyte_utf8_does_not_panic() {
+        // Box-drawing chars are 3 bytes each in UTF-8.
+        let diagram = "┌──────┐\n│ test │\n└──────┘";
+        let para_a = format!("Some text with diagram:\n{diagram}");
+        let para_b = "Follow-up paragraph content here.".to_string();
+        let md = format!("# Section\n\n{para_a}\n\n{para_b}");
+
+        // Overlap of 20 bytes will likely land inside a 3-byte char.
+        let chunks = chunk_document(&md, 10, 20);
+
+        // Should not panic — that's the main assertion.
+        let paragraphs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Paragraph)
+            .collect();
+        assert!(paragraphs.len() >= 2);
+
+        // The overlap prefix should be valid UTF-8.
+        for p in &paragraphs {
+            assert!(p.text.is_char_boundary(0));
+        }
+    }
+
+    #[test]
+    fn emoji_overlap_does_not_panic() {
+        let para_a = "Hello 🌍🌎🌏 world";
+        let para_b = "Another paragraph";
+        let md = format!("# Section\n\n{para_a}\n\n{para_b}");
+        // Each emoji is 4 bytes; overlap=3 lands inside one.
+        let chunks = chunk_document(&md, 5, 3);
+        let paragraphs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Paragraph)
+            .collect();
+        assert!(paragraphs.len() >= 2);
     }
 }
