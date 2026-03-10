@@ -85,6 +85,14 @@ pub struct Config {
     /// sidecar. Env: `COVALENCE_GLINER_THRESHOLD`. Default: `0.5`.
     pub gliner_threshold: f32,
 
+    /// Base URL for the ReaderLM-v2 HTML-to-Markdown sidecar.
+    ///
+    /// When set, HTML content is converted to clean Markdown via
+    /// the MLX-based ReaderLM model before parsing. Falls back to
+    /// the built-in tag-stripping `HtmlConverter` if unavailable.
+    /// Env: `COVALENCE_READERLM_URL`. Default: none (disabled).
+    pub readerlm_url: Option<String>,
+
     /// Trigram similarity threshold for entity and relationship
     /// resolution (0.0–1.0). Values below this are not considered
     /// matches.
@@ -266,6 +274,7 @@ impl std::fmt::Debug for Config {
             .field("entity_extractor", &self.entity_extractor)
             .field("extract_url", &self.extract_url)
             .field("gliner_threshold", &self.gliner_threshold)
+            .field("readerlm_url", &self.readerlm_url)
             .field("consolidation", &self.consolidation)
             .field("search", &self.search)
             .field("resolve_trigram_threshold", &self.resolve_trigram_threshold)
@@ -332,6 +341,7 @@ impl Config {
                     0.001,
                 )?,
             },
+            readerlm_url: optional_env("COVALENCE_READERLM_URL"),
             resolve_trigram_threshold: env_parse("COVALENCE_RESOLVE_TRIGRAM_THRESHOLD", 0.4)?,
             resolve_vector_threshold: env_parse("COVALENCE_RESOLVE_VECTOR_THRESHOLD", 0.85_f32)?,
         })

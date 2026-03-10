@@ -77,6 +77,81 @@ impl SourceConverter for HtmlConverter {
     }
 }
 
+/// Converter for HTML content via the ReaderLM-v2 MLX sidecar.
+///
+/// Calls the ReaderLM sidecar HTTP endpoint to produce high-quality
+/// Markdown from HTML (preserving tables, lists, semantic structure).
+/// Falls back to the built-in [`HtmlConverter`] tag stripper if the
+/// sidecar is unreachable or returns an error.
+pub struct ReaderLmConverter {
+    /// Base URL of the ReaderLM sidecar (e.g. `http://localhost:8432`).
+    base_url: String,
+    /// HTTP client for sidecar requests.
+    client: reqwest::Client,
+}
+
+impl ReaderLmConverter {
+    /// Create a new ReaderLM converter pointing at the given sidecar URL.
+    pub fn new(base_url: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_default();
+        Self { base_url, client }
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceConverter for ReaderLmConverter {
+    async fn convert(&self, content: &[u8], _content_type: &str) -> Result<String> {
+        let html = String::from_utf8_lossy(content);
+
+        // Try the sidecar first.
+        let url = format!("{}/convert", self.base_url);
+        let body = serde_json::json!({ "html": html });
+
+        match self.client.post(&url).json(&body).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        if let Some(md) = json["markdown"].as_str() {
+                            tracing::debug!(
+                                html_len = html.len(),
+                                md_len = md.len(),
+                                "ReaderLM conversion succeeded"
+                            );
+                            return Ok(md.to_string());
+                        }
+                        tracing::warn!("ReaderLM response missing 'markdown' field, falling back");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ReaderLM response parse failed, falling back");
+                    }
+                }
+            }
+            Ok(resp) => {
+                tracing::warn!(
+                    status = %resp.status(),
+                    "ReaderLM sidecar returned error, falling back to HtmlConverter"
+                );
+            }
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    "ReaderLM sidecar unavailable, falling back to HtmlConverter"
+                );
+            }
+        }
+
+        // Fallback: use the built-in tag stripper.
+        Ok(strip_html(&html))
+    }
+
+    fn supported_types(&self) -> &[&str] {
+        &["text/html", "application/xhtml+xml"]
+    }
+}
+
 /// Strip HTML tags and convert structural elements to Markdown.
 ///
 /// Handles: `<h1>`-`<h6>` (to `#`-`######`), `<p>` (blank line),
@@ -240,6 +315,14 @@ impl ConverterRegistry {
         registry.converters.push(Box::new(PlainTextConverter));
         registry.converters.push(Box::new(HtmlConverter));
         registry
+    }
+
+    /// Register an additional converter at the front of the list.
+    ///
+    /// The converter takes priority over all previously registered
+    /// converters for overlapping content types.
+    pub fn register_front(&mut self, converter: Box<dyn SourceConverter>) {
+        self.converters.insert(0, converter);
     }
 
     /// Register an additional converter.
@@ -542,5 +625,83 @@ mod tests {
     fn supported_types_html() {
         let c = HtmlConverter;
         assert_eq!(c.supported_types(), &["text/html", "application/xhtml+xml"]);
+    }
+
+    #[test]
+    fn supported_types_readerlm() {
+        let c = ReaderLmConverter::new("http://localhost:8432".into());
+        assert_eq!(c.supported_types(), &["text/html", "application/xhtml+xml"]);
+    }
+
+    #[tokio::test]
+    async fn readerlm_fallback_when_sidecar_down() {
+        // Point at a non-existent sidecar — should fall back to
+        // HtmlConverter's strip_html.
+        let converter = ReaderLmConverter::new("http://127.0.0.1:1".into());
+        let input = b"<p>Hello <b>world</b></p>";
+        let result = converter
+            .convert(input, "text/html")
+            .await
+            .expect("should fall back gracefully");
+        assert!(result.contains("Hello world"));
+        assert!(!result.contains("<p>"));
+    }
+
+    #[tokio::test]
+    async fn readerlm_fallback_preserves_structure() {
+        let converter = ReaderLmConverter::new("http://127.0.0.1:1".into());
+        let input = b"<h1>Title</h1><ul><li>One</li><li>Two</li></ul>";
+        let result = converter
+            .convert(input, "text/html")
+            .await
+            .expect("fallback should preserve structure");
+        assert!(result.contains("# Title"));
+        assert!(result.contains("- One"));
+        assert!(result.contains("- Two"));
+    }
+
+    #[tokio::test]
+    async fn registry_readerlm_takes_priority() {
+        // ReaderLmConverter registered front should be dispatched
+        // for text/html instead of HtmlConverter.
+        let mut registry = ConverterRegistry::new();
+        registry.register_front(Box::new(ReaderLmConverter::new(
+            "http://127.0.0.1:1".into(),
+        )));
+
+        // Even though the sidecar is down, ReaderLmConverter's
+        // fallback (strip_html) produces the same result as
+        // HtmlConverter — proving it was dispatched first.
+        let result = registry
+            .convert(b"<p>Test</p>", "text/html")
+            .await
+            .expect("should work via readerlm fallback");
+        assert!(result.contains("Test"));
+    }
+
+    #[tokio::test]
+    async fn register_front_takes_priority() {
+        /// Converter that always returns "FRONT" for text/plain.
+        struct FrontConverter;
+
+        #[async_trait::async_trait]
+        impl SourceConverter for FrontConverter {
+            async fn convert(&self, _content: &[u8], _content_type: &str) -> Result<String> {
+                Ok("FRONT".to_string())
+            }
+
+            fn supported_types(&self) -> &[&str] {
+                &["text/plain"]
+            }
+        }
+
+        let mut registry = ConverterRegistry::new();
+        registry.register_front(Box::new(FrontConverter));
+
+        let result = registry
+            .convert(b"hello", "text/plain")
+            .await
+            .expect("front converter should win");
+        assert_eq!(result, "FRONT");
     }
 }

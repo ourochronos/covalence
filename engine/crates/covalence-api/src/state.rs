@@ -12,8 +12,8 @@ use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
-    GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver, TwoPassExtractor, VoyageConfig,
-    VoyageEmbedder,
+    ConverterRegistry, GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver,
+    ReaderLmConverter, TwoPassExtractor, VoyageConfig, VoyageEmbedder,
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
@@ -183,6 +183,16 @@ impl AppState {
         let resolver: Option<Arc<dyn EntityResolver>> =
             Some(Arc::clone(&pg_resolver) as Arc<dyn EntityResolver>);
 
+        // Build the converter registry. When a ReaderLM sidecar URL is
+        // configured, HTML gets converted to clean Markdown via the MLX
+        // model before parsing. The converter falls back to the built-in
+        // tag stripper if the sidecar is unavailable.
+        let mut converter_registry = ConverterRegistry::new();
+        if let Some(ref url) = config.readerlm_url {
+            tracing::info!(url = %url, "ReaderLM HTML converter enabled");
+            converter_registry.register_front(Box::new(ReaderLmConverter::new(url.clone())));
+        }
+
         let source_service = Arc::new(
             SourceService::with_full_pipeline(
                 Arc::clone(&repo),
@@ -191,6 +201,7 @@ impl AppState {
                 resolver,
                 Some(pg_resolver),
             )
+            .with_converter_registry(converter_registry)
             .with_table_dims(config.embedding.table_dims.clone())
             .with_chunk_config(config.chunk_size, config.chunk_overlap)
             .with_extract_concurrency(config.extract_concurrency),
