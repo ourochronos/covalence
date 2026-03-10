@@ -113,10 +113,20 @@ pub fn compute_core_numbers(
 /// and splitting by connected component.
 ///
 /// Nodes sharing a core number but in disconnected subgraphs become
-/// separate communities. Communities are sorted by size (descending),
-/// with IDs assigned after sorting. Higher `core_level` values
-/// indicate denser, more cohesive subgraphs.
+/// separate communities. Communities with fewer than `min_size` nodes
+/// are excluded. Communities are sorted by size (descending), with
+/// IDs assigned after sorting. Higher `core_level` values indicate
+/// denser, more cohesive subgraphs.
 pub fn detect_communities(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> Vec<Community> {
+    detect_communities_with_min_size(graph, 2)
+}
+
+/// Like [`detect_communities`] but with a configurable minimum
+/// community size.
+pub fn detect_communities_with_min_size(
+    graph: &StableDiGraph<NodeMeta, EdgeMeta>,
+    min_size: usize,
+) -> Vec<Community> {
     if graph.node_count() == 0 {
         return Vec::new();
     }
@@ -129,9 +139,6 @@ pub fn detect_communities(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> Vec<Comm
         by_core.entry(k).or_default().push(idx);
     }
 
-    // Build node-to-core lookup for coherence computation.
-    let node_core: HashMap<NodeIndex, usize> = core_numbers;
-
     // For each core level, split into connected components so that
     // disconnected subgraphs with the same density become separate
     // communities.
@@ -140,8 +147,12 @@ pub fn detect_communities(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> Vec<Comm
         let idx_set: HashSet<NodeIndex> = indices.iter().copied().collect();
         let components = connected_components_within(graph, &idx_set);
         for component in components {
+            if component.len() < min_size {
+                continue;
+            }
             let node_ids: Vec<Uuid> = component.iter().map(|&idx| graph[idx].id).collect();
-            let coherence = compute_coherence(graph, &node_core, *core_level);
+            let component_set: HashSet<NodeIndex> = component.into_iter().collect();
+            let coherence = compute_component_coherence(graph, &component_set);
             communities.push(Community {
                 id: 0,
                 node_ids,
@@ -205,20 +216,12 @@ fn connected_components_within(
     components
 }
 
-/// Compute coherence for a community (nodes sharing the same core
-/// level): ratio of internal edge weight to total edge weight of
-/// those nodes.
-fn compute_coherence(
+/// Compute coherence for a specific community component: ratio of
+/// internal edge weight to total edge weight of those nodes.
+fn compute_component_coherence(
     graph: &StableDiGraph<NodeMeta, EdgeMeta>,
-    node_core: &HashMap<NodeIndex, usize>,
-    core_level: usize,
+    members: &HashSet<NodeIndex>,
 ) -> f64 {
-    let members: HashSet<NodeIndex> = node_core
-        .iter()
-        .filter(|&(_, &k)| k == core_level)
-        .map(|(&idx, _)| idx)
-        .collect();
-
     if members.len() <= 1 {
         return 1.0;
     }
@@ -226,7 +229,7 @@ fn compute_coherence(
     let mut internal_weight = 0.0;
     let mut total_weight = 0.0;
 
-    for &idx in &members {
+    for &idx in members {
         for edge in graph.edges(idx) {
             let w = graph[edge.id()].weight;
             total_weight += w;
@@ -303,10 +306,21 @@ mod tests {
     }
 
     #[test]
-    fn detect_communities_single_node() {
+    fn detect_communities_single_node_filtered() {
+        // A single isolated node is filtered out by the default
+        // min_size=2 threshold.
         let mut g = GraphSidecar::new();
         let _a = add_node(&mut g, "A");
         let comms = detect_communities(g.graph());
+        assert!(comms.is_empty());
+    }
+
+    #[test]
+    fn detect_communities_single_node_min_size_1() {
+        // With min_size=1, single nodes are included.
+        let mut g = GraphSidecar::new();
+        let _a = add_node(&mut g, "A");
+        let comms = detect_communities_with_min_size(g.graph(), 1);
         assert_eq!(comms.len(), 1);
         assert_eq!(comms[0].node_ids.len(), 1);
         assert_eq!(comms[0].core_level, 0);
@@ -461,5 +475,71 @@ mod tests {
             // so core_level should be 2.
             assert_eq!(comm.core_level, 2);
         }
+    }
+
+    #[test]
+    fn coherence_is_per_component() {
+        // Two disconnected triangles at the same core level should
+        // each have coherence 1.0 (all edges internal).
+        let mut g = GraphSidecar::new();
+        let a1 = add_node(&mut g, "A1");
+        let a2 = add_node(&mut g, "A2");
+        let a3 = add_node(&mut g, "A3");
+        add_edge(&mut g, a1, a2);
+        add_edge(&mut g, a2, a1);
+        add_edge(&mut g, a2, a3);
+        add_edge(&mut g, a3, a2);
+        add_edge(&mut g, a1, a3);
+        add_edge(&mut g, a3, a1);
+
+        let b1 = add_node(&mut g, "B1");
+        let b2 = add_node(&mut g, "B2");
+        let b3 = add_node(&mut g, "B3");
+        add_edge(&mut g, b1, b2);
+        add_edge(&mut g, b2, b1);
+        add_edge(&mut g, b2, b3);
+        add_edge(&mut g, b3, b2);
+        add_edge(&mut g, b1, b3);
+        add_edge(&mut g, b3, b1);
+
+        let comms = detect_communities(g.graph());
+        assert_eq!(comms.len(), 2);
+        // Both disconnected triangles have only internal edges,
+        // so coherence should be 1.0 for each.
+        for comm in &comms {
+            assert!(
+                (comm.coherence - 1.0).abs() < 1e-10,
+                "expected coherence 1.0, got {}",
+                comm.coherence
+            );
+        }
+    }
+
+    #[test]
+    fn min_size_filters_small_communities() {
+        // Graph with a triangle + an isolated pair.
+        let mut g = GraphSidecar::new();
+        let a = add_node(&mut g, "A");
+        let b = add_node(&mut g, "B");
+        let c = add_node(&mut g, "C");
+        add_edge(&mut g, a, b);
+        add_edge(&mut g, b, a);
+        add_edge(&mut g, b, c);
+        add_edge(&mut g, c, b);
+        add_edge(&mut g, a, c);
+        add_edge(&mut g, c, a);
+
+        // Isolated node (no edges) — core level 0, size 1.
+        let _d = add_node(&mut g, "D");
+
+        // Default min_size=2 should exclude the isolated node.
+        let comms = detect_communities(g.graph());
+        let total: usize = comms.iter().map(|c| c.node_ids.len()).sum();
+        assert_eq!(total, 3); // Only the triangle.
+
+        // min_size=1 includes everything.
+        let all = detect_communities_with_min_size(g.graph(), 1);
+        let total_all: usize = all.iter().map(|c| c.node_ids.len()).sum();
+        assert_eq!(total_all, 4);
     }
 }

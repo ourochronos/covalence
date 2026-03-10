@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, CommunityResponse, ConsolidateResponse, DomainLinkResponse, DomainResponse,
-    GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
+    AuditLogResponse, CommunityParams, CommunityResponse, ConsolidateResponse, DomainLinkResponse,
+    DomainResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
     KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem, OntologyClusterRequest,
     OntologyClusterResponse, PaginationParams, PublishResponse, ReloadResponse,
     SearchTraceResponse, TopologyResponse, TraceReplayResponse,
@@ -37,22 +37,30 @@ pub async fn graph_stats(State(state): State<AppState>) -> Json<GraphStatsRespon
 #[utoipa::path(
     get,
     path = "/graph/communities",
+    params(CommunityParams),
     responses(
         (status = 200, description = "Detected communities", body = Vec<CommunityResponse>),
     ),
     tag = "graph"
 )]
-pub async fn graph_communities(State(state): State<AppState>) -> Json<Vec<CommunityResponse>> {
+pub async fn graph_communities(
+    State(state): State<AppState>,
+    Query(params): Query<CommunityParams>,
+) -> Json<Vec<CommunityResponse>> {
+    let min_size = params.min_size.unwrap_or(2);
     let graph = state.graph.read().await;
-    let communities = covalence_core::graph::community::detect_communities(graph.graph());
+    let communities =
+        covalence_core::graph::community::detect_communities_with_min_size(graph.graph(), min_size);
     Json(
         communities
             .into_iter()
             .map(|c| CommunityResponse {
                 id: c.id,
+                size: c.node_ids.len(),
                 node_ids: c.node_ids,
                 label: c.label,
                 coherence: c.coherence,
+                core_level: c.core_level,
             })
             .collect(),
     )

@@ -289,13 +289,25 @@ pub struct GraphStatsResponse {
     pub component_count: usize,
 }
 
+/// Query parameters for community detection.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct CommunityParams {
+    /// Minimum community size (default: 2). Set to 1 to include
+    /// single-node communities.
+    pub min_size: Option<usize>,
+}
+
 /// Response for a community.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CommunityResponse {
     pub id: usize,
+    /// Number of nodes in this community.
+    pub size: usize,
     pub node_ids: Vec<Uuid>,
     pub label: Option<String>,
     pub coherence: f64,
+    /// K-core level (higher = denser subgraph).
+    pub core_level: usize,
 }
 
 // --- Topology ---
