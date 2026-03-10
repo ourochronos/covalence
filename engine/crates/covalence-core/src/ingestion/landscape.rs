@@ -129,6 +129,27 @@ pub fn analyze_landscape(
 
     let mut results = Vec::with_capacity(chunk_embeddings.len());
 
+    // Single-chunk sources: the one chunk IS the entire document,
+    // so parent-child alignment is meaningless (≈1.0). Always
+    // extract to avoid silently skipping small documents.
+    if chunk_embeddings.len() == 1 {
+        tracing::debug!("single-chunk source — bypassing landscape, forcing full extraction");
+        let parent_alignment =
+            parent_embeddings[0].map(|pe| cosine_similarity(&chunk_embeddings[0], pe));
+        return vec![ChunkLandscapeResult {
+            chunk_index: 0,
+            parent_alignment,
+            extraction_method: ExtractionMethod::FullExtraction,
+            metrics: LandscapeMetrics {
+                adjacent_similarity: None,
+                sibling_outlier_score: None,
+                graph_novelty: None,
+                flags: vec!["single_chunk_bypass".to_string()],
+                valley_prominence: None,
+            },
+        }];
+    }
+
     for i in 0..chunk_embeddings.len() {
         // 1. Parent-child alignment
         let parent_alignment =
@@ -165,6 +186,7 @@ pub fn analyze_landscape(
 
         // 5. Determine extraction method
         let extraction_method = determine_extraction_method(
+            i,
             parent_alignment,
             sibling_outlier_score,
             valley_prominence,
@@ -201,6 +223,7 @@ pub fn analyze_landscape(
 
 /// Determine the extraction method based on landscape metrics.
 fn determine_extraction_method(
+    chunk_index: usize,
     parent_alignment: Option<f64>,
     sibling_outlier_score: Option<f64>,
     valley_prominence: Option<f64>,
@@ -208,23 +231,49 @@ fn determine_extraction_method(
 ) -> ExtractionMethod {
     // High alignment with parent = redundant, skip extraction
     if parent_alignment.is_some_and(|pa| pa > cal.parent_child_p75) {
+        tracing::debug!(
+            chunk_index,
+            alignment = parent_alignment,
+            threshold = cal.parent_child_p75,
+            "landscape: skipping chunk (high parent alignment)"
+        );
         return ExtractionMethod::EmbeddingLinkage;
     }
 
     // Very low alignment = highly novel content
     if parent_alignment.is_some_and(|pa| pa < cal.parent_child_p25) {
         if sibling_outlier_score.is_some_and(|so| so > 2.0 * cal.adjacent_stddev) {
+            tracing::debug!(
+                chunk_index,
+                alignment = parent_alignment,
+                "landscape: full extraction with review (low alignment + outlier)"
+            );
             return ExtractionMethod::FullExtractionWithReview;
         }
+        tracing::debug!(
+            chunk_index,
+            alignment = parent_alignment,
+            "landscape: full extraction (low parent alignment)"
+        );
         return ExtractionMethod::FullExtraction;
     }
 
     // Topic boundary (valley) = potential new topic, extract
     if valley_prominence.is_some_and(|vp| vp > cal.adjacent_stddev) {
+        tracing::debug!(
+            chunk_index,
+            valley_prominence,
+            "landscape: full extraction (topic boundary)"
+        );
         return ExtractionMethod::FullExtraction;
     }
 
     // Middle range = delta check
+    tracing::debug!(
+        chunk_index,
+        alignment = parent_alignment,
+        "landscape: delta check (moderate alignment)"
+    );
     ExtractionMethod::DeltaCheck
 }
 
@@ -260,11 +309,45 @@ mod tests {
     }
 
     #[test]
-    fn high_alignment_skips_extraction() {
+    fn single_chunk_always_extracts() {
+        // A single chunk IS the entire document. Even with perfect
+        // parent alignment, landscape should bypass and force
+        // FullExtraction.
         let parent = vec![1.0, 0.5, 0.3];
         let child = vec![0.98, 0.52, 0.31];
         let results = analyze_landscape(&[child], &[Some(&parent)], None);
         assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].extraction_method,
+            ExtractionMethod::FullExtraction
+        );
+        assert!(
+            results[0]
+                .metrics
+                .flags
+                .contains(&"single_chunk_bypass".to_string())
+        );
+    }
+
+    #[test]
+    fn single_chunk_no_parent_still_extracts() {
+        let child = vec![1.0, 0.5, 0.3];
+        let results = analyze_landscape(&[child], &[None], None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].extraction_method,
+            ExtractionMethod::FullExtraction
+        );
+    }
+
+    #[test]
+    fn high_alignment_skips_extraction() {
+        // Use 2 chunks so the single-chunk bypass doesn't trigger.
+        let parent = vec![1.0, 0.5, 0.3];
+        let child1 = vec![0.98, 0.52, 0.31]; // high alignment
+        let child2 = vec![0.95, 0.48, 0.29]; // also high alignment
+        let results = analyze_landscape(&[child1, child2], &[Some(&parent), Some(&parent)], None);
+        assert_eq!(results.len(), 2);
         assert_eq!(
             results[0].extraction_method,
             ExtractionMethod::EmbeddingLinkage
@@ -273,10 +356,12 @@ mod tests {
 
     #[test]
     fn low_alignment_triggers_full_extraction() {
+        // Use 2 chunks so the single-chunk bypass doesn't trigger.
         let parent = vec![1.0, 0.0, 0.0];
-        let child = vec![0.0, 1.0, 0.0];
-        let results = analyze_landscape(&[child], &[Some(&parent)], None);
-        assert_eq!(results.len(), 1);
+        let child1 = vec![0.0, 1.0, 0.0]; // low alignment
+        let child2 = vec![0.0, 0.0, 1.0]; // low alignment
+        let results = analyze_landscape(&[child1, child2], &[Some(&parent), Some(&parent)], None);
+        assert_eq!(results.len(), 2);
         assert!(matches!(
             results[0].extraction_method,
             ExtractionMethod::FullExtraction | ExtractionMethod::FullExtractionWithReview
@@ -286,8 +371,9 @@ mod tests {
     #[test]
     fn low_alignment_sets_flag() {
         let parent = vec![1.0, 0.0, 0.0];
-        let child = vec![0.0, 1.0, 0.0];
-        let results = analyze_landscape(&[child], &[Some(&parent)], None);
+        let child1 = vec![0.0, 1.0, 0.0];
+        let child2 = vec![0.0, 0.0, 1.0];
+        let results = analyze_landscape(&[child1, child2], &[Some(&parent), Some(&parent)], None);
         assert!(
             results[0]
                 .metrics
@@ -298,8 +384,10 @@ mod tests {
 
     #[test]
     fn no_parent_uses_delta_check() {
-        let child = vec![1.0, 0.5, 0.3];
-        let results = analyze_landscape(&[child], &[None], None);
+        // Use 2 chunks so the single-chunk bypass doesn't trigger.
+        let child1 = vec![1.0, 0.5, 0.3];
+        let child2 = vec![0.9, 0.4, 0.2];
+        let results = analyze_landscape(&[child1, child2], &[None, None], None);
         assert_eq!(results[0].extraction_method, ExtractionMethod::DeltaCheck);
     }
 
@@ -357,10 +445,16 @@ mod tests {
             adjacent_stddev: 0.15,
             sample_size: 100,
         };
-        // With lower p75 threshold, moderate alignment now skips
+        // With lower p75 threshold, moderate alignment now skips.
+        // Use 2 chunks to avoid single-chunk bypass.
         let parent = vec![1.0, 0.5, 0.3];
-        let child = vec![0.98, 0.52, 0.31];
-        let results = analyze_landscape(&[child], &[Some(&parent)], Some(&cal));
+        let child1 = vec![0.98, 0.52, 0.31];
+        let child2 = vec![0.95, 0.48, 0.29];
+        let results = analyze_landscape(
+            &[child1, child2],
+            &[Some(&parent), Some(&parent)],
+            Some(&cal),
+        );
         assert_eq!(
             results[0].extraction_method,
             ExtractionMethod::EmbeddingLinkage

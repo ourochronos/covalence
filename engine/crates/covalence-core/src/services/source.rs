@@ -1063,15 +1063,24 @@ fn should_extract(
 ) -> bool {
     match landscape {
         None => true, // No landscape data — extract everything
-        Some(results) => {
-            match results.get(chunk_index) {
-                None => true, // Missing result — extract
-                Some(lr) => matches!(
+        Some(results) => match results.get(chunk_index) {
+            None => true, // Missing result — extract
+            Some(lr) => {
+                let extract = matches!(
                     lr.extraction_method,
                     ExtractionMethod::FullExtraction | ExtractionMethod::FullExtractionWithReview
-                ),
+                );
+                if !extract {
+                    tracing::debug!(
+                        chunk_index,
+                        method = lr.extraction_method.as_str(),
+                        alignment = ?lr.parent_alignment,
+                        "skipping extraction for chunk (landscape gating)"
+                    );
+                }
+                extract
             }
-        }
+        },
     }
 }
 
