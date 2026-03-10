@@ -163,21 +163,38 @@ impl LlmExtractor {
             .and_then(|c| c.message.content.as_deref())
             .unwrap_or("{}");
 
-        let raw: RawRelationshipResult =
-            serde_json::from_str(content).unwrap_or(RawRelationshipResult {
-                relationships: Vec::new(),
-            });
+        let raw: RawRelationshipResult = match serde_json::from_str(content) {
+            Ok(r) => r,
+            Err(e) => {
+                let preview: String = content.chars().take(500).collect();
+                tracing::warn!(
+                    error = %e,
+                    raw_output = %preview,
+                    "relationship extraction JSON parse failed — returning empty"
+                );
+                return Ok(Vec::new());
+            }
+        };
 
         // Build a set of known entity names for validation.
         let known_names: std::collections::HashSet<&str> =
             entities.iter().map(|e| e.name.as_str()).collect();
 
-        let relationships = raw
+        let raw_count = raw.relationships.len();
+        let relationships: Vec<ExtractedRelationship> = raw
             .relationships
             .into_iter()
             .filter(|r| {
-                known_names.contains(r.source_name.as_str())
-                    && known_names.contains(r.target_name.as_str())
+                let valid = known_names.contains(r.source_name.as_str())
+                    && known_names.contains(r.target_name.as_str());
+                if !valid {
+                    tracing::debug!(
+                        source = %r.source_name,
+                        target = %r.target_name,
+                        "dropping relationship: entity name not in known set"
+                    );
+                }
+                valid
             })
             .map(|r| ExtractedRelationship {
                 source_name: r.source_name,
@@ -187,6 +204,12 @@ impl LlmExtractor {
                 confidence: r.confidence.clamp(0.0, 1.0),
             })
             .collect();
+
+        tracing::debug!(
+            raw = raw_count,
+            kept = relationships.len(),
+            "relationship extraction parsed"
+        );
 
         Ok(relationships)
     }
@@ -363,14 +386,27 @@ impl Extractor for LlmExtractor {
 
 /// Parse the LLM's JSON output into an ExtractionResult.
 ///
-/// Handles malformed responses gracefully by returning an empty result.
+/// Handles malformed responses gracefully by returning an empty result
+/// with a warning log so failures are visible to operators.
 fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
-    let raw: RawExtractionResult = serde_json::from_str(json_str).unwrap_or(RawExtractionResult {
-        entities: Vec::new(),
-        relationships: Vec::new(),
-    });
+    let raw: RawExtractionResult = match serde_json::from_str(json_str) {
+        Ok(r) => r,
+        Err(e) => {
+            // Truncate raw output for logging to avoid flooding.
+            let preview: String = json_str.chars().take(500).collect();
+            tracing::warn!(
+                error = %e,
+                raw_output = %preview,
+                "extraction JSON parse failed — returning empty result"
+            );
+            return Ok(ExtractionResult::default());
+        }
+    };
 
-    let entities = raw
+    let raw_entity_count = raw.entities.len();
+    let raw_rel_count = raw.relationships.len();
+
+    let entities: Vec<ExtractedEntity> = raw
         .entities
         .into_iter()
         .filter(|e| !is_noisy_entity(&e.name))
@@ -382,7 +418,9 @@ fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
         })
         .collect();
 
-    let relationships = raw
+    let filtered_count = raw_entity_count - entities.len();
+
+    let relationships: Vec<ExtractedRelationship> = raw
         .relationships
         .into_iter()
         .map(|r| ExtractedRelationship {
@@ -393,6 +431,15 @@ fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
             confidence: r.confidence.clamp(0.0, 1.0),
         })
         .collect();
+
+    tracing::debug!(
+        entities = entities.len(),
+        relationships = relationships.len(),
+        filtered_noisy = filtered_count,
+        raw_entities = raw_entity_count,
+        raw_relationships = raw_rel_count,
+        "extraction JSON parsed"
+    );
 
     Ok(ExtractionResult {
         entities,
