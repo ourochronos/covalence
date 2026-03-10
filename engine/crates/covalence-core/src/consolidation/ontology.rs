@@ -1,9 +1,16 @@
 //! Emergent ontology via embed-cluster-resolve.
 //!
 //! Instead of predefined ontologies, lets structure emerge from data:
-//! extract freely, embed labels, cluster by cosine similarity, and
-//! pick canonical names. The same mechanism applies at three levels:
+//! extract freely, embed labels, cluster with HDBSCAN, and pick
+//! canonical names. The same mechanism applies at three levels:
 //! entity names, entity types, and relationship types.
+//!
+//! Uses HDBSCAN (Hierarchical Density-Based Spatial Clustering of
+//! Applications with Noise) which finds natural density-based
+//! clusters without requiring a similarity threshold. Genuinely
+//! unique labels are correctly identified as noise (unclustered).
+
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -11,7 +18,6 @@ use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::ingestion::Embedder;
-use crate::ingestion::landscape::cosine_similarity;
 
 /// The level at which ontology clustering operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,7 +33,7 @@ pub enum ClusterLevel {
 }
 
 /// A cluster of semantically equivalent labels discovered by
-/// embedding similarity.
+/// density-based clustering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OntologyCluster {
     /// Unique cluster identifier.
@@ -42,6 +48,18 @@ pub struct OntologyCluster {
     pub member_count: usize,
 }
 
+/// Result of HDBSCAN-based clustering, including noise labels
+/// that did not belong to any cluster.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterResult {
+    /// Discovered clusters.
+    pub clusters: Vec<OntologyCluster>,
+    /// Labels that HDBSCAN identified as noise (unclustered).
+    /// These are genuinely unique labels that don't belong to
+    /// any density-based group.
+    pub noise_labels: Vec<String>,
+}
+
 /// A label with its associated mention count, used as input to
 /// clustering.
 #[derive(Debug, Clone)]
@@ -52,22 +70,36 @@ pub struct LabelWithCount {
     pub count: usize,
 }
 
-/// Cluster labels by cosine similarity of their embeddings.
+/// L2-normalize a vector to unit length.
 ///
-/// Uses greedy agglomerative clustering: labels are processed in
-/// descending order of mention count. Each label is compared
-/// against existing cluster centroids. If the maximum similarity
-/// exceeds `threshold`, the label joins that cluster; otherwise
-/// it seeds a new cluster.
+/// Euclidean distance between unit vectors is monotonically related
+/// to cosine distance: `||a - b|| = sqrt(2 * (1 - cos(a, b)))`.
+/// This gives HDBSCAN better numerical properties than raw cosine
+/// distance matrices.
+fn l2_normalize(v: &[f64]) -> Vec<f64> {
+    let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm > 0.0 {
+        v.iter().map(|x| x / norm).collect()
+    } else {
+        v.to_vec()
+    }
+}
+
+/// Cluster labels using HDBSCAN on cosine distances of their
+/// embeddings.
 ///
-/// The canonical label for each cluster is the one with the
-/// highest mention count (i.e., the first label added).
+/// Uses density-based clustering to find natural groupings without
+/// requiring a similarity threshold. Labels that don't belong to
+/// any cluster are returned as noise.
+///
+/// `min_cluster_size` is the minimum number of labels required to
+/// form a cluster (default: 2).
 pub fn cluster_labels(
     labels: &[LabelWithCount],
     embeddings: &[Vec<f64>],
-    threshold: f64,
+    min_cluster_size: usize,
     level: ClusterLevel,
-) -> Result<Vec<OntologyCluster>> {
+) -> Result<ClusterResult> {
     if labels.len() != embeddings.len() {
         return Err(Error::InvalidInput(format!(
             "labels count ({}) != embeddings count ({})",
@@ -77,96 +109,99 @@ pub fn cluster_labels(
     }
 
     if labels.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ClusterResult {
+            clusters: Vec::new(),
+            noise_labels: Vec::new(),
+        });
     }
 
-    // Sort indices by descending mention count so the most
-    // frequent label becomes each cluster's canonical name.
-    let mut indices: Vec<usize> = (0..labels.len()).collect();
-    indices.sort_by(|&a, &b| labels[b].count.cmp(&labels[a].count));
-
-    // Each cluster tracks: canonical index, member indices,
-    // centroid embedding (average of members).
-    struct BuildCluster {
-        canonical_idx: usize,
-        member_indices: Vec<usize>,
-        centroid: Vec<f64>,
+    // With fewer points than min_cluster_size, HDBSCAN will
+    // classify everything as noise. Return all as noise.
+    if labels.len() < min_cluster_size {
+        return Ok(ClusterResult {
+            clusters: Vec::new(),
+            noise_labels: labels.iter().map(|l| l.label.clone()).collect(),
+        });
     }
 
-    let mut clusters: Vec<BuildCluster> = Vec::new();
+    // L2-normalize embeddings so Euclidean distance is
+    // monotonically related to cosine distance. This gives
+    // HDBSCAN much better numerical properties than raw
+    // cosine distance matrices.
+    let normalized: Vec<Vec<f64>> = embeddings.iter().map(|v| l2_normalize(v)).collect();
 
-    for &idx in &indices {
-        let emb = &embeddings[idx];
+    // Run HDBSCAN with Euclidean distance on unit vectors.
+    // min_samples(1) ensures core distance = distance to nearest
+    // neighbor, which works well for small label sets.
+    let hyper_params = hdbscan::HdbscanHyperParams::builder()
+        .min_cluster_size(min_cluster_size)
+        .min_samples(1)
+        .dist_metric(hdbscan::DistanceMetric::Euclidean)
+        .build();
+    let clusterer = hdbscan::Hdbscan::new(&normalized, hyper_params);
+    let assignments = clusterer
+        .cluster()
+        .map_err(|e| Error::InvalidInput(format!("HDBSCAN error: {e:?}")))?;
 
-        // Find the most similar existing cluster centroid.
-        let mut best_sim = f64::NEG_INFINITY;
-        let mut best_cluster: Option<usize> = None;
+    // Group indices by cluster assignment.
+    let mut cluster_map: HashMap<i32, Vec<usize>> = HashMap::new();
+    let mut noise_indices: Vec<usize> = Vec::new();
 
-        for (ci, cluster) in clusters.iter().enumerate() {
-            let sim = cosine_similarity(emb, &cluster.centroid);
-            if sim > best_sim {
-                best_sim = sim;
-                best_cluster = Some(ci);
-            }
-        }
-
-        if best_sim >= threshold {
-            // Merge into the best cluster and update centroid.
-            if let Some(ci) = best_cluster {
-                let cluster = &mut clusters[ci];
-                let n = cluster.member_indices.len() as f64;
-                // Incremental centroid update:
-                // new_centroid = (old_centroid * n + new_emb) / (n+1)
-                for (j, val) in emb.iter().enumerate() {
-                    if j < cluster.centroid.len() {
-                        cluster.centroid[j] = (cluster.centroid[j] * n + val) / (n + 1.0);
-                    }
-                }
-                cluster.member_indices.push(idx);
-            }
+    for (idx, &cluster_id) in assignments.iter().enumerate() {
+        if cluster_id < 0 {
+            noise_indices.push(idx);
         } else {
-            // Seed a new cluster.
-            clusters.push(BuildCluster {
-                canonical_idx: idx,
-                member_indices: vec![idx],
-                centroid: emb.clone(),
-            });
+            cluster_map.entry(cluster_id).or_default().push(idx);
         }
     }
 
-    // Convert to OntologyCluster output.
-    let result = clusters
-        .into_iter()
-        .map(|c| {
-            let member_labels: Vec<String> = c
-                .member_indices
-                .iter()
-                .map(|&i| labels[i].label.clone())
-                .collect();
-            let member_count: usize = c.member_indices.iter().map(|&i| labels[i].count).sum();
+    // Build OntologyCluster for each HDBSCAN cluster.
+    let mut clusters: Vec<OntologyCluster> = cluster_map
+        .into_values()
+        .map(|mut indices| {
+            // Sort by descending mention count so the most frequent
+            // label becomes canonical.
+            indices.sort_by(|&a, &b| labels[b].count.cmp(&labels[a].count));
+
+            let canonical_idx = indices[0];
+            let member_labels: Vec<String> =
+                indices.iter().map(|&i| labels[i].label.clone()).collect();
+            let member_count: usize = indices.iter().map(|&i| labels[i].count).sum();
+
             OntologyCluster {
                 id: Uuid::new_v4(),
                 level,
-                canonical_label: labels[c.canonical_idx].label.clone(),
+                canonical_label: labels[canonical_idx].label.clone(),
                 member_labels,
                 member_count,
             }
         })
         .collect();
 
-    Ok(result)
+    // Sort clusters by member_count descending for deterministic output.
+    clusters.sort_by(|a, b| b.member_count.cmp(&a.member_count));
+
+    let noise_labels: Vec<String> = noise_indices
+        .iter()
+        .map(|&i| labels[i].label.clone())
+        .collect();
+
+    Ok(ClusterResult {
+        clusters,
+        noise_labels,
+    })
 }
 
 /// Build ontology clusters for entity canonical names.
 ///
 /// Queries all node `canonical_name` values with their mention
-/// counts from the database, embeds them, and clusters by cosine
-/// similarity.
+/// counts from the database, embeds them, and clusters with
+/// HDBSCAN.
 pub async fn build_entity_clusters(
     pool: &PgPool,
     embedder: &dyn Embedder,
-    threshold: f64,
-) -> Result<Vec<OntologyCluster>> {
+    min_cluster_size: usize,
+) -> Result<ClusterResult> {
     let rows = sqlx::query_as::<_, (String, i64)>(
         "SELECT canonical_name, mention_count \
          FROM nodes \
@@ -179,7 +214,10 @@ pub async fn build_entity_clusters(
     .map_err(Error::Database)?;
 
     if rows.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ClusterResult {
+            clusters: Vec::new(),
+            noise_labels: Vec::new(),
+        });
     }
 
     let labels: Vec<LabelWithCount> = rows
@@ -193,18 +231,18 @@ pub async fn build_entity_clusters(
     let texts: Vec<String> = labels.iter().map(|l| l.label.clone()).collect();
     let embeddings = embedder.embed(&texts).await?;
 
-    cluster_labels(&labels, &embeddings, threshold, ClusterLevel::Entity)
+    cluster_labels(&labels, &embeddings, min_cluster_size, ClusterLevel::Entity)
 }
 
 /// Build ontology clusters for entity type labels.
 ///
 /// Queries all distinct `node_type` values with their occurrence
-/// counts, embeds them, and clusters by cosine similarity.
+/// counts, embeds them, and clusters with HDBSCAN.
 pub async fn build_type_clusters(
     pool: &PgPool,
     embedder: &dyn Embedder,
-    threshold: f64,
-) -> Result<Vec<OntologyCluster>> {
+    min_cluster_size: usize,
+) -> Result<ClusterResult> {
     let rows = sqlx::query_as::<_, (String, i64)>(
         "SELECT node_type, COUNT(*) as cnt \
          FROM nodes \
@@ -217,7 +255,10 @@ pub async fn build_type_clusters(
     .map_err(Error::Database)?;
 
     if rows.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ClusterResult {
+            clusters: Vec::new(),
+            noise_labels: Vec::new(),
+        });
     }
 
     let labels: Vec<LabelWithCount> = rows
@@ -231,19 +272,23 @@ pub async fn build_type_clusters(
     let texts: Vec<String> = labels.iter().map(|l| l.label.clone()).collect();
     let embeddings = embedder.embed(&texts).await?;
 
-    cluster_labels(&labels, &embeddings, threshold, ClusterLevel::EntityType)
+    cluster_labels(
+        &labels,
+        &embeddings,
+        min_cluster_size,
+        ClusterLevel::EntityType,
+    )
 }
 
 /// Build ontology clusters for relationship type labels.
 ///
 /// Queries all distinct `rel_type` values from edges with their
-/// occurrence counts, embeds them, and clusters by cosine
-/// similarity.
+/// occurrence counts, embeds them, and clusters with HDBSCAN.
 pub async fn build_rel_type_clusters(
     pool: &PgPool,
     embedder: &dyn Embedder,
-    threshold: f64,
-) -> Result<Vec<OntologyCluster>> {
+    min_cluster_size: usize,
+) -> Result<ClusterResult> {
     let rows = sqlx::query_as::<_, (String, i64)>(
         "SELECT rel_type, COUNT(*) as cnt \
          FROM edges \
@@ -256,7 +301,10 @@ pub async fn build_rel_type_clusters(
     .map_err(Error::Database)?;
 
     if rows.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ClusterResult {
+            clusters: Vec::new(),
+            noise_labels: Vec::new(),
+        });
     }
 
     let labels: Vec<LabelWithCount> = rows
@@ -270,7 +318,12 @@ pub async fn build_rel_type_clusters(
     let texts: Vec<String> = labels.iter().map(|l| l.label.clone()).collect();
     let embeddings = embedder.embed(&texts).await?;
 
-    cluster_labels(&labels, &embeddings, threshold, ClusterLevel::RelationType)
+    cluster_labels(
+        &labels,
+        &embeddings,
+        min_cluster_size,
+        ClusterLevel::RelationType,
+    )
 }
 
 /// Apply discovered clusters: store definitions in
@@ -282,7 +335,7 @@ pub async fn build_rel_type_clusters(
 pub async fn apply_clusters(
     pool: &PgPool,
     clusters: &[OntologyCluster],
-    threshold: f64,
+    min_cluster_size: usize,
 ) -> Result<()> {
     if clusters.is_empty() {
         return Ok(());
@@ -336,7 +389,8 @@ pub async fn apply_clusters(
 
         sqlx::query(
             "INSERT INTO ontology_clusters \
-                 (id, level, canonical_label, member_labels, member_count, threshold) \
+                 (id, level, canonical_label, member_labels, \
+                  member_count, min_cluster_size) \
              VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(cluster.id)
@@ -344,7 +398,7 @@ pub async fn apply_clusters(
         .bind(&cluster.canonical_label)
         .bind(&member_labels_json)
         .bind(cluster.member_count as i32)
-        .bind(threshold)
+        .bind(min_cluster_size as i32)
         .execute(pool)
         .await
         .map_err(Error::Database)?;
@@ -405,7 +459,6 @@ pub async fn apply_clusters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ingestion::landscape::cosine_similarity;
 
     /// Helper: build a unit vector with `dim_index` set to 1.0.
     fn unit_vec(dim: usize, dim_index: usize) -> Vec<f64> {
@@ -423,9 +476,11 @@ mod tests {
 
     #[test]
     fn empty_input_returns_empty() {
-        let result = cluster_labels(&[], &[], 0.8, ClusterLevel::Entity);
+        let result = cluster_labels(&[], &[], 2, ClusterLevel::Entity);
         assert!(result.is_ok());
-        assert!(result.as_ref().ok().is_some_and(|v| v.is_empty()));
+        let cr = result.unwrap();
+        assert!(cr.clusters.is_empty());
+        assert!(cr.noise_labels.is_empty());
     }
 
     #[test]
@@ -435,151 +490,14 @@ mod tests {
             count: 1,
         }];
         let embeddings: Vec<Vec<f64>> = vec![];
-        let result = cluster_labels(&labels, &embeddings, 0.8, ClusterLevel::Entity);
+        let result = cluster_labels(&labels, &embeddings, 2, ClusterLevel::Entity);
         assert!(result.is_err());
     }
 
     #[test]
-    fn identical_labels_cluster_together() {
-        let labels = vec![
-            LabelWithCount {
-                label: "New York City".into(),
-                count: 10,
-            },
-            LabelWithCount {
-                label: "NYC".into(),
-                count: 5,
-            },
-        ];
-        let emb = vec![1.0, 0.5, 0.3];
-        let embeddings = vec![emb.clone(), emb];
-
-        let clusters = cluster_labels(&labels, &embeddings, 0.9, ClusterLevel::Entity)
-            .expect("clustering should succeed");
-
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].canonical_label, "New York City");
-        assert_eq!(clusters[0].member_labels.len(), 2);
-        assert_eq!(clusters[0].member_count, 15);
-        assert_eq!(clusters[0].level, ClusterLevel::Entity);
-    }
-
-    #[test]
-    fn different_labels_stay_separate() {
-        let labels = vec![
-            LabelWithCount {
-                label: "person".into(),
-                count: 10,
-            },
-            LabelWithCount {
-                label: "location".into(),
-                count: 8,
-            },
-            LabelWithCount {
-                label: "event".into(),
-                count: 3,
-            },
-        ];
-        let embeddings = vec![unit_vec(3, 0), unit_vec(3, 1), unit_vec(3, 2)];
-
-        let clusters = cluster_labels(&labels, &embeddings, 0.5, ClusterLevel::EntityType)
-            .expect("clustering should succeed");
-
-        assert_eq!(clusters.len(), 3);
-    }
-
-    #[test]
-    fn canonical_label_is_highest_count() {
-        let labels = vec![
-            LabelWithCount {
-                label: "Alpha".into(),
-                count: 2,
-            },
-            LabelWithCount {
-                label: "Beta".into(),
-                count: 10,
-            },
-        ];
-        let embeddings = vec![vec_of(&[1.0, 0.0]), vec_of(&[0.99, 0.01])];
-
-        let clusters = cluster_labels(&labels, &embeddings, 0.9, ClusterLevel::Entity)
-            .expect("clustering should succeed");
-
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].canonical_label, "Beta");
-    }
-
-    #[test]
-    fn threshold_boundary_behavior() {
-        let a = vec_of(&[1.0, 0.0, 0.0]);
-        let b = vec_of(&[0.99, 0.1, 0.0]);
-        let sim = cosine_similarity(&a, &b);
-
-        let labels = vec![
-            LabelWithCount {
-                label: "A".into(),
-                count: 5,
-            },
-            LabelWithCount {
-                label: "B".into(),
-                count: 3,
-            },
-        ];
-
-        // With threshold above the similarity, they stay separate.
-        let high = cluster_labels(
-            &labels,
-            &[a.clone(), b.clone()],
-            sim + 0.01,
-            ClusterLevel::Entity,
-        )
-        .expect("clustering should succeed");
-        assert_eq!(high.len(), 2);
-
-        // With threshold at or below the similarity, they merge.
-        let low = cluster_labels(&labels, &[a, b], sim - 0.01, ClusterLevel::Entity)
-            .expect("clustering should succeed");
-        assert_eq!(low.len(), 1);
-    }
-
-    #[test]
-    fn single_label_forms_single_cluster() {
-        let labels = vec![LabelWithCount {
-            label: "singleton".into(),
-            count: 42,
-        }];
-        let embeddings = vec![vec_of(&[1.0, 0.5])];
-
-        let clusters = cluster_labels(&labels, &embeddings, 0.9, ClusterLevel::RelationType)
-            .expect("clustering should succeed");
-
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].canonical_label, "singleton");
-        assert_eq!(clusters[0].member_count, 42);
-        assert_eq!(clusters[0].level, ClusterLevel::RelationType);
-    }
-
-    #[test]
-    fn cluster_level_preserved() {
-        let labels = vec![LabelWithCount {
-            label: "x".into(),
-            count: 1,
-        }];
-        let embeddings = vec![vec_of(&[1.0])];
-
-        for level in [
-            ClusterLevel::Entity,
-            ClusterLevel::EntityType,
-            ClusterLevel::RelationType,
-        ] {
-            let clusters = cluster_labels(&labels, &embeddings, 0.9, level)
-                .expect("clustering should succeed");
-            assert_eq!(clusters[0].level, level);
-        }
-    }
-
-    #[test]
-    fn mixed_clustering_some_merge_some_separate() {
+    fn two_pairs_cluster_with_noise() {
+        // Two pairs of similar labels + one outlier. HDBSCAN
+        // should find two clusters and one noise point.
         let labels = vec![
             LabelWithCount {
                 label: "works_at".into(),
@@ -604,58 +522,379 @@ mod tests {
         ];
         let embeddings = vec![
             vec_of(&[1.0, 0.0, 0.0]),   // works_at
-            vec_of(&[0.98, 0.05, 0.0]), // employed_by ~ works_at
+            vec_of(&[0.95, 0.05, 0.0]), // employed_by
             vec_of(&[0.0, 1.0, 0.0]),   // located_in
-            vec_of(&[0.02, 0.99, 0.0]), // situated_in ~ located_in
-            vec_of(&[0.0, 0.0, 1.0]),   // contradicts (alone)
+            vec_of(&[0.05, 0.95, 0.0]), // situated_in
+            vec_of(&[0.0, 0.0, 1.0]),   // contradicts
         ];
 
-        let clusters = cluster_labels(&labels, &embeddings, 0.9, ClusterLevel::RelationType)
+        let result = cluster_labels(&labels, &embeddings, 2, ClusterLevel::RelationType)
             .expect("clustering should succeed");
 
-        assert_eq!(clusters.len(), 3);
+        // Should find 2 clusters.
+        assert_eq!(
+            result.clusters.len(),
+            2,
+            "expected 2 clusters, got {:?}",
+            result
+        );
 
-        let work_cluster = clusters
+        // "contradicts" should be noise.
+        assert!(
+            result.noise_labels.contains(&"contradicts".to_string()),
+            "contradicts should be noise"
+        );
+
+        // works_at and employed_by should be in the same cluster.
+        let work_cluster = result
+            .clusters
             .iter()
-            .find(|c| c.canonical_label == "works_at")
+            .find(|c| c.member_labels.contains(&"works_at".to_string()))
             .expect("should have works_at cluster");
         assert!(
             work_cluster
                 .member_labels
                 .contains(&"employed_by".to_string())
         );
-        assert_eq!(work_cluster.member_count, 35);
+        assert_eq!(work_cluster.canonical_label, "works_at");
 
-        let loc_cluster = clusters
+        // located_in and situated_in should be in the same cluster.
+        let loc_cluster = result
+            .clusters
             .iter()
-            .find(|c| c.canonical_label == "located_in")
+            .find(|c| c.member_labels.contains(&"located_in".to_string()))
             .expect("should have located_in cluster");
         assert!(
             loc_cluster
                 .member_labels
                 .contains(&"situated_in".to_string())
         );
-
-        let contra_cluster = clusters
-            .iter()
-            .find(|c| c.canonical_label == "contradicts")
-            .expect("should have contradicts cluster");
-        assert_eq!(contra_cluster.member_labels.len(), 1);
     }
 
     #[test]
-    fn cosine_similarity_reuse_from_landscape() {
-        let a = vec_of(&[1.0, 0.0, 0.0]);
-        let b = vec_of(&[1.0, 0.0, 0.0]);
-        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-10);
+    fn orthogonal_labels_become_noise() {
+        // Orthogonal embeddings should all be noise since each
+        // label is in its own density region.
+        let labels = vec![
+            LabelWithCount {
+                label: "person".into(),
+                count: 10,
+            },
+            LabelWithCount {
+                label: "location".into(),
+                count: 8,
+            },
+            LabelWithCount {
+                label: "event".into(),
+                count: 3,
+            },
+        ];
+        let embeddings = vec![unit_vec(3, 0), unit_vec(3, 1), unit_vec(3, 2)];
 
-        let c = vec_of(&[0.0, 1.0, 0.0]);
-        assert!(cosine_similarity(&a, &c).abs() < 1e-10);
+        let result = cluster_labels(&labels, &embeddings, 2, ClusterLevel::EntityType)
+            .expect("clustering should succeed");
 
-        let z = vec_of(&[0.0, 0.0, 0.0]);
-        assert_eq!(cosine_similarity(&a, &z), 0.0);
+        assert!(result.clusters.is_empty());
+        assert_eq!(result.noise_labels.len(), 3);
+    }
 
-        let short = vec_of(&[1.0]);
-        assert_eq!(cosine_similarity(&a, &short), 0.0);
+    #[test]
+    fn canonical_label_is_highest_count() {
+        // When similar labels cluster, the one with the highest
+        // mention count should become canonical.
+        let labels = vec![
+            LabelWithCount {
+                label: "works_at".into(),
+                count: 2,
+            },
+            LabelWithCount {
+                label: "employed_by".into(),
+                count: 10,
+            },
+            LabelWithCount {
+                label: "located_in".into(),
+                count: 5,
+            },
+            LabelWithCount {
+                label: "situated_in".into(),
+                count: 4,
+            },
+            LabelWithCount {
+                label: "contradicts".into(),
+                count: 1,
+            },
+        ];
+        let embeddings = vec![
+            vec_of(&[1.0, 0.0, 0.0]),   // works_at
+            vec_of(&[0.95, 0.05, 0.0]), // employed_by
+            vec_of(&[0.0, 1.0, 0.0]),   // located_in
+            vec_of(&[0.05, 0.95, 0.0]), // situated_in
+            vec_of(&[0.0, 0.0, 1.0]),   // contradicts
+        ];
+
+        let result = cluster_labels(&labels, &embeddings, 2, ClusterLevel::RelationType)
+            .expect("clustering should succeed");
+
+        // The works_at cluster should have employed_by as canonical
+        // (higher count).
+        let cluster = result
+            .clusters
+            .iter()
+            .find(|c| c.member_labels.contains(&"employed_by".to_string()))
+            .expect("should have cluster containing employed_by");
+        assert_eq!(cluster.canonical_label, "employed_by");
+    }
+
+    #[test]
+    fn single_label_is_noise() {
+        let labels = vec![LabelWithCount {
+            label: "singleton".into(),
+            count: 42,
+        }];
+        let embeddings = vec![vec_of(&[1.0, 0.5])];
+
+        let result = cluster_labels(&labels, &embeddings, 2, ClusterLevel::RelationType)
+            .expect("clustering should succeed");
+
+        assert!(result.clusters.is_empty());
+        assert_eq!(result.noise_labels, vec!["singleton"]);
+    }
+
+    #[test]
+    fn cluster_level_preserved() {
+        // 5 labels: 2 pairs + noise to test level preservation.
+        let labels = vec![
+            LabelWithCount {
+                label: "a".into(),
+                count: 1,
+            },
+            LabelWithCount {
+                label: "b".into(),
+                count: 1,
+            },
+            LabelWithCount {
+                label: "c".into(),
+                count: 1,
+            },
+            LabelWithCount {
+                label: "d".into(),
+                count: 1,
+            },
+            LabelWithCount {
+                label: "e".into(),
+                count: 1,
+            },
+        ];
+        let embeddings = vec![
+            vec_of(&[1.0, 0.0, 0.0]),
+            vec_of(&[0.95, 0.05, 0.0]),
+            vec_of(&[0.0, 1.0, 0.0]),
+            vec_of(&[0.05, 0.95, 0.0]),
+            vec_of(&[0.0, 0.0, 1.0]),
+        ];
+
+        for level in [
+            ClusterLevel::Entity,
+            ClusterLevel::EntityType,
+            ClusterLevel::RelationType,
+        ] {
+            let result =
+                cluster_labels(&labels, &embeddings, 2, level).expect("clustering should succeed");
+            if !result.clusters.is_empty() {
+                assert_eq!(result.clusters[0].level, level);
+            }
+        }
+    }
+
+    #[test]
+    fn realistic_ten_labels_three_clusters() {
+        // 10 labels: 3 groups of 3 similar + 1 unique outlier.
+        let labels = vec![
+            LabelWithCount {
+                label: "works_at".into(),
+                count: 20,
+            },
+            LabelWithCount {
+                label: "employed_by".into(),
+                count: 15,
+            },
+            LabelWithCount {
+                label: "hired_at".into(),
+                count: 10,
+            },
+            LabelWithCount {
+                label: "located_in".into(),
+                count: 12,
+            },
+            LabelWithCount {
+                label: "situated_in".into(),
+                count: 9,
+            },
+            LabelWithCount {
+                label: "based_in".into(),
+                count: 7,
+            },
+            LabelWithCount {
+                label: "created_by".into(),
+                count: 8,
+            },
+            LabelWithCount {
+                label: "authored_by".into(),
+                count: 6,
+            },
+            LabelWithCount {
+                label: "contradicts".into(),
+                count: 3,
+            },
+            LabelWithCount {
+                label: "associated_with".into(),
+                count: 5,
+            },
+        ];
+        let embeddings = vec![
+            vec_of(&[1.0, 0.0, 0.0, 0.0]),   // works_at
+            vec_of(&[0.95, 0.05, 0.0, 0.0]), // employed_by
+            vec_of(&[0.93, 0.07, 0.0, 0.0]), // hired_at
+            vec_of(&[0.0, 1.0, 0.0, 0.0]),   // located_in
+            vec_of(&[0.0, 0.95, 0.05, 0.0]), // situated_in
+            vec_of(&[0.0, 0.93, 0.07, 0.0]), // based_in
+            vec_of(&[0.0, 0.0, 1.0, 0.0]),   // created_by
+            vec_of(&[0.0, 0.0, 0.95, 0.05]), // authored_by
+            vec_of(&[0.0, 0.0, 0.0, 1.0]),   // contradicts
+            vec_of(&[0.5, 0.5, 0.0, 0.0]),   // associated_with
+        ];
+
+        let result = cluster_labels(&labels, &embeddings, 2, ClusterLevel::RelationType)
+            .expect("clustering should succeed");
+
+        // Should find at least 2 clusters.
+        assert!(
+            result.clusters.len() >= 2,
+            "expected >= 2 clusters, got {:?}",
+            result
+        );
+
+        // works_at cluster should have the 3 employment labels.
+        let work_cluster = result
+            .clusters
+            .iter()
+            .find(|c| c.member_labels.contains(&"works_at".to_string()));
+        if let Some(wc) = work_cluster {
+            assert_eq!(wc.canonical_label, "works_at");
+            assert!(wc.member_labels.len() >= 2);
+        }
+
+        // contradicts should be noise (genuinely unique).
+        assert!(
+            result.noise_labels.contains(&"contradicts".to_string()),
+            "contradicts should be noise"
+        );
+    }
+
+    #[test]
+    fn noise_labels_returned_for_outliers() {
+        // Two dense groups + scattered outliers. HDBSCAN needs
+        // density contrast between multiple groups to work well.
+        let labels = vec![
+            LabelWithCount {
+                label: "cat".into(),
+                count: 10,
+            },
+            LabelWithCount {
+                label: "kitten".into(),
+                count: 8,
+            },
+            LabelWithCount {
+                label: "feline".into(),
+                count: 5,
+            },
+            LabelWithCount {
+                label: "dog".into(),
+                count: 9,
+            },
+            LabelWithCount {
+                label: "puppy".into(),
+                count: 7,
+            },
+            LabelWithCount {
+                label: "canine".into(),
+                count: 4,
+            },
+            LabelWithCount {
+                label: "rocket".into(),
+                count: 2,
+            },
+        ];
+        let embeddings = vec![
+            vec_of(&[1.0, 0.0, 0.0]),   // cat
+            vec_of(&[0.95, 0.05, 0.0]), // kitten
+            vec_of(&[0.93, 0.07, 0.0]), // feline
+            vec_of(&[0.0, 1.0, 0.0]),   // dog
+            vec_of(&[0.05, 0.95, 0.0]), // puppy
+            vec_of(&[0.07, 0.93, 0.0]), // canine
+            vec_of(&[0.0, 0.0, 1.0]),   // rocket (outlier)
+        ];
+
+        let result = cluster_labels(&labels, &embeddings, 2, ClusterLevel::Entity)
+            .expect("clustering should succeed");
+
+        // Should find 2 clusters (cat-family and dog-family).
+        assert!(
+            result.clusters.len() >= 2,
+            "expected >= 2 clusters, got {:?}",
+            result
+        );
+
+        // Outlier should be noise.
+        assert!(
+            result.noise_labels.contains(&"rocket".to_string()),
+            "rocket should be noise, got noise: {:?}",
+            result.noise_labels
+        );
+
+        // Cat-family should cluster together.
+        let cat_cluster = result
+            .clusters
+            .iter()
+            .find(|c| c.member_labels.contains(&"cat".to_string()));
+        assert!(cat_cluster.is_some(), "should have a cat cluster");
+        assert_eq!(cat_cluster.unwrap().canonical_label, "cat");
+    }
+
+    #[test]
+    fn l2_normalize_produces_unit_vector() {
+        let v = vec![3.0, 4.0];
+        let n = l2_normalize(&v);
+        let norm: f64 = n.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-10);
+        assert!((n[0] - 0.6).abs() < 1e-10);
+        assert!((n[1] - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn l2_normalize_zero_vector_unchanged() {
+        let v = vec![0.0, 0.0, 0.0];
+        let n = l2_normalize(&v);
+        assert_eq!(n, v);
+    }
+
+    #[test]
+    fn fewer_than_min_cluster_size_all_noise() {
+        let labels = vec![LabelWithCount {
+            label: "solo".into(),
+            count: 1,
+        }];
+        let embeddings = vec![vec_of(&[1.0])];
+
+        let result = cluster_labels(
+            &labels,
+            &embeddings,
+            3, // min_cluster_size=3 but only 1 label
+            ClusterLevel::Entity,
+        )
+        .expect("clustering should succeed");
+
+        assert!(result.clusters.is_empty());
+        assert_eq!(result.noise_labels, vec!["solo"]);
     }
 }

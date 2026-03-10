@@ -56,3 +56,6 @@ dotenvy = "0.15"
 
 # Regex
 regex = "1"
+
+# Clustering
+hdbscan = "0.10"

@@ -20,8 +20,8 @@ pub use contention::{Contention, detect_contentions};
 pub use deep::{DeepConfig, DeepConsolidator, DeepReport};
 pub use graph_batch::GraphBatchConsolidator;
 pub use ontology::{
-    ClusterLevel, LabelWithCount, OntologyCluster, build_entity_clusters, build_rel_type_clusters,
-    build_type_clusters, cluster_labels,
+    ClusterLevel, ClusterResult, LabelWithCount, OntologyCluster, build_entity_clusters,
+    build_rel_type_clusters, build_type_clusters, cluster_labels,
 };
 pub use scheduler::ConsolidationScheduler;
 pub use summary::{

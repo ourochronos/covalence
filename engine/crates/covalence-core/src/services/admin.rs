@@ -10,7 +10,7 @@ use petgraph::visit::EdgeRef;
 use crate::consolidation::batch::BatchJob;
 use crate::consolidation::graph_batch::GraphBatchConsolidator;
 use crate::consolidation::ontology::{
-    self, ClusterLevel, OntologyCluster, build_entity_clusters, build_rel_type_clusters,
+    self, ClusterLevel, ClusterResult, build_entity_clusters, build_rel_type_clusters,
     build_type_clusters,
 };
 use crate::consolidation::{BatchConsolidator, BatchStatus};
@@ -219,55 +219,78 @@ impl AdminService {
         SearchTraceRepo::get(&*self.repo, id).await
     }
 
-    /// Run ontology clustering at the specified level(s).
+    /// Run ontology clustering at the specified level(s) using
+    /// HDBSCAN.
     ///
     /// When `dry_run` is true, returns discovered clusters without
     /// writing them back to the database. When false, stores cluster
     /// definitions and updates canonical labels on nodes/edges, then
     /// reloads the graph sidecar.
+    ///
+    /// `min_cluster_size` controls the minimum number of labels
+    /// required to form a cluster (default: 2). Labels that don't
+    /// belong to any cluster are returned as noise.
     pub async fn cluster_ontology(
         &self,
         level: Option<ClusterLevel>,
-        threshold: f64,
+        min_cluster_size: usize,
         dry_run: bool,
-    ) -> Result<Vec<OntologyCluster>> {
+    ) -> Result<ClusterResult> {
         let embedder = self.embedder.as_ref().ok_or_else(|| {
             Error::Config("no embedder configured for ontology clustering".into())
         })?;
 
         let pool = self.repo.pool();
-        let mut all_clusters = Vec::new();
+        let mut combined = ClusterResult {
+            clusters: Vec::new(),
+            noise_labels: Vec::new(),
+        };
 
         let do_entity = level.is_none() || level == Some(ClusterLevel::Entity);
         let do_type = level.is_none() || level == Some(ClusterLevel::EntityType);
         let do_rel = level.is_none() || level == Some(ClusterLevel::RelationType);
 
         if do_entity {
-            let c = build_entity_clusters(pool, embedder.as_ref(), threshold).await?;
-            tracing::info!(count = c.len(), "entity name clusters discovered");
-            all_clusters.extend(c);
+            let r = build_entity_clusters(pool, embedder.as_ref(), min_cluster_size).await?;
+            tracing::info!(
+                clusters = r.clusters.len(),
+                noise = r.noise_labels.len(),
+                "entity name clusters discovered"
+            );
+            combined.clusters.extend(r.clusters);
+            combined.noise_labels.extend(r.noise_labels);
         }
         if do_type {
-            let c = build_type_clusters(pool, embedder.as_ref(), threshold).await?;
-            tracing::info!(count = c.len(), "entity type clusters discovered");
-            all_clusters.extend(c);
+            let r = build_type_clusters(pool, embedder.as_ref(), min_cluster_size).await?;
+            tracing::info!(
+                clusters = r.clusters.len(),
+                noise = r.noise_labels.len(),
+                "entity type clusters discovered"
+            );
+            combined.clusters.extend(r.clusters);
+            combined.noise_labels.extend(r.noise_labels);
         }
         if do_rel {
-            let c = build_rel_type_clusters(pool, embedder.as_ref(), threshold).await?;
-            tracing::info!(count = c.len(), "relationship type clusters discovered");
-            all_clusters.extend(c);
+            let r = build_rel_type_clusters(pool, embedder.as_ref(), min_cluster_size).await?;
+            tracing::info!(
+                clusters = r.clusters.len(),
+                noise = r.noise_labels.len(),
+                "relationship type clusters discovered"
+            );
+            combined.clusters.extend(r.clusters);
+            combined.noise_labels.extend(r.noise_labels);
         }
 
-        if !dry_run && !all_clusters.is_empty() {
-            ontology::apply_clusters(pool, &all_clusters, threshold).await?;
+        if !dry_run && !combined.clusters.is_empty() {
+            ontology::apply_clusters(pool, &combined.clusters, min_cluster_size).await?;
             tracing::info!(
-                total = all_clusters.len(),
+                total = combined.clusters.len(),
                 "ontology clusters applied, reloading graph"
             );
             full_reload(self.repo.pool(), self.graph.clone()).await?;
         }
 
-        Ok(all_clusters)
+        Ok(combined)
     }
 
     /// Submit search feedback and log to audit.

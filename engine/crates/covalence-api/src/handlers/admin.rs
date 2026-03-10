@@ -263,7 +263,7 @@ pub async fn cluster_ontology(
     State(state): State<AppState>,
     Json(req): Json<OntologyClusterRequest>,
 ) -> Result<Json<OntologyClusterResponse>, ApiError> {
-    let threshold = req.threshold.unwrap_or(0.85);
+    let min_cluster_size = req.min_cluster_size.unwrap_or(2);
     let dry_run = req.dry_run.unwrap_or(true);
     let level = req.level.as_deref().and_then(|l| match l {
         "entity" => Some(covalence_core::consolidation::ClusterLevel::Entity),
@@ -272,12 +272,13 @@ pub async fn cluster_ontology(
         _ => None,
     });
 
-    let clusters = state
+    let result = state
         .admin_service
-        .cluster_ontology(level, threshold, dry_run)
+        .cluster_ontology(level, min_cluster_size, dry_run)
         .await?;
 
-    let items: Vec<OntologyClusterItem> = clusters
+    let items: Vec<OntologyClusterItem> = result
+        .clusters
         .iter()
         .map(|c| {
             let level_str = match c.level {
@@ -299,6 +300,7 @@ pub async fn cluster_ontology(
         applied: !dry_run,
         cluster_count: items.len(),
         clusters: items,
+        noise_labels: result.noise_labels,
     }))
 }
 

@@ -23,6 +23,7 @@ dotenvy = { workspace = true }
 reqwest = { workspace = true }
 futures = { workspace = true }
 regex = { workspace = true }
+hdbscan = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

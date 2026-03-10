@@ -487,8 +487,10 @@ pub struct OntologyClusterRequest {
     /// Clustering level: `entity`, `entity_type`, `rel_type`, or
     /// null for all levels.
     pub level: Option<String>,
-    /// Cosine similarity threshold (default 0.85).
-    pub threshold: Option<f64>,
+    /// Minimum number of labels to form a cluster (default 2).
+    /// HDBSCAN finds natural density-based clusters; this
+    /// controls the minimum group size.
+    pub min_cluster_size: Option<usize>,
     /// If true, return clusters without writing them to the
     /// database (default true).
     pub dry_run: Option<bool>,
@@ -518,6 +520,10 @@ pub struct OntologyClusterResponse {
     pub cluster_count: usize,
     /// The discovered clusters.
     pub clusters: Vec<OntologyClusterItem>,
+    /// Labels that HDBSCAN identified as noise (unclustered).
+    /// These are genuinely unique labels that don't belong to
+    /// any density-based group.
+    pub noise_labels: Vec<String>,
 }
 
 // --- Audit ---
