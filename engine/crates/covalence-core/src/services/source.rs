@@ -221,6 +221,15 @@ impl SourceService {
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
         source.title = parsed.title;
+        // Extract the primary author from metadata.authors if
+        // present, falling back to any author in parser metadata.
+        source.author = metadata
+            .get("authors")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| parsed.metadata.get("author").cloned());
         source.metadata = metadata;
         source.raw_content = String::from_utf8(content.to_vec()).ok();
 
@@ -272,6 +281,9 @@ impl SourceService {
                     .collect::<Vec<_>>()
                     .join(".");
 
+                // Detect content types for chunk metadata.
+                let chunk_meta = detect_chunk_content_types(&co.text);
+
                 let mut chunk = Chunk::new(
                     source.id,
                     level,
@@ -289,6 +301,7 @@ impl SourceService {
                 if !hierarchy.is_empty() {
                     chunk = chunk.with_hierarchy(hierarchy);
                 }
+                chunk = chunk.with_metadata(chunk_meta);
                 chunk
             })
             .collect();
@@ -1076,6 +1089,57 @@ fn content_overlap(a: &str, b: &str) -> f64 {
     intersection as f64 / union as f64
 }
 
+/// Detect content types in a chunk's Markdown text.
+///
+/// Sets boolean flags for table content, fenced code blocks,
+/// and lists. Used to enrich the chunk metadata JSONB during
+/// ingestion so search and extraction can adapt to content type.
+fn detect_chunk_content_types(text: &str) -> serde_json::Value {
+    let mut contains_table = false;
+    let mut contains_code = false;
+    let mut contains_list = false;
+    let mut in_code_fence = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        // Detect fenced code blocks (``` or ~~~).
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code_fence = !in_code_fence;
+            contains_code = true;
+            continue;
+        }
+
+        // Skip content inside code fences for other detection.
+        if in_code_fence {
+            continue;
+        }
+
+        // Detect Markdown tables: lines starting and ending with `|`
+        // or containing `|` with at least 2 cells.
+        if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.matches('|').count() >= 3 {
+            contains_table = true;
+        }
+
+        // Detect unordered lists (-, *, +) and ordered lists (1.).
+        if trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("+ ")
+            || (trimmed.len() >= 3
+                && trimmed.as_bytes()[0].is_ascii_digit()
+                && trimmed.contains(". "))
+        {
+            contains_list = true;
+        }
+    }
+
+    serde_json::json!({
+        "contains_table": contains_table,
+        "contains_code": contains_code,
+        "contains_list": contains_list,
+    })
+}
+
 /// Sanitize a string for use as an ltree label.
 ///
 /// ltree labels can only contain alphanumeric characters and
@@ -1325,5 +1389,67 @@ mod tests {
     fn should_extract_missing_index() {
         // Index not in landscape results — extract
         assert!(should_extract(5, Some(&[])));
+    }
+
+    // --- Content type detection tests ---
+
+    #[test]
+    fn detect_table_content() {
+        let text =
+            "Some intro text.\n\n| Name | Value |\n|------|-------|\n| A | 1 |\n\nMore text.";
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_table"], true);
+        assert_eq!(meta["contains_code"], false);
+        assert_eq!(meta["contains_list"], false);
+    }
+
+    #[test]
+    fn detect_code_content() {
+        let text = "Some text.\n\n```rust\nfn main() {}\n```\n\nMore text.";
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_table"], false);
+        assert_eq!(meta["contains_code"], true);
+    }
+
+    #[test]
+    fn detect_list_content() {
+        let text = "Items:\n- First item\n- Second item\n* Third item";
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_list"], true);
+        assert_eq!(meta["contains_table"], false);
+    }
+
+    #[test]
+    fn detect_ordered_list() {
+        let text = "Steps:\n1. Do this\n2. Do that";
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_list"], true);
+    }
+
+    #[test]
+    fn detect_no_special_content() {
+        let text = "Just a plain paragraph with no special formatting.";
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_table"], false);
+        assert_eq!(meta["contains_code"], false);
+        assert_eq!(meta["contains_list"], false);
+    }
+
+    #[test]
+    fn detect_mixed_content() {
+        let text =
+            "# Section\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n```python\nprint('hi')\n```\n\n- item";
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_table"], true);
+        assert_eq!(meta["contains_code"], true);
+        assert_eq!(meta["contains_list"], true);
+    }
+
+    #[test]
+    fn pipe_inside_code_fence_not_table() {
+        let text = "```\necho \"a | b | c\"\n```";
+        let meta = detect_chunk_content_types(text);
+        assert_eq!(meta["contains_table"], false);
+        assert_eq!(meta["contains_code"], true);
     }
 }

@@ -44,6 +44,12 @@ pub struct CreateSourceRequest {
     pub uri: Option<String>,
     /// Optional metadata.
     pub metadata: Option<serde_json::Value>,
+    /// Original file format before conversion (e.g. "pdf", "html",
+    /// "markdown", "docx"). Stored in metadata.format_origin.
+    pub format_origin: Option<String>,
+    /// List of authors. First entry is used as the primary author.
+    /// Stored in metadata.authors.
+    pub authors: Option<Vec<String>>,
 }
 
 /// Response after successful source creation.

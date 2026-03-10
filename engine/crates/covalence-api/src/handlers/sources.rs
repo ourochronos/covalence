@@ -35,6 +35,20 @@ pub async fn create_source(
 
     let mime = req.mime.as_deref().unwrap_or("text/plain");
 
+    // Build metadata, merging format_origin and authors into the
+    // JSONB metadata object.
+    let mut metadata = req
+        .metadata
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+    if let serde_json::Value::Object(ref mut map) = metadata {
+        if let Some(ref fmt) = req.format_origin {
+            map.insert("format_origin".to_string(), serde_json::json!(fmt));
+        }
+        if let Some(ref authors) = req.authors {
+            map.insert("authors".to_string(), serde_json::json!(authors));
+        }
+    }
+
     let id = state
         .source_service
         .ingest(
@@ -42,8 +56,7 @@ pub async fn create_source(
             &req.source_type,
             mime,
             req.uri.as_deref(),
-            req.metadata
-                .unwrap_or(serde_json::Value::Object(Default::default())),
+            metadata,
         )
         .await?;
 

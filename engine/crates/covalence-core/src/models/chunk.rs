@@ -121,6 +121,12 @@ impl Chunk {
         self.structural_hierarchy = hierarchy;
         self
     }
+
+    /// Set the metadata and return self for chaining.
+    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata = metadata;
+        self
+    }
 }
 
 /// Extraction method determined by landscape analysis.
