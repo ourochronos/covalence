@@ -13,7 +13,7 @@ use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
     ConverterRegistry, GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver,
-    ReaderLmConverter, TwoPassExtractor, VoyageConfig, VoyageEmbedder,
+    ReaderLmConverter, SidecarExtractor, TwoPassExtractor, VoyageConfig, VoyageEmbedder,
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
@@ -117,7 +117,22 @@ impl AppState {
                 (emb, None)
             };
 
-        let extractor: Option<Arc<dyn Extractor>> = if config.entity_extractor == "gliner2" {
+        let extractor: Option<Arc<dyn Extractor>> = if config.entity_extractor == "sidecar" {
+            // Unified sidecar: coref + NER + relationships in one
+            // service, with Rust-side windowing for large inputs.
+            let base_url = config
+                .extract_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:8433".to_string());
+            tracing::info!(
+                url = %base_url,
+                "using unified extraction sidecar"
+            );
+            Some(
+                Arc::new(SidecarExtractor::new(base_url, config.gliner_threshold))
+                    as Arc<dyn Extractor>,
+            )
+        } else if config.entity_extractor == "gliner2" {
             let base_url = config
                 .extract_url
                 .clone()
