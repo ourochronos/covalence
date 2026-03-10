@@ -2,6 +2,12 @@
 
 ## Status: emergent, being formalized now
 
+> **Updated 2026-03-10**: Massive engineering wave — 47 of 50 GitHub issues closed in a single day.
+> Full local model pipeline confirmed: ReaderLM-v2 → Fastcoref → GLiNER2 → NuExtract →
+> HDBSCAN (~5.5GB RAM total). Embedding provider switched to Voyage AI. Gemini 2.5 Flash via
+> OpenRouter now active for extraction ($0.30/M tokens). Only 3 issues remain open: #11 (fine-tune
+> RE), #35 (federation scope), #42 (extraction research tracking).
+
 ## Spec Sections: 10-lessons-learned.md, 11-evaluation.md
 
 ## Architecture Overview
@@ -25,7 +31,7 @@ This flywheel is self-reinforcing: design docs identify which papers are missing
 
 ## Evidence: The Flywheel Works
 
-Measured over a single session (2026-03-09, ~20 minutes):
+### March 9, 2026 — Initial documentation session (~20 minutes)
 
 | Metric | Before | After | Δ |
 |--------|--------|-------|---|
@@ -36,7 +42,19 @@ Measured over a single session (2026-03-09, ~20 minutes):
 | Design docs | 1 | 8 | +7 |
 | Subsystems with documented status | 1 | 8 | all |
 
-The worst-grounded spec section (08-api at 14.4%) improved to 49.3%. The most isolated section (11-evaluation at 21.9%) jumped to 65.6%.
+### March 10, 2026 — Engineering wave (single day)
+
+| Metric | Before | After | Δ |
+|--------|--------|-------|---|
+| Open GitHub issues | 50 | 3 | -47 |
+| Two-pass extraction | ❌ Blocked | ✅ Active | — |
+| Local model pipeline | ❌ Untested | ✅ Confirmed | ~5.5GB RAM |
+| Embedding provider | OpenAI | Voyage AI | $0.13→$0.01/M |
+| Extraction provider | Gemini Flash Lite | Gemini 2.5 Flash | Better quality |
+| Community detection | 🐛 6,026 empty | ✅ Correct | — |
+| Byte-offset chunking | ❌ | ✅ | Incremental re-ingest |
+| URL ingestion | ❌ | ✅ | Accept URLs directly |
+| Source metadata | ❌ | ✅ | title/author/date |
 
 ## Process Components
 
@@ -52,6 +70,7 @@ The worst-grounded spec section (08-api at 14.4%) improved to 49.3%. The most is
 | **Async paper workers** | Subagents research, synthesize, and ingest papers in parallel while analysis continues |
 | **Design doc template** | Status, spec sections, implemented/partial/not-implemented tables, gaps, academic foundations, next actions |
 | **Immediate git commit** | Design docs committed and pushed as they're written — no batch, no delay |
+| **Issue-driven development** | GitHub issues tracked per feature; closed when confirmed working in code |
 
 ### Partially Implemented 🟡
 
@@ -65,12 +84,35 @@ The worst-grounded spec section (08-api at 14.4%) improved to 49.3%. The most is
 
 | Component | Source | Priority |
 |-----------|--------|----------|
-| **Automated gap detection** | #39 | High — currently manual SQL; should be API endpoint |
+| **Automated gap detection** | #39 ✅ Closed | API endpoint implemented; not yet wired to CI check |
 | **Grounding CI check** | — | Medium — fail build if grounding drops below threshold |
 | **Design doc staleness detection** | — | Medium — detect when code changes invalidate a design doc |
 | **Process metrics dashboard** | — | Low — track grounding %, node/edge counts, worker success rate over time |
 | **Automated paper suggestions** | — | Low — graph analysis suggests papers to ingest |
 | **DSRM evaluation phase** | Hevner 2004 | Medium — formal evaluation criteria for each design artifact |
+
+## Current Model Stack (confirmed March 10)
+
+The full local pipeline is confirmed working at ~5.5GB total RAM:
+
+| Stage | Model | RAM | Notes |
+|-------|-------|-----|-------|
+| HTML → Markdown | ReaderLM-v2 (MLX) | ~1GB | High-quality structure preservation |
+| PDF → Markdown | pymupdf4llm | ~0MB | No model — pure extraction, 3.4s/15 pages |
+| Coreference resolution | Fastcoref 90M | ~300MB | 20KB context OK |
+| Entity extraction (NER) | GLiNER2 ~500MB | ~500MB | 384-token limit (windowing needed) |
+| Relationship extraction | NuExtract-1.5-tiny 0.5B | ~1GB | 4K token context |
+| Embeddings | Voyage AI (cloud) | ~0MB | $0.01/M tokens, voyage-3-large |
+| LLM fallback / enrichment | Gemini 2.5 Flash (OpenRouter) | ~0MB | $0.30/M tokens |
+
+## Open Issues (as of 2026-03-10)
+
+| Issue | Description | Status |
+|-------|-------------|--------|
+| #11 | Fine-tune relationship extraction | 🔴 Open |
+| #35 | Federation scope decision | 🔴 Open |
+| #42 | Extraction alternatives research tracking | 🔴 Open |
+| All others | — | ✅ Closed 2026-03-10 |
 
 ## Key Design Decisions
 
@@ -83,8 +125,11 @@ ADRs capture individual decisions. Design docs capture the full status of a subs
 ### Why grounding percentage as the primary metric
 Grounding measures how much of the spec is backed by academic literature. It's objective (entity overlap), automated (SQL query), and actionable (low grounding → ingest more papers on that topic). It's not perfect — entity matching is noisy — but it's directionally correct and computable in milliseconds.
 
-### Why async paper workers
-Paper research, synthesis, and ingestion takes 5-7 minutes per batch. Running workers in parallel while continuing analysis means no idle time. The flywheel spins continuously.
+### Why Voyage AI over OpenAI for embeddings
+Voyage `voyage-3-large` is $0.01/M tokens vs OpenAI `text-embedding-3-large` at $0.13/M — 13× cheaper with comparable or better quality on technical domain retrieval. Voyage is also the provider for the `rerank-2.5` model already wired in the codebase. One provider for both embeddings and reranking simplifies key management.
+
+### Why Gemini 2.5 Flash for extraction
+At $0.30/M tokens and with strong instruction following, Gemini 2.5 Flash via OpenRouter offers better extraction quality than Gemini Flash Lite at minimal extra cost. OpenRouter provides vendor-agnostic routing — if Gemini degrades, switching to another model is a one-line config change.
 
 ### Why immediate commit
 Design docs are artifacts of analysis, not proposals. They describe what IS, not what should be. No review gate needed — they're documentation of measured reality. Push immediately, iterate later.
@@ -92,34 +137,34 @@ Design docs are artifacts of analysis, not proposals. They describe what IS, not
 ## Process Patterns Observed
 
 ### The Citation Gap Pattern
-When a design doc identifies a concept referenced in code but absent from the KB, that's a citation gap. Filling it always improves grounding, often by 5-15 percentage points. Example: ingesting RAGAS + Zaveri pushed evaluation grounding from 31% to 66%.
+When a design doc identifies a concept referenced in code but absent from the KB, that's a citation gap. Filling it always improves grounding, often by 5-15 percentage points.
 
 ### The Bridge Pattern
-Papers that introduce concepts used across multiple spec sections have outsized impact. "Attention Is All You Need" bridges search, ingestion, and evaluation. Prioritize bridge papers over section-specific ones.
+Papers that introduce concepts used across multiple spec sections have outsized impact. Prioritize bridge papers over section-specific ones.
 
 ### The Isolation Pattern
-Spec sections that share few entities with other sections are either (a) genuinely independent or (b) missing connections. 11-evaluation was isolated because it lacked references to the specific systems it should evaluate. Design docs fix isolation by explicitly mapping connections.
+Spec sections that share few entities with other sections are either (a) genuinely independent or (b) missing connections. Design docs fix isolation by explicitly mapping connections.
 
 ### The Sink Pattern
-Graph entities with many incoming edges but no outgoing edges are knowledge dead-ends. Filling these (e.g., "Subjective Logic Opinions" went from 11in/0out to 14in/3out after ingesting the paper) enriches the graph's explanatory power.
+Graph entities with many incoming edges but no outgoing edges are knowledge dead-ends. Filling these enriches the graph's explanatory power.
 
 ## Academic Foundations
 
 | Concept | Paper | Status in KB |
 |---------|-------|-------------|
-| Architecture Decision Records | Nygard 2011 | ✅ Just ingested |
-| Design Science Research | Hevner et al. 2004 | ✅ Just ingested |
-| DSRM 6-step process | Peffers et al. 2007 | ✅ Just ingested |
-| Ontology engineering | Noy & McGuinness 2001 | ✅ Just ingested |
-| KG Quality Assessment | Zaveri et al. 2016 | ✅ Just ingested |
+| Architecture Decision Records | Nygard 2011 | ✅ Ingested |
+| Design Science Research | Hevner et al. 2004 | ✅ Ingested |
+| DSRM 6-step process | Peffers et al. 2007 | ✅ Ingested |
+| Ontology engineering | Noy & McGuinness 2001 | ✅ Ingested |
+| KG Quality Assessment | Zaveri et al. 2016 | ✅ Ingested |
 | Reflective practice | Schön 1983 | ❌ Not ingested |
 | Double-loop learning | Argyris & Schön 1978 | ❌ Not ingested |
 
 ## Next Actions
 
-1. Automate grounding analysis as API endpoint (#39)
-2. Add grounding check to CI — warn (not block) on drops
-3. Detect design doc staleness by tracking code changes vs doc timestamps
-4. Extract formal ADRs from design doc "Key Design Decisions" sections
-5. Ingest Schön's reflective practice and Argyris & Schön's double-loop learning — the theoretical foundation for a system that improves its own process
+1. Wire grounding check to CI — warn (not block) on drops
+2. Detect design doc staleness by tracking code changes vs doc timestamps
+3. Extract formal ADRs from design doc "Key Design Decisions" sections
+4. Resolve #42 (extraction research) — document findings from GLiNER2/NuExtract testing
+5. Ingest Schön's reflective practice and Argyris & Schön's double-loop learning
 6. Define DSRM evaluation criteria for Covalence as a design science artifact

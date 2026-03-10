@@ -2,6 +2,10 @@
 
 ## Status: implemented (core), partial (propagation wiring)
 
+> **Updated 2026-03-10**: No major code changes in this subsystem during the March 10 engineering
+> wave. All 5 epistemic stages remain as documented on March 9. The main outstanding gaps
+> (TrustRank seed set, confidence_breakdown population, forgetting trigger) are unchanged.
+
 ## Spec Sections: 07-epistemic-model.md, 04-graph.md
 
 ## Architecture Overview
@@ -43,7 +47,7 @@ The epistemic model provides mathematically grounded confidence scoring for all 
 | **Belief oscillation detection** | Spec 07: "belief oscillation" | Medium — guard against feedback loops |
 | **Network-wide calibration** | Spec 07: "network-wide calibration" | Medium — global consistency check |
 | **Epistemic delta triggers** | Spec 07: significant delta → re-propagation | Medium — currently manual |
-| **Federated trust discounting** | Spec 09: discount opinions by federation trust level | Low — blocked on federation |
+| **Federated trust discounting** | Spec 09: discount opinions by federation trust level | Low — blocked on federation (#35) |
 
 ## Key Design Decisions
 
@@ -77,27 +81,32 @@ Collapsing these into one formula would lose the ability to diagnose *why* a con
 | Subjective Logic | Jøsang 2016 | ✅ Ingested |
 | DF-QuAD | Rago et al. 2016 | ❌ Not ingested — should be |
 | ACT-R memory model | Anderson 1998 | ❌ Not ingested — should be |
-| TrustRank | Gyöngyi et al. 2004 | ✅ Just ingested |
-| EigenTrust | Kamvar et al. 2003 | ✅ Just ingested |
+| TrustRank | Gyöngyi et al. 2004 | ✅ Ingested |
+| EigenTrust | Kamvar et al. 2003 | ✅ Ingested |
 | Pearl's Causal Hierarchy | Pearl 2000 | ✅ Ingested |
 | Beta-binomial conjugate | Standard Bayesian | ❌ No paper — textbook material |
 
-## Gaps Identified by Graph Analysis
+## Gaps Identified
 
-1. **confidence_breakdown JSONB is always NULL** — the schema supports it but ingestion never populates it. This means the 5-stage pipeline's intermediate results are lost.
+1. **confidence_breakdown JSONB is always NULL** — the schema supports it but ingestion never
+   populates it. The 5-stage pipeline's intermediate results are lost.
 
-2. **TrustRank disabled by default** — `apply_trust_rank: false`. No seed set defined. Needs a way to designate "trusted" sources (operator-authored articles?).
+2. **TrustRank disabled by default** — `apply_trust_rank: false`. No seed set defined. Needs a
+   way to designate "trusted" sources (operator-authored articles?).
 
-3. **DF-QuAD paper not in KB** — the implementation cites it but we haven't ingested the actual paper. The graph can't trace the academic foundation.
+3. **DF-QuAD paper not in KB** — the implementation cites it but the paper hasn't been ingested.
+   The graph can't trace the academic foundation of the contradiction system.
 
-4. **Organic forgetting is computed but not triggered** — `bmr_analysis()` and `eviction_decision()` exist but aren't wired to a scheduled job.
+4. **Organic forgetting is computed but not triggered** — `bmr_analysis()` and
+   `eviction_decision()` exist but aren't wired to a scheduled job.
 
-5. **No connection between epistemic model and evaluation spec** — 07-epistemic and 11-evaluation share only 3 entities. How do you evaluate epistemic correctness without referencing epistemic concepts?
+5. **No connection between epistemic model and evaluation spec** — how do you evaluate epistemic
+   correctness without referencing epistemic concepts? Calibration metric needed.
 
 ## Next Actions
 
 1. Populate `confidence_breakdown` JSONB during ingestion — store per-stage opinions
 2. Define TrustRank seed set criteria and enable stage 5
-3. Ingest DF-QuAD paper (Rago et al. 2016) and ACT-R memory model
+3. Ingest DF-QuAD paper (Rago et al. 2016) and ACT-R memory model (Anderson 1998)
 4. Wire forgetting to a consolidation schedule
 5. Add epistemic-specific metrics to 11-evaluation.md

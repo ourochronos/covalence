@@ -1,6 +1,10 @@
 # Design: Evaluation Framework
 
-## Status: framework implemented, not wired to CI or production
+## Status: harness implemented and wired (#4 closed); fixture data and RAGAS still needed
+
+> **Updated 2026-03-10**: Layer evaluation harness completed and verified (#4 closed). The CLI
+> binary runs end-to-end against all three layer evaluators (chunker, extractor, search). Still
+> needs fixture datasets and RAGAS LLM computation, but the framework infrastructure is complete.
 
 ## Spec Sections: 11-evaluation.md
 
@@ -23,7 +27,7 @@ This is the most isolated subsystem — the evaluation spec (11-evaluation.md) s
 | **RAGAS metric types** | `ragas.rs` | All 4 RAGAS metrics: faithfulness, answer relevancy, context precision, context recall |
 | **Fixture loader** | `fixtures.rs` | JSON fixture format: document + expected entities + search queries with relevance |
 | **Regression gating** | `regression.rs` | Compare current metrics against baseline, pass/fail per metric |
-| **CLI harness** | `main.rs` | `clap`-based CLI runs layer evaluations against fixture files |
+| **CLI harness** | `main.rs` | **VERIFIED (#4)**: `clap`-based CLI runs all layer evaluations against fixture files; tested end-to-end |
 | **Typed metrics** | `metrics.rs` | `ChunkerMetrics`, `ExtractorMetrics`, `SearchMetrics` — serializable |
 | **Query trace** | `search/trace.rs` | Per-query execution metadata: strategy, dimension counts, cache hit, abstention |
 
@@ -39,11 +43,11 @@ This is the most isolated subsystem — the evaluation spec (11-evaluation.md) s
 
 | Component | Spec Reference | Priority |
 |-----------|---------------|----------|
-| **CI integration** | Spec 11: "Regression Testing" | High — evaluators exist but don't run in CI |
+| **CI integration** | Spec 11: "Regression Testing" | High — evaluators exist and work, but don't run in CI |
 | **Fixture generation** | Spec 11: "Evaluation Dataset" | High — need gold-standard test documents with annotations |
 | **RAGAS LLM pipeline** | Spec 11: automated RAG scoring | Medium — requires LLM calls for faithfulness decomposition |
 | **Epistemic metrics** | Spec 07/11: confidence calibration, contradiction detection rate | Medium — epistemic module has no eval coverage |
-| **Knowledge graph quality** | Spec 11: "Knowledge Graph Quality" (Zaveri dimensions) | Medium — Zaveri 2016 now in KB, needs mapping |
+| **Knowledge graph quality** | Spec 11: "Knowledge Graph Quality" (Zaveri dimensions) | Medium — Zaveri 2016 in KB, needs mapping |
 | **Prompt ablation testing** | Spec 11: systematic prompt variation evaluation | Low |
 | **Online evaluation** | Spec 11: production query quality monitoring | Low — query trace is the foundation |
 | **Embedding landscape metrics** | `ingestion/landscape.rs` → eval | Low — landscape analysis exists but isn't evaluated |
@@ -57,7 +61,7 @@ Each pipeline stage (chunk → extract → search) can fail independently. Layer
 Fixtures provide reproducible evaluation — same input, expected output, deterministic metrics. Production evaluation captures real-world distribution but can't regression-test against known-good behavior. Both are needed; fixtures first.
 
 ### Why RAGAS over custom metrics
-RAGAS (Shahul Es et al. 2023, now in KB) provides a well-validated framework with reference-free metrics — no need for human-annotated answers. The four metrics map directly to Covalence quality concerns:
+RAGAS (Shahul Es et al. 2023) provides a well-validated framework with reference-free metrics — no need for human-annotated answers. The four metrics map directly to Covalence quality concerns:
 - **Faithfulness** → Are articles grounded in sources?
 - **Answer relevancy** → Does search return what was asked?
 - **Context precision** → Is noise in search results minimized?
@@ -67,8 +71,6 @@ RAGAS (Shahul Es et al. 2023, now in KB) provides a well-validated framework wit
 Metrics naturally fluctuate. Regression gating compares current metrics against a saved baseline with configurable tolerance. This catches degradation (e.g., extraction F1 drops after a prompt change) while allowing natural variation.
 
 ## Connections to Other Subsystems
-
-The evaluation spec was the most isolated section in coupling analysis. Here's how it should connect:
 
 | Subsystem | Eval Metric | Status |
 |-----------|------------|--------|
@@ -80,30 +82,35 @@ The evaluation spec was the most isolated section in coupling analysis. Here's h
 | **Epistemic** | Contradiction detection rate, convergence speed | ❌ Not started |
 | **Graph** | Community coherence, bridge detection accuracy | ❌ Not started |
 | **Consolidation** | Cluster purity, ontology stability across runs | ❌ Not started |
-| **KG Quality** | Zaveri 18-dimension framework (accessibility, intrinsic, contextual, representational) | ❌ Not started |
+| **KG Quality** | Zaveri 18-dimension framework | ❌ Not started |
 
 ## Gaps Identified
 
-1. **No fixture data** — the evaluators are built but have nothing to evaluate. Need gold-standard documents with annotated entities, relationships, and search relevance judgments.
+1. **No fixture data** — the evaluators now work (#4) but have nothing to evaluate. Need
+   gold-standard documents with annotated entities, relationships, and search relevance judgments.
 
-2. **RAGAS is stubs** — the trait and types exist but actual computation requires decomposing answers into claims and checking each against context. This needs LLM calls.
+2. **RAGAS is stubs** — the trait and types exist but actual computation requires decomposing
+   answers into claims and checking each against context. This needs LLM calls.
 
-3. **Epistemic eval completely absent** — confidence calibration is the most important missing metric. If the system says confidence=0.8, it should be correct 80% of the time. No way to measure this currently.
+3. **Epistemic eval completely absent** — confidence calibration is the most important missing
+   metric. If the system says confidence=0.8, it should be correct 80% of the time.
 
-4. **Zaveri dimensions unmapped** — the KG Quality paper (now in KB) provides 18 quality dimensions. None are computed or tracked. The mapping table from the paper ingestion is a direct implementation roadmap.
+4. **Zaveri dimensions unmapped** — the KG Quality paper provides 18 quality dimensions. None are
+   computed or tracked. The mapping table from the paper is a direct implementation roadmap.
 
-5. **No online monitoring** — query traces exist but aren't analyzed. Could detect degradation in real-time (e.g., abstention rate climbing, average result count dropping).
+5. **No online monitoring** — query traces exist but aren't analyzed. Could detect degradation in
+   real-time (e.g., abstention rate climbing, average result count dropping).
 
 ## Academic Foundations
 
 | Concept | Paper | Status in KB |
 |---------|-------|-------------|
-| RAGAS framework | Shahul Es et al. 2023 | ✅ Just ingested |
-| KG Quality dimensions | Zaveri et al. 2016 | ✅ Just ingested |
+| RAGAS framework | Shahul Es et al. 2023 | ✅ Ingested |
+| KG Quality dimensions | Zaveri et al. 2016 | ✅ Ingested |
 | nDCG | Järvelin & Kekäläinen 2002 | ❌ Classic IR, not ingested |
 | Precision/Recall/F1 | — | Textbook, not ingested |
 | Confidence calibration | Guo et al. 2017 "On Calibration" | ❌ Not ingested |
-| Design Science evaluation | Hevner et al. 2004 | ✅ Just ingested |
+| Design Science evaluation | Hevner et al. 2004 | ✅ Ingested |
 
 ## Next Actions
 
