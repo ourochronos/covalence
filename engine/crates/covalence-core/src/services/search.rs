@@ -287,6 +287,15 @@ impl SearchService {
             ]
         };
 
+        // Entity demotion: for content-focused strategies, push bare
+        // entity nodes to the end of each dimension's ranked list
+        // BEFORE fusion. This prevents nodes from crowding out
+        // chunks in high-weight dimensions like vector search.
+        let demote_entities = !matches!(
+            effective_strategy,
+            SearchStrategy::Exploratory | SearchStrategy::GraphFirst | SearchStrategy::Global
+        );
+
         let mut ranked_lists = Vec::new();
         let mut weights = Vec::new();
         let mut snippets: HashMap<Uuid, String> = HashMap::new();
@@ -294,7 +303,7 @@ impl SearchService {
 
         for (name, result, weight) in dimensions {
             match result {
-                Ok(results) => {
+                Ok(mut results) => {
                     tracing::debug!(
                         dimension = name,
                         count = results.len(),
@@ -310,6 +319,25 @@ impl SearchService {
                             result_types.entry(r.id).or_insert_with(|| rt.clone());
                         }
                     }
+
+                    // Per-dimension entity demotion: move bare entity
+                    // nodes to the back of the ranked list so they
+                    // get worse RRF ranks. This is more principled
+                    // than post-fusion score multiplication because
+                    // it affects the rank input to RRF directly.
+                    if demote_entities && !results.is_empty() {
+                        let (mut content, entities): (Vec<_>, Vec<_>) = results
+                            .drain(..)
+                            .partition(|r| r.result_type.as_deref() != Some("node"));
+                        // Re-rank: content items keep their positions,
+                        // entity nodes follow at the end.
+                        content.extend(entities);
+                        for (i, r) in content.iter_mut().enumerate() {
+                            r.rank = i + 1;
+                        }
+                        results = content;
+                    }
+
                     ranked_lists.push(results);
                     weights.push(weight);
                 }
@@ -477,16 +505,11 @@ impl SearchService {
             }
         }
 
-        // --- Step 8b: Entity demotion ---
-        // Entity-only nodes (bare names like "GraphRAG" with no
-        // content) rank high on lexical + graph + structural
-        // dimensions but provide no useful content. Demote them
-        // for content-focused strategies so chunks and articles
-        // surface first. Graph-focused strategies skip demotion.
-        let demote_entities = !matches!(
-            effective_strategy,
-            SearchStrategy::Exploratory | SearchStrategy::GraphFirst | SearchStrategy::Global
-        );
+        // --- Step 8b: Post-fusion entity demotion ---
+        // Secondary demotion pass: even after per-dimension rank
+        // demotion (Step 5), entity nodes that appear in many
+        // dimensions can still accumulate high fused scores. Apply
+        // a score multiplier to push them below content results.
         if demote_entities {
             let mut demoted_count = 0usize;
             for result in &mut fused {

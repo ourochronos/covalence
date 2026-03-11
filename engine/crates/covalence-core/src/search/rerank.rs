@@ -143,12 +143,36 @@ impl Reranker for HttpReranker {
             return Ok(Vec::new());
         }
 
-        let top_k = self.config.top_k.min(documents.len());
+        // Filter out empty/whitespace documents — Voyage rerank-2.5
+        // returns HTTP 400 if any document is an empty string.
+        // Track original indices so we can map scores back.
+        let indexed_docs: Vec<(usize, &String)> = documents
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| !d.trim().is_empty())
+            .collect();
+
+        if indexed_docs.is_empty() {
+            // All documents were empty — return identity ordering.
+            return Ok(documents
+                .iter()
+                .enumerate()
+                .map(|(i, _)| RerankedResult {
+                    index: i,
+                    relevance_score: 0.0,
+                })
+                .collect());
+        }
+
+        let filtered_docs: Vec<String> = indexed_docs.iter().map(|(_, d)| (*d).clone()).collect();
+        let original_indices: Vec<usize> = indexed_docs.iter().map(|(i, _)| *i).collect();
+
+        let top_k = self.config.top_k.min(filtered_docs.len());
         let url = format!("{}/rerank", self.config.base_url);
         let body = RerankRequest {
             model: &self.config.model,
             query,
-            documents,
+            documents: &filtered_docs,
             top_k,
         };
 
@@ -174,14 +198,33 @@ impl Reranker for HttpReranker {
             crate::error::Error::Search(format!("rerank response parse error: {e}"))
         })?;
 
-        Ok(parsed
+        // Map filtered indices back to original document indices.
+        let mut results: Vec<RerankedResult> = parsed
             .data
             .into_iter()
-            .map(|r| RerankedResult {
-                index: r.index,
-                relevance_score: r.relevance_score,
+            .filter_map(|r| {
+                original_indices
+                    .get(r.index)
+                    .map(|&orig_idx| RerankedResult {
+                        index: orig_idx,
+                        relevance_score: r.relevance_score,
+                    })
             })
-            .collect())
+            .collect();
+
+        // Append empty documents at the end with zero relevance so
+        // callers that expect one result per input still work.
+        let returned: std::collections::HashSet<usize> = results.iter().map(|r| r.index).collect();
+        for i in 0..documents.len() {
+            if !returned.contains(&i) {
+                results.push(RerankedResult {
+                    index: i,
+                    relevance_score: 0.0,
+                });
+            }
+        }
+
+        Ok(results)
     }
 }
 
@@ -253,5 +296,35 @@ mod tests {
             top_k: 5,
         };
         let _reranker = HttpReranker::new(config);
+    }
+
+    #[test]
+    fn empty_doc_filter_preserves_indices() {
+        // Simulate the filtering logic used in HttpReranker::rerank.
+        let documents = vec![
+            "first".to_string(),
+            "".to_string(),
+            "third".to_string(),
+            "   ".to_string(),
+        ];
+        let indexed_docs: Vec<(usize, &String)> = documents
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| !d.trim().is_empty())
+            .collect();
+        let original_indices: Vec<usize> = indexed_docs.iter().map(|(i, _)| *i).collect();
+
+        assert_eq!(original_indices, vec![0, 2]);
+    }
+
+    #[test]
+    fn all_empty_docs_returns_identity() {
+        let documents: Vec<String> = vec!["".to_string(), "   ".to_string(), "\n".to_string()];
+        let indexed_docs: Vec<(usize, &String)> = documents
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| !d.trim().is_empty())
+            .collect();
+        assert!(indexed_docs.is_empty());
     }
 }

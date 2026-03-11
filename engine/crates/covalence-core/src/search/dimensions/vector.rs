@@ -100,6 +100,15 @@ impl SearchDimension for VectorDimension {
 
         let limit = query.limit as i64;
 
+        // Per-table limits to prevent any single table from crowding
+        // out others. Chunks get half the budget (primary content),
+        // nodes get a quarter, sources and articles share the rest.
+        // Each table gets at least 2 results so nothing is starved.
+        let chunk_limit = (limit / 2).max(2);
+        let node_limit = (limit / 4).max(2);
+        let source_limit = (limit / 8).max(2);
+        let article_limit = (limit / 8).max(2);
+
         // Format per-table pgvec literals (truncated to column dim).
         let pgvec_chunk = self.pgvec_for_table(embedding, "chunks");
         let pgvec_node = self.pgvec_for_table(embedding, "nodes");
@@ -109,10 +118,10 @@ impl SearchDimension for VectorDimension {
         // Query each table independently so a dimension mismatch
         // in one table does not prevent results from others.
         let (chunk_rows, node_rows, source_rows, article_rows) = tokio::join!(
-            self.query_table("chunks", &pgvec_chunk, limit),
-            self.query_table("nodes", &pgvec_node, limit),
-            self.query_table("sources", &pgvec_source, limit),
-            self.query_table("articles", &pgvec_article, limit),
+            self.query_table("chunks", &pgvec_chunk, chunk_limit),
+            self.query_table("nodes", &pgvec_node, node_limit),
+            self.query_table("sources", &pgvec_source, source_limit),
+            self.query_table("articles", &pgvec_article, article_limit),
         );
 
         // Merge and re-rank by score descending.

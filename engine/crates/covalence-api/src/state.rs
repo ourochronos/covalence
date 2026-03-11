@@ -161,6 +161,13 @@ impl AppState {
                 .or(config.openai_api_key.as_ref());
             let chat_base = config.chat_base_url.clone();
 
+            tracing::info!(
+                has_chat_key = chat_key.is_some(),
+                entity_extractor = %config.entity_extractor,
+                chat_model = %config.chat_model,
+                "two_pass extractor init"
+            );
+
             chat_key.map(|key| {
                 let llm = Arc::new(LlmExtractor::new(
                     config.chat_model.clone(),

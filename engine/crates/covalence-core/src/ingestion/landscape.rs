@@ -229,11 +229,22 @@ fn determine_extraction_method(
     valley_prominence: Option<f64>,
     cal: &ModelCalibration,
 ) -> ExtractionMethod {
-    // High alignment with parent = redundant, skip extraction
-    if parent_alignment.is_some_and(|pa| pa > cal.parent_child_p75) {
+    // No parent alignment data (first ingestion, or no parent
+    // embeddings available). Without a reference point we cannot
+    // judge redundancy, so default to full extraction.
+    let Some(pa) = parent_alignment else {
         tracing::debug!(
             chunk_index,
-            alignment = parent_alignment,
+            "landscape: full extraction (no parent alignment)"
+        );
+        return ExtractionMethod::FullExtraction;
+    };
+
+    // High alignment with parent = redundant, skip extraction
+    if pa > cal.parent_child_p75 {
+        tracing::debug!(
+            chunk_index,
+            alignment = pa,
             threshold = cal.parent_child_p75,
             "landscape: skipping chunk (high parent alignment)"
         );
@@ -241,18 +252,18 @@ fn determine_extraction_method(
     }
 
     // Very low alignment = highly novel content
-    if parent_alignment.is_some_and(|pa| pa < cal.parent_child_p25) {
+    if pa < cal.parent_child_p25 {
         if sibling_outlier_score.is_some_and(|so| so > 2.0 * cal.adjacent_stddev) {
             tracing::debug!(
                 chunk_index,
-                alignment = parent_alignment,
+                alignment = pa,
                 "landscape: full extraction with review (low alignment + outlier)"
             );
             return ExtractionMethod::FullExtractionWithReview;
         }
         tracing::debug!(
             chunk_index,
-            alignment = parent_alignment,
+            alignment = pa,
             "landscape: full extraction (low parent alignment)"
         );
         return ExtractionMethod::FullExtraction;
@@ -271,7 +282,7 @@ fn determine_extraction_method(
     // Middle range = delta check
     tracing::debug!(
         chunk_index,
-        alignment = parent_alignment,
+        alignment = pa,
         "landscape: delta check (moderate alignment)"
     );
     ExtractionMethod::DeltaCheck
@@ -383,12 +394,16 @@ mod tests {
     }
 
     #[test]
-    fn no_parent_uses_delta_check() {
-        // Use 2 chunks so the single-chunk bypass doesn't trigger.
+    fn no_parent_uses_full_extraction() {
+        // Without parent embeddings (first ingestion), landscape
+        // cannot judge redundancy, so it defaults to full extraction.
         let child1 = vec![1.0, 0.5, 0.3];
         let child2 = vec![0.9, 0.4, 0.2];
         let results = analyze_landscape(&[child1, child2], &[None, None], None);
-        assert_eq!(results[0].extraction_method, ExtractionMethod::DeltaCheck);
+        assert_eq!(
+            results[0].extraction_method,
+            ExtractionMethod::FullExtraction
+        );
     }
 
     #[test]

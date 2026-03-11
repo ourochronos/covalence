@@ -183,23 +183,24 @@ impl SourceConverter for ReaderLmConverter {
         );
 
         let mut parts = Vec::with_capacity(windows.len());
-        let mut sidecar_ok = true;
 
         for window in &windows {
-            if sidecar_ok {
-                if let Some(md) = self.convert_single(window).await {
-                    parts.push(md);
-                    continue;
-                }
-                // Sidecar failed — fall back for all remaining
-                // windows to avoid partial sidecar/fallback mix.
-                sidecar_ok = false;
+            if let Some(md) = self.convert_single(window).await {
+                parts.push(md);
+            } else {
+                // Sidecar failed on this window. To avoid
+                // inconsistent mixed output (some windows
+                // ReaderLM, some tag-stripped), discard any
+                // partial results and fall back to tag-stripping
+                // the entire source document as one pass.
                 tracing::warn!(
-                    "ReaderLM sidecar failed during windowed conversion, \
-                     falling back to tag stripper for remaining windows"
+                    completed_windows = parts.len(),
+                    total_windows = windows.len(),
+                    "ReaderLM sidecar failed mid-batch, \
+                     falling back to full document tag strip"
                 );
+                return Ok(strip_html(&html));
             }
-            parts.push(strip_html(window));
         }
 
         Ok(parts.join("\n\n"))
