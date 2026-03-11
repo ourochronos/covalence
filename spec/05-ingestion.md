@@ -20,16 +20,16 @@ This is the primary focus area. The ingestion pipeline transforms raw unstructur
 ## Pipeline Stages
 
 ```
-┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│  Accept   │─→│  Parse   │─→│ Normalize│─→│  Chunk   │─→│  Embed   │─→│ Landscape│─→│ Extract  │─→│ Resolve  │
-│  Source   │  │  + Meta  │  │  to MD   │  │  (hier.) │  │ +Context │  │ Analysis │  │(targeted)│  │ + Store  │
-└──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘
-                                                                            │
-                                                                  ┌─────────┴─────────┐
-                                                                  │ Extraction Priority│
-                                                                  │ Map (per-chunk     │
-                                                                  │ scores + reasons)  │
-                                                                  └───────────────────┘
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│  Accept   │─→│ Convert  │─→│  Parse   │─→│ Normalize│─→│  Chunk   │─→│  Embed   │─→│ Landscape│─→│ Extract  │─→│ Resolve  │
+│  Source   │  │  to MD   │  │  + Meta  │  │  to MD   │  │  (hier.) │  │ +Context │  │ Analysis │  │(targeted)│  │ + Store  │
+└──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘
+                                                                                          │
+                                                                                ┌─────────┴─────────┐
+                                                                                │ Extraction Priority│
+                                                                                │ Map (per-chunk     │
+                                                                                │ scores + reasons)  │
+                                                                                └───────────────────┘
 ```
 
 The key architectural change from a naive GraphRAG pipeline: **embedding landscape analysis sits between embedding and extraction**, acting as the decision layer. Embeddings are cheap and fast. LLM extraction is slow and expensive. The landscape analysis uses embedding topology to determine which chunks are worth spending LLM tokens on.
@@ -77,7 +77,7 @@ enum SourceType {
 }
 ```
 
-### Stage 1.5: Format Conversion
+### Stage 2: Format Conversion
 
 Before parsing, raw source content passes through a pluggable converter that produces Markdown. The `SourceConverter` trait defines the interface:
 
@@ -98,10 +98,13 @@ A `ConverterRegistry` dispatches to the first registered converter whose `suppor
 | `MarkdownConverter` | `text/markdown`, `text/x-markdown` | UTF-8 passthrough (invalid bytes replaced with U+FFFD) |
 | `PlainTextConverter` | `text/plain` | Wraps body under an `# Untitled Document` heading |
 | `HtmlConverter` | `text/html`, `application/xhtml+xml` | State-machine tag stripping: `<h1>`–`<h6>` → `#`–`######`, `<p>` → blank line, `<br>` → newline, `<li>` → bullet, `<script>`/`<style>` blocks removed entirely, common HTML entities decoded |
+| `ReaderLmConverter` | `text/html`, `application/xhtml+xml` | High-quality HTML → Markdown via ReaderLM-v2 MLX sidecar; falls back to `HtmlConverter` tag stripping when sidecar is unavailable. Registered front so it takes priority over `HtmlConverter`. |
+| `PdfConverter` | `application/pdf` | PDF → text via external sidecar endpoint; falls back to error when sidecar is unavailable |
+| `CodeConverter` | `text/x-rust`, `text/x-python`, `text/x-script.python` | Annotated Markdown via tree-sitter AST: extracts functions, structs, classes with signatures and doc comments |
 
 Custom converters can be registered via `ConverterRegistry::register()`. The registry is attached to the source service with `SourceService::with_converter_registry()`, which enables the conversion step during `ingest()`. When no registry is configured, raw content is passed directly to the parser.
 
-### Stage 2: Parse + Extract Metadata
+### Stage 3: Parse + Extract Metadata
 
 Convert raw format into structured representation, preserving all available structure.
 
@@ -118,7 +121,7 @@ Convert raw format into structured representation, preserving all available stru
 
 **Key principle:** Preserve as much structural information as possible. Heading levels, page numbers, speaker identity, code structure, table boundaries — all become chunk metadata.
 
-### Stage 3: Normalize to Markdown
+### Stage 4: Normalize to Markdown
 
 All parsed output is converted to extended Markdown as the canonical intermediate format before chunking.
 
@@ -160,7 +163,7 @@ Revenue increased 15% year-over-year...
 | Q3      | $2.5B   | 15%    |
 ```
 
-### Stage 4: Hierarchical Chunking
+### Stage 5: Hierarchical Chunking
 
 Decompose the normalized Markdown into a chunk tree:
 
@@ -177,7 +180,7 @@ There is no document-level chunk. The document embedding lives on the `Source` r
 **Chunking strategy (hybrid):**
 
 1. **Structural first** — Use Markdown heading levels as primary boundaries. Hard breaks at `#`, `##`, `###`. Tables and code blocks are never split mid-element.
-2. **Semantic refinement** — Within structural chunks, embed adjacent sentences and compute pairwise cosine similarity. Valleys in the similarity curve indicate topic shifts that the structural chunking missed. Split at valleys whose prominence exceeds 1 standard deviation below the local mean (using calibrated model statistics from Stage 6.1). This is the "embedding first, chunking second" principle (cf. Max-Min Semantic Chunking) applied as a refinement pass on structural boundaries.
+2. **Semantic refinement** — Within structural chunks, embed adjacent sentences and compute pairwise cosine similarity. Valleys in the similarity curve indicate topic shifts that the structural chunking missed. Split at valleys whose prominence exceeds 1 standard deviation below the local mean (using calibrated model statistics from Stage 7.1). This is the "embedding first, chunking second" principle (cf. Max-Min Semantic Chunking) applied as a refinement pass on structural boundaries.
 3. **Size constraints** — No chunk exceeds a max token count (configurable, default 1024 tokens for complex documents, 512 for short-form content). Chunks below a minimum (default 32 tokens) are merged with neighbors. Empirical finding: chunk size 1024 optimized faithfulness and relevancy on complex documents (LlamaIndex eval on SEC filings). Context completeness matters more than precision for complex content.
 
 **Semantic boundary detection (sentence-level valley detection):**
@@ -241,7 +244,7 @@ Overlap resets at section boundaries — the first paragraph of a new section ne
 
 Section-level chunks never have overlap; only paragraph-level children produced by size-triggered splitting carry the overlap prefix.
 
-### Stage 5: Embed + Contextual Prefix
+### Stage 6: Embed + Contextual Prefix
 
 Generate vector embeddings for all chunks, with contextual enrichment.
 
@@ -266,17 +269,17 @@ The prefix is generated once per document (or per top-level section) and prepend
 - Store embeddings in the `chunks.embedding` column
 - The full normalized document text is also embedded and stored on the `Source` record directly (see below)
 
-### Stage 6: Embedding Landscape Analysis
+### Stage 7: Embedding Landscape Analysis
 
 **This is the architectural core of the pipeline.** Embeddings are cheap (one API call per batch). LLM extraction is expensive (one call per chunk, structured output parsing, entity resolution). The landscape analysis stage examines the embedding topology to decide *how* each chunk should contribute to the graph — from pure embedding linkage for well-understood content to full LLM extraction for genuinely novel material.
 
-**Inputs:** All chunks with embeddings from Stage 5, organized by parent-child hierarchy.
+**Inputs:** All chunks with embeddings from Stage 6, organized by parent-child hierarchy.
 
-**Outputs:** A per-chunk `ExtractionMethod` classification that determines how Stage 7 processes each chunk.
+**Outputs:** A per-chunk `ExtractionMethod` classification that determines how Stage 8 processes each chunk.
 
 **Principle:** Nothing is silently skipped. Every chunk contributes to the graph. The question is *how* — via embedding linkage (cheap, always-on) or via LLM extraction (expensive, targeted). No heuristics, no regex — embeddings and LLMs only.
 
-#### 6.1: Threshold Calibration
+#### 7.1: Threshold Calibration
 
 Cosine similarity distributions vary dramatically between embedding models. OpenAI's text-embedding-3-small clusters in a narrow cone (typical range 0.65–0.95), while BGE-base uses more of the space (typical range 0.30–0.90). Hardcoded thresholds are model-dependent and will silently break on model changes.
 
@@ -322,7 +325,7 @@ Until calibration completes (cold start), use conservative defaults that send mo
 - Adaptive query routing falls back to `balanced` strategy (no score distribution history)
 - After 500+ chunks: calibration runs, extraction method distribution stabilizes, community detection begins
 
-#### 6.2: Parent-Child Alignment Scoring
+#### 7.2: Parent-Child Alignment Scoring
 
 For every child chunk, compute cosine similarity to its parent:
 
@@ -330,17 +333,17 @@ For every child chunk, compute cosine similarity to its parent:
 alignment(child) = cosine_similarity(child.embedding, parent.embedding)
 ```
 
-Classify using calibrated thresholds from 6.1. The alignment score determines the **extraction method**, not a binary extract/skip decision:
+Classify using calibrated thresholds from 7.1. The alignment score determines the **extraction method**, not a binary extract/skip decision:
 
 | Alignment | Extraction Method | Rationale |
 |-----------|------------------|-----------|
 | **High** | **Embedding linkage** — vector similarity to existing graph nodes creates `MENTIONED_IN` edges. No LLM. | The embedding already captures this content. Link it to what the graph knows. |
 | **Medium** | **Delta check** — cheap LLM call (4o-mini): "Does this chunk contain entities or relationships not present in the parent?" If yes → full extraction. If no → embedding linkage. | Catches the "silent signal" problem — negations, new relationships, specific facts hiding in high-similarity text. |
-| **Low** | **Full LLM extraction** + cross-document novelty check (6.4) | Divergent content likely contains novel entities/relationships worth capturing. |
+| **Low** | **Full LLM extraction** + cross-document novelty check (7.4) | Divergent content likely contains novel entities/relationships worth capturing. |
 | **Misaligned** | **Full LLM extraction** + structural review flag | May indicate a chunking boundary error or genuinely unrelated content. |
 
 ```rust
-/// How each chunk will be processed in Stage 7.
+/// How each chunk will be processed in Stage 8.
 /// No chunk is silently skipped — every chunk contributes to the graph.
 enum ExtractionMethod {
     /// Vector similarity to existing nodes → MENTIONED_IN edges. No LLM call.
@@ -358,7 +361,7 @@ struct ChunkAnalysis {
     parent_alignment: f64,
     adjacent_similarity: Option<f64>,
     sibling_outlier_score: Option<f64>,
-    graph_novelty: Option<f64>,       // from cross-document analysis (6.4)
+    graph_novelty: Option<f64>,       // from cross-document analysis (7.4)
     extraction_method: ExtractionMethod,
     flags: Vec<AnalysisFlag>,
 }
@@ -374,7 +377,7 @@ enum AnalysisFlag {
 }
 ```
 
-#### 6.3: Adjacent Chunk Similarity (Peaks and Valleys)
+#### 7.3: Adjacent Chunk Similarity (Peaks and Valleys)
 
 For same-level siblings (e.g., consecutive paragraphs within a section), compute pairwise cosine similarity:
 
@@ -410,7 +413,7 @@ struct ValleyPoint {
 
 **Valley prominence** is computed relative to calibrated statistics, not absolute values. A valley is prominent when it's more than 1 standard deviation below the local mean for this model.
 
-#### 6.4: Cross-Document Novelty Analysis
+#### 7.4: Cross-Document Novelty Analysis
 
 After intra-document analysis, check each chunk against the **existing graph** to determine whether the content is genuinely novel to the system or redundant with what's already known.
 
@@ -467,7 +470,7 @@ LIMIT 5;
 
 This adds one PG query per chunk but avoids any LLM calls. For a 100-chunk document, that's 100 fast ANN queries vs potentially 60+ saved LLM calls.
 
-#### 6.5: Cross-Level Cluster Analysis
+#### 7.5: Cross-Level Cluster Analysis
 
 Beyond pairwise comparisons, analyze how chunks cluster in embedding space:
 
@@ -481,9 +484,9 @@ sibling_outlier_score(chunk) = 1 - cosine_similarity(chunk.embedding, mean(sibli
 
 Chunks with high sibling outlier scores get their extraction method upgraded by one level (e.g., EmbeddingLinkage → DeltaCheck, DeltaCheck → FullExtraction).
 
-#### 6.6: Building the Final Extraction Method Map
+#### 7.6: Building the Final Extraction Method Map
 
-Combine all signals — parent alignment (6.2), valley/cliff detection (6.3), cross-document novelty (6.4), and sibling outlier analysis (6.5) — into the final per-chunk extraction method:
+Combine all signals — parent alignment (7.2), valley/cliff detection (7.3), cross-document novelty (7.4), and sibling outlier analysis (7.5) — into the final per-chunk extraction method:
 
 ```rust
 fn determine_extraction_method(
@@ -519,7 +522,7 @@ fn determine_extraction_method(
 
 **No budget-based skipping.** Every chunk gets at least embedding linkage. If the LLM budget runs out mid-ingestion, chunks classified for DeltaCheck or FullExtraction are queued for the next batch consolidation pass — but they still get embedding linkage immediately. The graph is never hollow.
 
-#### 6.7: Storing Landscape Metrics
+#### 7.7: Storing Landscape Metrics
 
 The landscape analysis results are valuable beyond extraction gating. Store them as chunk metadata:
 
@@ -546,9 +549,9 @@ These metrics are useful for:
 - **Re-extraction** — if the extraction model improves, re-process FullExtraction chunks first
 - **Model migration** — when the embedding model changes, recalibrate thresholds and re-run landscape analysis; chunks whose alignment class changed get re-processed
 
-### Stage 7: Graduated Entity Extraction
+### Stage 8: Graduated Entity Extraction
 
-Extraction is **graduated, not binary.** Every chunk contributes to the graph — the extraction method from Stage 6 determines how.
+Extraction is **graduated, not binary.** Every chunk contributes to the graph — the extraction method from Stage 7 determines how.
 
 **Parallel extraction with bounded concurrency:**
 
@@ -572,7 +575,7 @@ Both backends implement the same `Extractor` trait and produce identical `Extrac
 
 The GLiNER2 backend extracts entities from a fixed label set (`person`, `organization`, `location`, `concept`, `event`, `technology`) and optionally returns relationships if the sidecar supports them. It does not generate entity descriptions (those come from the LLM path or from batch consolidation).
 
-#### 7.1: Embedding Linkage (All Chunks)
+#### 8.1: Embedding Linkage (All Chunks)
 
 Every chunk, regardless of extraction method, gets embedding linkage. This is the baseline that ensures the graph is never hollow:
 
@@ -595,7 +598,7 @@ This captures the "consensus" layer — what the graph already knows about, refe
 
 **Cost:** One ANN query per chunk. For a 100-chunk document: ~100ms total.
 
-#### 7.2: Delta Check (Medium-Alignment + Novel High-Alignment Chunks)
+#### 8.2: Delta Check (Medium-Alignment + Novel High-Alignment Chunks)
 
 A cheap LLM call to determine if full extraction is warranted. The prompt is structured to leverage the landscape analysis context:
 
@@ -647,7 +650,7 @@ Expected response schema:
 
 This catches the "silent signal" problem Gemini identified — negations, new relationships, and specific facts hiding inside high-similarity text — without paying full extraction cost for every chunk.
 
-#### 7.3: Full LLM Extraction (Low-Alignment + Upgraded Chunks)
+#### 8.3: Full LLM Extraction (Low-Alignment + Upgraded Chunks)
 
 Full structured extraction for chunks where the landscape analysis identified genuine novelty. The prompt is designed to leverage all available context — structural location, parent content, landscape analysis flags, delta check hints (if available), and embedding-derived entity type hints.
 
@@ -778,13 +781,13 @@ For chunks classified as `FullExtractionWithReview` or any chunk where the initi
 }
 ```
 
-### Stage 7.5: Node Embedding
+### Stage 8.5: Node Embedding
 
 After all entities for a source have been extracted and resolved, the pipeline batch-embeds their descriptions so that nodes are searchable via vector similarity. Each entity is embedded using the text `"{canonical_name}: {description}"` (or just the canonical name when no description is available). The resulting vectors are stored in `nodes.embedding`.
 
 Node embeddings use a separate dimension configured by `COVALENCE_NODE_EMBED_DIM` (default `256`), which is typically smaller than the chunk embedding dimension to save storage. The same `OpenAiEmbedder` is used, with the `dimensions` parameter in the API request controlling truncation.
 
-### Stage 7.6: Type Normalization (Emergent Ontology)
+### Stage 8.6: Type Normalization (Emergent Ontology)
 
 Before entity resolution, normalize extracted entity types and relationship types against the graph's emergent schema. This prevents drift without requiring a formal ontology.
 
@@ -792,7 +795,7 @@ Before entity resolution, normalize extracted entity types and relationship type
 
 **The approach: Extract-Define-Canonicalize** (EDC pattern, arXiv:2404.03868):
 
-1. **Extract** — Already done in Stage 7.3. The LLM produced entity types and relationship types.
+1. **Extract** — Already done in Stage 8.3. The LLM produced entity types and relationship types.
 2. **Canonicalize** — For each extracted type:
    a. Embed the type string (e.g., embed "researcher")
    b. Search existing type embeddings: `SELECT type_name, embedding FROM type_registry WHERE embedding <=> $type_embedding < 0.15`
@@ -835,13 +838,13 @@ CREATE INDEX idx_type_registry_embedding ON type_registry
 - Types consolidate naturally as the graph grows (more data → more stable types)
 - But it still prevents the chaos of completely uncontrolled types
 
-### Stage 8: Entity Resolution + Store
+### Stage 9: Entity Resolution + Store
 
-Match extracted entities against existing nodes in the graph. Uses a three-phase approach (cf. Shereshevsky 2025) that leverages embedding linkage from Stage 7.1 as a natural blocking mechanism:
+Match extracted entities against existing nodes in the graph. Uses a three-phase approach (cf. Shereshevsky 2025) that leverages embedding linkage from Stage 8.1 as a natural blocking mechanism:
 
 **Phase 1: Blocking via Embedding Similarity (already done)**
 
-Embedding linkage (Stage 7.1) already identified the top-k nearest existing nodes for each chunk. The `is_existing_match` flag from the extraction prompt (Stage 7.3) further narrows candidates. This replaces traditional blocking strategies and naturally avoids O(n²) pairwise comparisons.
+Embedding linkage (Stage 8.1) already identified the top-k nearest existing nodes for each chunk. The `is_existing_match` flag from the extraction prompt (Stage 8.3) further narrows candidates. This replaces traditional blocking strategies and naturally avoids O(n²) pairwise comparisons.
 
 **Phase 2: 4-Tier Pairwise Resolution (`PgResolver`)**
 
