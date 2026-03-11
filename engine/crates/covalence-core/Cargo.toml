@@ -24,6 +24,9 @@ reqwest = { workspace = true }
 futures = { workspace = true }
 regex = { workspace = true }
 hdbscan = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-python = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
