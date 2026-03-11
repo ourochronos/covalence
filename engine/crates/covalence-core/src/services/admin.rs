@@ -20,7 +20,10 @@ use crate::ingestion::Embedder;
 use crate::models::audit::{AuditAction, AuditLog};
 use crate::models::trace::{SearchFeedback, SearchTrace};
 use crate::storage::postgres::PgRepo;
-use crate::storage::traits::{AuditLogRepo, SearchFeedbackRepo, SearchTraceRepo, SourceRepo};
+use crate::storage::traits::{
+    AuditLogRepo, EdgeRepo, NodeAliasRepo, NodeRepo, SearchFeedbackRepo, SearchTraceRepo,
+    SourceRepo,
+};
 
 /// Graph statistics snapshot.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -55,6 +58,20 @@ pub struct HealthStatus {
     pub sidecar_node_count: usize,
     /// Number of edges in the sidecar.
     pub sidecar_edge_count: usize,
+}
+
+/// Result of a provenance-based garbage collection pass.
+///
+/// Nodes that lost all active (non-superseded) extraction grounding
+/// are evicted along with their edges and aliases.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GcResult {
+    /// Number of ungrounded nodes evicted.
+    pub nodes_evicted: u64,
+    /// Number of edges removed (from evicted nodes).
+    pub edges_removed: u64,
+    /// Number of aliases removed (from evicted nodes).
+    pub aliases_removed: u64,
 }
 
 /// Count weakly connected components in a `StableDiGraph`.
@@ -457,6 +474,57 @@ impl AdminService {
 
         Ok(())
     }
+
+    /// Run provenance-based garbage collection.
+    ///
+    /// Finds all nodes where every extraction has been superseded
+    /// (no active extractions remain) and evicts them along with
+    /// their edges and aliases. Returns counts of evicted entities.
+    pub async fn garbage_collect_nodes(&self) -> Result<GcResult> {
+        let ungrounded = NodeRepo::list_ungrounded(&*self.repo).await?;
+
+        if ungrounded.is_empty() {
+            tracing::info!("gc: no ungrounded nodes found");
+            return Ok(GcResult {
+                nodes_evicted: 0,
+                edges_removed: 0,
+                aliases_removed: 0,
+            });
+        }
+
+        tracing::info!(count = ungrounded.len(), "gc: evicting ungrounded nodes");
+
+        let mut nodes_evicted: u64 = 0;
+        let mut edges_removed: u64 = 0;
+        let mut aliases_removed: u64 = 0;
+
+        for node in &ungrounded {
+            // Delete aliases first (no FK constraints from aliases
+            // to edges, but clean up before node deletion).
+            aliases_removed += NodeAliasRepo::delete_by_node(&*self.repo, node.id).await?;
+
+            // Delete edges involving this node.
+            edges_removed += EdgeRepo::delete_by_node(&*self.repo, node.id).await?;
+
+            // Delete the node itself.
+            if NodeRepo::delete(&*self.repo, node.id).await? {
+                nodes_evicted += 1;
+            }
+        }
+
+        tracing::info!(
+            nodes_evicted,
+            edges_removed,
+            aliases_removed,
+            "gc: provenance-based garbage collection complete"
+        );
+
+        Ok(GcResult {
+            nodes_evicted,
+            edges_removed,
+            aliases_removed,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -676,5 +744,59 @@ mod tests {
         let g = GraphSidecar::new();
         let candidates = compute_gap_candidates(g.graph(), 3, 4, &[], 20);
         assert!(candidates.is_empty());
+    }
+
+    // --- GcResult tests ---
+
+    #[test]
+    fn gc_result_serializes_all_fields() {
+        let result = GcResult {
+            nodes_evicted: 5,
+            edges_removed: 12,
+            aliases_removed: 8,
+        };
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(json["nodes_evicted"], 5);
+        assert_eq!(json["edges_removed"], 12);
+        assert_eq!(json["aliases_removed"], 8);
+    }
+
+    #[test]
+    fn gc_result_zero_counts() {
+        let result = GcResult {
+            nodes_evicted: 0,
+            edges_removed: 0,
+            aliases_removed: 0,
+        };
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(json["nodes_evicted"], 0);
+        assert_eq!(json["edges_removed"], 0);
+        assert_eq!(json["aliases_removed"], 0);
+    }
+
+    #[test]
+    fn gc_result_debug_impl() {
+        let result = GcResult {
+            nodes_evicted: 3,
+            edges_removed: 7,
+            aliases_removed: 2,
+        };
+        let debug = format!("{result:?}");
+        assert!(debug.contains("nodes_evicted: 3"));
+        assert!(debug.contains("edges_removed: 7"));
+        assert!(debug.contains("aliases_removed: 2"));
+    }
+
+    #[test]
+    fn gc_result_clone() {
+        let result = GcResult {
+            nodes_evicted: 10,
+            edges_removed: 20,
+            aliases_removed: 5,
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.nodes_evicted, result.nodes_evicted);
+        assert_eq!(cloned.edges_removed, result.edges_removed);
+        assert_eq!(cloned.aliases_removed, result.aliases_removed);
     }
 }

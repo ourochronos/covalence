@@ -131,6 +131,27 @@ impl NodeRepo for PgRepo {
         Ok(())
     }
 
+    async fn list_ungrounded(&self) -> Result<Vec<Node>> {
+        let rows = sqlx::query(
+            "SELECT n.id, n.canonical_name, n.node_type,
+                    n.description, n.properties,
+                    n.confidence_breakdown, n.clearance_level,
+                    n.first_seen, n.last_seen, n.mention_count
+             FROM nodes n
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM extractions e
+                 JOIN chunks c ON e.chunk_id = c.id
+                 WHERE e.entity_type = 'node'
+                   AND e.entity_id = n.id
+                   AND e.is_superseded = false
+             )",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(node_from_row).collect())
+    }
+
     async fn list_by_type(&self, node_type: &str, limit: i64, offset: i64) -> Result<Vec<Node>> {
         let rows = sqlx::query(
             "SELECT id, canonical_name, node_type, description,

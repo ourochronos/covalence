@@ -147,6 +147,13 @@ pub trait NodeRepo: Send + Sync {
         id: NodeId,
         embedding: &[f64],
     ) -> impl Future<Output = Result<()>> + Send;
+
+    /// List nodes that have zero active (non-superseded) extractions.
+    ///
+    /// These "ungrounded" nodes lost all provenance backing when
+    /// their extractions were superseded during source reprocessing
+    /// and are candidates for garbage collection.
+    fn list_ungrounded(&self) -> impl Future<Output = Result<Vec<Node>>> + Send;
 }
 
 /// Repository for [`Edge`] entities.

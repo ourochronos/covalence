@@ -7,10 +7,10 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::handlers::dto::{
     AuditLogResponse, CommunityParams, CommunityResponse, ConsolidateResponse, DomainLinkResponse,
-    DomainResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
-    KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem, OntologyClusterRequest,
-    OntologyClusterResponse, PaginationParams, PublishResponse, ReloadResponse,
-    SearchTraceResponse, TopologyResponse, TraceReplayResponse,
+    DomainResponse, GcResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem,
+    KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem,
+    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
+    ReloadResponse, SearchTraceResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -188,6 +188,27 @@ pub async fn trigger_consolidation(
 ) -> Result<Json<ConsolidateResponse>, ApiError> {
     state.admin_service.trigger_consolidation().await?;
     Ok(Json(ConsolidateResponse { triggered: true }))
+}
+
+/// Run provenance-based garbage collection.
+///
+/// Evicts nodes that have zero active (non-superseded) extractions,
+/// along with their edges and aliases.
+#[utoipa::path(
+    post,
+    path = "/admin/gc",
+    responses(
+        (status = 200, description = "Garbage collection results", body = GcResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn garbage_collect(State(state): State<AppState>) -> Result<Json<GcResponse>, ApiError> {
+    let result = state.admin_service.garbage_collect_nodes().await?;
+    Ok(Json(GcResponse {
+        nodes_evicted: result.nodes_evicted,
+        edges_removed: result.edges_removed,
+        aliases_removed: result.aliases_removed,
+    }))
 }
 
 /// Health check.

@@ -495,6 +495,17 @@ pub struct ConsolidateResponse {
     pub triggered: bool,
 }
 
+/// Response for garbage collection.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GcResponse {
+    /// Number of ungrounded nodes evicted.
+    pub nodes_evicted: u64,
+    /// Number of edges removed (from evicted nodes).
+    pub edges_removed: u64,
+    /// Number of aliases removed (from evicted nodes).
+    pub aliases_removed: u64,
+}
+
 /// Health check response.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
@@ -803,5 +814,31 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["content"], "full content here");
+    }
+
+    #[test]
+    fn gc_response_serializes_all_fields() {
+        let resp = GcResponse {
+            nodes_evicted: 3,
+            edges_removed: 7,
+            aliases_removed: 2,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["nodes_evicted"], 3);
+        assert_eq!(json["edges_removed"], 7);
+        assert_eq!(json["aliases_removed"], 2);
+    }
+
+    #[test]
+    fn gc_response_zero_counts() {
+        let resp = GcResponse {
+            nodes_evicted: 0,
+            edges_removed: 0,
+            aliases_removed: 0,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["nodes_evicted"], 0);
+        assert_eq!(json["edges_removed"], 0);
+        assert_eq!(json["aliases_removed"], 0);
     }
 }
