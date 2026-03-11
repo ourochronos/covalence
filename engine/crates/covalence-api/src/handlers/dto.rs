@@ -709,6 +709,33 @@ pub struct KnowledgeGapsResponse {
     pub gaps: Vec<KnowledgeGapItem>,
 }
 
+// --- Config Audit ---
+
+/// Health status of a single sidecar in the audit response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SidecarHealthResponse {
+    /// Human-readable sidecar name.
+    pub name: String,
+    /// Whether the sidecar URL is configured.
+    pub configured: bool,
+    /// Whether the sidecar responded to a health probe.
+    pub reachable: bool,
+    /// Description of fallback behavior when unreachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+}
+
+/// Response for the configuration audit endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConfigAuditResponse {
+    /// Current pipeline configuration summary.
+    pub current_config: serde_json::Value,
+    /// Sidecar health status.
+    pub sidecars: Vec<SidecarHealthResponse>,
+    /// Warnings about potential issues.
+    pub warnings: Vec<String>,
+}
+
 // --- Audit ---
 
 /// Response for an audit log entry.

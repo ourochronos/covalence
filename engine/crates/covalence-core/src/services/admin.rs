@@ -195,6 +195,7 @@ pub struct AdminService {
     repo: Arc<PgRepo>,
     graph: SharedGraph,
     embedder: Option<Arc<dyn Embedder>>,
+    config: Option<crate::config::Config>,
 }
 
 impl AdminService {
@@ -204,6 +205,7 @@ impl AdminService {
             repo,
             graph,
             embedder: None,
+            config: None,
         }
     }
 
@@ -211,6 +213,25 @@ impl AdminService {
     pub fn with_embedder(mut self, embedder: Option<Arc<dyn Embedder>>) -> Self {
         self.embedder = embedder;
         self
+    }
+
+    /// Set the application configuration for config audit.
+    pub fn with_config(mut self, config: crate::config::Config) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Run a full configuration audit.
+    ///
+    /// Checks sidecar health, summarizes the current configuration,
+    /// and generates warnings for potential issues. Returns
+    /// `Error::Config` if no configuration has been set.
+    pub async fn config_audit(&self) -> Result<super::health::ConfigAudit> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| Error::Config("no configuration set on AdminService".into()))?;
+        Ok(super::health::run_config_audit(config).await)
     }
 
     /// Get graph statistics from the sidecar.

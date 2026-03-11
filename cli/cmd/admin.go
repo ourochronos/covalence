@@ -121,11 +121,67 @@ var adminPublishCmd = &cobra.Command{
 	},
 }
 
+var adminAuditCmd = &cobra.Command{
+	Use:   "audit",
+	Short: "Run configuration audit (sidecar health + warnings)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client := internal.NewClient(apiURL)
+		var result map[string]interface{}
+		if err := client.Post("/admin/config-audit", nil, &result); err != nil {
+			return fmt.Errorf("API error: %w", err)
+		}
+
+		if jsonOutput {
+			return internal.PrintJSON(result)
+		}
+
+		// Print sidecars
+		fmt.Println("=== Sidecar Health ===")
+		if sidecars, ok := result["sidecars"].([]interface{}); ok {
+			for _, s := range sidecars {
+				sc, _ := s.(map[string]interface{})
+				name := getString(sc, "name")
+				configured := false
+				if v, ok := sc["configured"].(bool); ok {
+					configured = v
+				}
+				reachable := false
+				if v, ok := sc["reachable"].(bool); ok {
+					reachable = v
+				}
+
+				status := "not configured"
+				if configured && reachable {
+					status = "OK"
+				} else if configured {
+					status = "UNREACHABLE"
+				}
+				fmt.Printf("  %-12s %s\n", name+":", status)
+			}
+		}
+
+		// Print warnings
+		if warnings, ok := result["warnings"].([]interface{}); ok && len(warnings) > 0 {
+			fmt.Println("\n=== Warnings ===")
+			for _, w := range warnings {
+				if ws, ok := w.(string); ok {
+					fmt.Printf("  - %s\n", ws)
+				}
+			}
+		} else {
+			fmt.Println("\nNo warnings.")
+		}
+
+		return nil
+	},
+}
+
 func init() {
 	adminCmd.AddCommand(adminHealthCmd)
 	adminCmd.AddCommand(adminReloadCmd)
 	adminCmd.AddCommand(adminConsolidateCmd)
 	adminCmd.AddCommand(adminMetricsCmd)
 	adminCmd.AddCommand(adminPublishCmd)
+	adminCmd.AddCommand(adminAuditCmd)
 	rootCmd.AddCommand(adminCmd)
 }

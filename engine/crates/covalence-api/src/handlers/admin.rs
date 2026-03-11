@@ -6,11 +6,12 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, CommunityParams, CommunityResponse, ConsolidateResponse, DomainLinkResponse,
-    DomainResponse, GcResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem,
-    KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem,
-    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
-    ReloadResponse, SearchTraceResponse, TopologyResponse, TraceReplayResponse,
+    AuditLogResponse, CommunityParams, CommunityResponse, ConfigAuditResponse, ConsolidateResponse,
+    DomainLinkResponse, DomainResponse, GcResponse, GraphStatsResponse, HealthResponse,
+    KnowledgeGapItem, KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse,
+    OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse, PaginationParams,
+    PublishResponse, ReloadResponse, SearchTraceResponse, SidecarHealthResponse, TopologyResponse,
+    TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -435,5 +436,41 @@ pub async fn replay_trace(
                 dimension_ranks: r.dimension_ranks,
             })
             .collect(),
+    }))
+}
+
+/// Run a configuration audit.
+///
+/// Checks sidecar health, summarizes current config, and generates
+/// warnings for potential issues.
+#[utoipa::path(
+    post,
+    path = "/admin/config-audit",
+    responses(
+        (status = 200, description = "Configuration audit result",
+         body = ConfigAuditResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn config_audit(
+    State(state): State<AppState>,
+) -> Result<Json<ConfigAuditResponse>, ApiError> {
+    let audit = state.admin_service.config_audit().await?;
+
+    let sidecars: Vec<SidecarHealthResponse> = audit
+        .sidecars
+        .into_iter()
+        .map(|s| SidecarHealthResponse {
+            name: s.name,
+            configured: s.configured,
+            reachable: s.reachable,
+            fallback: s.fallback,
+        })
+        .collect();
+
+    Ok(Json(ConfigAuditResponse {
+        current_config: audit.current_config,
+        sidecars,
+        warnings: audit.warnings,
     }))
 }
