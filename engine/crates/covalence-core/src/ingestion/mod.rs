@@ -35,7 +35,8 @@ pub use converter::{
 pub use coreference::{CorefLink, CorefResolver, FastcorefClient};
 pub use embedder::{Embedder, MockEmbedder};
 pub use extractor::{
-    ExtractedEntity, ExtractedRelationship, ExtractionResult, Extractor, MockExtractor,
+    ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,
+    MockExtractor,
 };
 pub use gliner_extractor::GlinerExtractor;
 pub use landscape::{

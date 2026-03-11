@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::ingestion::extractor::{ExtractionResult, Extractor};
+use crate::ingestion::extractor::{ExtractionContext, ExtractionResult, Extractor};
 use crate::ingestion::gliner_extractor::GlinerExtractor;
 use crate::ingestion::llm_extractor::LlmExtractor;
 
@@ -39,22 +39,23 @@ impl TwoPassExtractor {
 
 #[async_trait::async_trait]
 impl Extractor for TwoPassExtractor {
-    async fn extract(&self, text: &str) -> Result<ExtractionResult> {
+    async fn extract(&self, text: &str, context: &ExtractionContext) -> Result<ExtractionResult> {
         if text.trim().is_empty() {
             return Ok(ExtractionResult::default());
         }
 
-        // Pass 1: GLiNER entity extraction.
-        let gliner_result = match self.gliner.extract(text).await {
+        // Pass 1: GLiNER entity extraction (context ignored by
+        // local NER model).
+        let gliner_result = match self.gliner.extract(text, context).await {
             Ok(result) => result,
             Err(e) => {
                 // GLiNER sidecar unavailable — fall back to
-                // single-pass LLM extraction.
+                // single-pass LLM extraction with context.
                 tracing::warn!(
                     error = %e,
                     "GLiNER sidecar unavailable, falling back to single-pass LLM"
                 );
-                return self.llm.extract(text).await;
+                return self.llm.extract(text, context).await;
             }
         };
 

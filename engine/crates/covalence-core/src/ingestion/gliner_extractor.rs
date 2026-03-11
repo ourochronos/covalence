@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::ingestion::extractor::{
-    ExtractedEntity, ExtractedRelationship, ExtractionResult, Extractor,
+    ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,
 };
 
 /// Default entity types to request from the GLiNER2 sidecar.
@@ -100,7 +100,7 @@ impl GlinerExtractor {
 
 #[async_trait::async_trait]
 impl Extractor for GlinerExtractor {
-    async fn extract(&self, text: &str) -> Result<ExtractionResult> {
+    async fn extract(&self, text: &str, _context: &ExtractionContext) -> Result<ExtractionResult> {
         if text.trim().is_empty() {
             return Ok(ExtractionResult::default());
         }
@@ -255,7 +255,8 @@ mod tests {
     #[tokio::test]
     async fn extract_empty_text_returns_default() {
         let ext = GlinerExtractor::new("http://localhost:9999".to_string(), 0.5);
-        let result = ext.extract("   ").await.unwrap();
+        let ctx = ExtractionContext::default();
+        let result = ext.extract("   ", &ctx).await.unwrap();
         assert!(result.entities.is_empty());
         assert!(result.relationships.is_empty());
     }

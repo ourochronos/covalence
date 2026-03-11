@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::ingestion::coreference::split_text_windows;
 use crate::ingestion::extractor::{
-    ExtractedEntity, ExtractedRelationship, ExtractionResult, Extractor,
+    ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,
 };
 
 /// Maximum input characters for the NER model (GLiNER2, 384 tokens).
@@ -354,7 +354,7 @@ impl Clone for RelEntityHint {
 
 #[async_trait::async_trait]
 impl Extractor for SidecarExtractor {
-    async fn extract(&self, text: &str) -> Result<ExtractionResult> {
+    async fn extract(&self, text: &str, _context: &ExtractionContext) -> Result<ExtractionResult> {
         if text.trim().is_empty() {
             return Ok(ExtractionResult::default());
         }
@@ -435,7 +435,8 @@ mod tests {
     #[tokio::test]
     async fn extract_empty_text_returns_default() {
         let ext = SidecarExtractor::new("http://localhost:9999".to_string(), 0.4);
-        let result = ext.extract("   ").await.unwrap();
+        let ctx = ExtractionContext::default();
+        let result = ext.extract("   ", &ctx).await.unwrap();
         assert!(result.entities.is_empty());
         assert!(result.relationships.is_empty());
     }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::ingestion::extractor::{
-    ExtractedEntity, ExtractedRelationship, ExtractionResult, Extractor,
+    ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,
 };
 
 const SYSTEM_PROMPT: &str = r#"You are an entity and relationship extractor. Given a text passage, extract all notable entities and relationships.
@@ -329,10 +329,26 @@ fn is_noisy_entity(name: &str) -> bool {
 
 #[async_trait::async_trait]
 impl Extractor for LlmExtractor {
-    async fn extract(&self, text: &str) -> Result<ExtractionResult> {
+    async fn extract(&self, text: &str, context: &ExtractionContext) -> Result<ExtractionResult> {
         if text.trim().is_empty() {
             return Ok(ExtractionResult::default());
         }
+
+        // Build user message with optional source metadata.
+        let mut user_msg = String::new();
+        if let Some(ref st) = context.source_type {
+            user_msg.push_str(&format!("Source type: {st}\n"));
+        }
+        if let Some(ref uri) = context.source_uri {
+            user_msg.push_str(&format!("Source URI: {uri}\n"));
+        }
+        if let Some(ref title) = context.source_title {
+            user_msg.push_str(&format!("Source title: {title}\n"));
+        }
+        if !user_msg.is_empty() {
+            user_msg.push_str("\n---\n\n");
+        }
+        user_msg.push_str(text);
 
         let body = ChatRequest {
             model: &self.model,
@@ -343,7 +359,7 @@ impl Extractor for LlmExtractor {
                 },
                 ChatMessage {
                     role: "user",
-                    content: text,
+                    content: &user_msg,
                 },
             ],
             response_format: ResponseFormat {
@@ -573,7 +589,8 @@ mod tests {
     #[tokio::test]
     async fn extract_empty_text() {
         let extractor = LlmExtractor::new("gpt-4o".to_string(), "sk-test".to_string(), None);
-        let result = extractor.extract("   ").await.unwrap();
+        let ctx = ExtractionContext::default();
+        let result = extractor.extract("   ", &ctx).await.unwrap();
         assert!(result.entities.is_empty());
         assert!(result.relationships.is_empty());
     }
@@ -612,5 +629,90 @@ mod tests {
         let result = parse_extraction_json(json).unwrap();
         assert_eq!(result.entities.len(), 1);
         assert_eq!(result.entities[0].name, "GraphRAG");
+    }
+
+    #[test]
+    fn user_message_with_full_context() {
+        let context = ExtractionContext {
+            source_type: Some("web_page".to_string()),
+            source_uri: Some("https://example.com/page".to_string()),
+            source_title: Some("Example Page".to_string()),
+        };
+        let text = "Alice works at Acme Corp.";
+
+        let mut user_msg = String::new();
+        if let Some(ref st) = context.source_type {
+            user_msg.push_str(&format!("Source type: {st}\n"));
+        }
+        if let Some(ref uri) = context.source_uri {
+            user_msg.push_str(&format!("Source URI: {uri}\n"));
+        }
+        if let Some(ref title) = context.source_title {
+            user_msg.push_str(&format!("Source title: {title}\n"));
+        }
+        if !user_msg.is_empty() {
+            user_msg.push_str("\n---\n\n");
+        }
+        user_msg.push_str(text);
+
+        assert!(user_msg.starts_with("Source type: web_page\n"));
+        assert!(user_msg.contains("Source URI: https://example.com/page\n"));
+        assert!(user_msg.contains("Source title: Example Page\n"));
+        assert!(user_msg.contains("\n---\n\n"));
+        assert!(user_msg.ends_with(text));
+    }
+
+    #[test]
+    fn user_message_with_no_context() {
+        let context = ExtractionContext::default();
+        let text = "Alice works at Acme Corp.";
+
+        let mut user_msg = String::new();
+        if let Some(ref st) = context.source_type {
+            user_msg.push_str(&format!("Source type: {st}\n"));
+        }
+        if let Some(ref uri) = context.source_uri {
+            user_msg.push_str(&format!("Source URI: {uri}\n"));
+        }
+        if let Some(ref title) = context.source_title {
+            user_msg.push_str(&format!("Source title: {title}\n"));
+        }
+        if !user_msg.is_empty() {
+            user_msg.push_str("\n---\n\n");
+        }
+        user_msg.push_str(text);
+
+        // No context means no prefix — just the raw text.
+        assert_eq!(user_msg, text);
+    }
+
+    #[test]
+    fn user_message_with_partial_context() {
+        let context = ExtractionContext {
+            source_type: Some("document".to_string()),
+            source_uri: None,
+            source_title: Some("Research Paper".to_string()),
+        };
+        let text = "Quantum computing overview.";
+
+        let mut user_msg = String::new();
+        if let Some(ref st) = context.source_type {
+            user_msg.push_str(&format!("Source type: {st}\n"));
+        }
+        if let Some(ref uri) = context.source_uri {
+            user_msg.push_str(&format!("Source URI: {uri}\n"));
+        }
+        if let Some(ref title) = context.source_title {
+            user_msg.push_str(&format!("Source title: {title}\n"));
+        }
+        if !user_msg.is_empty() {
+            user_msg.push_str("\n---\n\n");
+        }
+        user_msg.push_str(text);
+
+        assert!(user_msg.starts_with("Source type: document\n"));
+        assert!(!user_msg.contains("Source URI:"));
+        assert!(user_msg.contains("Source title: Research Paper\n"));
+        assert!(user_msg.ends_with(text));
     }
 }
