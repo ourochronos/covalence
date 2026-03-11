@@ -60,11 +60,27 @@ pub struct Config {
     /// extractor in parallel.
     pub extract_concurrency: usize,
 
+    /// Minimum token count for a chunk to be sent to the LLM
+    /// extractor. Chunks below this threshold are skipped to
+    /// avoid wasting API round-trips on tiny fragments.
+    /// Env: `COVALENCE_MIN_EXTRACT_TOKENS`. Default: `30`.
+    pub min_extract_tokens: usize,
+
+    /// Token budget for batching adjacent small chunks into a
+    /// single LLM extraction call. Adjacent chunks are concatenated
+    /// (separated by `---`) up to this budget. Reduces API calls
+    /// significantly for documents with many small chunks.
+    /// Env: `COVALENCE_EXTRACT_BATCH_TOKENS`. Default: `2000`.
+    pub extract_batch_tokens: usize,
+
     /// Consolidation scheduling configuration.
     pub consolidation: ConsolidationConfig,
 
     /// Search behavior configuration.
     pub search: SearchConfig,
+
+    /// Per-stage pipeline configuration (enable/disable, windowing).
+    pub pipeline: PipelineConfig,
 
     /// Which entity extractor backend to use.
     ///
@@ -84,6 +100,21 @@ pub struct Config {
     /// Entities scoring below this threshold are discarded by the
     /// sidecar. Env: `COVALENCE_GLINER_THRESHOLD`. Default: `0.5`.
     pub gliner_threshold: f32,
+
+    /// Base URL for the Fastcoref neural coreference sidecar.
+    ///
+    /// When set, neural coreference resolution runs as a
+    /// preprocessing stage before entity extraction, benefiting
+    /// all extractor backends. When `entity_extractor` is
+    /// `"sidecar"`, defaults to `extract_url` if not explicitly set.
+    /// Env: `COVALENCE_COREF_URL`. Default: none (auto from sidecar).
+    pub coref_url: Option<String>,
+
+    /// Base URL for the PDF-to-Markdown conversion sidecar
+    /// (e.g., pymupdf4llm). When set, `application/pdf` content
+    /// is converted to Markdown via `POST /convert-pdf`.
+    /// Env: `COVALENCE_PDF_URL`. Default: none (disabled).
+    pub pdf_url: Option<String>,
 
     /// Base URL for the ReaderLM-v2 HTML-to-Markdown sidecar.
     ///
@@ -223,6 +254,78 @@ impl Default for ConsolidationConfig {
     }
 }
 
+/// Per-stage pipeline configuration.
+///
+/// Each ingestion pipeline stage can be independently toggled
+/// on or off. Windowing parameters for extraction models are
+/// also configurable here.
+#[derive(Debug, Clone)]
+pub struct PipelineConfig {
+    /// Enable format conversion (HTML→MD, PDF→MD).
+    /// Env: `COVALENCE_CONVERT_ENABLED`. Default: `true`.
+    pub convert_enabled: bool,
+
+    /// Enable text normalization before chunking.
+    /// Env: `COVALENCE_NORMALIZE_ENABLED`. Default: `true`.
+    pub normalize_enabled: bool,
+
+    /// Enable neural coreference resolution preprocessing.
+    /// Env: `COVALENCE_COREF_ENABLED`. Default: `true`.
+    pub coref_enabled: bool,
+
+    /// Enable embedding landscape analysis for extraction gating.
+    /// When disabled, all chunks are sent to the extractor.
+    /// Env: `COVALENCE_LANDSCAPE_ENABLED`. Default: `true`.
+    pub landscape_enabled: bool,
+
+    /// Enable entity resolution (dedup against existing nodes).
+    /// When disabled, every extracted entity creates a new node.
+    /// Env: `COVALENCE_RESOLVE_ENABLED`. Default: `true`.
+    pub resolve_enabled: bool,
+
+    /// NER model window size in characters.
+    /// Env: `COVALENCE_NER_WINDOW_CHARS`. Default: `1200`.
+    pub ner_window_chars: usize,
+
+    /// NER model window overlap in characters.
+    /// Env: `COVALENCE_NER_WINDOW_OVERLAP`. Default: `200`.
+    pub ner_window_overlap: usize,
+
+    /// Coreference model window size in characters.
+    /// Env: `COVALENCE_COREF_WINDOW_CHARS`. Default: `15000`.
+    pub coref_window_chars: usize,
+
+    /// Coreference model window overlap in characters.
+    /// Env: `COVALENCE_COREF_WINDOW_OVERLAP`. Default: `500`.
+    pub coref_window_overlap: usize,
+
+    /// Relationship extraction window size in characters.
+    /// Env: `COVALENCE_RE_WINDOW_CHARS`. Default: `15000`.
+    pub re_window_chars: usize,
+
+    /// Relationship extraction window overlap in characters.
+    /// Env: `COVALENCE_RE_WINDOW_OVERLAP`. Default: `500`.
+    pub re_window_overlap: usize,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            convert_enabled: true,
+            normalize_enabled: true,
+            coref_enabled: true,
+            landscape_enabled: true,
+            resolve_enabled: true,
+            ner_window_chars: 1200,
+            ner_window_overlap: 200,
+            coref_window_chars: 15_000,
+            coref_window_overlap: 500,
+            re_window_chars: 15_000,
+            re_window_overlap: 500,
+        }
+    }
+}
+
 /// Configuration for the search subsystem.
 #[derive(Debug, Clone)]
 pub struct SearchConfig {
@@ -274,9 +377,11 @@ impl std::fmt::Debug for Config {
             .field("entity_extractor", &self.entity_extractor)
             .field("extract_url", &self.extract_url)
             .field("gliner_threshold", &self.gliner_threshold)
+            .field("coref_url", &self.coref_url)
             .field("readerlm_url", &self.readerlm_url)
             .field("consolidation", &self.consolidation)
             .field("search", &self.search)
+            .field("pipeline", &self.pipeline)
             .field("resolve_trigram_threshold", &self.resolve_trigram_threshold)
             .field("resolve_vector_threshold", &self.resolve_vector_threshold)
             .finish()
@@ -325,6 +430,8 @@ impl Config {
                 }
             },
             extract_concurrency: env_parse("COVALENCE_EXTRACT_CONCURRENCY", 8)?,
+            min_extract_tokens: env_parse("COVALENCE_MIN_EXTRACT_TOKENS", 30)?,
+            extract_batch_tokens: env_parse("COVALENCE_EXTRACT_BATCH_TOKENS", 2000)?,
             entity_extractor: env_or("COVALENCE_ENTITY_EXTRACTOR", "llm"),
             extract_url: optional_env("COVALENCE_EXTRACT_URL"),
             gliner_threshold: env_parse("COVALENCE_GLINER_THRESHOLD", 0.5_f32)?,
@@ -341,6 +448,21 @@ impl Config {
                     0.001,
                 )?,
             },
+            pipeline: PipelineConfig {
+                convert_enabled: env_parse_bool("COVALENCE_CONVERT_ENABLED", true),
+                normalize_enabled: env_parse_bool("COVALENCE_NORMALIZE_ENABLED", true),
+                coref_enabled: env_parse_bool("COVALENCE_COREF_ENABLED", true),
+                landscape_enabled: env_parse_bool("COVALENCE_LANDSCAPE_ENABLED", true),
+                resolve_enabled: env_parse_bool("COVALENCE_RESOLVE_ENABLED", true),
+                ner_window_chars: env_parse("COVALENCE_NER_WINDOW_CHARS", 1200)?,
+                ner_window_overlap: env_parse("COVALENCE_NER_WINDOW_OVERLAP", 200)?,
+                coref_window_chars: env_parse("COVALENCE_COREF_WINDOW_CHARS", 15_000)?,
+                coref_window_overlap: env_parse("COVALENCE_COREF_WINDOW_OVERLAP", 500)?,
+                re_window_chars: env_parse("COVALENCE_RE_WINDOW_CHARS", 15_000)?,
+                re_window_overlap: env_parse("COVALENCE_RE_WINDOW_OVERLAP", 500)?,
+            },
+            coref_url: optional_env("COVALENCE_COREF_URL"),
+            pdf_url: optional_env("COVALENCE_PDF_URL"),
             readerlm_url: optional_env("COVALENCE_READERLM_URL"),
             resolve_trigram_threshold: env_parse("COVALENCE_RESOLVE_TRIGRAM_THRESHOLD", 0.4)?,
             resolve_vector_threshold: env_parse("COVALENCE_RESOLVE_VECTOR_THRESHOLD", 0.85_f32)?,
@@ -370,6 +492,13 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> Result<T> {
             .parse::<T>()
             .map_err(|_| Error::Config(format!("invalid value for {key}: {v}"))),
         None => Ok(default),
+    }
+}
+
+fn env_parse_bool(key: &str, default: bool) -> bool {
+    match std::env::var(key).ok().filter(|v| !v.is_empty()) {
+        Some(v) => matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"),
+        None => default,
     }
 }
 

@@ -1,12 +1,23 @@
 //! Co-reference resolution within a single document.
 //!
-//! Provides a heuristic-based resolver that detects abbreviations
-//! (e.g., "Natural Language Processing" -> "NLP") and maps them back
-//! to the full entity name. This is a v1 starting point that can be
-//! replaced with LLM-based co-reference resolution later.
+//! Two co-reference resolvers:
+//!
+//! 1. **Heuristic** ([`CorefResolver`]) — in-process abbreviation
+//!    detection (e.g., "Natural Language Processing" → "NLP"). Runs
+//!    across all chunks with zero external dependencies.
+//!
+//! 2. **Neural** ([`FastcorefClient`]) — HTTP client for the
+//!    Fastcoref sidecar (`/coref` endpoint). Resolves pronouns and
+//!    other anaphora using a neural model. Runs as an independent
+//!    preprocessing stage before extraction so that **all** extractor
+//!    backends benefit from neural coref.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
 use crate::ingestion::chunker::ChunkOutput;
 
 /// A link from a mention (abbreviation or short form) to the full
@@ -157,6 +168,200 @@ fn contains_word(text: &str, word: &str) -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------
+// Neural coreference resolution via Fastcoref sidecar
+// ---------------------------------------------------------------------------
+
+/// Maximum input characters per coref window.
+const COREF_MAX_CHARS: usize = 15_000;
+/// Overlap between coref windows.
+const COREF_OVERLAP_CHARS: usize = 500;
+/// HTTP request timeout for coref calls.
+const COREF_TIMEOUT: Duration = Duration::from_secs(120);
+
+#[derive(Debug, Serialize)]
+struct CorefRequest<'a> {
+    texts: Vec<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CorefResultData {
+    #[allow(dead_code)]
+    original: String,
+    resolved: String,
+    #[allow(dead_code)]
+    clusters: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CorefResponse {
+    results: Vec<CorefResultData>,
+}
+
+/// HTTP client for the Fastcoref neural coreference resolution sidecar.
+///
+/// Calls `POST /coref` to resolve pronouns and other anaphoric
+/// references. Texts exceeding the model's context limit are
+/// processed in overlapping windows and reassembled.
+///
+/// This is an independent preprocessing stage that runs **before**
+/// entity extraction, so all extractor backends (sidecar, two_pass,
+/// llm) benefit from neural coref.
+pub struct FastcorefClient {
+    /// HTTP client with timeout.
+    client: reqwest::Client,
+    /// Base URL of the sidecar (e.g., `http://localhost:8433`).
+    base_url: String,
+    /// Maximum input characters per coref window.
+    max_chars: usize,
+    /// Overlap between coref windows.
+    overlap_chars: usize,
+}
+
+impl FastcorefClient {
+    /// Create a new Fastcoref client with default windowing.
+    pub fn new(base_url: String) -> Self {
+        Self::with_windowing(base_url, COREF_MAX_CHARS, COREF_OVERLAP_CHARS)
+    }
+
+    /// Create a new Fastcoref client with custom windowing parameters.
+    pub fn with_windowing(base_url: String, max_chars: usize, overlap_chars: usize) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(COREF_TIMEOUT)
+            .build()
+            .unwrap_or_default();
+        Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            max_chars,
+            overlap_chars,
+        }
+    }
+
+    /// Resolve coreferences in the given text.
+    ///
+    /// Splits text into overlapping windows if it exceeds the
+    /// model's context limit. Returns the resolved text with
+    /// pronouns replaced by their antecedents.
+    pub async fn resolve(&self, text: &str) -> Result<String> {
+        if text.trim().is_empty() {
+            return Ok(text.to_string());
+        }
+
+        if text.len() <= self.max_chars {
+            return self.resolve_single(text).await;
+        }
+
+        let windows = split_text_windows(text, self.max_chars, self.overlap_chars);
+        let mut resolved_parts = Vec::with_capacity(windows.len());
+        for window in &windows {
+            match self.resolve_single(window).await {
+                Ok(r) => resolved_parts.push(r),
+                Err(e) => {
+                    tracing::warn!(error = %e, "coref window failed, using original");
+                    resolved_parts.push(window.to_string());
+                }
+            }
+        }
+        Ok(resolved_parts.join(" "))
+    }
+
+    /// Call `/coref` for a single text.
+    async fn resolve_single(&self, text: &str) -> Result<String> {
+        let body = CorefRequest { texts: vec![text] };
+        let resp = self
+            .client
+            .post(format!("{}/coref", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Ingestion(format!("fastcoref request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(Error::Ingestion(format!(
+                "fastcoref returned {status}: {body_text}"
+            )));
+        }
+
+        let parsed: CorefResponse = resp
+            .json()
+            .await
+            .map_err(|e| Error::Ingestion(format!("failed to parse coref response: {e}")))?;
+
+        Ok(parsed
+            .results
+            .into_iter()
+            .next()
+            .map(|r| r.resolved)
+            .unwrap_or_else(|| text.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windowing utilities (shared with sidecar_extractor)
+// ---------------------------------------------------------------------------
+
+/// Split text into overlapping windows at sentence boundaries.
+///
+/// Each window is at most `max_chars` long. Windows overlap by
+/// `overlap_chars` to avoid missing entities at boundaries.
+/// If the text is shorter than `max_chars`, returns a single window.
+pub(crate) fn split_text_windows(text: &str, max_chars: usize, overlap_chars: usize) -> Vec<&str> {
+    if text.len() <= max_chars {
+        return vec![text];
+    }
+
+    let mut windows = Vec::new();
+    let mut start = 0;
+    let bytes = text.as_bytes();
+
+    while start < text.len() {
+        let mut end = (start + max_chars).min(text.len());
+
+        // Try to break at a sentence boundary ('. ', '? ', '! ', '\n')
+        // by scanning backward from `end`.
+        if end < text.len() {
+            let search_start = if end > 100 { end - 100 } else { start };
+            let mut best_break = None;
+            for i in (search_start..end).rev() {
+                if i + 1 < bytes.len()
+                    && (bytes[i] == b'.' || bytes[i] == b'?' || bytes[i] == b'!')
+                    && bytes[i + 1] == b' '
+                {
+                    best_break = Some(i + 2); // After ". "
+                    break;
+                }
+                if bytes[i] == b'\n' {
+                    best_break = Some(i + 1);
+                    break;
+                }
+            }
+            if let Some(b) = best_break {
+                end = b;
+            }
+        }
+
+        // Ensure we're at a valid UTF-8 boundary.
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
+
+        windows.push(&text[start..end]);
+
+        // Advance by (window size - overlap), ensuring we make progress.
+        let advance = if end - start > overlap_chars {
+            end - start - overlap_chars
+        } else {
+            end - start
+        };
+        start += advance;
+    }
+
+    windows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +481,102 @@ mod tests {
         assert!(!contains_word("NLPX is not NLP", "NLPX is"));
         // Standalone word match
         assert!(contains_word("use NLP today", "NLP"));
+    }
+
+    // --- split_text_windows tests ---
+
+    #[test]
+    fn split_short_text_single_window() {
+        let text = "Hello world.";
+        let windows = split_text_windows(text, 1200, 200);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0], text);
+    }
+
+    #[test]
+    fn split_long_text_multiple_windows() {
+        let sentences: Vec<String> = (0..20)
+            .map(|i| format!("Sentence number {i} is here. "))
+            .collect();
+        let text = sentences.join("");
+        assert!(text.len() > 200);
+
+        let windows = split_text_windows(&text, 200, 50);
+        assert!(
+            windows.len() > 1,
+            "expected multiple windows, got {}",
+            windows.len()
+        );
+
+        for (i, w) in windows.iter().enumerate() {
+            assert!(w.len() <= 200, "window {i} too long: {} chars", w.len());
+        }
+    }
+
+    #[test]
+    fn split_respects_sentence_boundaries() {
+        let text = "First sentence. Second sentence. Third sentence. \
+                     Fourth sentence. Fifth sentence.";
+        let windows = split_text_windows(text, 40, 10);
+        for w in &windows {
+            let trimmed = w.trim();
+            if !trimmed.is_empty() {
+                assert!(
+                    trimmed.ends_with('.')
+                        || trimmed.ends_with('?')
+                        || trimmed.ends_with('!')
+                        || w.len() <= 40,
+                    "window doesn't end at sentence boundary: {w:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_makes_progress() {
+        let text = "a".repeat(5000);
+        let windows = split_text_windows(&text, 1200, 200);
+        assert!(windows.len() >= 4);
+        let total_new: usize = windows
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                if i == 0 {
+                    w.len()
+                } else {
+                    w.len().saturating_sub(200)
+                }
+            })
+            .sum();
+        assert!(total_new >= 5000);
+    }
+
+    // --- FastcorefClient tests ---
+
+    #[test]
+    fn coref_response_deserialization() {
+        let json = serde_json::json!({
+            "results": [{
+                "original": "He went home.",
+                "resolved": "John went home.",
+                "clusters": [["John", "He"]]
+            }]
+        });
+        let resp: CorefResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0].resolved, "John went home.");
+    }
+
+    #[tokio::test]
+    async fn fastcoref_empty_text_noop() {
+        let client = FastcorefClient::new("http://localhost:9999".to_string());
+        let result = client.resolve("   ").await.unwrap();
+        assert_eq!(result, "   ");
+    }
+
+    #[test]
+    fn fastcoref_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<FastcorefClient>();
     }
 }

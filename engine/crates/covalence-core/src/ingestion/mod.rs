@@ -27,10 +27,10 @@ pub mod voyage;
 pub use accept::{AcceptResult, compute_content_hash};
 pub use chunker::{ChunkLevel, ChunkOutput, chunk_document};
 pub use converter::{
-    ConverterRegistry, HtmlConverter, MarkdownConverter, PlainTextConverter, ReaderLmConverter,
-    SourceConverter, linearize_tables,
+    ConverterRegistry, HtmlConverter, MarkdownConverter, PdfConverter, PlainTextConverter,
+    ReaderLmConverter, SourceConverter, linearize_tables,
 };
-pub use coreference::{CorefLink, CorefResolver};
+pub use coreference::{CorefLink, CorefResolver, FastcorefClient};
 pub use embedder::{Embedder, MockEmbedder};
 pub use extractor::{
     ExtractedEntity, ExtractedRelationship, ExtractionResult, Extractor, MockExtractor,

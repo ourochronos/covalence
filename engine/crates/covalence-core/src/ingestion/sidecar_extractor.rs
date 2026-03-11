@@ -1,9 +1,13 @@
 //! Unified extraction sidecar client with windowed processing.
 //!
-//! Calls three sidecar endpoints in sequence:
-//! 1. `/coref` — coreference resolution (Fastcoref, ~15K char limit)
-//! 2. `/ner` — named entity recognition (GLiNER2, ~1200 char windows)
-//! 3. `/relationships` — relationship extraction (NuExtract, ~15K char limit)
+//! Calls two sidecar endpoints in sequence:
+//! 1. `/ner` — named entity recognition (GLiNER2, ~1200 char windows)
+//! 2. `/relationships` — relationship extraction (NuExtract, ~15K char limit)
+//!
+//! Coreference resolution (Fastcoref) is handled by the separate
+//! [`FastcorefClient`](crate::ingestion::coreference::FastcorefClient)
+//! preprocessing stage, which runs before extraction so that all
+//! extractor backends benefit from neural coref.
 //!
 //! Rust owns the windowing: the sidecar stays dumb and stateless.
 //! Each model has a configurable `max_input_chars` limit. Input
@@ -16,6 +20,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::ingestion::coreference::split_text_windows;
 use crate::ingestion::extractor::{
     ExtractedEntity, ExtractedRelationship, ExtractionResult, Extractor,
 };
@@ -24,7 +29,7 @@ use crate::ingestion::extractor::{
 const NER_MAX_CHARS: usize = 1200;
 /// Overlap between NER windows (in characters).
 const NER_OVERLAP_CHARS: usize = 200;
-/// Maximum input characters for coref and relationship models.
+/// Maximum input characters for the relationship model.
 const LARGE_MODEL_MAX_CHARS: usize = 15_000;
 /// HTTP request timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
@@ -43,25 +48,6 @@ const DEFAULT_LABELS: &[&str] = &[
 // ---------------------------------------------------------------------------
 // Sidecar request/response types
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
-struct CorefRequest<'a> {
-    texts: Vec<&'a str>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CorefResult {
-    #[allow(dead_code)]
-    original: String,
-    resolved: String,
-    #[allow(dead_code)]
-    clusters: Vec<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CorefResponse {
-    results: Vec<CorefResult>,
-}
 
 #[derive(Debug, Serialize)]
 struct NerRequest<'a> {
@@ -118,13 +104,16 @@ struct RelResponse {
 // SidecarExtractor
 // ---------------------------------------------------------------------------
 
-/// Three-stage extraction client that calls the unified sidecar with
+/// Two-stage extraction client that calls the unified sidecar with
 /// windowed processing for models with limited context windows.
 ///
 /// Pipeline:
-/// 1. Coreference resolution (full text or large windows)
-/// 2. NER in overlapping ~1200-char windows, deduplicated
-/// 3. Relationship extraction with entity hints
+/// 1. NER in overlapping ~1200-char windows, deduplicated
+/// 2. Relationship extraction with entity hints
+///
+/// Coreference resolution is handled by the separate
+/// [`FastcorefClient`](crate::ingestion::coreference::FastcorefClient)
+/// preprocessing stage before this extractor is called.
 pub struct SidecarExtractor {
     /// HTTP client with timeout.
     client: reqwest::Client,
@@ -132,11 +121,38 @@ pub struct SidecarExtractor {
     base_url: String,
     /// NER confidence threshold.
     threshold: f32,
+    /// NER window size in characters.
+    ner_max_chars: usize,
+    /// NER window overlap in characters.
+    ner_overlap_chars: usize,
+    /// Relationship extraction window size in characters.
+    re_max_chars: usize,
+    /// Relationship extraction window overlap in characters.
+    re_overlap_chars: usize,
 }
 
 impl SidecarExtractor {
-    /// Create a new sidecar extractor.
+    /// Create a new sidecar extractor with default windowing.
     pub fn new(base_url: String, threshold: f32) -> Self {
+        Self::with_windowing(
+            base_url,
+            threshold,
+            NER_MAX_CHARS,
+            NER_OVERLAP_CHARS,
+            LARGE_MODEL_MAX_CHARS,
+            500,
+        )
+    }
+
+    /// Create a new sidecar extractor with custom windowing parameters.
+    pub fn with_windowing(
+        base_url: String,
+        threshold: f32,
+        ner_max_chars: usize,
+        ner_overlap_chars: usize,
+        re_max_chars: usize,
+        re_overlap_chars: usize,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -145,71 +161,16 @@ impl SidecarExtractor {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             threshold,
+            ner_max_chars,
+            ner_overlap_chars,
+            re_max_chars,
+            re_overlap_chars,
         }
     }
 
-    /// Stage 1: Coreference resolution.
-    ///
-    /// Resolves pronouns to their antecedents. If the text exceeds
-    /// the coref model's limit, it is processed in large windows.
-    async fn resolve_coreferences(&self, text: &str) -> Result<String> {
-        if text.len() <= LARGE_MODEL_MAX_CHARS {
-            return self.coref_single(text).await;
-        }
-
-        // Window the text for coref.
-        let windows = split_into_windows(text, LARGE_MODEL_MAX_CHARS, 500);
-        let mut resolved_parts = Vec::with_capacity(windows.len());
-        for window in &windows {
-            match self.coref_single(window).await {
-                Ok(r) => resolved_parts.push(r),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "coref window failed, using original"
-                    );
-                    resolved_parts.push(window.to_string());
-                }
-            }
-        }
-        Ok(resolved_parts.join(" "))
-    }
-
-    /// Call `/coref` for a single text.
-    async fn coref_single(&self, text: &str) -> Result<String> {
-        let body = CorefRequest { texts: vec![text] };
-        let resp = self
-            .client
-            .post(format!("{}/coref", self.base_url))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Ingestion(format!("sidecar coref request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(Error::Ingestion(format!(
-                "sidecar coref returned {status}: {body_text}"
-            )));
-        }
-
-        let parsed: CorefResponse = resp
-            .json()
-            .await
-            .map_err(|e| Error::Ingestion(format!("failed to parse coref response: {e}")))?;
-
-        Ok(parsed
-            .results
-            .into_iter()
-            .next()
-            .map(|r| r.resolved)
-            .unwrap_or_else(|| text.to_string()))
-    }
-
-    /// Stage 2: NER in overlapping windows, deduplicated.
+    /// Stage 1: NER in overlapping windows, deduplicated.
     async fn extract_entities(&self, text: &str) -> Result<Vec<ExtractedEntity>> {
-        let windows = split_into_windows(text, NER_MAX_CHARS, NER_OVERLAP_CHARS);
+        let windows = split_text_windows(text, self.ner_max_chars, self.ner_overlap_chars);
 
         tracing::debug!(
             windows = windows.len(),
@@ -283,7 +244,7 @@ impl SidecarExtractor {
             .collect())
     }
 
-    /// Stage 3: Relationship extraction with entity hints.
+    /// Stage 2: Relationship extraction with entity hints.
     async fn extract_relationships(
         &self,
         text: &str,
@@ -297,7 +258,7 @@ impl SidecarExtractor {
             })
             .collect();
 
-        let windows = split_into_windows(text, LARGE_MODEL_MAX_CHARS, 500);
+        let windows = split_text_windows(text, self.re_max_chars, self.re_overlap_chars);
 
         let mut all_rels: Vec<ExtractedRelationship> = Vec::new();
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
@@ -398,27 +359,9 @@ impl Extractor for SidecarExtractor {
             return Ok(ExtractionResult::default());
         }
 
-        // Stage 1: Coreference resolution.
-        let resolved = match self.resolve_coreferences(text).await {
-            Ok(r) => {
-                tracing::debug!(
-                    original_len = text.len(),
-                    resolved_len = r.len(),
-                    "coreference resolution complete"
-                );
-                r
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "coreference resolution failed, using original text"
-                );
-                text.to_string()
-            }
-        };
-
-        // Stage 2: NER on resolved text.
-        let entities = match self.extract_entities(&resolved).await {
+        // Stage 1: NER on text (coref preprocessing is handled
+        // upstream by the pipeline's FastcorefClient).
+        let entities = match self.extract_entities(text).await {
             Ok(e) => e,
             Err(e) => {
                 tracing::warn!(
@@ -429,8 +372,8 @@ impl Extractor for SidecarExtractor {
             }
         };
 
-        // Stage 3: Relationship extraction on resolved text.
-        let relationships = match self.extract_relationships(&resolved, &entities).await {
+        // Stage 2: Relationship extraction.
+        let relationships = match self.extract_relationships(text, &entities).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(
@@ -448,158 +391,9 @@ impl Extractor for SidecarExtractor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Windowing utilities
-// ---------------------------------------------------------------------------
-
-/// Split text into overlapping windows at sentence boundaries.
-///
-/// Each window is at most `max_chars` long. Windows overlap by
-/// `overlap_chars` to avoid missing entities at boundaries.
-/// If the text is shorter than `max_chars`, returns a single window.
-fn split_into_windows(text: &str, max_chars: usize, overlap_chars: usize) -> Vec<&str> {
-    if text.len() <= max_chars {
-        return vec![text];
-    }
-
-    let mut windows = Vec::new();
-    let mut start = 0;
-    let bytes = text.as_bytes();
-
-    while start < text.len() {
-        let mut end = (start + max_chars).min(text.len());
-
-        // Try to break at a sentence boundary ('. ', '? ', '! ', '\n')
-        // by scanning backward from `end`.
-        if end < text.len() {
-            let search_start = if end > 100 { end - 100 } else { start };
-            let mut best_break = None;
-            for i in (search_start..end).rev() {
-                if i + 1 < bytes.len()
-                    && (bytes[i] == b'.' || bytes[i] == b'?' || bytes[i] == b'!')
-                    && bytes[i + 1] == b' '
-                {
-                    best_break = Some(i + 2); // After ". "
-                    break;
-                }
-                if bytes[i] == b'\n' {
-                    best_break = Some(i + 1);
-                    break;
-                }
-            }
-            if let Some(b) = best_break {
-                end = b;
-            }
-        }
-
-        // Ensure we're at a valid UTF-8 boundary.
-        while end < text.len() && !text.is_char_boundary(end) {
-            end += 1;
-        }
-
-        windows.push(&text[start..end]);
-
-        // Advance by (window size - overlap), ensuring we make progress.
-        let advance = if end - start > overlap_chars {
-            end - start - overlap_chars
-        } else {
-            end - start
-        };
-        start += advance;
-    }
-
-    windows
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn split_short_text_single_window() {
-        let text = "Hello world.";
-        let windows = split_into_windows(text, 1200, 200);
-        assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0], text);
-    }
-
-    #[test]
-    fn split_long_text_multiple_windows() {
-        // Create a text with clear sentence boundaries.
-        let sentences: Vec<String> = (0..20)
-            .map(|i| format!("Sentence number {i} is here. "))
-            .collect();
-        let text = sentences.join("");
-        assert!(text.len() > 200);
-
-        let windows = split_into_windows(&text, 200, 50);
-        assert!(
-            windows.len() > 1,
-            "expected multiple windows, got {}",
-            windows.len()
-        );
-
-        // All windows should be <= max_chars.
-        for (i, w) in windows.iter().enumerate() {
-            assert!(w.len() <= 200, "window {i} too long: {} chars", w.len());
-        }
-
-        // Windows should cover the full text (overlap means some
-        // parts appear twice, but nothing is missed).
-        let mut covered = 0;
-        for w in &windows {
-            // At minimum each window adds (len - overlap) new chars,
-            // except the last which adds its full length.
-            covered += w.len();
-        }
-        assert!(
-            covered >= text.len(),
-            "windows don't cover full text: covered={covered}, text={}",
-            text.len()
-        );
-    }
-
-    #[test]
-    fn split_respects_sentence_boundaries() {
-        let text = "First sentence. Second sentence. Third sentence. \
-                     Fourth sentence. Fifth sentence.";
-        let windows = split_into_windows(text, 40, 10);
-        // Each window should end at or near a sentence boundary.
-        for w in &windows {
-            let trimmed = w.trim();
-            if !trimmed.is_empty() {
-                // Should end with a period or be the last window.
-                assert!(
-                    trimmed.ends_with('.')
-                        || trimmed.ends_with('?')
-                        || trimmed.ends_with('!')
-                        || w.len() <= 40,
-                    "window doesn't end at sentence boundary: {w:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn split_makes_progress() {
-        // Even without sentence boundaries, windowing must not loop.
-        let text = "a".repeat(5000);
-        let windows = split_into_windows(&text, 1200, 200);
-        assert!(windows.len() >= 4);
-        // Total coverage.
-        let total_new: usize = windows
-            .iter()
-            .enumerate()
-            .map(|(i, w)| {
-                if i == 0 {
-                    w.len()
-                } else {
-                    w.len().saturating_sub(200)
-                }
-            })
-            .sum();
-        assert!(total_new >= 5000);
-    }
 
     #[test]
     fn entity_dedup_by_lowercase() {
@@ -644,20 +438,6 @@ mod tests {
         let result = ext.extract("   ").await.unwrap();
         assert!(result.entities.is_empty());
         assert!(result.relationships.is_empty());
-    }
-
-    #[test]
-    fn coref_response_deserialization() {
-        let json = serde_json::json!({
-            "results": [{
-                "original": "He went home.",
-                "resolved": "John went home.",
-                "clusters": [["John", "He"]]
-            }]
-        });
-        let resp: CorefResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.results.len(), 1);
-        assert_eq!(resp.results[0].resolved, "John went home.");
     }
 
     #[test]

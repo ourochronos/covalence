@@ -12,8 +12,9 @@ use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
-    ConverterRegistry, GlinerExtractor, LlmExtractor, OpenAiEmbedder, PgResolver,
-    ReaderLmConverter, SidecarExtractor, TwoPassExtractor, VoyageConfig, VoyageEmbedder,
+    ConverterRegistry, FastcorefClient, GlinerExtractor, LlmExtractor, OpenAiEmbedder,
+    PdfConverter, PgResolver, ReaderLmConverter, SidecarExtractor, TwoPassExtractor, VoyageConfig,
+    VoyageEmbedder,
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
@@ -118,8 +119,9 @@ impl AppState {
             };
 
         let extractor: Option<Arc<dyn Extractor>> = if config.entity_extractor == "sidecar" {
-            // Unified sidecar: coref + NER + relationships in one
-            // service, with Rust-side windowing for large inputs.
+            // Unified sidecar: NER + relationships with Rust-side
+            // windowing. Coref is handled separately by
+            // FastcorefClient.
             let base_url = config
                 .extract_url
                 .clone()
@@ -128,10 +130,14 @@ impl AppState {
                 url = %base_url,
                 "using unified extraction sidecar"
             );
-            Some(
-                Arc::new(SidecarExtractor::new(base_url, config.gliner_threshold))
-                    as Arc<dyn Extractor>,
-            )
+            Some(Arc::new(SidecarExtractor::with_windowing(
+                base_url,
+                config.gliner_threshold,
+                config.pipeline.ner_window_chars,
+                config.pipeline.ner_window_overlap,
+                config.pipeline.re_window_chars,
+                config.pipeline.re_window_overlap,
+            )) as Arc<dyn Extractor>)
         } else if config.entity_extractor == "gliner2" {
             let base_url = config
                 .extract_url
@@ -207,20 +213,51 @@ impl AppState {
             tracing::info!(url = %url, "ReaderLM HTML converter enabled");
             converter_registry.register_front(Box::new(ReaderLmConverter::new(url.clone())));
         }
+        if let Some(ref url) = config.pdf_url {
+            tracing::info!(url = %url, "PDF converter enabled");
+            converter_registry.register(Box::new(PdfConverter::new(url.clone())));
+        }
 
-        let source_service = Arc::new(
-            SourceService::with_full_pipeline(
-                Arc::clone(&repo),
-                embedder.clone(),
-                extractor,
-                resolver,
-                Some(pg_resolver),
-            )
-            .with_converter_registry(converter_registry)
-            .with_table_dims(config.embedding.table_dims.clone())
-            .with_chunk_config(config.chunk_size, config.chunk_overlap)
-            .with_extract_concurrency(config.extract_concurrency),
-        );
+        // Determine the Fastcoref sidecar URL for neural coref
+        // preprocessing. Explicit COVALENCE_COREF_URL takes priority.
+        // When using the unified sidecar extractor, auto-enable
+        // coref using the same base URL (coref endpoint lives on
+        // the same sidecar).
+        let coref_url = config.coref_url.clone().or_else(|| {
+            if config.entity_extractor == "sidecar" {
+                config
+                    .extract_url
+                    .clone()
+                    .or_else(|| Some("http://localhost:8433".to_string()))
+            } else {
+                None
+            }
+        });
+
+        let mut source_svc = SourceService::with_full_pipeline(
+            Arc::clone(&repo),
+            embedder.clone(),
+            extractor,
+            resolver,
+            Some(pg_resolver),
+        )
+        .with_converter_registry(converter_registry)
+        .with_table_dims(config.embedding.table_dims.clone())
+        .with_chunk_config(config.chunk_size, config.chunk_overlap)
+        .with_extract_concurrency(config.extract_concurrency)
+        .with_extract_batch_config(config.min_extract_tokens, config.extract_batch_tokens)
+        .with_pipeline_config(config.pipeline.clone());
+
+        if let Some(ref url) = coref_url {
+            tracing::info!(url = %url, "Fastcoref preprocessing enabled");
+            source_svc = source_svc.with_coref_client(Arc::new(FastcorefClient::with_windowing(
+                url.clone(),
+                config.pipeline.coref_window_chars,
+                config.pipeline.coref_window_overlap,
+            )));
+        }
+
+        let source_service = Arc::new(source_svc);
         let abstention_config = covalence_core::search::abstention::AbstentionConfig {
             min_relevance_score: config.search.abstention_threshold,
             ..Default::default()

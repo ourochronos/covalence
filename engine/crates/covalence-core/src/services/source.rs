@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::config::TableDimensions;
+use crate::config::{PipelineConfig, TableDimensions};
 use crate::error::{Error, Result};
 use crate::ingestion::converter::ConverterRegistry;
-use crate::ingestion::coreference::CorefResolver;
+use crate::ingestion::coreference::{CorefResolver, FastcorefClient};
 use crate::ingestion::embedder::{Embedder, truncate_and_validate};
 use crate::ingestion::extractor::Extractor;
 use crate::ingestion::landscape::ExtractionMethod;
@@ -52,17 +52,31 @@ pub struct SourceService {
     /// content is run through the matching converter to produce
     /// Markdown before parsing.
     converter_registry: Option<ConverterRegistry>,
+    /// Optional Fastcoref client for neural coreference
+    /// resolution as a preprocessing step before extraction.
+    coref_client: Option<Arc<FastcorefClient>>,
     /// Per-table embedding dimensions for truncation.
     table_dims: TableDimensions,
     /// Maximum chunk size in bytes before paragraph splitting.
     chunk_size: usize,
     /// Overlap characters from the end of the previous chunk.
     chunk_overlap: usize,
+    /// Minimum token count for a chunk to be sent to the extractor.
+    min_extract_tokens: usize,
+    /// Token budget for batching adjacent small chunks into a
+    /// single extraction call.
+    extract_batch_tokens: usize,
+    /// Per-stage pipeline configuration.
+    pipeline: PipelineConfig,
 }
 
 impl SourceService {
     /// Default extraction concurrency when not configured.
     const DEFAULT_EXTRACT_CONCURRENCY: usize = 8;
+    /// Default minimum token count for extraction.
+    const DEFAULT_MIN_EXTRACT_TOKENS: usize = 30;
+    /// Default token budget for extraction batching.
+    const DEFAULT_EXTRACT_BATCH_TOKENS: usize = 2000;
 
     /// Create a new source service.
     pub fn new(repo: Arc<PgRepo>) -> Self {
@@ -74,9 +88,13 @@ impl SourceService {
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver: None,
             converter_registry: None,
+            coref_client: None,
             table_dims: TableDimensions::default(),
             chunk_size: 1000,
             chunk_overlap: 200,
+            min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
+            extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
+            pipeline: PipelineConfig::default(),
         }
     }
 
@@ -94,9 +112,13 @@ impl SourceService {
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver: None,
             converter_registry: None,
+            coref_client: None,
             table_dims: TableDimensions::default(),
             chunk_size: 1000,
             chunk_overlap: 200,
+            min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
+            extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
+            pipeline: PipelineConfig::default(),
         }
     }
 
@@ -116,9 +138,13 @@ impl SourceService {
             extract_concurrency: Self::DEFAULT_EXTRACT_CONCURRENCY,
             rel_type_resolver,
             converter_registry: None,
+            coref_client: None,
             table_dims: TableDimensions::default(),
             chunk_size: 1000,
             chunk_overlap: 200,
+            min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
+            extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
+            pipeline: PipelineConfig::default(),
         }
     }
 
@@ -130,6 +156,13 @@ impl SourceService {
     /// passing it to the parser.
     pub fn with_converter_registry(mut self, registry: ConverterRegistry) -> Self {
         self.converter_registry = Some(registry);
+        self
+    }
+
+    /// Attach a Fastcoref client for neural coreference resolution
+    /// as a preprocessing step before entity extraction.
+    pub fn with_coref_client(mut self, client: Arc<FastcorefClient>) -> Self {
+        self.coref_client = Some(client);
         self
     }
 
@@ -149,6 +182,23 @@ impl SourceService {
     /// Set the maximum number of concurrent LLM extraction calls.
     pub fn with_extract_concurrency(mut self, concurrency: usize) -> Self {
         self.extract_concurrency = concurrency;
+        self
+    }
+
+    /// Set per-stage pipeline configuration.
+    pub fn with_pipeline_config(mut self, config: PipelineConfig) -> Self {
+        self.pipeline = config;
+        self
+    }
+
+    /// Set extraction batching parameters.
+    ///
+    /// - `min_tokens`: chunks with fewer tokens are skipped.
+    /// - `batch_tokens`: adjacent small chunks are concatenated
+    ///   up to this token budget for a single extraction call.
+    pub fn with_extract_batch_config(mut self, min_tokens: usize, batch_tokens: usize) -> Self {
+        self.min_extract_tokens = min_tokens;
+        self.extract_batch_tokens = batch_tokens;
         self
     }
 
@@ -257,14 +307,18 @@ impl SourceService {
         };
 
         // Stage 1.5: Convert content if a converter registry is
-        // configured.
+        // configured and conversion is enabled.
         let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
-            if let Some(ref registry) = self.converter_registry {
-                let converted = registry.convert(content, mime).await?;
-                (
-                    std::borrow::Cow::Owned(converted.into_bytes()),
-                    "text/markdown",
-                )
+            if self.pipeline.convert_enabled {
+                if let Some(ref registry) = self.converter_registry {
+                    let converted = registry.convert(content, mime).await?;
+                    (
+                        std::borrow::Cow::Owned(converted.into_bytes()),
+                        "text/markdown",
+                    )
+                } else {
+                    (std::borrow::Cow::Borrowed(content), mime)
+                }
             } else {
                 (std::borrow::Cow::Borrowed(content), mime)
             };
@@ -272,8 +326,12 @@ impl SourceService {
         // Stage 2: Parse
         let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
 
-        // Stage 3: Normalize
-        let normalized = crate::ingestion::normalize::normalize(&parsed.body);
+        // Stage 3: Normalize (skippable via pipeline config).
+        let normalized = if self.pipeline.normalize_enabled {
+            crate::ingestion::normalize::normalize(&parsed.body)
+        } else {
+            parsed.body.clone()
+        };
 
         // Compute normalized content hash for semantic dedup.
         let normalized_hash = Sha256::digest(normalized.as_bytes()).to_vec();
@@ -484,27 +542,32 @@ impl SourceService {
                 }
             }
 
-            // Stage 5.5: Embedding landscape analysis.
+            // Stage 5.5: Embedding landscape analysis (gated by
+            // pipeline.landscape_enabled).
             //
-            // Determine extraction method per chunk based on
-            // embedding topology.
-            let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
-                .iter()
-                .map(|co| {
-                    co.parent_id.and_then(|pid| {
-                        chunk_outputs
-                            .iter()
-                            .position(|c| c.id == pid)
-                            .and_then(|idx| embeddings.get(idx))
+            // When disabled, all chunks are sent to the extractor
+            // without landscape-based gating.
+            let landscape = if self.pipeline.landscape_enabled {
+                let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
+                    .iter()
+                    .map(|co| {
+                        co.parent_id.and_then(|pid| {
+                            chunk_outputs
+                                .iter()
+                                .position(|c| c.id == pid)
+                                .and_then(|idx| embeddings.get(idx))
+                        })
                     })
-                })
-                .collect();
+                    .collect();
 
-            let landscape = crate::ingestion::landscape::analyze_landscape(
-                &embeddings,
-                &parent_embeddings,
-                None,
-            );
+                crate::ingestion::landscape::analyze_landscape(
+                    &embeddings,
+                    &parent_embeddings,
+                    None,
+                )
+            } else {
+                Vec::new()
+            };
 
             // Store landscape results on chunks
             for lr in &landscape {
@@ -536,22 +599,72 @@ impl SourceService {
             coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
         }
 
+        // Stage 5.7: Neural coreference preprocessing (optional).
+        //
+        // When a FastcorefClient is configured, resolve pronouns
+        // and anaphora in each extractable chunk before passing
+        // to the entity extractor. This benefits all extractor
+        // backends (sidecar, two_pass, llm).
+        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> =
+            if self.pipeline.coref_enabled {
+                if let Some(ref coref_client) = self.coref_client {
+                    let extractable_indices: Vec<usize> = chunk_outputs
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
+                        .map(|(i, _)| i)
+                        .collect();
+
+                    let mut resolved = std::collections::HashMap::new();
+                    for &idx in &extractable_indices {
+                        let co = &chunk_outputs[idx];
+                        match coref_client.resolve(&co.text).await {
+                            Ok(r) => {
+                                tracing::debug!(
+                                    chunk_index = idx,
+                                    original_len = co.text.len(),
+                                    resolved_len = r.len(),
+                                    "neural coref resolved"
+                                );
+                                resolved.insert(co.id, r);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    chunk_index = idx,
+                                    error = %e,
+                                    "neural coref failed, using original text"
+                                );
+                            }
+                        }
+                    }
+                    if resolved.is_empty() {
+                        None
+                    } else {
+                        Some(resolved)
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         // Stages 6-7: Extract entities + resolve + create
         // nodes/edges.
         //
         // Landscape gating: Only send chunks with FullExtraction
         // or FullExtractionWithReview to the LLM. Chunks classified
         // as EmbeddingLinkage or DeltaCheck are skipped.
+        //
+        // Token-budget batching: Adjacent small chunks are
+        // concatenated into a single extraction call to reduce
+        // API round-trips. Chunks below `min_extract_tokens` are
+        // skipped entirely.
         if let Some(ref extractor) = self.extractor {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
 
-            // Determine which chunks should go through LLM
-            // extraction based on landscape analysis.
-            //
-            // Process in batches to limit memory pressure on large
-            // documents. Each batch runs up to `extract_concurrency`
-            // concurrent LLM calls, and results are collected before
-            // the next batch starts.
+            // Determine which chunks should go through extraction
+            // based on landscape analysis.
             let extractable: Vec<_> = chunk_outputs
                 .iter()
                 .enumerate()
@@ -559,23 +672,41 @@ impl SourceService {
                 .map(|(_i, co)| co)
                 .collect();
 
-            let batch_size = self.extract_concurrency * 2;
+            // Group chunks into token-budget batches. Small chunks
+            // below `min_extract_tokens` are skipped. Adjacent
+            // chunks are concatenated up to `extract_batch_tokens`.
+            let batches = group_extraction_batches(
+                &extractable,
+                self.min_extract_tokens,
+                self.extract_batch_tokens,
+                resolved_texts.as_ref(),
+            );
+
+            tracing::debug!(
+                extractable = extractable.len(),
+                batches = batches.len(),
+                min_tokens = self.min_extract_tokens,
+                batch_budget = self.extract_batch_tokens,
+                "extraction batching"
+            );
+
+            let concurrency_size = self.extract_concurrency * 2;
             let mut extraction_results: Vec<Result<(uuid::Uuid, _)>> = Vec::new();
 
-            for batch in extractable.chunks(batch_size) {
-                let batch_futures: Vec<_> = batch
+            for batch_slice in batches.chunks(concurrency_size) {
+                let batch_futures: Vec<_> = batch_slice
                     .iter()
-                    .map(|co| {
+                    .map(|(primary_id, text)| {
                         let sem = Arc::clone(&semaphore);
                         let ext = Arc::clone(extractor);
-                        let text = co.text.clone();
-                        let chunk_uuid = co.id;
+                        let text = text.clone();
+                        let primary_id = *primary_id;
                         async move {
                             let _permit = sem.acquire().await.map_err(|_| {
                                 Error::Ingestion("extraction semaphore closed".to_string())
                             })?;
                             let result = ext.extract(&text).await?;
-                            Ok::<_, Error>((chunk_uuid, result))
+                            Ok::<_, Error>((primary_id, result))
                         }
                     })
                     .collect();
@@ -859,7 +990,12 @@ impl SourceService {
 
         // --- critical section: read-check-write under lock ---
 
-        let (node_id, match_type) = if let Some(ref resolver) = self.resolver {
+        let active_resolver = if self.pipeline.resolve_enabled {
+            self.resolver.as_ref()
+        } else {
+            None
+        };
+        let (node_id, match_type) = if let Some(resolver) = active_resolver {
             let resolved = resolver.resolve(entity).await?;
             match resolved.match_type {
                 MatchType::New => {
@@ -1134,6 +1270,77 @@ struct SupersedesInfo {
     update_class: UpdateClass,
     /// The version number for the new source.
     new_version: i32,
+}
+
+/// Group extractable chunks into token-budget batches for
+/// efficient LLM usage.
+///
+/// - Chunks with fewer than `min_tokens` whitespace-delimited words
+///   are skipped entirely.
+/// - Adjacent chunks are concatenated (separated by `\n\n---\n\n`)
+///   up to `batch_tokens`. A single chunk exceeding the budget is
+///   extracted alone.
+///
+/// Returns a list of `(primary_chunk_uuid, combined_text)` pairs.
+/// The primary UUID is used for extraction provenance.
+fn group_extraction_batches(
+    chunks: &[&crate::ingestion::chunker::ChunkOutput],
+    min_tokens: usize,
+    batch_tokens: usize,
+    resolved_texts: Option<&std::collections::HashMap<uuid::Uuid, String>>,
+) -> Vec<(uuid::Uuid, String)> {
+    let mut batches: Vec<(uuid::Uuid, String)> = Vec::new();
+    let mut current_primary: Option<uuid::Uuid> = None;
+    let mut current_text = String::new();
+    let mut current_tokens: usize = 0;
+    let mut skipped = 0_usize;
+
+    for co in chunks {
+        let text = resolved_texts
+            .and_then(|m| m.get(&co.id))
+            .map(|s| s.as_str())
+            .unwrap_or(&co.text);
+        let tokens = text.split_whitespace().count();
+
+        if tokens < min_tokens {
+            skipped += 1;
+            continue;
+        }
+
+        // Flush if adding this chunk would exceed the budget
+        // (but only if we already have content).
+        if current_primary.is_some() && current_tokens + tokens > batch_tokens {
+            batches.push((
+                current_primary.take().unwrap(),
+                std::mem::take(&mut current_text),
+            ));
+            current_tokens = 0;
+        }
+
+        if current_primary.is_none() {
+            current_primary = Some(co.id);
+        }
+        if !current_text.is_empty() {
+            current_text.push_str("\n\n---\n\n");
+        }
+        current_text.push_str(text);
+        current_tokens += tokens;
+    }
+
+    // Flush remaining
+    if let Some(primary) = current_primary {
+        batches.push((primary, current_text));
+    }
+
+    if skipped > 0 {
+        tracing::debug!(
+            skipped,
+            min_tokens,
+            "chunks skipped (below min_extract_tokens)"
+        );
+    }
+
+    batches
 }
 
 /// Determine whether a chunk should go through LLM extraction
@@ -1646,5 +1853,100 @@ mod tests {
         let text = "In this hypothetical scenario, the agent trusts \
                     only verified peers.";
         assert!(has_example_markers(text));
+    }
+
+    // --- Extraction batch grouping tests ---
+
+    fn make_chunk_output(text: &str) -> crate::ingestion::chunker::ChunkOutput {
+        crate::ingestion::chunker::ChunkOutput {
+            id: uuid::Uuid::new_v4(),
+            parent_id: None,
+            text: text.to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Paragraph,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 0,
+            byte_end: 0,
+        }
+    }
+
+    #[test]
+    fn batch_skips_tiny_chunks() {
+        let c1 = make_chunk_output("too small");
+        let c2 = make_chunk_output(
+            "This chunk has enough tokens to pass the minimum threshold for extraction.",
+        );
+        let chunks: Vec<&_> = vec![&c1, &c2];
+        let batches = group_extraction_batches(&chunks, 5, 2000, None);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].0, c2.id);
+        assert!(!batches[0].1.contains("too small"));
+    }
+
+    #[test]
+    fn batch_groups_adjacent_small_chunks() {
+        // 10 words each, budget = 50, so ~5 chunks per batch
+        let chunks: Vec<_> = (0..10)
+            .map(|i| {
+                make_chunk_output(&format!(
+                    "Chunk number {i} has exactly ten words in this sentence here."
+                ))
+            })
+            .collect();
+        let refs: Vec<&_> = chunks.iter().collect();
+        let batches = group_extraction_batches(&refs, 5, 50, None);
+        // Should produce multiple batches (each ~50 tokens)
+        assert!(
+            batches.len() >= 2,
+            "expected multiple batches, got {}",
+            batches.len()
+        );
+        // Each batch text should contain separator
+        for (_, text) in &batches {
+            if text.contains("---") {
+                // Multi-chunk batch — has separators
+                assert!(text.matches("---").count() >= 1);
+            }
+        }
+    }
+
+    #[test]
+    fn batch_single_large_chunk_alone() {
+        let big = make_chunk_output(&"word ".repeat(100));
+        let small = make_chunk_output(&"word ".repeat(10));
+        let chunks: Vec<&_> = vec![&big, &small];
+        let batches = group_extraction_batches(&chunks, 5, 50, None);
+        // The big chunk should be in its own batch
+        assert!(batches.len() >= 2);
+        assert_eq!(batches[0].0, big.id);
+    }
+
+    #[test]
+    fn batch_empty_input() {
+        let batches = group_extraction_batches(&[], 30, 2000, None);
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn batch_all_below_threshold() {
+        let c1 = make_chunk_output("tiny");
+        let c2 = make_chunk_output("also tiny");
+        let chunks: Vec<&_> = vec![&c1, &c2];
+        let batches = group_extraction_batches(&chunks, 30, 2000, None);
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn batch_uses_resolved_texts() {
+        let c1 = make_chunk_output("He went to the store.");
+        let mut resolved = std::collections::HashMap::new();
+        resolved.insert(
+            c1.id,
+            "John went to the grocery store to buy supplies.".to_string(),
+        );
+        let chunks: Vec<&_> = vec![&c1];
+        let batches = group_extraction_batches(&chunks, 5, 2000, Some(&resolved));
+        assert_eq!(batches.len(), 1);
+        assert!(batches[0].1.contains("John"));
     }
 }

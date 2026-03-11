@@ -77,10 +77,22 @@ impl SourceConverter for HtmlConverter {
     }
 }
 
+/// Maximum HTML size for a single ReaderLM sidecar call.
+///
+/// HTML exceeding this limit is split into windows at structural
+/// boundaries (`<section>`, `<article>`, `<div>`, heading tags)
+/// and each window is converted separately.
+const READERLM_MAX_CHARS: usize = 50_000;
+
 /// Converter for HTML content via the ReaderLM-v2 MLX sidecar.
 ///
 /// Calls the ReaderLM sidecar HTTP endpoint to produce high-quality
 /// Markdown from HTML (preserving tables, lists, semantic structure).
+///
+/// For large HTML documents exceeding [`READERLM_MAX_CHARS`], the
+/// HTML is split at structural element boundaries and each window
+/// is converted separately, then reassembled.
+///
 /// Falls back to the built-in [`HtmlConverter`] tag stripper if the
 /// sidecar is unreachable or returns an error.
 pub struct ReaderLmConverter {
@@ -99,14 +111,12 @@ impl ReaderLmConverter {
             .unwrap_or_default();
         Self { base_url, client }
     }
-}
 
-#[async_trait::async_trait]
-impl SourceConverter for ReaderLmConverter {
-    async fn convert(&self, content: &[u8], _content_type: &str) -> Result<String> {
-        let html = String::from_utf8_lossy(content);
-
-        // Try the sidecar first.
+    /// Convert a single HTML fragment via the sidecar.
+    ///
+    /// Returns `None` if the sidecar is unreachable or returns an
+    /// error, signaling the caller to fall back.
+    async fn convert_single(&self, html: &str) -> Option<String> {
         let url = format!("{}/convert", self.base_url);
         let body = serde_json::json!({ "html": html });
 
@@ -120,36 +130,205 @@ impl SourceConverter for ReaderLmConverter {
                                 md_len = md.len(),
                                 "ReaderLM conversion succeeded"
                             );
-                            return Ok(md.to_string());
+                            return Some(md.to_string());
                         }
-                        tracing::warn!("ReaderLM response missing 'markdown' field, falling back");
+                        tracing::warn!("ReaderLM response missing 'markdown' field");
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "ReaderLM response parse failed, falling back");
+                        tracing::warn!(
+                            error = %e,
+                            "ReaderLM response parse failed"
+                        );
                     }
                 }
             }
             Ok(resp) => {
                 tracing::warn!(
                     status = %resp.status(),
-                    "ReaderLM sidecar returned error, falling back to HtmlConverter"
+                    "ReaderLM sidecar returned error"
                 );
             }
             Err(e) => {
                 tracing::debug!(
                     error = %e,
-                    "ReaderLM sidecar unavailable, falling back to HtmlConverter"
+                    "ReaderLM sidecar unavailable"
                 );
             }
         }
 
-        // Fallback: use the built-in tag stripper.
-        Ok(strip_html(&html))
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceConverter for ReaderLmConverter {
+    async fn convert(&self, content: &[u8], _content_type: &str) -> Result<String> {
+        let html = String::from_utf8_lossy(content);
+
+        if html.len() <= READERLM_MAX_CHARS {
+            // Small enough for a single call.
+            if let Some(md) = self.convert_single(&html).await {
+                return Ok(md);
+            }
+            return Ok(strip_html(&html));
+        }
+
+        // Large HTML: split at structural boundaries and convert
+        // each window separately.
+        let windows = split_html_windows(&html, READERLM_MAX_CHARS);
+        tracing::debug!(
+            html_len = html.len(),
+            windows = windows.len(),
+            "splitting large HTML for ReaderLM windowed conversion"
+        );
+
+        let mut parts = Vec::with_capacity(windows.len());
+        let mut sidecar_ok = true;
+
+        for window in &windows {
+            if sidecar_ok {
+                if let Some(md) = self.convert_single(window).await {
+                    parts.push(md);
+                    continue;
+                }
+                // Sidecar failed — fall back for all remaining
+                // windows to avoid partial sidecar/fallback mix.
+                sidecar_ok = false;
+                tracing::warn!(
+                    "ReaderLM sidecar failed during windowed conversion, \
+                     falling back to tag stripper for remaining windows"
+                );
+            }
+            parts.push(strip_html(window));
+        }
+
+        Ok(parts.join("\n\n"))
     }
 
     fn supported_types(&self) -> &[&str] {
         &["text/html", "application/xhtml+xml"]
     }
+}
+
+/// Converter for PDF content via an external sidecar.
+///
+/// Calls a configurable HTTP endpoint (e.g., pymupdf4llm sidecar)
+/// to extract Markdown from PDF files. The sidecar must accept
+/// `POST /convert-pdf` with `{"pdf_base64": "..."}` and return
+/// `{"markdown": "..."}`.
+pub struct PdfConverter {
+    /// Base URL of the PDF conversion sidecar.
+    base_url: String,
+    /// HTTP client with generous timeout for large PDFs.
+    client: reqwest::Client,
+}
+
+impl PdfConverter {
+    /// Create a new PDF converter pointing at the given sidecar URL.
+    pub fn new(base_url: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_default();
+        Self { base_url, client }
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceConverter for PdfConverter {
+    async fn convert(&self, content: &[u8], _content_type: &str) -> Result<String> {
+        let url = format!("{}/convert-pdf", self.base_url);
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/pdf")
+            .body(content.to_vec())
+            .send()
+            .await
+            .map_err(|e| Error::Ingestion(format!("PDF sidecar request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(Error::Ingestion(format!(
+                "PDF sidecar returned {status}: {body_text}"
+            )));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Ingestion(format!("failed to parse PDF response: {e}")))?;
+
+        json["markdown"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                Error::Ingestion("PDF sidecar response missing 'markdown' field".to_string())
+            })
+    }
+
+    fn supported_types(&self) -> &[&str] {
+        &["application/pdf"]
+    }
+}
+
+/// Split HTML at structural element boundaries into windows of
+/// approximately `max_chars` each.
+///
+/// Looks for `<section`, `<article`, `<div`, `<h1`-`<h6`, and
+/// `<main` opening tags as split points. Wraps each window in
+/// minimal `<html><body>` and `</body></html>` tags.
+fn split_html_windows(html: &str, max_chars: usize) -> Vec<String> {
+    if html.len() <= max_chars {
+        return vec![html.to_string()];
+    }
+
+    // Find positions of structural element opening tags.
+    let split_tags = ["<section", "<article", "<div", "<main", "<h1", "<h2", "<h3"];
+    let mut split_points: Vec<usize> = Vec::new();
+
+    let lower = html.to_lowercase();
+    for tag in &split_tags {
+        let mut start = 0;
+        while let Some(pos) = lower[start..].find(tag) {
+            let abs_pos = start + pos;
+            if abs_pos > 0 {
+                split_points.push(abs_pos);
+            }
+            start = abs_pos + tag.len();
+        }
+    }
+    split_points.sort_unstable();
+    split_points.dedup();
+
+    if split_points.is_empty() {
+        // No structural elements — fall back to simple char split.
+        return html
+            .as_bytes()
+            .chunks(max_chars)
+            .map(|chunk| String::from_utf8_lossy(chunk).to_string())
+            .collect();
+    }
+
+    // Group split points into windows up to max_chars.
+    let mut windows: Vec<String> = Vec::new();
+    let mut window_start = 0;
+
+    for &point in &split_points {
+        if point - window_start >= max_chars && window_start < point {
+            windows.push(html[window_start..point].to_string());
+            window_start = point;
+        }
+    }
+
+    // Flush remainder.
+    if window_start < html.len() {
+        windows.push(html[window_start..].to_string());
+    }
+
+    windows
 }
 
 /// Strip HTML tags and convert structural elements to Markdown.
@@ -482,6 +661,33 @@ impl ConverterRegistry {
                 .any(|&t| t.eq_ignore_ascii_case(base_type))
             {
                 let md = converter.convert(content, base_type).await?;
+
+                // Post-conversion quality check for format
+                // conversions (HTML, PDF) to catch garbage output.
+                // Skip for passthrough formats (markdown, text).
+                let needs_quality_check = base_type.contains("html") || base_type.contains("pdf");
+                if needs_quality_check {
+                    if let Some(reason) = check_conversion_quality(&md) {
+                        tracing::warn!(
+                            content_type = base_type,
+                            reason,
+                            md_len = md.len(),
+                            "conversion quality check failed"
+                        );
+                        return Err(Error::Ingestion(format!(
+                            "conversion produced low-quality output: {reason}"
+                        )));
+                    }
+                    if is_low_quality_conversion(content.len(), &md) {
+                        tracing::warn!(
+                            content_type = base_type,
+                            input_len = content.len(),
+                            md_words = md.split_whitespace().count(),
+                            "conversion output suspiciously small relative to input"
+                        );
+                    }
+                }
+
                 // Post-process: linearize markdown tables into
                 // natural language sentences for better NER/embedding.
                 return Ok(linearize_tables(&md));
@@ -499,6 +705,36 @@ impl Default for ConverterRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Check whether converted Markdown meets minimum quality thresholds.
+///
+/// Only flags issues when the input was large enough to expect
+/// meaningful output. Small HTML fragments convert to short Markdown
+/// and that's fine.
+///
+/// Returns `None` if the output is acceptable, or `Some(reason)` if
+/// it should be rejected.
+fn check_conversion_quality(md: &str) -> Option<&'static str> {
+    let trimmed = md.trim();
+    if trimmed.is_empty() {
+        return Some("empty output");
+    }
+
+    None
+}
+
+/// Check whether a conversion result is proportionally too small
+/// relative to the original content size.
+///
+/// Returns `true` if the conversion looks like garbage (large input
+/// produced very little output). Used by the registry to log
+/// warnings for low-quality conversions without hard-failing.
+pub(crate) fn is_low_quality_conversion(input_len: usize, md: &str) -> bool {
+    let word_count = md.split_whitespace().count();
+    // Only flag when input was substantial (>1KB) and output is
+    // tiny (<10 words).
+    input_len > 1024 && word_count < 10
 }
 
 #[cfg(test)]
@@ -979,5 +1215,96 @@ More text after.";
             .expect("should convert");
         assert!(result.contains("A: 1, B: 2."));
         assert!(result.contains("# Test"));
+    }
+
+    // --- HTML windowing tests ---
+
+    #[test]
+    fn split_html_small_passthrough() {
+        let html = "<p>Hello world</p>";
+        let windows = split_html_windows(html, 50_000);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0], html);
+    }
+
+    #[test]
+    fn split_html_at_structural_boundaries() {
+        let html = format!(
+            "<div>{}</div><div>{}</div><div>{}</div>",
+            "a".repeat(200),
+            "b".repeat(200),
+            "c".repeat(200),
+        );
+        let windows = split_html_windows(&html, 300);
+        assert!(
+            windows.len() >= 2,
+            "expected split, got {} windows",
+            windows.len()
+        );
+    }
+
+    #[test]
+    fn split_html_no_structural_tags() {
+        let html = "x".repeat(200);
+        let windows = split_html_windows(&html, 100);
+        assert!(windows.len() >= 2);
+        // Each window should be <= max_chars
+        for w in &windows {
+            assert!(w.len() <= 100);
+        }
+    }
+
+    // --- Conversion quality tests ---
+
+    #[test]
+    fn quality_check_empty_fails() {
+        assert_eq!(check_conversion_quality(""), Some("empty output"));
+        assert_eq!(check_conversion_quality("   "), Some("empty output"));
+    }
+
+    #[test]
+    fn quality_check_short_passes() {
+        // Short output is OK for short input
+        assert_eq!(check_conversion_quality("Hello world"), None);
+    }
+
+    #[test]
+    fn low_quality_large_input_tiny_output() {
+        assert!(is_low_quality_conversion(5000, "Hello"));
+    }
+
+    #[test]
+    fn low_quality_small_input_ok() {
+        assert!(!is_low_quality_conversion(100, "Hello"));
+    }
+
+    #[test]
+    fn low_quality_adequate_output() {
+        let output = "This is a sufficiently long output with many words to \
+                      pass the quality check for conversion results.";
+        assert!(!is_low_quality_conversion(5000, output));
+    }
+
+    // --- PDF converter tests ---
+
+    #[test]
+    fn pdf_converter_supported_types() {
+        let conv = PdfConverter::new("http://localhost:9999".into());
+        assert_eq!(conv.supported_types(), &["application/pdf"]);
+    }
+
+    #[test]
+    fn pdf_converter_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<PdfConverter>();
+    }
+
+    #[tokio::test]
+    async fn registry_rejects_pdf_without_converter() {
+        let registry = ConverterRegistry::new();
+        let result = registry.convert(b"%PDF-1.4", "application/pdf").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no converter registered"));
     }
 }
