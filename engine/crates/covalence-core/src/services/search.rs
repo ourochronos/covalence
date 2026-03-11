@@ -352,6 +352,38 @@ impl SearchService {
             }
         }
 
+        // --- Step 5b: Redistribute weight from empty dimensions ---
+        // If a dimension returned 0 results (e.g., global with no
+        // community summaries), its weight is wasted in RRF.
+        // Redistribute it proportionally to non-empty dimensions so
+        // strategy-selected weights remain meaningful.
+        let empty_weight: f64 = ranked_lists
+            .iter()
+            .zip(weights.iter())
+            .filter(|(list, _)| list.is_empty())
+            .map(|(_, &w)| w)
+            .sum();
+        if empty_weight > 0.0 {
+            let active_weight: f64 = weights
+                .iter()
+                .zip(ranked_lists.iter())
+                .filter(|(_, list)| !list.is_empty())
+                .map(|(&w, _)| w)
+                .sum();
+            if active_weight > 0.0 {
+                for (w, list) in weights.iter_mut().zip(ranked_lists.iter()) {
+                    if !list.is_empty() {
+                        *w += empty_weight * (*w / active_weight);
+                    }
+                }
+                tracing::debug!(
+                    redistributed = empty_weight,
+                    active_dimensions = ranked_lists.iter().filter(|l| !l.is_empty()).count(),
+                    "redistributed weight from empty dimensions"
+                );
+            }
+        }
+
         let mut fused = fusion::rrf_fuse(&ranked_lists, &weights, fusion::DEFAULT_K);
         trace.fused_count = fused.len();
 
@@ -550,12 +582,25 @@ impl SearchService {
         }
 
         // --- Step 9: Reranking ---
+        // Build documents for the reranker. Prefer snippet, then
+        // name, then truncated content. Vector-only chunk results
+        // have no snippet or name — without content fallback they
+        // would be reranked against empty strings and always lose.
         let documents: Vec<String> = fused
             .iter()
             .map(|r| {
                 r.snippet
                     .clone()
                     .or_else(|| r.name.clone())
+                    .or_else(|| {
+                        r.content.as_ref().map(|c| {
+                            if c.len() > 500 {
+                                format!("{}...", &c[..500])
+                            } else {
+                                c.clone()
+                            }
+                        })
+                    })
                     .unwrap_or_default()
             })
             .collect();
@@ -563,14 +608,30 @@ impl SearchService {
         if !documents.is_empty() {
             match self.reranker.rerank(query, &documents).await {
                 Ok(reranked) => {
-                    let mut reordered = Vec::with_capacity(fused.len());
-                    for rr in &reranked {
-                        if rr.index < fused.len() {
-                            reordered.push(fused[rr.index].clone());
+                    // Blend reranker scores with fusion scores rather
+                    // than letting the reranker completely override
+                    // multi-dimensional evidence. The reranker provides
+                    // text-level relevance; fusion provides multi-signal
+                    // evidence. Multiplying them gives credit to both.
+                    let max_rerank = reranked
+                        .iter()
+                        .map(|r| r.relevance_score)
+                        .fold(0.0f64, f64::max);
+                    if max_rerank > 0.0 {
+                        for rr in &reranked {
+                            if rr.index < fused.len() {
+                                let norm_score = rr.relevance_score / max_rerank;
+                                // Blend: 60% fusion rank + 40% reranker
+                                fused[rr.index].fused_score =
+                                    fused[rr.index].fused_score * 0.6
+                                        + fused[rr.index].fused_score * norm_score * 0.4;
+                            }
                         }
-                    }
-                    if reordered.len() == fused.len() {
-                        fused = reordered;
+                        fused.sort_by(|a, b| {
+                            b.fused_score
+                                .partial_cmp(&a.fused_score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
                     }
                 }
                 Err(e) => {
