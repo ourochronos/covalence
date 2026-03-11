@@ -2,11 +2,14 @@
 
 ## Status: emergent, being formalized now
 
-> **Updated 2026-03-10**: Massive engineering wave — 47 of 50 GitHub issues closed in a single day.
-> Full local model pipeline confirmed: ReaderLM-v2 → Fastcoref → GLiNER2 → NuExtract →
-> HDBSCAN (~5.5GB RAM total). Embedding provider switched to Voyage AI. Gemini 2.5 Flash via
-> OpenRouter now active for extraction ($0.30/M tokens). Only 3 issues remain open: #11 (fine-tune
-> RE), #35 (federation scope), #42 (extraction research tracking).
+> **Updated 2026-03-10 (+post2)**: Massive engineering wave — 47 of 50 GitHub issues closed in a
+> single day. Full local model pipeline confirmed: ReaderLM-v2 → Fastcoref → GLiNER2 → NuExtract
+> → HDBSCAN (~5.5GB RAM total). Embedding provider switched to Voyage AI (`VOYAGE_API_KEY`).
+> Gemini 2.5 Flash via OpenRouter now active. Post-wave closures: GLiNER2 windowing (✅), Voyage
+> reranker (✅), #43, #46, #51 (coref standalone), #52 (converter windowing), #57 (batch
+> extraction), #58 (stage configurability). Bug #59: dotenvy ordering fixed locally. Bug #60:
+> landscape disabled (`COVALENCE_LANDSCAPE_ENABLED=false`). Pipeline must run from project root.
+> Open: #11, #35, #42, #59 (pending commit), #60 (landscape re-calibration).
 
 ## Spec Sections: 10-lessons-learned.md, 11-evaluation.md
 
@@ -100,19 +103,36 @@ The full local pipeline is confirmed working at ~5.5GB total RAM:
 | HTML → Markdown | ReaderLM-v2 (MLX) | ~1GB | High-quality structure preservation |
 | PDF → Markdown | pymupdf4llm | ~0MB | No model — pure extraction, 3.4s/15 pages |
 | Coreference resolution | Fastcoref 90M | ~300MB | 20KB context OK |
-| Entity extraction (NER) | GLiNER2 ~500MB | ~500MB | 384-token limit (windowing needed) |
-| Relationship extraction | NuExtract-1.5-tiny 0.5B | ~1GB | 4K token context |
-| Embeddings | Voyage AI (cloud) | ~0MB | $0.01/M tokens, voyage-3-large |
+| Entity extraction (NER) | GLiNER2 ~500MB | ~500MB | 384-token limit (windowing implemented); two-pass confirmed with Gemini Flash for RE |
+| Relationship extraction | NuExtract-1.5-tiny 0.5B or Gemini Flash | ~1GB / ~0MB | 4K tokens local; Gemini Flash confirmed for two-pass RE |
+| Embeddings | Voyage AI (cloud) | ~0MB | $0.01/M tokens, voyage-3-large; requires `VOYAGE_API_KEY` |
 | LLM fallback / enrichment | Gemini 2.5 Flash (OpenRouter) | ~0MB | $0.30/M tokens |
 
-## Open Issues (as of 2026-03-10)
+## Open Issues (as of 2026-03-10 post-wave)
 
 | Issue | Description | Status |
 |-------|-------------|--------|
 | #11 | Fine-tune relationship extraction | 🔴 Open |
 | #35 | Federation scope decision | 🔴 Open |
 | #42 | Extraction alternatives research tracking | 🔴 Open |
-| All others | — | ✅ Closed 2026-03-10 |
+| #51 | Separate coref preprocessing from extraction | ✅ Closed |
+| #52 | Converter windowing (large HTML); PDF placeholder | ✅ Closed |
+| #57 | Batch extraction token thresholds | ✅ Closed |
+| #58 | Full stage configurability (CONVERT_ENABLED, COREF_ENABLED, etc.) | ✅ Closed |
+| #59 | dotenvy initialized after tracing_subscriber (bug) | 🟡 Fixed locally, commit pending |
+| #60 | Landscape gating too aggressive — disabled | 🔴 Open (re-calibration needed) |
+| All others (#43, #46, windowing, reranker…) | — | ✅ Closed |
+
+## Operational Notes
+
+- **Run from project root**: `dotenvy` reads `.env` from the current working directory — always
+  start the server with `cargo run` or the binary from the repo root to ensure `.env` is picked up.
+- **`VOYAGE_API_KEY`**: Required env var for Voyage AI embeddings and reranking. Without it, the
+  server falls back to OpenAI (if `OPENAI_API_KEY` set) or fails.
+- **`COVALENCE_LANDSCAPE_ENABLED=false`**: Set in `.env` for now (#60) — landscape gating
+  disabled until thresholds are re-calibrated.
+- **`COVALENCE_ENTITY_EXTRACTOR=two_pass`**: Confirmed working — GLiNER2 (local) for NER +
+  Gemini Flash (OpenRouter) for relationship extraction.
 
 ## Key Design Decisions
 

@@ -2,11 +2,17 @@
 
 ## Status: implemented (core + two-pass + URL + sidecar), partial (PII, landscape)
 
-> **Updated 2026-03-10**: Massive engineering wave closed 47/50 GitHub issues. Key additions: table
-> linearization (#45), byte-offset chunking (#30), URL ingestion (#28), SidecarExtractor (#44),
-> extraction error logging (#49), two-pass extraction activated (#32), full local model pipeline
-> tested (Fastcoref → GLiNER2 → NuExtract). GLiNER2 384-token limit identified — Rust-side
-> windowing still needed.
+> **Updated 2026-03-10 (+post2)**: Massive engineering wave closed 47/50 GitHub issues. Key
+> additions: table linearization (#45), byte-offset chunking (#30), URL ingestion (#28),
+> SidecarExtractor (#44), extraction error logging (#49), two-pass extraction (#32), Voyage
+> embedding provider switching (#46), landscape bypass for single-chunk sources (#43), full local
+> model pipeline tested. GLiNER2 windowing **now implemented** in `SidecarExtractor`. Additional
+> post-wave closures: #51 (coref now independent stage), #52 (converter windowing + PDF
+> placeholder), #57 (batch extraction token thresholds), #58 (full stage configurability).
+> Bug #59 (dotenvy ordering, fixed locally). **Landscape disabled** (#60,
+> `COVALENCE_LANDSCAPE_ENABLED=false`) — gating was too aggressive. Two-pass extraction
+> confirmed: GLiNER (local) for entities + Gemini Flash for relationships. Pipeline **must run
+> from project root** (dotenvy reads `.env` from CWD).
 
 ## Spec Sections: 05-ingestion.md, 02-data-model.md
 
@@ -32,6 +38,12 @@ The ingestion pipeline transforms raw content into a knowledge graph through 8 s
   natural-language sentences (e.g., `| A | B |` → "A is B"). No ML model needed.
 - **NEW**: PDF conversion tested via `pymupdf4llm` — 3.4s for a 15-page paper, no model inference
   required. Accurate structure preservation including tables and headings.
+- **NEW (#52)**: Converter windowing for large HTML — `HtmlConverter` (ReaderLM-v2 path) now
+  splits documents that exceed the ReaderLM context limit into overlapping windows, converts each
+  independently, then rejoins. Prevents silent truncation of large HTML pages.
+- **NOTE (#52)**: `PdfConverter` currently exists as a **placeholder** — the `pymupdf4llm` Python
+  integration is wired at the trait level but the implementation returns a stub pending a full
+  sidecar integration. Direct Rust-callable PDF extraction is the planned path.
 - All content normalized to markdown for downstream processing
 
 ### Stage 2-3: Parse & Normalize
@@ -63,36 +75,73 @@ The ingestion pipeline transforms raw content into a knowledge graph through 8 s
 
 ### Stage 5.5: Embedding Landscape Analysis
 - **File**: `ingestion/landscape.rs`
-- **Status**: 🟡 Implemented but not surfaced
+- **Status**: 🟡 Wired but currently **DISABLED** (`COVALENCE_LANDSCAPE_ENABLED=false`)
 - Computes cosine similarity distribution across chunk embeddings
-- Detects topic diversity, embedding quality anomalies
-- Model calibration metrics
-- Not exposed via API or used in downstream decisions
+- Detects topic diversity, embedding quality anomalies; determines extraction method per chunk
+- Model calibration metrics (parent-child alignment, adjacent similarity, sibling outlier score)
+- **#43**: Single-chunk sources bypass landscape analysis entirely and always force
+  `FullExtraction` — avoids spurious `EmbeddingLinkage` decisions when the chunk IS the entire
+  document and parent-child alignment would be meaninglessly high.
+- Results stored on chunks: `extraction_method` and `landscape_metrics` JSONB fields in the DB.
+- Chunks classified as `EmbeddingLinkage` (high parent alignment → redundant content) or
+  `DeltaCheck` (moderate alignment) skip full entity/relationship extraction; only
+  `FullExtraction` and `FullExtractionWithReview` chunks are sent to the extractor.
+- **⚠️ #60 BUG (disabled)**: Landscape gating was too aggressive — correctly-formed multi-chunk
+  sources were being classified as `EmbeddingLinkage` and skipping extraction entirely, resulting
+  in zero entities extracted. Disabled via `COVALENCE_LANDSCAPE_ENABLED=false` (#58 flag) while
+  thresholds are re-calibrated. When disabled, all chunks receive `FullExtraction`.
+- Not yet exposed via API for external inspection or surfaced in admin UI.
 
 ### Stage 5.5b: Coreference Resolution
 - **File**: `ingestion/coreference.rs`
-- **Status**: ✅ Tested locally
-- **NEW**: Fastcoref 90M model tested locally — handles 20KB context OK (confirmed benchmark).
-  Cross-chunk coreference linking now functional.
-- Pronoun resolution and entity tracking across chunks working in practice
+- **Status**: ✅ Independent preprocessing stage (#51 ✅ Closed)
+- **#51 ✅ CLOSED**: Coref is now a **standalone pipeline stage** — extracted from
+  `SidecarExtractor` and runs as an independent preprocessing step between embedding (Stage 5)
+  and extraction (Stage 6). This enables running coref *before* chunking in the future and makes
+  it independently testable and swappable.
+- Calls the Python sidecar `/coref` endpoint with the chunk text; Fastcoref 90M handles inputs
+  up to ~15K chars; longer texts are processed in large windows (500-char overlap).
+- Coref failure is non-fatal: if `/coref` returns an error the original text is used and a
+  `WARN`-level log entry is emitted.
+- Controlled via `COVALENCE_COREF_ENABLED` (#58 stage configurability). Defaults to enabled
+  when sidecar URL is configured.
 
 ### Stage 6: Entity & Relationship Extraction
 - **File**: `ingestion/llm_extractor.rs`, `gliner_extractor.rs`, `two_pass_extractor.rs`,
   `sidecar_extractor.rs`
 - **Status**: ✅ Two-pass active, sidecar wired
-- **NEW (#44)**: `SidecarExtractor` implemented in Rust — calls Python sidecar via HTTP. Config:
-  `COVALENCE_EXTRACTION_URL`. Falls back to single-pass LLM if sidecar is unreachable.
-- **NEW (#49)**: `parse_extraction_json` now logs structured warnings on malformed sidecar
-  responses — no more silent failures; extraction errors visible in logs.
-- **NEW (#32)**: Two-pass extraction now active end-to-end:
+- **NEW (#44)**: `SidecarExtractor` implemented in Rust — a **three-stage** client calling the
+  unified Python sidecar via HTTP: `/coref` → `/ner` → `/relationships`. Config:
+  `COVALENCE_ENTITY_EXTRACTOR=sidecar`, `COVALENCE_EXTRACT_URL` (default:
+  `http://localhost:8433`). Each stage is independently fault-tolerant: coref failure → use
+  original text; NER failure → return empty result; relationship failure → return entities only.
+- **GLiNER2 windowing IMPLEMENTED**: `SidecarExtractor` automatically splits inputs into
+  overlapping ~1200-char windows (200-char overlap, sentence-boundary-aware) before calling
+  `/ner`. Entity results are deduplicated by lowercased name across windows. The 384-token hard
+  limit is now handled transparently in Rust — no silent entity loss for longer chunks.
+- **NEW (#49)**: `SidecarExtractor` logs structured `WARN`-level messages on HTTP failures and
+  JSON parse errors — no more silent failures; extraction errors visible in logs.
+- **NEW (#32)**: Two-pass extraction available via `COVALENCE_ENTITY_EXTRACTOR=two_pass`:
   - **Pass 1**: GLiNER2 (~500MB, zero-shot NER) for entity extraction with types and spans.
-    Truncates at **384 tokens** — Rust-side windowing (~1KB chunks with 20% overlap) needed to
-    handle longer chunks safely. Currently a known gap.
-  - **Pass 2**: NuExtract-1.5-tiny (0.5B) at 4K token context for relationship-only extraction,
+  - **Pass 2**: LLM (e.g., Gemini 2.5 Flash via OpenRouter) for relationship-only extraction,
     constrained to GLiNER2 entity spans. LLM token usage reduced 50-70% vs single-pass.
-  - Gemini 2.5 Flash via OpenRouter ($0.30/M tokens) used as fallback/supplemental LLM.
+  - Falls back to single-pass LLM if GLiNER2 sidecar is unreachable.
+- **`COVALENCE_ENTITY_EXTRACTOR` modes**: `llm` (default), `two_pass`, `gliner2`, `sidecar`.
+  The `sidecar` mode is the unified three-stage client (coref + NER + rels); `two_pass` uses
+  separate `GlinerExtractor` + `LlmExtractor` clients.
+- **Two-pass extraction CONFIRMED** (`COVALENCE_ENTITY_EXTRACTOR=two_pass`): GLiNER2 (local,
+  ~500MB) for entity extraction + Gemini Flash (OpenRouter) for relationship extraction. This is
+  the confirmed working configuration as of post-March-10.
+- Gemini 2.5 Flash via OpenRouter ($0.30/M tokens) used for LLM pass/fallback.
 - **Tested locally**: Fastcoref 90M + GLiNER2 ~500MB + NuExtract 0.5B full pipeline confirmed.
   Total RAM footprint: ~5.5GB with all local models loaded.
+- **NEW (#57)**: Batch extraction with token thresholds — chunks with fewer than
+  `min_extract_tokens=30` tokens are skipped (no extraction on trivially short content);
+  extraction is batched with a target batch size of `extract_batch_tokens=2000` tokens.
+- **NEW (#58)**: Full stage configurability via environment variables. Each major pipeline stage
+  can be independently enabled/disabled: `COVALENCE_CONVERT_ENABLED`, `COVALENCE_COREF_ENABLED`,
+  `COVALENCE_LANDSCAPE_ENABLED` (currently `false` — see #60), `COVALENCE_EXTRACT_ENABLED`.
+  Useful for debugging, cost control, and selective pipeline runs.
 
 ### Stage 7: Entity Resolution
 - **File**: `ingestion/resolver.rs`, `pg_resolver.rs`
@@ -138,28 +187,51 @@ No model inference — pure text extraction with structure preservation. 3.4s fo
 
 ## Gaps Identified
 
-1. **GLiNER2 windowing** — GLiNER2 truncates at 384 tokens. Chunks > ~1KB are silently truncated,
-   missing entities in the latter portion. Need Rust-side windowing that splits chunks with overlap
-   before sending to GLiNER2, then deduplicates entities by span. Estimated: 1-2 hours of Rust work.
+1. **GLiNER2 windowing** — ✅ **FIXED** (in `SidecarExtractor`). Input text is split into
+   ~1200-char overlapping windows (200-char overlap, sentence-boundary-aware) before calling
+   `/ner`. Entities are deduplicated by lowercased name across windows. The 384-token truncation
+   limit is now handled transparently in Rust.
 
 2. **PII detection not gated** — PII patterns are detected but don't block ingestion. In a
    multi-user deployment, this is a compliance risk.
 
-3. **Landscape analysis not actionable** — embedding quality metrics are computed but not surfaced
-   or used. Could flag low-quality sources or trigger re-embedding.
+3. **Landscape analysis disabled (#60)** — landscape gating was too aggressive, incorrectly
+   classifying valid chunks as `EmbeddingLinkage` and skipping extraction. Currently disabled via
+   `COVALENCE_LANDSCAPE_ENABLED=false`. Thresholds need calibration before re-enabling. Once
+   re-enabled, landscape metrics should also be exposed via API for external inspection.
 
 4. **confidence_breakdown not populated** — extraction produces confidence scores but they're not
    stored in the edge JSONB.
 
-5. **Voyage not yet active for node embeddings** — switched for chunk embeddings but node embedding
-   (`Stage 7.5`) still uses old provider config. Needs one-line config change.
+5. **Voyage node embeddings** — ✅ **FIXED**: `PgResolver` and `AdminService` both receive the
+   same `Arc<dyn Embedder>` as chunk embedding (VoyageEmbedder when `VOYAGE_API_KEY` present), so
+   node embeddings now use Voyage consistently via the shared embedder instance.
+
+## Runtime & Environment Notes
+
+- **Project root required**: The pipeline uses `dotenvy` to load `.env` at startup. `dotenvy`
+  reads from the current working directory — **always run the server from the project root**,
+  otherwise `.env` is not found and all env-var config is silently missing.
+- **`VOYAGE_API_KEY`**: Required for Voyage AI embeddings (`voyage-3-large`) and reranking
+  (`rerank-2.5`). Set in `.env` or shell environment. Without this key, the system falls back
+  to OpenAI embeddings if `OPENAI_API_KEY` is set, or fails embedding entirely.
+- **Bug #59 (fixed locally)**: `dotenvy` was being initialized *after* `tracing_subscriber`,
+  meaning `.env` values (e.g., `RUST_LOG`) were not visible to the logging framework at startup.
+  Fixed by moving `dotenvy::dotenv().ok()` to the very top of `main()`, before any other
+  initialization. Commit pending.
 
 ## Open Issues
 
 | Issue | Description | Status |
 |-------|-------------|--------|
 | #11 | Fine-tune relationship extraction | 🔴 Open |
-| All others (28, 30, 32, 44, 45, 49...) | See above | ✅ Closed 2026-03-10 |
+| #51 | Separate coref preprocessing from extraction | ✅ Closed (coref is now standalone stage) |
+| #52 | Converter windowing for large HTML; PDF converter placeholder | ✅ Closed |
+| #57 | Batch extraction (min_extract_tokens=30, extract_batch_tokens=2000) | ✅ Closed |
+| #58 | Full stage configurability (CONVERT_ENABLED, COREF_ENABLED, LANDSCAPE_ENABLED…) | ✅ Closed |
+| #59 | dotenvy initialized after tracing_subscriber (bug, fixed locally) | 🟡 Fix needs commit |
+| #60 | Landscape gating too aggressive — disabled (COVALENCE_LANDSCAPE_ENABLED=false) | 🔴 Open |
+| All others (28, 30, 32, 43, 44, 45, 46, 49...) | See above | ✅ Closed |
 
 ## Academic Foundations
 
@@ -174,9 +246,11 @@ No model inference — pure text extraction with structure preservation. 3.4s fo
 
 ## Next Actions
 
-1. Implement Rust-side GLiNER2 windowing (~1KB chunks, 20% overlap, span dedup)
-2. Wire PII detection as ingestion gate (configurable: warn vs block)
-3. Surface landscape analysis via API or admin endpoint
-4. Populate `confidence_breakdown` JSONB during extraction
-5. Switch node embeddings to Voyage (one-line config change)
-6. Ingest entity resolution and relation extraction survey papers
+1. **Re-calibrate landscape thresholds** (#60) — tune `EmbeddingLinkage`/`DeltaCheck` similarity
+   cutoffs so valid chunks aren't skipped; then re-enable `COVALENCE_LANDSCAPE_ENABLED=true`
+2. **Commit dotenvy fix** (#59) — move `dotenvy::dotenv().ok()` before `tracing_subscriber` init
+3. **Complete PDF converter** (#52) — replace placeholder with working `pymupdf4llm` sidecar call
+4. Wire PII detection as ingestion gate (configurable: warn vs block)
+5. Surface landscape analysis via API or admin endpoint (metrics stored per chunk)
+6. Populate `confidence_breakdown` JSONB during extraction
+7. Ingest entity resolution and relation extraction survey papers

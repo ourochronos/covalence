@@ -2,10 +2,12 @@
 
 ## Status: current — reflects post-March-10 engineering wave
 
-> **Updated 2026-03-10**: 47 of 50 GitHub issues closed. Priority landscape has shifted
-> dramatically. Most P0/P1 items from the original list are now done. Remaining work is smaller
-> in scope and concentrated in three areas: vector search re-enablement, background automation,
-> and the three remaining open issues (#11, #35, #42).
+> **Updated 2026-03-10 (+post2)**: 47 of 50 GitHub issues closed. Additional post-wave closures:
+> #43, #46, #51 (coref standalone stage), #52 (converter windowing), #57 (batch extraction
+> thresholds), #58 (full stage configurability). GLiNER2 windowing ✅, Voyage reranker ✅.
+> Bug #59: dotenvy ordering (fixed locally, commit pending). Bug #60: landscape gating too
+> aggressive — disabled via `COVALENCE_LANDSCAPE_ENABLED=false`. Remaining open: #11, #35, #42,
+> #59 (pending commit), #60 (landscape re-calibration).
 
 ## Spec Sections: 10-lessons-learned.md
 
@@ -20,20 +22,26 @@ With 47 issues closed in one day, Covalence's prioritization focus has shifted f
 | #28 | URL-based ingestion | Accept URLs directly at API |
 | #29 | UTF-8 safe chunking | Fixed multi-byte boundary crashes |
 | #30 | Byte-offset chunks | Incremental re-ingestion, precise attribution |
-| #32 | Two-pass extraction | GLiNER2 + NuExtract now active |
+| #32 | Two-pass extraction | GLiNER2 + NuExtract now active via `COVALENCE_ENTITY_EXTRACTOR=two_pass` |
 | #33 | Source metadata enrichment | title/author/date now stored |
 | #36 | HDBSCAN clustering wired | Ontology clustering end-to-end |
 | #37 | Cluster pinning/gravity wells | Pinned clusters persist and attract |
 | #39 | Knowledge gap detection | API endpoint + background analysis |
 | #40 | Self-loop + example entity filtering | Graph cleanup automated |
-| #44 | Extraction sidecar wired | SidecarExtractor in Rust |
+| #43 | Landscape bypass for single-chunk sources | Single-chunk docs always get FullExtraction |
+| #44 | Extraction sidecar wired | SidecarExtractor: three-stage coref→NER→rels with Rust windowing |
 | #45 | Table linearization | Pure Rust, no model needed |
+| #46 | Voyage env-based provider switching | `COVALENCE_EMBED_PROVIDER=voyage`; reranker auto-activated |
 | #47 | Community detection fixed | Was producing 6,026 empty communities |
 | #48 | Entity nodes filtered from search | Clean result sets |
 | #49 | Extraction error logging | Warnings on parse failure |
 | #50 | RRF score normalization | Dimension weights now meaningful |
 | #4  | Layer evaluation harness | CLI verified end-to-end |
-| …34 more | Various bug fixes and completions | — |
+| #51 | Separate coref preprocessing from extraction | Coref is now standalone pipeline stage |
+| #52 | Converter windowing for large HTML; PDF converter placeholder | HtmlConverter windowed; PDF trait wired as placeholder |
+| #57 | Batch extraction token thresholds | min_extract_tokens=30, extract_batch_tokens=2000 |
+| #58 | Full stage configurability | CONVERT_ENABLED, COREF_ENABLED, LANDSCAPE_ENABLED, EXTRACT_ENABLED |
+| …28 more | Various bug fixes and completions | — |
 
 ## What Remains Open
 
@@ -42,6 +50,8 @@ With 47 issues closed in one day, Covalence's prioritization focus has shifted f
 | **#11** | Fine-tune relationship extraction | Needs labeled dataset + training run |
 | **#35** | Federation scope decision | Architectural decision, not implementation |
 | **#42** | Extraction alternatives research | Research tracking, not a code issue |
+| **#59** | dotenvy initialized after tracing_subscriber | Bug fixed locally — commit/PR pending |
+| **#60** | Landscape gating too aggressive | Disabled pending threshold re-calibration |
 
 ## Prioritization Framework
 
@@ -58,17 +68,16 @@ Priority = Risk × Value, where:
 | Item | Risk | Value | Rationale |
 |------|------|-------|-----------|
 | **Rebuild Voyage vector index** | High | Unblocks entire vector search dimension | Dimension alignment broken after Voyage migration — only lexical search firing |
-| **GLiNER2 windowing** | Medium | Fixes silent entity truncation | Chunks > ~1KB lose entities silently at 384 token limit |
 
 #### P1: Do Soon (high value, low risk)
 
 | Item | Risk | Value | Rationale |
 |------|------|-------|-----------|
-| **Wire Voyage reranker** | Low | Better result ordering across all queries | `HttpReranker` exists, just needs activation |
+| **Re-calibrate landscape (#60)** | Low | Re-enables extraction quality gating | Landscape disabled — all chunks extract at full cost regardless of content |
+| **Commit dotenvy fix (#59)** | Low | Fixes tracing + env var startup reliability | Fix exists locally, just needs a commit |
 | **Background consolidation loop** | Low | Enables auto-clustering and forgetting | Scheduler exists, no tokio task running it |
 | **Incremental graph sync** | Medium | Eliminates restart-to-see-new-data | `outbox_events` table exists, not consumed |
 | **Confidence_breakdown population** | Low | Epistemic explainability | Data computed but not stored in JSONB |
-| **Node embedding → Voyage** | Low | Consistent embedding space | Chunk embeddings switched, node embeddings not yet |
 
 #### P2: Do When Convenient (good improvements, can wait)
 
@@ -76,7 +85,8 @@ Priority = Risk × Value, where:
 |------|------|-------|-----------|
 | **Lost in the Middle reordering** | Zero | Better context assembly quality | Academic foundation in KB |
 | **PII gating** | Low | Compliance for multi-user deployment | Pattern detection exists, not blocking |
-| **Landscape analysis surfacing** | Low | Better ingestion quality signals | Metrics computed, not exposed |
+| **Landscape analysis surfacing** | Low | Better ingestion quality signals | Metrics stored per chunk; disabled (#60) and not exposed via API |
+| **PDF converter (complete #52)** | Low | Unblocks PDF ingestion at scale | Placeholder wired; pymupdf4llm sidecar integration pending |
 | **Bridge node boosting in search** | Low | Better cross-domain results | Bridge discovery exists, not used in scoring |
 | **Community → search weighting** | Low | Denser subgraphs ranked higher | Communities now correct, not in scoring |
 | **Eval fixture generation** | Low | Regression testing | Harness works, no data |
@@ -129,7 +139,7 @@ Before changing a component, capture its current behavior:
 |-----------------|----------|---------------|
 | **Grounding %** | Academic backing of spec | ✅ Automated SQL query, run manually |
 | **Embedding coverage** | % of chunks/nodes with embeddings | ✅ Can query from DB |
-| **Search dimension firing** | Dimensions producing results | 🟡 Only lexical firing; vector blocked on index rebuild |
+| **Search dimension firing** | Dimensions producing results | 🟡 Lexical firing; vector blocked on index rebuild; reranker now active with Voyage |
 | **Entity extraction P/R/F1** | Extraction quality | 🟡 Eval crate works, no fixtures |
 | **Search P@K, nDCG** | Search quality | 🟡 Eval crate works, no fixtures |
 | **RAGAS scores** | End-to-end RAG quality | ❌ Stubs only |
@@ -163,9 +173,14 @@ For each of the remaining partial components, the path to completion follows a p
 
 ## Next Actions
 
-1. **Rebuild Voyage vector index** — highest leverage remaining item
-2. **Implement GLiNER2 windowing** — silent entity truncation at 384 tokens
-3. Wire Voyage reranker — one config change
+1. **Rebuild Voyage vector index** — highest leverage remaining item (unblocks vector search dimension)
+2. **Re-calibrate landscape thresholds** (#60) — tune similarity cutoffs so valid chunks aren't gated; re-enable `COVALENCE_LANDSCAPE_ENABLED=true`
+3. **Commit dotenvy fix** (#59) — one-liner move; unblocks reliable env-var startup
 4. Start background consolidation loop (tokio background task)
 5. Generate eval fixtures from current corpus
 6. Wire grounding % as CI fitness function
+
+> **Done since last prioritization**: GLiNER2 windowing (✅), Voyage reranker (✅), landscape
+> single-chunk bypass (#43 ✅), Voyage env switching (#46 ✅), coref independent stage (#51 ✅),
+> converter windowing (#52 ✅), batch extraction thresholds (#57 ✅), full stage configurability
+> (#58 ✅). Two-pass extraction confirmed working: GLiNER (local) + Gemini Flash.

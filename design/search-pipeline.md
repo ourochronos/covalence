@@ -1,10 +1,12 @@
 # Design: Search Pipeline
 
-## Status: partial (vector dimension blocked on index alignment)
+## Status: partial (vector dimension blocked on index alignment; reranker now active)
 
-> **Updated 2026-03-10**: RRF score normalization tuned (#50); entity nodes filtered from results
-> (#48). Vector search dimension currently not firing due to Voyage index dimension alignment
-> mismatch — lexical dimension is the only active retrieval path right now.
+> **Updated 2026-03-10 (+post)**: RRF score normalization tuned (#50); entity nodes filtered from
+> results (#48). Vector search dimension currently not firing due to Voyage index dimension
+> alignment mismatch — lexical dimension is the only active retrieval path right now.
+> Voyage reranker (`HttpReranker`, `rerank-2.5`) is now **auto-activated** when `VOYAGE_API_KEY`
+> is present — no longer requires manual wiring.
 
 ## Spec Sections: 06-search.md, 03-storage.md, 08-api.md
 
@@ -37,7 +39,7 @@ The search pipeline implements 5-dimensional fused retrieval: vector similarity,
 | Component | Status | Gap |
 |-----------|--------|-----|
 | **Vector search dimension** | Wired but not firing | Voyage index dimension mismatch — embeddings stored at one dimension count, query vector at another. Needs index rebuild after Voyage migration is fully settled. |
-| **Reranking** | `NoopReranker` active | `HttpReranker` exists for Voyage `rerank-2.5` but disabled. Need to wire `VOYAGE_API_KEY` and enable. |
+| **Reranking** | Auto-activated with Voyage | `HttpReranker` with Voyage `rerank-2.5` is automatically wired when `VOYAGE_API_KEY` is present (and `COVALENCE_EMBED_PROVIDER=voyage` or Voyage key detected). Falls back to `NoopReranker` when no key. No longer requires manual activation. |
 | **Topological confidence scoring** | Partial | Graph dimension uses structural metrics but doesn't do iterative trust propagation (EigenTrust/TrustRank-style). |
 | **Semantic cache invalidation** | Partial | Cache has TTL but no invalidation on source ingestion/update. |
 | **Multi-granularity search** | Partial | Searches chunks, nodes, and sources — but no article-level search yet. |
@@ -113,8 +115,10 @@ A system that confidently returns irrelevant results is worse than one that says
 ## Next Actions
 
 1. **Rebuild Voyage vector index** — fix dimension mismatch to re-enable vector search dimension
-2. Wire Voyage reranker — `HttpReranker` exists, just needs activation
-3. Implement bi-temporal query filtering — `valid_from`/`valid_until` WHERE clause on temporal dimension
-4. Define STAR-RAG in spec or remove references
-5. Add iterative trust propagation (EigenTrust-style) to graph dimension
-6. Wire cache invalidation on source mutation
+2. Implement bi-temporal query filtering — `valid_from`/`valid_until` WHERE clause on temporal dimension
+3. Define STAR-RAG in spec or remove references
+4. Add iterative trust propagation (EigenTrust-style) to graph dimension
+5. Wire cache invalidation on source mutation
+
+> **Done**: Voyage reranker (`HttpReranker` with `rerank-2.5`) is now auto-activated when
+> `VOYAGE_API_KEY` is present — no longer requires a config change.

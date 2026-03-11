@@ -2,10 +2,13 @@
 
 ## Status: active — updated with March 10 benchmarks
 
-> **Updated 2026-03-10**: Model stack confirmed end-to-end. Benchmarks added for Fastcoref (20KB
-> context OK), GLiNER2 (384-token hard limit!), NuExtract (4K tokens). pymupdf4llm confirmed for
-> PDF (3.4s/15 pages). Voyage AI now active for embeddings ($0.01/M). Gemini 2.5 Flash via
-> OpenRouter for extraction ($0.30/M).
+> **Updated 2026-03-10 (+post2)**: Model stack confirmed end-to-end. GLiNER2 windowing
+> **implemented** in `SidecarExtractor`. Coref is now an **independent preprocessing stage**
+> (#51 ✅ Closed). Voyage reranker auto-activated when `VOYAGE_API_KEY` present. **Landscape
+> disabled** (#60, `COVALENCE_LANDSCAPE_ENABLED=false`) — gating too aggressive. New closures:
+> #52 (converter windowing + PDF placeholder), #57 (batch extraction token thresholds), #58
+> (full stage configurability flags). Bug #59: dotenvy must initialize before tracing_subscriber;
+> pipeline must run from project root. Two-pass confirmed: GLiNER (local) + Gemini Flash.
 
 ## Purpose
 
@@ -45,7 +48,10 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 - `HtmlConverter` — hand-rolled tag stripper (naive, no tables)
 - `ReaderLmConverter` — MLX sidecar using ReaderLM-v2 (#41, ✅ implemented)
 - **NEW (#45)**: Table linearization — pure Rust, converts MD pipe tables to natural language
-- **NEW**: `PdfConverter` via pymupdf4llm — no model, pure extraction
+- **NEW (#52)**: Converter windowing — `HtmlConverter` splits large HTML documents into
+  overlapping windows before passing to ReaderLM-v2, preventing silent context truncation
+- **NEW**: `PdfConverter` via pymupdf4llm — currently a **placeholder**; trait is wired but
+  implementation returns a stub pending full sidecar integration
 
 **Candidates**:
 | Option | Type | Quality | Speed | Cost | Status |
@@ -129,22 +135,31 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 
 ---
 
-### 6.5. Coreference Resolution (NEW)
+### 6.5. Coreference Resolution
 
 **Trait**: Coreference → resolve pronouns and references across chunks.
 
-**Current**: ✅ **Fastcoref 90M** — tested locally, confirmed working.
+**Current**: ✅ **Independent preprocessing stage** (`ingestion/coreference.rs`). As of #51
+closure, coref has been extracted from `SidecarExtractor` and runs as a standalone pipeline
+stage. Calls `/coref` on the Python sidecar before Stage 6 extraction. Fastcoref 90M handles up
+to ~15K chars per call; longer inputs are windowed with 500-char overlap. Coref failure is
+non-fatal (original text used, WARN logged). Controlled via `COVALENCE_COREF_ENABLED` (#58).
+
+**#51 ✅ Closed**: Coref is now separate — running it as an independent stage allows independent
+testing, future pre-chunking coref, and cleaner model swapping without touching the extractor.
 
 **Benchmark (March 10)**:
 | Property | Value |
 |----------|-------|
-| Model | Fastcoref 90M |
+| Model | Fastcoref 90M (in Python sidecar) |
 | RAM | ~300MB |
-| Max context | **20KB OK** (confirmed) |
+| Max context | ~15K chars before windowing |
 | Speed | Fast (CPU-only) |
 | Quality | Good for pronoun resolution and entity tracking |
 
-**Key question**: Should coreference run before or after chunking? Currently after (cross-chunk linking). Before-chunking would let the chunker see resolved references, potentially improving chunk boundaries.
+**Key question (future)**: Should coreference run before or after chunking? Currently AFTER
+chunking (Stage 5.5b). Before-chunking would let the chunker see resolved references and
+potentially produce better boundaries — a future improvement now that the stage is independent.
 
 ---
 
@@ -152,16 +167,20 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 
 **Trait**: `Extractor` — chunk text → entities with types and spans.
 
-**Current**: ✅ **GLiNER2 ~500MB** via Python sidecar (#44, #32).
+**Current**: ✅ **GLiNER2 ~500MB** via unified sidecar (`SidecarExtractor`, `COVALENCE_ENTITY_EXTRACTOR=sidecar`).
 
-**⚠️ Critical finding**: GLiNER2 **truncates at 384 tokens**. Any text beyond this limit is silently dropped — entities in the latter portion of longer chunks are missed. Rust-side windowing needed: split chunks into ~1KB windows with 20% overlap, deduplicate entity spans after.
+**Windowing implemented**: Rust splits input into overlapping ~1200-char windows (200-char overlap,
+sentence-boundary-aware) in `SidecarExtractor::extract_entities()` before sending to `/ner`.
+Entities from all windows are deduplicated by lowercased name. The 384-token hard limit is now
+handled transparently — no silent entity loss for long chunks.
 
 **Benchmark (March 10)**:
 | Property | Value |
 |----------|-------|
 | Model | GLiNER2 ~500MB |
 | RAM | ~500MB |
-| Max context | **384 tokens (HARD LIMIT)** |
+| Max context | 384 tokens (hard limit — mitigated by Rust windowing) |
+| Window size | ~1200 chars, 200-char overlap, sentence-boundary splits |
 | Speed | Fast (CPU-only) |
 | Quality | High zero-shot NER |
 | Entity types | Open vocabulary (user-specified or emergent) |
@@ -194,6 +213,18 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 
 **Fallback**: Gemini 2.5 Flash via OpenRouter ($0.30/M tokens) — used when sidecar is unavailable or for enrichment of complex passages.
 
+**Two-pass CONFIRMED** (`COVALENCE_ENTITY_EXTRACTOR=two_pass`): GLiNER2 (local, ~500MB) for
+entity extraction + Gemini Flash (OpenRouter) for relationship extraction. This is the confirmed
+working two-pass configuration as of post-March-10 testing.
+
+**NEW (#57)**: Batch extraction token thresholds:
+- `min_extract_tokens=30` — chunks with fewer tokens are skipped (no extraction on trivially short content such as headers or metadata fragments)
+- `extract_batch_tokens=2000` — extraction batched at this token target to control sidecar/LLM call size and cost
+
+**NEW (#58)**: Each pipeline stage can be independently controlled via env vars:
+`COVALENCE_CONVERT_ENABLED`, `COVALENCE_COREF_ENABLED`, `COVALENCE_LANDSCAPE_ENABLED`,
+`COVALENCE_EXTRACT_ENABLED`. Useful for debugging specific stages, cost control during development, and A/B testing individual components.
+
 **Candidates**:
 | Option | Type | Quality | Context | Speed | Cost | Status |
 |--------|------|---------|---------|-------|------|--------|
@@ -208,9 +239,18 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 
 **Trait**: `analyze_landscape` — assess extraction confidence, decide extraction method.
 
-**Current**: Cosine similarity analysis, model calibration, extraction method selection.
+**Current**: 🟡 **Wired but currently DISABLED** (`COVALENCE_LANDSCAPE_ENABLED=false`).
 
-**Options**: Tightly coupled to extraction — evolves with #42.
+**⚠️ #60 BUG**: Landscape gating was too aggressive — valid multi-chunk sources were being
+classified as `EmbeddingLinkage` and skipping extraction entirely, producing zero entities.
+Disabled via `COVALENCE_LANDSCAPE_ENABLED=false` (#58 configurability flag) while similarity
+thresholds are re-calibrated. When disabled, all chunks receive `FullExtraction`.
+
+When re-enabled: results stored per chunk (`extraction_method`, `landscape_metrics` JSONB);
+`EmbeddingLinkage`/`DeltaCheck` chunks skip extractor; only `FullExtraction` and
+`FullExtractionWithReview` chunks proceed. **#43**: single-chunk sources always bypass landscape.
+
+**Options**: Tightly coupled to extraction — evolves with #42 and threshold calibration work.
 
 **Test**: Given chunks with varying complexity, verify method selection makes sense.
 
@@ -254,7 +294,7 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 |---------|----------|------|-------|
 | Embeddings | Voyage AI (`voyage-3-large`) | $0.01/M tokens | 13× cheaper than OpenAI |
 | LLM extraction | Gemini 2.5 Flash (OpenRouter) | $0.30/M tokens | Fallback / enrichment |
-| Reranking | Voyage `rerank-2.5` | ~$0.05/M tokens | Not yet activated (NoopReranker active) |
+| Reranking | Voyage `rerank-2.5` | ~$0.05/M tokens | Auto-activated when `VOYAGE_API_KEY` present; NoopReranker fallback if no key |
 | NER | GLiNER2 (local) | Free | ~500MB RAM |
 | RE | NuExtract (local) | Free | ~1GB RAM |
 | Coreference | Fastcoref (local) | Free | ~300MB RAM |
@@ -266,7 +306,7 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 | Model | Max Context | Behavior at Limit | Workaround |
 |-------|-------------|-------------------|------------|
 | Fastcoref 90M | ~20KB | Untested beyond 20KB | Chunk-level application; 20KB is plenty |
-| **GLiNER2** | **384 tokens** | **Silent truncation** | **Rust-side windowing needed (~1KB chunks, 20% overlap)** |
+| **GLiNER2** | **384 tokens** | Silent truncation (mitigated) | Rust-side windowing implemented in `SidecarExtractor`: ~1200-char windows, 200-char overlap, sentence boundaries |
 | NuExtract-1.5-tiny | 4K tokens | Untested beyond | Chunk-level; 4K sufficient for most chunks |
 | Gemini 2.5 Flash | 1M tokens | Cost scales linearly | Budget management via token cap |
 | Voyage voyage-3-large | 32K tokens | Truncation | Document-level OK for most content |
@@ -282,19 +322,32 @@ Each stage needs:
 
 The eval harness (`covalence-eval`) is now verified (#4) with layer evaluators for chunking, extraction, and search. Needs fixture data to actually run.
 
-## Priority Order (updated March 10)
+## Priority Order (updated post-March-10 wave 2)
 
-1. **Vector index rebuild** — fix Voyage dimension alignment, re-enable vector search
-2. **GLiNER2 windowing** — prevent silent entity truncation at 384 tokens
-3. **Activate Voyage reranker** — `HttpReranker` ready, just needs config
-4. **Generate eval fixtures** — the harness works, give it data
-5. **Fine-tune RE model** (#11) — labeled dataset needed first
+1. **Vector index rebuild** — fix Voyage dimension alignment, re-enable vector search dimension
+2. **Re-calibrate landscape thresholds** (#60) — gating too aggressive; re-enable once tuned
+3. **Commit dotenvy fix** (#59) — tracing_subscriber sees `.env` vars correctly
+4. **Complete PDF converter** (#52) — replace placeholder with working implementation
+5. **Generate eval fixtures** — the harness works, give it data
+6. **Fine-tune RE model** (#11) — labeled dataset needed first
+
+> **Done since March 10**: GLiNER2 windowing (✅), Voyage reranker (✅ auto-wired), #51 coref
+> separation (✅), #52 converter windowing (✅), #57 batch token thresholds (✅), #58 stage
+> configurability (✅). Two-pass extraction confirmed working (GLiNER local + Gemini Flash).
 
 ## Related Issues
 - #30 — Byte offset chunks ✅ Closed
 - #41 — ReaderLM-v2 converter ✅ Closed
 - #42 — Extraction alternatives research 🔴 Open
+- #43 — Landscape bypass for single-chunk sources ✅ Closed
+- #44 — Extraction sidecar (SidecarExtractor, windowing) ✅ Closed
+- #45 — Table linearization ✅ Closed
+- #46 — Voyage env-based provider switching (COVALENCE_EMBED_PROVIDER) ✅ Closed
 - #4 — Layer-by-layer evaluation harness ✅ Closed
 - #11 — Fine-tune relationship extraction 🔴 Open
-- #44 — Extraction sidecar ✅ Closed
-- #45 — Table linearization ✅ Closed
+- #51 — Separate coref preprocessing from extraction ✅ Closed
+- #52 — Converter windowing (large HTML); PDF converter placeholder ✅ Closed
+- #57 — Batch extraction token thresholds (min_extract_tokens, extract_batch_tokens) ✅ Closed
+- #58 — Full stage configurability (CONVERT_ENABLED, COREF_ENABLED, LANDSCAPE_ENABLED…) ✅ Closed
+- #59 — dotenvy initialized after tracing_subscriber (bug, fix needs commit) 🟡
+- #60 — Landscape gating too aggressive, disabled (COVALENCE_LANDSCAPE_ENABLED=false) 🔴 Open
