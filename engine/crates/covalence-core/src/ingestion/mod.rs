@@ -39,8 +39,9 @@ pub use extractor::{
 };
 pub use gliner_extractor::GlinerExtractor;
 pub use landscape::{
-    ChunkLandscapeResult, ExtractionMethod, LandscapeMetrics, ModelCalibration, analyze_landscape,
-    cosine_similarity,
+    ChunkEmbeddingMetrics, ChunkLandscapeResult, ExtractionMethod, LandscapeMetrics,
+    ModelCalibration, analyze_landscape, compute_chunk_landscape_metrics,
+    compute_chunk_landscape_metrics_default, cosine_similarity,
 };
 pub use llm_extractor::LlmExtractor;
 pub use normalize::normalize;

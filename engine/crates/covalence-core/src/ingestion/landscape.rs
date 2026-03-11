@@ -5,7 +5,11 @@
 //! Embedding landscape topology decides which chunks warrant expensive
 //! LLM extraction — not a blanket policy.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::types::ids::ChunkId;
 
 /// Calibration statistics for a specific embedding model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,6 +292,165 @@ fn determine_extraction_method(
     ExtractionMethod::DeltaCheck
 }
 
+/// Default number of nearest neighbors for k-NN density.
+const DEFAULT_KNN_K: usize = 5;
+
+/// Per-chunk embedding landscape metrics computed after embedding.
+///
+/// These metrics capture the geometric relationship of each chunk's
+/// embedding to its sibling chunks within the same source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkEmbeddingMetrics {
+    /// Average cosine similarity to k-nearest sibling chunks.
+    pub density: f64,
+    /// 1.0 minus the maximum cosine similarity to any sibling chunk.
+    pub uniqueness: f64,
+    /// Shannon entropy of token (whitespace-split word) distribution.
+    pub entropy: f64,
+    /// Maximum cosine similarity to any sibling chunk (explicit
+    /// complement of uniqueness).
+    pub redundancy_score: f64,
+    /// Cosine distance (1 - cos_sim) from the source centroid
+    /// embedding.
+    pub centroid_distance: f64,
+}
+
+/// Compute per-chunk landscape metrics for a batch of sibling
+/// embeddings from the same source.
+///
+/// # Arguments
+/// * `chunks` - Tuples of (chunk_id, embedding, text) for every
+///   chunk in a single source.
+/// * `k` - Number of nearest neighbors for density (clamped to
+///   `chunks.len() - 1`).
+///
+/// Returns a mapping from [`ChunkId`] to the computed metrics as
+/// a [`serde_json::Value`].
+pub fn compute_chunk_landscape_metrics(
+    chunks: &[(ChunkId, &[f64], &str)],
+    k: usize,
+) -> Vec<(ChunkId, serde_json::Value)> {
+    if chunks.is_empty() {
+        return Vec::new();
+    }
+
+    // Single chunk: metrics are trivially defined.
+    if chunks.len() == 1 {
+        let (id, _, text) = &chunks[0];
+        let entropy = token_entropy(text);
+        let metrics = ChunkEmbeddingMetrics {
+            density: 1.0,
+            uniqueness: 1.0,
+            entropy,
+            redundancy_score: 0.0,
+            centroid_distance: 0.0,
+        };
+        let value = match serde_json::to_value(&metrics) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+        return vec![(*id, value)];
+    }
+
+    // Compute centroid as element-wise mean of all embeddings.
+    let dim = chunks[0].1.len();
+    let mut centroid = vec![0.0f64; dim];
+    for (_, emb, _) in chunks {
+        for (c, &v) in centroid.iter_mut().zip(emb.iter()) {
+            *c += v;
+        }
+    }
+    let n = chunks.len() as f64;
+    for c in &mut centroid {
+        *c /= n;
+    }
+
+    // Precompute pairwise similarities.
+    let len = chunks.len();
+    let mut sim_matrix = vec![vec![0.0f64; len]; len];
+    for i in 0..len {
+        sim_matrix[i][i] = 1.0;
+        for j in (i + 1)..len {
+            let s = cosine_similarity(chunks[i].1, chunks[j].1);
+            sim_matrix[i][j] = s;
+            sim_matrix[j][i] = s;
+        }
+    }
+
+    let effective_k = k.min(len - 1);
+
+    let mut results = Vec::with_capacity(len);
+    for i in 0..len {
+        let (id, emb, text) = &chunks[i];
+
+        // Gather similarities to all *other* chunks.
+        let mut sims: Vec<f64> = (0..len)
+            .filter(|&j| j != i)
+            .map(|j| sim_matrix[i][j])
+            .collect();
+        sims.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+        // density: average of top-k similarities.
+        let density: f64 = if effective_k > 0 {
+            sims.iter().take(effective_k).copied().sum::<f64>() / effective_k as f64
+        } else {
+            0.0
+        };
+
+        // max similarity to any sibling.
+        let max_sim = sims.first().copied().unwrap_or(0.0);
+        let uniqueness = 1.0 - max_sim;
+        let redundancy_score = max_sim;
+
+        let centroid_sim = cosine_similarity(emb, &centroid);
+        let centroid_distance = 1.0 - centroid_sim;
+
+        let entropy = token_entropy(text);
+
+        let metrics = ChunkEmbeddingMetrics {
+            density,
+            uniqueness,
+            entropy,
+            redundancy_score,
+            centroid_distance,
+        };
+        if let Ok(value) = serde_json::to_value(&metrics) {
+            results.push((*id, value));
+        }
+    }
+
+    results
+}
+
+/// Convenience wrapper using the default k value.
+pub fn compute_chunk_landscape_metrics_default(
+    chunks: &[(ChunkId, &[f64], &str)],
+) -> Vec<(ChunkId, serde_json::Value)> {
+    compute_chunk_landscape_metrics(chunks, DEFAULT_KNN_K)
+}
+
+/// Compute Shannon entropy over whitespace-split token frequencies.
+///
+/// Returns 0.0 for empty text.
+fn token_entropy(text: &str) -> f64 {
+    let mut freq: HashMap<&str, usize> = HashMap::new();
+    let mut total = 0usize;
+    for word in text.split_whitespace() {
+        *freq.entry(word).or_insert(0) += 1;
+        total += 1;
+    }
+    if total == 0 {
+        return 0.0;
+    }
+    let total_f = total as f64;
+    let mut entropy = 0.0f64;
+    for &count in freq.values() {
+        let p = count as f64 / total_f;
+        entropy -= p * p.log2();
+    }
+    entropy
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +643,143 @@ mod tests {
     fn empty_input() {
         let results: Vec<ChunkLandscapeResult> = analyze_landscape(&[], &[], None);
         assert!(results.is_empty());
+    }
+
+    // --- Tests for compute_chunk_landscape_metrics ---
+
+    #[test]
+    fn chunk_metrics_empty_input() {
+        let results = compute_chunk_landscape_metrics(&[], 5);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn chunk_metrics_single_chunk() {
+        let id = ChunkId::new();
+        let emb = vec![1.0, 0.0, 0.0];
+        let text = "hello world hello";
+        let chunks = vec![(id, emb.as_slice(), text)];
+
+        let results = compute_chunk_landscape_metrics(&chunks, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, id);
+
+        let m: ChunkEmbeddingMetrics =
+            serde_json::from_value(results[0].1.clone()).expect("valid json");
+        assert!((m.density - 1.0).abs() < 1e-10);
+        assert!((m.uniqueness - 1.0).abs() < 1e-10);
+        assert!((m.redundancy_score - 0.0).abs() < 1e-10);
+        assert!((m.centroid_distance - 0.0).abs() < 1e-10);
+        // Entropy should be > 0 for text with multiple distinct tokens
+        assert!(m.entropy > 0.0);
+    }
+
+    #[test]
+    fn chunk_metrics_identical_embeddings() {
+        let id1 = ChunkId::new();
+        let id2 = ChunkId::new();
+        let emb = vec![1.0, 0.0, 0.0];
+        let chunks = vec![
+            (id1, emb.as_slice(), "foo bar"),
+            (id2, emb.as_slice(), "baz qux"),
+        ];
+
+        let results = compute_chunk_landscape_metrics(&chunks, 5);
+        assert_eq!(results.len(), 2);
+
+        let m: ChunkEmbeddingMetrics =
+            serde_json::from_value(results[0].1.clone()).expect("valid json");
+        // Identical embeddings: max similarity = 1.0
+        assert!((m.redundancy_score - 1.0).abs() < 1e-10);
+        assert!(m.uniqueness.abs() < 1e-10);
+        // Density with 1 neighbor = 1.0
+        assert!((m.density - 1.0).abs() < 1e-10);
+        // Same as centroid, so distance = 0
+        assert!(m.centroid_distance.abs() < 1e-10);
+    }
+
+    #[test]
+    fn chunk_metrics_orthogonal_embeddings() {
+        let id1 = ChunkId::new();
+        let id2 = ChunkId::new();
+        let id3 = ChunkId::new();
+        let e1 = vec![1.0, 0.0, 0.0];
+        let e2 = vec![0.0, 1.0, 0.0];
+        let e3 = vec![0.0, 0.0, 1.0];
+        let chunks = vec![
+            (id1, e1.as_slice(), "alpha"),
+            (id2, e2.as_slice(), "beta"),
+            (id3, e3.as_slice(), "gamma"),
+        ];
+
+        let results = compute_chunk_landscape_metrics(&chunks, 5);
+        assert_eq!(results.len(), 3);
+
+        let m: ChunkEmbeddingMetrics =
+            serde_json::from_value(results[0].1.clone()).expect("valid json");
+        // Orthogonal vectors: similarity = 0 to all others
+        assert!(m.density.abs() < 1e-10);
+        assert!((m.uniqueness - 1.0).abs() < 1e-10);
+        assert!(m.redundancy_score.abs() < 1e-10);
+        // Centroid is (1/3, 1/3, 1/3), cos_sim with (1,0,0) =
+        // 1/3 / (1 * sqrt(1/3)) = 1/sqrt(3)
+        let expected_sim = 1.0 / 3.0_f64.sqrt();
+        let expected_dist = 1.0 - expected_sim;
+        assert!((m.centroid_distance - expected_dist).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chunk_metrics_knn_clamps_to_available() {
+        // k=5 but only 2 other chunks available
+        let id1 = ChunkId::new();
+        let id2 = ChunkId::new();
+        let id3 = ChunkId::new();
+        let e1 = vec![1.0, 0.0];
+        let e2 = vec![0.8, 0.6];
+        let e3 = vec![0.0, 1.0];
+        let chunks = vec![
+            (id1, e1.as_slice(), "one"),
+            (id2, e2.as_slice(), "two"),
+            (id3, e3.as_slice(), "three"),
+        ];
+
+        let results = compute_chunk_landscape_metrics(&chunks, 5);
+        // Should still work — k gets clamped to 2
+        assert_eq!(results.len(), 3);
+        let m: ChunkEmbeddingMetrics =
+            serde_json::from_value(results[0].1.clone()).expect("valid json");
+        // density = average of 2 similarities
+        let sim_12 = cosine_similarity(&e1, &e2);
+        let sim_13 = cosine_similarity(&e1, &e3);
+        let expected = (sim_12 + sim_13) / 2.0;
+        assert!((m.density - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn token_entropy_empty_text() {
+        assert!((token_entropy("") - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn token_entropy_single_token() {
+        // All same token: p=1, entropy = -1*log2(1) = 0
+        assert!((token_entropy("a a a a") - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn token_entropy_uniform_tokens() {
+        // 4 distinct tokens each appearing once:
+        // H = -4*(1/4 * log2(1/4)) = 2.0
+        let h = token_entropy("a b c d");
+        assert!((h - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn chunk_metrics_default_k() {
+        let id = ChunkId::new();
+        let emb = vec![1.0, 0.0];
+        let chunks = vec![(id, emb.as_slice(), "word")];
+        let results = compute_chunk_landscape_metrics_default(&chunks);
+        assert_eq!(results.len(), 1);
     }
 }
