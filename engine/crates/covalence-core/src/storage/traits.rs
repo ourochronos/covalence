@@ -185,6 +185,13 @@ pub trait EdgeRepo: Send + Sync {
 
     /// Delete an edge by ID.
     fn delete(&self, id: EdgeId) -> impl Future<Output = Result<bool>> + Send;
+
+    /// Delete all edges involving a node (as source or target).
+    ///
+    /// Returns the number of rows deleted. Used during cascading
+    /// source deletion to remove dangling edges before deleting
+    /// orphaned nodes.
+    fn delete_by_node(&self, node_id: NodeId) -> impl Future<Output = Result<u64>> + Send;
 }
 
 /// Repository for [`Article`] entities.
@@ -249,6 +256,31 @@ pub trait ExtractionRepo: Send + Sync {
         &self,
         source_id: SourceId,
     ) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Delete all extractions for a source's chunks.
+    ///
+    /// Returns the number of rows deleted. Used during cascading
+    /// source deletion.
+    fn delete_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
+
+    /// List distinct entity IDs of type "node" extracted from a
+    /// source's chunks (including superseded extractions).
+    ///
+    /// Used to find affected nodes during cascading source deletion.
+    fn list_node_ids_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<Vec<NodeId>>> + Send;
+
+    /// Count non-superseded extractions for a specific entity.
+    ///
+    /// Used to determine whether a node can be safely deleted
+    /// (zero remaining extractions) during cascading source deletion.
+    fn count_active_by_entity(
+        &self,
+        entity_type: &str,
+        entity_id: uuid::Uuid,
+    ) -> impl Future<Output = Result<i64>> + Send;
 }
 
 /// Repository for [`NodeAlias`] entities.
@@ -267,6 +299,20 @@ pub trait NodeAliasRepo: Send + Sync {
 
     /// Delete an alias by ID.
     fn delete(&self, id: AliasId) -> impl Future<Output = Result<bool>> + Send;
+
+    /// Delete all aliases for a node.
+    ///
+    /// Returns the number of rows deleted. Used during cascading
+    /// source deletion to remove aliases before deleting orphaned
+    /// nodes.
+    fn delete_by_node(&self, node_id: NodeId) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Nullify `source_chunk_id` for all aliases referencing chunks
+    /// belonging to a source.
+    ///
+    /// This must be called before deleting chunks to avoid FK
+    /// violations on `node_aliases.source_chunk_id`.
+    fn clear_source_chunks(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
 }
 
 /// Repository for [`AuditLog`] entries.

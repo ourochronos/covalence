@@ -413,6 +413,447 @@ async fn test_node_alias_crud() {
         .expect("cleanup node");
 }
 
+// ── Cascading Source Delete ──────────────────────────────────────
+
+#[tokio::test]
+#[ignore]
+async fn test_source_cascading_delete() {
+    use std::sync::Arc;
+
+    use crate::services::source::SourceService;
+
+    let repo = make_repo().await;
+    let repo = Arc::new(repo);
+    let svc = SourceService::new(Arc::clone(&repo));
+
+    // Set up a full provenance chain:
+    // source -> chunk -> extraction -> node -> edge
+
+    let source = Source::new(SourceType::Document, vec![99, 98, 97, 96]);
+    SourceRepo::create(&*repo, &source)
+        .await
+        .expect("create source");
+
+    let chunk = Chunk::new(
+        source.id,
+        ChunkLevel::Section,
+        0,
+        "Cascade delete test content.".to_string(),
+        vec![88, 87, 86],
+        5,
+    );
+    ChunkRepo::create(&*repo, &chunk)
+        .await
+        .expect("create chunk");
+
+    let node_a = Node::new("Cascade Node A".to_string(), "concept".to_string());
+    let node_b = Node::new("Cascade Node B".to_string(), "concept".to_string());
+    NodeRepo::create(&*repo, &node_a).await.expect("create A");
+    NodeRepo::create(&*repo, &node_b).await.expect("create B");
+
+    // Extraction linking chunk -> node_a
+    let ext = Extraction::new(
+        chunk.id,
+        ExtractedEntityType::Node,
+        node_a.id.into_uuid(),
+        "test_method".to_string(),
+        0.9,
+    );
+    ExtractionRepo::create(&*repo, &ext)
+        .await
+        .expect("create extraction");
+
+    // Edge between node_a and node_b
+    let edge = Edge::new(node_a.id, node_b.id, "related_to".to_string());
+    EdgeRepo::create(&*repo, &edge).await.expect("create edge");
+
+    // Alias for node_a referencing the chunk
+    let alias = NodeAlias {
+        id: AliasId::new(),
+        node_id: node_a.id,
+        alias: "CNA".to_string(),
+        source_chunk_id: Some(chunk.id),
+    };
+    NodeAliasRepo::create(&*repo, &alias)
+        .await
+        .expect("create alias");
+
+    // --- Perform cascading delete ---
+    let result = svc.delete(source.id).await.expect("cascading delete");
+
+    assert!(result.deleted, "source should be deleted");
+    assert_eq!(result.chunks_deleted, 1);
+    assert_eq!(result.extractions_deleted, 1);
+    assert_eq!(result.nodes_deleted, 1, "orphaned node_a should be deleted");
+    assert_eq!(
+        result.edges_deleted, 1,
+        "edge involving node_a should be deleted"
+    );
+
+    // Verify everything is gone
+    assert!(
+        SourceRepo::get(&*repo, source.id)
+            .await
+            .expect("get source")
+            .is_none()
+    );
+    assert!(
+        ChunkRepo::get(&*repo, chunk.id)
+            .await
+            .expect("get chunk")
+            .is_none()
+    );
+    assert!(
+        NodeRepo::get(&*repo, node_a.id)
+            .await
+            .expect("get node_a")
+            .is_none()
+    );
+    assert!(
+        EdgeRepo::get(&*repo, edge.id)
+            .await
+            .expect("get edge")
+            .is_none()
+    );
+
+    // node_b should still exist (no extractions from this source)
+    assert!(
+        NodeRepo::get(&*repo, node_b.id)
+            .await
+            .expect("get node_b")
+            .is_some()
+    );
+
+    // Cleanup remaining
+    NodeRepo::delete(&*repo, node_b.id)
+        .await
+        .expect("cleanup B");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_source_cascading_delete_preserves_shared_nodes() {
+    use std::sync::Arc;
+
+    use crate::services::source::SourceService;
+
+    let repo = make_repo().await;
+    let repo = Arc::new(repo);
+    let svc = SourceService::new(Arc::clone(&repo));
+
+    // Create two sources that share a node
+    let source1 = Source::new(SourceType::Document, vec![70, 71, 72]);
+    let source2 = Source::new(SourceType::Document, vec![73, 74, 75]);
+    SourceRepo::create(&*repo, &source1)
+        .await
+        .expect("create s1");
+    SourceRepo::create(&*repo, &source2)
+        .await
+        .expect("create s2");
+
+    let chunk1 = Chunk::new(
+        source1.id,
+        ChunkLevel::Section,
+        0,
+        "Shared node test chunk 1".to_string(),
+        vec![60, 61],
+        4,
+    );
+    let chunk2 = Chunk::new(
+        source2.id,
+        ChunkLevel::Section,
+        0,
+        "Shared node test chunk 2".to_string(),
+        vec![62, 63],
+        4,
+    );
+    ChunkRepo::create(&*repo, &chunk1).await.expect("create c1");
+    ChunkRepo::create(&*repo, &chunk2).await.expect("create c2");
+
+    // Shared node referenced by both sources
+    let shared_node = Node::new("Shared Node".to_string(), "concept".to_string());
+    NodeRepo::create(&*repo, &shared_node)
+        .await
+        .expect("create shared");
+
+    let ext1 = Extraction::new(
+        chunk1.id,
+        ExtractedEntityType::Node,
+        shared_node.id.into_uuid(),
+        "test_method".to_string(),
+        0.9,
+    );
+    let ext2 = Extraction::new(
+        chunk2.id,
+        ExtractedEntityType::Node,
+        shared_node.id.into_uuid(),
+        "test_method".to_string(),
+        0.85,
+    );
+    ExtractionRepo::create(&*repo, &ext1)
+        .await
+        .expect("create ext1");
+    ExtractionRepo::create(&*repo, &ext2)
+        .await
+        .expect("create ext2");
+
+    // Delete source1 — shared_node should survive
+    let result = svc.delete(source1.id).await.expect("delete source1");
+
+    assert!(result.deleted);
+    assert_eq!(result.chunks_deleted, 1);
+    assert_eq!(result.extractions_deleted, 1);
+    assert_eq!(result.nodes_deleted, 0, "shared node should NOT be deleted");
+    assert_eq!(result.edges_deleted, 0);
+
+    // Verify shared_node still exists with updated mention_count
+    let node = NodeRepo::get(&*repo, shared_node.id)
+        .await
+        .expect("get shared")
+        .expect("shared node should still exist");
+    assert_eq!(
+        node.mention_count, 1,
+        "mention_count should reflect one remaining extraction"
+    );
+
+    // Cleanup
+    let result2 = svc.delete(source2.id).await.expect("delete source2");
+    assert!(result2.deleted);
+    assert_eq!(
+        result2.nodes_deleted, 1,
+        "shared node should now be deleted"
+    );
+
+    // Verify fully cleaned up
+    assert!(
+        NodeRepo::get(&*repo, shared_node.id)
+            .await
+            .expect("get shared")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_extraction_delete_by_source() {
+    let repo = make_repo().await;
+
+    let source = Source::new(SourceType::Document, vec![50, 51, 52]);
+    SourceRepo::create(&repo, &source)
+        .await
+        .expect("create source");
+
+    let chunk = Chunk::new(
+        source.id,
+        ChunkLevel::Paragraph,
+        0,
+        "Delete by source test".to_string(),
+        vec![53, 54],
+        3,
+    );
+    ChunkRepo::create(&repo, &chunk)
+        .await
+        .expect("create chunk");
+
+    let node = Node::new("Del Test Node".to_string(), "concept".to_string());
+    NodeRepo::create(&repo, &node).await.expect("create node");
+
+    let ext = Extraction::new(
+        chunk.id,
+        ExtractedEntityType::Node,
+        node.id.into_uuid(),
+        "test".to_string(),
+        0.8,
+    );
+    ExtractionRepo::create(&repo, &ext)
+        .await
+        .expect("create ext");
+
+    // Test list_node_ids_by_source
+    let node_ids = ExtractionRepo::list_node_ids_by_source(&repo, source.id)
+        .await
+        .expect("list node ids");
+    assert_eq!(node_ids.len(), 1);
+    assert_eq!(node_ids[0], node.id);
+
+    // Test count_active_by_entity
+    let count = ExtractionRepo::count_active_by_entity(&repo, "node", node.id.into_uuid())
+        .await
+        .expect("count active");
+    assert_eq!(count, 1);
+
+    // Test delete_by_source
+    let deleted = ExtractionRepo::delete_by_source(&repo, source.id)
+        .await
+        .expect("delete by source");
+    assert_eq!(deleted, 1);
+
+    // Verify extraction is gone
+    let count = ExtractionRepo::count_active_by_entity(&repo, "node", node.id.into_uuid())
+        .await
+        .expect("count after delete");
+    assert_eq!(count, 0);
+
+    // Cleanup
+    NodeRepo::delete(&repo, node.id)
+        .await
+        .expect("cleanup node");
+    ChunkRepo::delete(&repo, chunk.id)
+        .await
+        .expect("cleanup chunk");
+    SourceRepo::delete(&repo, source.id)
+        .await
+        .expect("cleanup source");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_edge_delete_by_node() {
+    let repo = make_repo().await;
+
+    let node_a = Node::new("Edge Del A".to_string(), "concept".to_string());
+    let node_b = Node::new("Edge Del B".to_string(), "concept".to_string());
+    let node_c = Node::new("Edge Del C".to_string(), "concept".to_string());
+    NodeRepo::create(&repo, &node_a).await.expect("create A");
+    NodeRepo::create(&repo, &node_b).await.expect("create B");
+    NodeRepo::create(&repo, &node_c).await.expect("create C");
+
+    let edge_ab = Edge::new(node_a.id, node_b.id, "knows".to_string());
+    let edge_ca = Edge::new(node_c.id, node_a.id, "references".to_string());
+    let edge_bc = Edge::new(node_b.id, node_c.id, "contains".to_string());
+    EdgeRepo::create(&repo, &edge_ab).await.expect("create AB");
+    EdgeRepo::create(&repo, &edge_ca).await.expect("create CA");
+    EdgeRepo::create(&repo, &edge_bc).await.expect("create BC");
+
+    // Delete edges involving node_a
+    let deleted = EdgeRepo::delete_by_node(&repo, node_a.id)
+        .await
+        .expect("delete by node");
+    assert_eq!(deleted, 2, "should delete AB and CA edges");
+
+    // edge_bc should survive
+    assert!(
+        EdgeRepo::get(&repo, edge_bc.id)
+            .await
+            .expect("get BC")
+            .is_some()
+    );
+
+    // Cleanup
+    EdgeRepo::delete(&repo, edge_bc.id)
+        .await
+        .expect("cleanup BC");
+    NodeRepo::delete(&repo, node_a.id).await.expect("cleanup A");
+    NodeRepo::delete(&repo, node_b.id).await.expect("cleanup B");
+    NodeRepo::delete(&repo, node_c.id).await.expect("cleanup C");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_node_alias_delete_by_node() {
+    let repo = make_repo().await;
+
+    let node = Node::new("Alias Del Node".to_string(), "concept".to_string());
+    NodeRepo::create(&repo, &node).await.expect("create node");
+
+    let a1 = NodeAlias {
+        id: AliasId::new(),
+        node_id: node.id,
+        alias: "ADN1".to_string(),
+        source_chunk_id: None,
+    };
+    let a2 = NodeAlias {
+        id: AliasId::new(),
+        node_id: node.id,
+        alias: "ADN2".to_string(),
+        source_chunk_id: None,
+    };
+    NodeAliasRepo::create(&repo, &a1).await.expect("create a1");
+    NodeAliasRepo::create(&repo, &a2).await.expect("create a2");
+
+    let deleted = NodeAliasRepo::delete_by_node(&repo, node.id)
+        .await
+        .expect("delete by node");
+    assert_eq!(deleted, 2);
+
+    let remaining = NodeAliasRepo::list_by_node(&repo, node.id)
+        .await
+        .expect("list after delete");
+    assert!(remaining.is_empty());
+
+    NodeRepo::delete(&repo, node.id).await.expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_node_alias_clear_source_chunks() {
+    let repo = make_repo().await;
+
+    let source = Source::new(SourceType::Document, vec![80, 81, 82]);
+    SourceRepo::create(&repo, &source)
+        .await
+        .expect("create source");
+
+    let chunk = Chunk::new(
+        source.id,
+        ChunkLevel::Paragraph,
+        0,
+        "clear source chunks test".to_string(),
+        vec![83, 84],
+        3,
+    );
+    ChunkRepo::create(&repo, &chunk)
+        .await
+        .expect("create chunk");
+
+    let node = Node::new("Clear Chunks Node".to_string(), "concept".to_string());
+    NodeRepo::create(&repo, &node).await.expect("create node");
+
+    let alias = NodeAlias {
+        id: AliasId::new(),
+        node_id: node.id,
+        alias: "CCN".to_string(),
+        source_chunk_id: Some(chunk.id),
+    };
+    NodeAliasRepo::create(&repo, &alias)
+        .await
+        .expect("create alias");
+
+    // Verify source_chunk_id is set
+    let before = NodeAliasRepo::get(&repo, alias.id)
+        .await
+        .expect("get alias")
+        .expect("alias should exist");
+    assert!(before.source_chunk_id.is_some());
+
+    // Clear source chunks
+    let cleared = NodeAliasRepo::clear_source_chunks(&repo, source.id)
+        .await
+        .expect("clear source chunks");
+    assert_eq!(cleared, 1);
+
+    // Verify source_chunk_id is now NULL
+    let after = NodeAliasRepo::get(&repo, alias.id)
+        .await
+        .expect("get alias after clear")
+        .expect("alias should still exist");
+    assert!(after.source_chunk_id.is_none());
+
+    // Cleanup
+    NodeAliasRepo::delete(&repo, alias.id)
+        .await
+        .expect("cleanup alias");
+    NodeRepo::delete(&repo, node.id)
+        .await
+        .expect("cleanup node");
+    ChunkRepo::delete(&repo, chunk.id)
+        .await
+        .expect("cleanup chunk");
+    SourceRepo::delete(&repo, source.id)
+        .await
+        .expect("cleanup source");
+}
+
 // ── AuditLog ─────────────────────────────────────────────────────
 
 #[tokio::test]

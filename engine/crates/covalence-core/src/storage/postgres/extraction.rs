@@ -5,7 +5,7 @@ use sqlx::Row;
 use crate::error::Result;
 use crate::models::extraction::Extraction;
 use crate::storage::traits::ExtractionRepo;
-use crate::types::ids::{ChunkId, ExtractionId, SourceId};
+use crate::types::ids::{ChunkId, ExtractionId, NodeId, SourceId};
 
 use super::PgRepo;
 
@@ -109,6 +109,60 @@ impl ExtractionRepo for PgRepo {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
+    }
+
+    async fn delete_by_source(&self, source_id: SourceId) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM extractions
+             WHERE chunk_id IN (
+                 SELECT id FROM chunks WHERE source_id = $1
+             )",
+        )
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn list_node_ids_by_source(&self, source_id: SourceId) -> Result<Vec<NodeId>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT entity_id
+             FROM extractions
+             WHERE entity_type = 'node'
+               AND chunk_id IN (
+                   SELECT id FROM chunks WHERE source_id = $1
+               )",
+        )
+        .bind(source_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let uuid: uuid::Uuid = r.get("entity_id");
+                NodeId::from_uuid(uuid)
+            })
+            .collect())
+    }
+
+    async fn count_active_by_entity(
+        &self,
+        entity_type: &str,
+        entity_id: uuid::Uuid,
+    ) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) as cnt
+             FROM extractions
+             WHERE entity_type = $1
+               AND entity_id = $2
+               AND NOT is_superseded",
+        )
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get("cnt"))
     }
 }
 

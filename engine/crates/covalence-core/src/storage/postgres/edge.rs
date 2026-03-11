@@ -211,6 +211,18 @@ impl EdgeRepo for PgRepo {
             .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    async fn delete_by_node(&self, node_id: NodeId) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM edges
+             WHERE source_node_id = $1
+                OR target_node_id = $1",
+        )
+        .bind(node_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
 
 fn edge_from_row(row: &sqlx::postgres::PgRow) -> Edge {

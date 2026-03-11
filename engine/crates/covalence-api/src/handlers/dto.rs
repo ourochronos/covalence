@@ -96,6 +96,9 @@ pub struct SourceResponse {
 pub struct DeleteSourceResponse {
     pub deleted: bool,
     pub chunks_deleted: u64,
+    pub extractions_deleted: u64,
+    pub nodes_deleted: u64,
+    pub edges_deleted: u64,
 }
 
 /// Response for source reprocessing.

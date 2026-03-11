@@ -5,7 +5,7 @@ use sqlx::Row;
 use crate::error::Result;
 use crate::models::node_alias::NodeAlias;
 use crate::storage::traits::NodeAliasRepo;
-use crate::types::ids::{AliasId, NodeId};
+use crate::types::ids::{AliasId, NodeId, SourceId};
 
 use super::PgRepo;
 
@@ -71,6 +71,28 @@ impl NodeAliasRepo for PgRepo {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn delete_by_node(&self, node_id: NodeId) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM node_aliases WHERE node_id = $1")
+            .bind(node_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn clear_source_chunks(&self, source_id: SourceId) -> Result<u64> {
+        let result = sqlx::query(
+            "UPDATE node_aliases
+             SET source_chunk_id = NULL
+             WHERE source_chunk_id IN (
+                 SELECT id FROM chunks WHERE source_id = $1
+             )",
+        )
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 

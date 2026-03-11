@@ -248,5 +248,8 @@ pub async fn delete_source(
     Ok(Json(DeleteSourceResponse {
         deleted: result.deleted,
         chunks_deleted: result.chunks_deleted,
+        extractions_deleted: result.extractions_deleted,
+        nodes_deleted: result.nodes_deleted,
+        edges_deleted: result.edges_deleted,
     }))
 }
