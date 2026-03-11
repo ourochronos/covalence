@@ -6,44 +6,63 @@
 
 The API layer is a thin routing shell over the engine. Two interfaces: HTTP REST (for general clients) and MCP (for Claude/agent integration). Both expose the same underlying operations.
 
+All API routes are versioned under `/api/v1`. Swagger UI is available at `/docs`. A root `/health` endpoint is provided for convenience without auth.
+
 ## HTTP Endpoints
 
-### Ingestion
+### Sources
 
 ```
-POST /sources
-  Body: { source_type, content, metadata, clearance_level?, budget? }
+POST /api/v1/sources
+  Body: {
+    content: String?,        // base64-encoded content
+    url: String?,            // OR a URL to fetch
+    source_type: String?,    // document, web_page, conversation, code, api, manual, tool_output, observation
+    mime: String?,           // e.g., "text/markdown", "text/x-rust"
+    uri: String?,            // original material URI
+    title: String?,          // override auto-extracted title
+    author: String?,         // override auto-extracted author
+    authors: [String]?,      // list of authors
+    metadata: Object?,       // arbitrary metadata
+    format_origin: String?,  // original format (e.g., "pdf", "html")
+  }
   → Accepts a source and kicks off the ingestion pipeline
-  → budget: optional cost cap for LLM calls (prevents runaway API costs)
-  → Returns: { source_id, status: "accepted" }
+  → Provide either content (base64) or url — at least one required
+  → source_type required when using content directly
+  → Returns: { id }
 
-GET /sources/:id
-  → Source metadata + ingestion status + trust scores
+GET /api/v1/sources
+  Query: { limit?, offset? }
+  → Paginated list of sources, ordered by ingested_at descending
 
-GET /sources/:id/chunks
+GET /api/v1/sources/{id}
+  → Source metadata + ingestion status + reliability score
+
+GET /api/v1/sources/{id}/chunks
   → Chunk tree for a source, including landscape analysis metrics
-  → Each chunk includes: parent_alignment, extraction_method, landscape_metrics, flags
+  → Each chunk includes: parent_alignment, extraction_method, landscape_metrics
 
-GET /sources/:id/landscape
-  → Embedding landscape analysis summary for a source
-  → Returns: similarity curves, valleys, plateaus, extraction method distribution,
-    cross-document novelty stats, model calibration used
-  → Useful for debugging ingestion decisions and tuning thresholds
+POST /api/v1/sources/{id}/reprocess
+  → Idempotent reprocessing: re-runs the full pipeline on existing content
+  → Supersedes previous extractions, preserves source identity
+  → Returns: { id, chunks_created, entities_extracted, edges_created }
 
-DELETE /sources/:id
-  → Takedown: TMS cascade, soft-delete source, purge sole-provenance entities
-  → Returns: { affected_nodes, affected_edges, audit_log_id }
+DELETE /api/v1/sources/{id}
+  → Cascading deletion: extractions → aliases → chunks → orphaned edges → orphaned nodes
+  → Returns: { deleted, extractions_deleted, nodes_deleted, edges_deleted }
 ```
 
 ### Search
 
 ```
-POST /search
+POST /api/v1/search
   Body: {
     query: String,
     strategy: "balanced" | "precise" | "exploratory" | "recent" | "graph_first" | "custom",
-    weights: { vector, lexical, temporal, graph, structural }?,  // for custom strategy
+    weights: { vector, lexical, temporal, graph, structural }?,
     limit: Int?,
+    mode: "results" | "context",        // results (default) or assembled context
+    granularity: "chunk" | "section",   // chunk-level or section-level results
     filters: {
       source_types: [String]?,
       date_range: { start, end }?,
@@ -51,47 +70,85 @@ POST /search
       min_confidence: Float?,
     }?
   }
-  → Returns: [SearchResult]
+  → Returns: [SearchResult] or ContextResponse depending on mode
+
+POST /api/v1/search/feedback
+  Body: { trace_id, result_id, relevant: bool, comment? }
+  → Records relevance feedback for a search result
+  → Used to build eval datasets and tune retrieval quality
+```
+
+### Nodes
+
+```
+GET /api/v1/nodes/{id}
+  Query: { include_edges?, include_aliases? }
+  → Node with properties, aliases, and connected edges
+
+GET /api/v1/nodes/{id}/neighborhood
+  Query: { hops?, edge_types?, limit? }
+  → k-hop neighborhood around a node
+
+GET /api/v1/nodes/{id}/provenance
+  → Full provenance chain: extractions → chunks → sources
+
+GET /api/v1/nodes/landmarks
+  → Nodes ordered by mention count (proxy for betweenness centrality)
+
+POST /api/v1/nodes/resolve
+  Body: { name, description?, context? }
+  → Entity resolution: find existing node or suggest creation
+
+POST /api/v1/nodes/merge
+  Body: { source_nodes: [UUID], target_node: UUID }
+  → Merge multiple nodes into one. Creates SUPERSEDES edges.
+  → Returns: { merged_node, audit_log_id }
+
+POST /api/v1/nodes/{id}/split
+  Body: { new_nodes: [{ name, type, description, edge_ids }] }
+  → Split a wrongly-merged node into distinct entities
+  → Returns: { new_nodes: [UUID], audit_log_id }
+
+POST /api/v1/nodes/{id}/correct
+  Body: { description, reason }
+  → Updates node description, re-embeds, creates correction source
+
+POST /api/v1/nodes/{id}/annotate
+  Body: { annotation, tags? }
+  → Adds annotation to node properties, creates annotation source
+```
+
+### Edges
+
+```
+GET /api/v1/edges/{id}
+  → Edge with properties and provenance
+
+POST /api/v1/edges/{id}/correct
+  Body: { rel_type?, properties?, reason }
+  → Updates edge, creates correction source
+
+DELETE /api/v1/edges/{id}
+  → Bi-temporal invalidation (sets invalid_at, not physical delete)
 ```
 
 ### Graph
 
 ```
-GET /nodes/:id
-  → Node with properties, aliases, and connected edges
-
-GET /nodes/:id/neighborhood
-  Query: { hops, edge_types, limit }
-  → k-hop neighborhood around a node
-
-GET /nodes/:id/provenance
-  → Full provenance chain: extractions → chunks → sources
-
-POST /nodes/resolve
-  Body: { name, description?, context? }
-  → Entity resolution: find existing node or suggest creation
-
-GET /edges/:id
-  → Edge with properties and provenance
-
-GET /graph/communities
-  → Current community structure
-
-POST /nodes/merge
-  Body: { source_nodes: [UUID], target_node: UUID }
-  → Merge multiple nodes into one. Creates SUPERSEDES edges from old to new.
-  → Old nodes set to clearance_level -1 (inactive). Sidecar follows SUPERSEDES dynamically.
-  → Returns: { merged_node, audit_log_id }
-
-POST /nodes/:id/split
-  Body: { new_nodes: [{ name, type, description, edge_ids }] }
-  → Split a wrongly-merged node into distinct entities
-  → Returns: { new_nodes: [UUID], audit_log_id }
-
-GET /graph/stats
+GET /api/v1/graph/stats
   → Node count, edge count, density, component count
 
-GET /audit
+GET /api/v1/graph/communities
+  → Current community structure (k-core decomposition)
+
+GET /api/v1/graph/topology
+  → Topological statistics: degree distribution, clustering coefficient
+```
+
+### Audit
+
+```
+GET /api/v1/audit
   Query: { action?, target_type?, target_id?, since?, limit? }
   → Paginated audit log of system decisions
 ```
@@ -99,56 +156,27 @@ GET /audit
 ### Memory (Agent-Friendly Wrapper)
 
 ```
-POST /memory
+POST /api/v1/memory
   Body: { content, importance?, tags?, context?, supersedes_id? }
   → Store a memory (creates an observation source with memory metadata)
   → Returns: { memory_id }
 
-POST /memory/recall
+POST /api/v1/memory/recall
   Body: { query, tags?, limit?, min_confidence? }
   → Search memories ranked by relevance, confidence, freshness
   → Returns: [MemoryResult]
 
-DELETE /memory/:id
+GET /api/v1/memory/status
+  → Memory count, top tags, last memory timestamp
+
+DELETE /api/v1/memory/{id}
   Body: { reason? }
   → Soft-forget a memory (filtered from future recall, audit trail preserved)
-
-GET /memory/status
-  → Memory count, top tags, last memory timestamp
 ```
-
-### Admin
 
 ### Knowledge Curation (Human-in-the-Loop)
 
 User corrections and annotations feed back into the graph. Every curation action is recorded as a new source (type: `user_correction`, reliability: 0.9) with full provenance.
-
-```
-POST /nodes/:id/correct
-  Body: { description: "corrected description", reason: "why" }
-  → Updates node description, re-embeds, creates correction source
-  → Increments node confidence (human-verified)
-
-POST /edges/:id/correct
-  Body: { rel_type: "new_type", properties: {...}, reason: "why" }
-  → Updates edge, creates correction source
-  → For factual corrections: invalidates old edge (bi-temporal),
-    creates new corrected edge
-
-DELETE /edges/:id
-  Body: { reason: "why" }
-  → Bi-temporal invalidation (sets invalid_at, not physical delete)
-  → Creates correction source documenting the removal
-
-POST /nodes/:id/annotate
-  Body: { annotation: "additional context", tags: ["verified", "disputed"] }
-  → Adds annotation to node properties, creates annotation source
-
-POST /search/feedback
-  Body: { trace_id: "...", result_id: "...", relevant: true|false, comment: "..." }
-  → Records relevance feedback for a search result
-  → Used to tune retrieval quality over time (eval dataset building)
-```
 
 All curation actions are:
 - Attributed to a user identity
@@ -156,33 +184,58 @@ All curation actions are:
 - Auditable (who changed what, when, why)
 - Reversible (corrections create new edges, don't destroy old ones)
 
-```
+See nodes `correct`/`annotate` and edges `correct`/`delete` endpoints above.
+
+### Admin
 
 ```
-POST /admin/graph/reload
+GET /api/v1/admin/health
+  → System health, PG connectivity, sidecar status
+
+GET /api/v1/admin/metrics
+  → Node/edge/chunk/source counts, index sizes, query latencies
+
+POST /api/v1/admin/graph/reload
   → Force full reload of graph sidecar from PG
 
-POST /admin/publish/:source_id
+POST /api/v1/admin/publish/{source_id}
   Query: { clearance_level: 1 | 2 }
   → Promote source + derivatives to federated clearance level
-  → Recursively updates chunks, extractions, nodes/edges
-  → Returns: { promoted_count, audit_log_id }
 
-POST /admin/consolidate
+POST /api/v1/admin/consolidate
   Query: { tier: "batch" | "deep" }
   → Trigger manual consolidation run
 
-GET /admin/health
-  → System health, PG connectivity, sidecar status, outbox lag
+POST /api/v1/admin/gc
+  → Provenance-based garbage collection: remove nodes with zero active extractions
 
-GET /admin/metrics
-  → Node/edge/chunk/source counts, index sizes, query latencies, LLM cost tracking
+POST /api/v1/admin/ontology/cluster
+  → Run ontology clustering (greedy agglomerative by cosine similarity)
 
-GET /admin/traces?limit=50
+POST /api/v1/admin/config-audit
+  → Config drift detection: sidecar health checks + configuration warnings
+
+GET /api/v1/admin/traces
+  Query: { limit? }
   → Recent query traces for debugging retrieval quality
 
-POST /admin/trace/{trace_id}/replay
+POST /api/v1/admin/traces/{id}/replay
   → Replay a traced query with different parameters for A/B comparison
+
+GET /api/v1/admin/knowledge-gaps
+  Query: { min_mentions?, max_extractions? }
+  → Identify knowledge gaps: entities with high mention count but low extraction coverage
+```
+
+### MCP (Model Context Protocol)
+
+```
+POST /api/v1/mcp/tools/list
+  → List available MCP tools
+
+POST /api/v1/mcp/tools/call
+  Body: { name, arguments }
+  → Call an MCP tool by name
 ```
 
 ### Query Tracing
