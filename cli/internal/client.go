@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -17,9 +18,11 @@ type Client struct {
 }
 
 // NewClient creates a new API client.
+// The baseURL should be the engine root (e.g. http://localhost:8431);
+// /api/v1 is appended automatically.
 func NewClient(baseURL string) *Client {
 	return &Client{
-		BaseURL: baseURL,
+		BaseURL: strings.TrimRight(baseURL, "/") + "/api/v1",
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},

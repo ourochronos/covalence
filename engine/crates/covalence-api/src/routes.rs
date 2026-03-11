@@ -15,11 +15,8 @@ const MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
 
 /// Build the application router with all routes.
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        // Swagger UI
-        .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
-        // Legacy health (kept for backward compat)
-        .route("/health", get(admin::health))
+    // Versioned API routes under /api/v1
+    let api_v1 = Router::new()
         // Sources
         .route("/sources", post(sources::create_source))
         .route("/sources", get(sources::list_sources))
@@ -66,7 +63,15 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/traces", get(admin::list_traces))
         .route("/admin/traces/{id}/replay", post(admin::replay_trace))
         .route("/admin/knowledge-gaps", get(admin::knowledge_gaps))
-        .route("/admin/config-audit", post(admin::config_audit))
+        .route("/admin/config-audit", post(admin::config_audit));
+
+    Router::new()
+        // Swagger UI + OpenAPI spec at root
+        .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
+        // Root health check (convenience, no auth)
+        .route("/health", get(admin::health))
+        // Versioned API
+        .nest("/api/v1", api_v1)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,

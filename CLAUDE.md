@@ -68,13 +68,70 @@ docs/adr/                           Architecture Decision Records
 
 ## Ports & Coexistence
 
-| Resource | This Instance | Existing Covalence |
-|----------|--------------|-------------------|
-| PG port | **5435** | 5434 |
-| Engine port | **8431** | 8430 |
-| CLI binary | **`cove`** | `cov` |
+| Resource | Dev | Prod | Existing Covalence |
+|----------|-----|------|-------------------|
+| PG port | **5435** | **5437** | 5434 |
+| Engine port | **8431** | **8441** | 8430 |
+| Test PG | **5436** | — | — |
+| CLI binary | **`cove`** | **`cove --api-url`** | `cov` |
 
-These must not conflict. The existing Covalence instance runs in production.
+These must not conflict. The existing Covalence instance runs separately.
+
+## Environments: Dev vs Prod
+
+Covalence runs two independent environments. **Dev** is for testing schema changes, pipeline modifications, and new features. **Prod** holds the canonical knowledge graph with ingested codebase, specs, and design docs.
+
+### Environment Summary
+
+| | Dev | Prod |
+|---|-----|------|
+| DB | `covalence_dev` on port 5435 | `covalence_prod` on port 5437 |
+| Engine | port 8431 | port 8441 |
+| Config | `.env` (default) | `.env.prod` (env overrides) |
+| Docker profile | default | `--profile prod` |
+| Data policy | Ephemeral — reset freely | Persistent — protect data |
+
+### Workflow: Testing in Dev, Promoting to Prod
+
+1. **Develop and test in dev first.** All schema changes, new migrations, pipeline changes, and features are tested against the dev database.
+2. **Run `make check`** to verify tests, clippy, and formatting pass.
+3. **Run `make promote`** to apply verified migrations to prod. This runs `make check` first, then starts prod-pg and runs migrations.
+4. **Never run `make reset-prod-db` without explicit user approval.** Prod data is not ephemeral.
+
+### Make Targets
+
+```bash
+# Dev (default)
+make dev-db          # Start dev PG (5435)
+make migrate         # Run migrations on dev
+make reset-db        # Drop + recreate dev DB (safe to do freely)
+make run-dev         # Start engine on :8431 (reads .env)
+
+# Prod
+make prod-db         # Start prod PG (5437)
+make migrate-prod    # Run migrations on prod
+make run-prod        # Start engine on :8441 (overrides DATABASE_URL + BIND_ADDR)
+make reset-prod-db   # DANGEROUS: drop + recreate prod DB (5s safety delay)
+
+# Promotion
+make promote         # check + prod-db + migrate-prod
+
+# Ingestion (requires prod engine running on :8441)
+make ingest-codebase # Ingest all .rs and .go files
+make ingest-specs    # Ingest spec/*.md
+make ingest-adrs     # Ingest docs/adr/*.md
+make ingest-prod     # All of the above
+```
+
+### Claude Code Directives
+
+When working on Covalence:
+- **Use dev for all development work.** `make run-dev` or `make run` (alias).
+- **Use prod only for querying the knowledge graph** to inform development decisions.
+- **Never modify prod data** without explicit user approval.
+- **After adding migrations**, run `make migrate` (dev) first, verify, then `make promote` for prod.
+- **To query prod**, use `cove --api-url http://localhost:8441 search "query"`.
+- **The prod knowledge graph contains** the Covalence codebase, design specs, and ADRs. Use it to understand existing patterns, find relevant code, and inform architectural decisions.
 
 ## Hard Rules
 
@@ -143,14 +200,18 @@ cd cli && go test ./...
 ## Database
 
 ```bash
-# Create dev database
-make dev-db
+# Dev database
+make dev-db                                                        # Start container
+make migrate                                                       # Run migrations
+psql postgres://covalence:covalence@localhost:5435/covalence_dev   # Connect
 
-# Run migrations
-make migrate
+# Prod database
+make prod-db                                                       # Start container
+make migrate-prod                                                  # Run migrations
+psql postgres://covalence:covalence@localhost:5437/covalence_prod  # Connect
 
-# PG connection
-psql postgres://covalence:covalence@localhost:5435/covalence_dev
+# Promotion (test in dev → apply to prod)
+make promote
 ```
 
 Extensions required: `pgvector`, `pg_trgm`, `ltree`
@@ -179,6 +240,31 @@ To add a new ADR:
 2. Number sequentially (next available number)
 3. Fill in Context, Decision, Consequences, Alternatives
 4. Set Status to "Accepted"
+
+## Issue Tracking
+
+All development work is tracked via GitHub issues. This is mandatory.
+
+### When to Create Issues
+
+- **Always create an issue** for: new features, bug fixes, refactoring, infrastructure changes, process changes.
+- **Fix inline without an issue** only for: typo fixes, formatting, trivial one-line changes that don't affect behavior.
+- **If you discover something broken** while working on something else: create a new issue for it, then decide whether to fix it now (if quick) or defer.
+
+### Issue Workflow
+
+1. Create the issue with a clear title, context, and task checklist.
+2. Reference the issue number in commit messages (e.g., `Fix source deletion cascade (#81)`).
+3. Close the issue when the work is complete and verified.
+4. If work is blocked or deferred, add a comment explaining why and leave it open.
+
+### Labels
+
+Use existing labels: `enhancement`, `bug`, `future`, `deferred`, `spec`. Create new labels only when a clear category is needed.
+
+### Commits
+
+Reference issue numbers in commit messages. Format: `<verb> <what> (#<issue>)`.
 
 ## Milestones
 

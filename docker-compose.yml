@@ -33,5 +33,25 @@ services:
     profiles:
       - test
 
+  prod-pg:
+    image: pgvector/pgvector:pg17
+    container_name: covalence-prod-pg
+    environment:
+      POSTGRES_USER: covalence
+      POSTGRES_PASSWORD: covalence
+      POSTGRES_DB: covalence_prod
+    ports:
+      - "5437:5432"
+    volumes:
+      - covalence-prod-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U covalence -d covalence_prod"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - prod
+
 volumes:
   covalence-dev-data:
+  covalence-prod-data:

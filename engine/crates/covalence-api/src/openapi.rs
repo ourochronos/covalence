@@ -12,6 +12,9 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         version = "0.1.0",
         description = "Hybrid GraphRAG knowledge engine API",
     ),
+    servers(
+        (url = "/api/v1", description = "Versioned API"),
+    ),
     paths(
         // Sources
         sources::create_source,
