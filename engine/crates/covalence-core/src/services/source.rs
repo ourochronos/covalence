@@ -617,6 +617,13 @@ impl SourceService {
             //
             // When disabled, all chunks are sent to the extractor
             // without landscape-based gating.
+            //
+            // First-ingestion bypass: if this source has no prior
+            // extractions (no superseded source), landscape gating
+            // is bypassed to avoid incorrectly skipping extraction
+            // on multi-chunk sources where intra-document alignment
+            // is naturally high.
+            let is_first_ingestion = supersedes_info.is_none();
             let landscape = if self.pipeline.landscape_enabled {
                 let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
                     .iter()
@@ -634,6 +641,7 @@ impl SourceService {
                     &embeddings,
                     &parent_embeddings,
                     None,
+                    is_first_ingestion,
                 )
             } else {
                 Vec::new()
@@ -729,6 +737,10 @@ impl SourceService {
         // Stages 6-7: Extract entities + resolve + create
         // nodes/edges.
         //
+        // For code sources, use the deterministic AST extractor
+        // instead of the LLM extractor. This avoids garbage
+        // extractions from sending code through NLP prompts.
+        //
         // Landscape gating: Only send chunks with FullExtraction
         // or FullExtractionWithReview to the LLM. Chunks classified
         // as EmbeddingLinkage or DeltaCheck are skipped.
@@ -737,7 +749,20 @@ impl SourceService {
         // concatenated into a single extraction call to reduce
         // API round-trips. Chunks below `min_extract_tokens` are
         // skipped entirely.
-        if let Some(ref extractor) = self.extractor {
+        let ast_ext: Option<Arc<dyn Extractor>> = if is_code {
+            Some(Arc::new(
+                crate::ingestion::ast_extractor::AstExtractor::new(),
+            ))
+        } else {
+            None
+        };
+        let active_extractor = if is_code {
+            ast_ext.as_ref()
+        } else {
+            self.extractor.as_ref()
+        };
+        let extraction_method_label = if is_code { "ast" } else { "llm" };
+        if let Some(extractor) = active_extractor {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
 
             // Build extraction context from source metadata.
@@ -822,7 +847,9 @@ impl SourceService {
                 let is_example_chunk = example_chunks.contains(&chunk_uuid);
 
                 for entity in &extraction.entities {
-                    let node_id = self.resolve_and_store_entity(entity, chunk_id).await?;
+                    let node_id = self
+                        .resolve_and_store_entity(entity, chunk_id, extraction_method_label)
+                        .await?;
                     name_to_node.insert(entity.name.to_lowercase(), node_id);
 
                     if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
@@ -881,7 +908,7 @@ impl SourceService {
                         chunk_id,
                         ExtractedEntityType::Edge,
                         edge.id.into_uuid(),
-                        "llm".to_string(),
+                        extraction_method_label.to_string(),
                         conf,
                     );
                     ExtractionRepo::create(&*self.repo, &ext_record).await?;
@@ -1055,6 +1082,7 @@ impl SourceService {
         &self,
         entity: &crate::ingestion::extractor::ExtractedEntity,
         chunk_id: ChunkId,
+        extraction_method: &str,
     ) -> Result<NodeId> {
         use crate::ingestion::resolver::MatchType;
         use sqlx::Row;
@@ -1137,7 +1165,7 @@ impl SourceService {
         .bind(chunk_id)
         .bind("node")
         .bind(node_id.into_uuid())
-        .bind("llm")
+        .bind(extraction_method)
         .bind(entity.confidence)
         .execute(&mut *tx)
         .await?;
@@ -1501,7 +1529,11 @@ impl SourceService {
                 }
             }
 
-            // Landscape analysis
+            // Landscape analysis.
+            //
+            // Reprocessing always has prior extractions (they were
+            // just superseded in step 1), so this is NOT a first
+            // ingestion — landscape gating applies normally.
             if self.pipeline.landscape_enabled {
                 let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
                     .iter()
@@ -1516,6 +1548,7 @@ impl SourceService {
                     &embeddings,
                     &parent_embeddings,
                     None,
+                    false, // reprocess = not first ingestion
                 );
                 for lr in &landscape {
                     if lr.chunk_index < chunk_outputs.len() {
@@ -1590,7 +1623,22 @@ impl SourceService {
         };
 
         // Stage 6-7: Extract + resolve
-        if let Some(ref extractor) = self.extractor {
+        // Use AST extractor for code sources, LLM for everything
+        // else.
+        let ast_ext_rp: Option<Arc<dyn Extractor>> = if is_code {
+            Some(Arc::new(
+                crate::ingestion::ast_extractor::AstExtractor::new(),
+            ))
+        } else {
+            None
+        };
+        let active_extractor_rp = if is_code {
+            ast_ext_rp.as_ref()
+        } else {
+            self.extractor.as_ref()
+        };
+        let ext_method_rp = if is_code { "ast" } else { "llm" };
+        if let Some(extractor) = active_extractor_rp {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
 
             // Build extraction context from source metadata.
@@ -1663,7 +1711,9 @@ impl SourceService {
                 let is_example_chunk = example_chunks.contains(&chunk_uuid);
 
                 for entity in &extraction.entities {
-                    let node_id = self.resolve_and_store_entity(entity, chunk_id).await?;
+                    let node_id = self
+                        .resolve_and_store_entity(entity, chunk_id, ext_method_rp)
+                        .await?;
                     name_to_node.insert(entity.name.to_lowercase(), node_id);
 
                     if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
@@ -1714,7 +1764,7 @@ impl SourceService {
                         chunk_id,
                         ExtractedEntityType::Edge,
                         edge.id.into_uuid(),
-                        "llm".to_string(),
+                        ext_method_rp.to_string(),
                         conf,
                     );
                     ExtractionRepo::create(&*self.repo, &ext_record).await?;

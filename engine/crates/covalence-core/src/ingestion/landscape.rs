@@ -112,6 +112,11 @@ pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 ///   document-level)
 /// * `calibration` - Model-specific calibration statistics (`None` =
 ///   use defaults)
+/// * `is_first_ingestion` - Whether this source has no prior
+///   extractions. On first ingestion, landscape gating is bypassed
+///   and all chunks receive `FullExtraction` to avoid incorrectly
+///   skipping extraction due to high intra-document parent-child
+///   alignment.
 ///
 /// # Returns
 /// A [`ChunkLandscapeResult`] for each input chunk.
@@ -119,6 +124,7 @@ pub fn analyze_landscape(
     chunk_embeddings: &[Vec<f64>],
     parent_embeddings: &[Option<&Vec<f64>>],
     calibration: Option<&ModelCalibration>,
+    is_first_ingestion: bool,
 ) -> Vec<ChunkLandscapeResult> {
     let default_cal = ModelCalibration {
         model_name: "default".to_string(),
@@ -132,6 +138,39 @@ pub fn analyze_landscape(
     let cal = calibration.unwrap_or(&default_cal);
 
     let mut results = Vec::with_capacity(chunk_embeddings.len());
+
+    // First-ingestion bypass: parent-child alignment within a
+    // well-structured document is naturally high (0.78–0.91).
+    // The P75 threshold incorrectly treats this as "redundant
+    // with existing knowledge" even when there IS no existing
+    // knowledge. On first ingestion, force FullExtraction for
+    // all chunks and set graph_novelty = 1.0.
+    if is_first_ingestion {
+        tracing::debug!(
+            chunks = chunk_embeddings.len(),
+            "first ingestion — bypassing landscape gating, \
+             forcing full extraction for all chunks"
+        );
+        for (i, chunk_emb) in chunk_embeddings.iter().enumerate() {
+            let parent_alignment = parent_embeddings
+                .get(i)
+                .and_then(|pe| pe.as_ref())
+                .map(|pe| cosine_similarity(chunk_emb, pe));
+            results.push(ChunkLandscapeResult {
+                chunk_index: i,
+                parent_alignment,
+                extraction_method: ExtractionMethod::FullExtraction,
+                metrics: LandscapeMetrics {
+                    adjacent_similarity: None,
+                    sibling_outlier_score: None,
+                    graph_novelty: Some(1.0),
+                    flags: vec!["first_ingestion_bypass".to_string()],
+                    valley_prominence: None,
+                },
+            });
+        }
+        return results;
+    }
 
     // Single-chunk sources: the one chunk IS the entire document,
     // so parent-child alignment is meaningless (≈1.0). Always
@@ -147,7 +186,7 @@ pub fn analyze_landscape(
             metrics: LandscapeMetrics {
                 adjacent_similarity: None,
                 sibling_outlier_score: None,
-                graph_novelty: None,
+                graph_novelty: Some(1.0),
                 flags: vec!["single_chunk_bypass".to_string()],
                 valley_prominence: None,
             },
@@ -486,10 +525,10 @@ mod tests {
     fn single_chunk_always_extracts() {
         // A single chunk IS the entire document. Even with perfect
         // parent alignment, landscape should bypass and force
-        // FullExtraction.
+        // FullExtraction (source update path).
         let parent = vec![1.0, 0.5, 0.3];
         let child = vec![0.98, 0.52, 0.31];
-        let results = analyze_landscape(&[child], &[Some(&parent)], None);
+        let results = analyze_landscape(&[child], &[Some(&parent)], None, false);
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].extraction_method,
@@ -506,7 +545,7 @@ mod tests {
     #[test]
     fn single_chunk_no_parent_still_extracts() {
         let child = vec![1.0, 0.5, 0.3];
-        let results = analyze_landscape(&[child], &[None], None);
+        let results = analyze_landscape(&[child], &[None], None, false);
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].extraction_method,
@@ -517,10 +556,16 @@ mod tests {
     #[test]
     fn high_alignment_skips_extraction() {
         // Use 2 chunks so the single-chunk bypass doesn't trigger.
+        // Source update path (not first ingestion).
         let parent = vec![1.0, 0.5, 0.3];
         let child1 = vec![0.98, 0.52, 0.31]; // high alignment
         let child2 = vec![0.95, 0.48, 0.29]; // also high alignment
-        let results = analyze_landscape(&[child1, child2], &[Some(&parent), Some(&parent)], None);
+        let results = analyze_landscape(
+            &[child1, child2],
+            &[Some(&parent), Some(&parent)],
+            None,
+            false,
+        );
         assert_eq!(results.len(), 2);
         assert_eq!(
             results[0].extraction_method,
@@ -531,10 +576,16 @@ mod tests {
     #[test]
     fn low_alignment_triggers_full_extraction() {
         // Use 2 chunks so the single-chunk bypass doesn't trigger.
+        // Source update path (not first ingestion).
         let parent = vec![1.0, 0.0, 0.0];
         let child1 = vec![0.0, 1.0, 0.0]; // low alignment
         let child2 = vec![0.0, 0.0, 1.0]; // low alignment
-        let results = analyze_landscape(&[child1, child2], &[Some(&parent), Some(&parent)], None);
+        let results = analyze_landscape(
+            &[child1, child2],
+            &[Some(&parent), Some(&parent)],
+            None,
+            false,
+        );
         assert_eq!(results.len(), 2);
         assert!(matches!(
             results[0].extraction_method,
@@ -547,7 +598,12 @@ mod tests {
         let parent = vec![1.0, 0.0, 0.0];
         let child1 = vec![0.0, 1.0, 0.0];
         let child2 = vec![0.0, 0.0, 1.0];
-        let results = analyze_landscape(&[child1, child2], &[Some(&parent), Some(&parent)], None);
+        let results = analyze_landscape(
+            &[child1, child2],
+            &[Some(&parent), Some(&parent)],
+            None,
+            false,
+        );
         assert!(
             results[0]
                 .metrics
@@ -558,11 +614,11 @@ mod tests {
 
     #[test]
     fn no_parent_uses_full_extraction() {
-        // Without parent embeddings (first ingestion), landscape
-        // cannot judge redundancy, so it defaults to full extraction.
+        // Without parent embeddings, landscape cannot judge
+        // redundancy, so it defaults to full extraction.
         let child1 = vec![1.0, 0.5, 0.3];
         let child2 = vec![0.9, 0.4, 0.2];
-        let results = analyze_landscape(&[child1, child2], &[None, None], None);
+        let results = analyze_landscape(&[child1, child2], &[None, None], None, false);
         assert_eq!(
             results[0].extraction_method,
             ExtractionMethod::FullExtraction
@@ -591,7 +647,7 @@ mod tests {
             vec![0.0, 0.0, 1.0],
         ];
         let parents: Vec<Option<&Vec<f64>>> = vec![None, None, None];
-        let results = analyze_landscape(&chunks, &parents, None);
+        let results = analyze_landscape(&chunks, &parents, None, false);
         assert_eq!(results.len(), 3);
         // First two are similar, so adjacent_similarity should
         // be high
@@ -632,6 +688,7 @@ mod tests {
             &[child1, child2],
             &[Some(&parent), Some(&parent)],
             Some(&cal),
+            false,
         );
         assert_eq!(
             results[0].extraction_method,
@@ -641,8 +698,152 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let results: Vec<ChunkLandscapeResult> = analyze_landscape(&[], &[], None);
+        let results: Vec<ChunkLandscapeResult> = analyze_landscape(&[], &[], None, false);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn empty_input_first_ingestion() {
+        let results: Vec<ChunkLandscapeResult> = analyze_landscape(&[], &[], None, true);
+        assert!(results.is_empty());
+    }
+
+    // --- First-ingestion bypass tests ---
+
+    #[test]
+    fn first_ingestion_forces_full_extraction_multi_chunk() {
+        // On first ingestion, even high parent-child alignment
+        // should NOT cause chunks to be skipped. This is the
+        // core bug fix: intra-document alignment is naturally
+        // high (0.78–0.91) and was being misinterpreted as
+        // "redundant with existing knowledge."
+        let parent = vec![1.0, 0.5, 0.3];
+        let child1 = vec![0.98, 0.52, 0.31]; // high alignment
+        let child2 = vec![0.95, 0.48, 0.29]; // also high
+        let child3 = vec![0.90, 0.55, 0.28]; // also high
+        let results = analyze_landscape(
+            &[child1, child2, child3],
+            &[Some(&parent), Some(&parent), Some(&parent)],
+            None,
+            true, // first ingestion
+        );
+        assert_eq!(results.len(), 3);
+        for r in &results {
+            assert_eq!(
+                r.extraction_method,
+                ExtractionMethod::FullExtraction,
+                "chunk {} should be FullExtraction on first ingestion",
+                r.chunk_index,
+            );
+            assert!(
+                r.metrics
+                    .flags
+                    .contains(&"first_ingestion_bypass".to_string()),
+                "chunk {} should have first_ingestion_bypass flag",
+                r.chunk_index,
+            );
+            assert_eq!(
+                r.metrics.graph_novelty,
+                Some(1.0),
+                "chunk {} should have graph_novelty = 1.0",
+                r.chunk_index,
+            );
+        }
+    }
+
+    #[test]
+    fn first_ingestion_single_chunk() {
+        // First ingestion + single chunk: both bypasses apply,
+        // first_ingestion_bypass takes precedence since it's
+        // checked first.
+        let parent = vec![1.0, 0.5, 0.3];
+        let child = vec![0.98, 0.52, 0.31];
+        let results = analyze_landscape(&[child], &[Some(&parent)], None, true);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].extraction_method,
+            ExtractionMethod::FullExtraction
+        );
+        assert!(
+            results[0]
+                .metrics
+                .flags
+                .contains(&"first_ingestion_bypass".to_string())
+        );
+        assert_eq!(results[0].metrics.graph_novelty, Some(1.0));
+    }
+
+    #[test]
+    fn first_ingestion_preserves_parent_alignment() {
+        // Even though first ingestion bypasses gating, it should
+        // still compute and store parent_alignment for metrics.
+        let parent = vec![1.0, 0.0, 0.0];
+        let child1 = vec![1.0, 0.0, 0.0]; // perfect alignment
+        let child2 = vec![0.0, 1.0, 0.0]; // orthogonal
+        let results = analyze_landscape(
+            &[child1, child2],
+            &[Some(&parent), Some(&parent)],
+            None,
+            true,
+        );
+        assert_eq!(results.len(), 2);
+        // First chunk: perfect alignment with parent
+        assert!(
+            results[0]
+                .parent_alignment
+                .is_some_and(|pa| (pa - 1.0).abs() < 1e-10)
+        );
+        // Second chunk: orthogonal to parent
+        assert!(
+            results[1]
+                .parent_alignment
+                .is_some_and(|pa| pa.abs() < 1e-10)
+        );
+        // Both should still be FullExtraction
+        assert_eq!(
+            results[0].extraction_method,
+            ExtractionMethod::FullExtraction
+        );
+        assert_eq!(
+            results[1].extraction_method,
+            ExtractionMethod::FullExtraction
+        );
+    }
+
+    #[test]
+    fn first_ingestion_no_parent_embeddings() {
+        // First ingestion without parent embeddings. Should still
+        // force FullExtraction.
+        let child1 = vec![1.0, 0.5, 0.3];
+        let child2 = vec![0.9, 0.4, 0.2];
+        let results = analyze_landscape(&[child1, child2], &[None, None], None, true);
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r.extraction_method, ExtractionMethod::FullExtraction);
+            assert!(r.parent_alignment.is_none());
+            assert_eq!(r.metrics.graph_novelty, Some(1.0));
+        }
+    }
+
+    #[test]
+    fn source_update_high_alignment_skips() {
+        // Contrast with first_ingestion: same high-alignment
+        // embeddings on a source update (not first ingestion)
+        // should be gated as EmbeddingLinkage.
+        let parent = vec![1.0, 0.5, 0.3];
+        let child1 = vec![0.98, 0.52, 0.31];
+        let child2 = vec![0.95, 0.48, 0.29];
+        let results = analyze_landscape(
+            &[child1, child2],
+            &[Some(&parent), Some(&parent)],
+            None,
+            false, // source update
+        );
+        assert_eq!(
+            results[0].extraction_method,
+            ExtractionMethod::EmbeddingLinkage,
+            "source update with high alignment should skip"
+        );
     }
 
     // --- Tests for compute_chunk_landscape_metrics ---
