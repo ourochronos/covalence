@@ -11,7 +11,7 @@ use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::{CorefResolver, FastcorefClient};
 use crate::ingestion::embedder::{Embedder, truncate_and_validate};
 use crate::ingestion::extractor::Extractor;
-use crate::ingestion::landscape::ExtractionMethod;
+use crate::ingestion::landscape::{ExtractionMethod, cosine_similarity};
 use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
 use crate::models::chunk::Chunk;
@@ -554,6 +554,13 @@ impl SourceService {
                     }
                 }
             }
+
+            // Compute parent_alignment for child chunks.
+            //
+            // For each chunk with a parent_chunk_id, compute cosine
+            // similarity between the child and parent embeddings
+            // and store it in the parent_alignment column.
+            compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &*self.repo).await;
 
             // Embed the full normalized text for source-level search.
             // Failures are logged but don't abort ingestion — the
@@ -1440,6 +1447,9 @@ impl SourceService {
                 }
             }
 
+            // Compute parent_alignment for child chunks.
+            compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &*self.repo).await;
+
             // Re-embed source-level vector
             match embedder.embed(std::slice::from_ref(&normalized)).await {
                 Ok(source_embeddings) => {
@@ -1912,6 +1922,47 @@ fn group_extraction_batches(
     }
 
     batches
+}
+
+/// Compute and store `parent_alignment` for child chunks.
+///
+/// For each chunk that has a `parent_chunk_id`, computes the
+/// cosine similarity between the child and parent embeddings
+/// and persists it via `ChunkRepo::update_parent_alignment`.
+///
+/// Failures are logged as warnings and do not abort ingestion.
+async fn compute_parent_alignment(
+    chunk_outputs: &[crate::ingestion::chunker::ChunkOutput],
+    embeddings: &[Vec<f64>],
+    id_map: &std::collections::HashMap<uuid::Uuid, ChunkId>,
+    repo: &(impl ChunkRepo + ?Sized),
+) {
+    for (i, co) in chunk_outputs.iter().enumerate() {
+        let parent_uuid = match co.parent_id {
+            Some(pid) => pid,
+            None => continue,
+        };
+
+        let parent_idx = match chunk_outputs.iter().position(|c| c.id == parent_uuid) {
+            Some(idx) => idx,
+            None => continue,
+        };
+
+        if i >= embeddings.len() || parent_idx >= embeddings.len() {
+            continue;
+        }
+
+        let similarity = cosine_similarity(&embeddings[i], &embeddings[parent_idx]);
+
+        let chunk_id = id_map[&co.id];
+        if let Err(e) = ChunkRepo::update_parent_alignment(repo, chunk_id, similarity).await {
+            tracing::warn!(
+                chunk_id = %chunk_id,
+                error = %e,
+                "failed to store parent_alignment"
+            );
+        }
+    }
 }
 
 /// Determine whether a chunk should go through LLM extraction
@@ -2620,5 +2671,299 @@ mod tests {
     fn non_code_mime_does_not_trigger_code_path() {
         let lang = code_chunker::detect_code_language("text/html", Some("index.html"));
         assert!(lang.is_none(), "HTML should not be detected as code");
+    }
+
+    // --- Parent alignment computation tests ---
+
+    /// In-memory mock of [`ChunkRepo`] that records
+    /// `update_parent_alignment` calls for verification.
+    struct MockChunkRepo {
+        alignments: std::sync::Mutex<Vec<(ChunkId, f64)>>,
+    }
+
+    impl MockChunkRepo {
+        fn new() -> Self {
+            Self {
+                alignments: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn recorded(&self) -> Vec<(ChunkId, f64)> {
+            self.alignments
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    impl ChunkRepo for MockChunkRepo {
+        async fn create(&self, _chunk: &Chunk) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn batch_create(&self, _chunks: &[Chunk]) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn get(&self, _id: ChunkId) -> crate::error::Result<Option<Chunk>> {
+            Ok(None)
+        }
+
+        async fn list_by_source(&self, _sid: SourceId) -> crate::error::Result<Vec<Chunk>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_children(&self, _pid: ChunkId) -> crate::error::Result<Vec<Chunk>> {
+            Ok(Vec::new())
+        }
+
+        async fn delete(&self, _id: ChunkId) -> crate::error::Result<bool> {
+            Ok(false)
+        }
+
+        async fn delete_by_source(&self, _sid: SourceId) -> crate::error::Result<u64> {
+            Ok(0)
+        }
+
+        async fn update_embedding(
+            &self,
+            _id: ChunkId,
+            _embedding: &[f64],
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn update_parent_alignment(
+            &self,
+            id: ChunkId,
+            alignment: f64,
+        ) -> crate::error::Result<()> {
+            if let Ok(mut v) = self.alignments.lock() {
+                v.push((id, alignment));
+            }
+            Ok(())
+        }
+
+        async fn update_landscape(
+            &self,
+            _id: ChunkId,
+            _pa: Option<f64>,
+            _em: &str,
+            _lm: Option<serde_json::Value>,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn update_landscape_metrics(
+            &self,
+            _id: ChunkId,
+            _metrics: serde_json::Value,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_alignment_computed_for_child_chunks() {
+        let parent_id = uuid::Uuid::new_v4();
+        let child_id = uuid::Uuid::new_v4();
+
+        let parent_co = crate::ingestion::chunker::ChunkOutput {
+            id: parent_id,
+            parent_id: None,
+            text: "parent section".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Section,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 0,
+            byte_end: 14,
+        };
+        let child_co = crate::ingestion::chunker::ChunkOutput {
+            id: child_id,
+            parent_id: Some(parent_id),
+            text: "child paragraph".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Paragraph,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 14,
+            byte_end: 29,
+        };
+
+        let chunk_outputs = vec![parent_co, child_co];
+
+        // Identical embeddings => cosine similarity = 1.0
+        let embeddings = vec![vec![1.0, 0.0, 0.0], vec![1.0, 0.0, 0.0]];
+
+        let mut id_map = std::collections::HashMap::new();
+        id_map.insert(parent_id, ChunkId::from_uuid(parent_id));
+        id_map.insert(child_id, ChunkId::from_uuid(child_id));
+
+        let repo = MockChunkRepo::new();
+        compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &repo).await;
+
+        let recorded = repo.recorded();
+        assert_eq!(recorded.len(), 1, "should compute alignment for one child");
+        assert_eq!(recorded[0].0, ChunkId::from_uuid(child_id));
+        assert!(
+            (recorded[0].1 - 1.0).abs() < 1e-10,
+            "identical vectors should have similarity 1.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_alignment_orthogonal_vectors() {
+        let parent_id = uuid::Uuid::new_v4();
+        let child_id = uuid::Uuid::new_v4();
+
+        let parent_co = crate::ingestion::chunker::ChunkOutput {
+            id: parent_id,
+            parent_id: None,
+            text: "parent".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Section,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 0,
+            byte_end: 6,
+        };
+        let child_co = crate::ingestion::chunker::ChunkOutput {
+            id: child_id,
+            parent_id: Some(parent_id),
+            text: "child".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Paragraph,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 6,
+            byte_end: 11,
+        };
+
+        let chunk_outputs = vec![parent_co, child_co];
+        // Orthogonal embeddings => cosine similarity = 0.0
+        let embeddings = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+
+        let mut id_map = std::collections::HashMap::new();
+        id_map.insert(parent_id, ChunkId::from_uuid(parent_id));
+        id_map.insert(child_id, ChunkId::from_uuid(child_id));
+
+        let repo = MockChunkRepo::new();
+        compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &repo).await;
+
+        let recorded = repo.recorded();
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            recorded[0].1.abs() < 1e-10,
+            "orthogonal vectors should have similarity ~0.0, got {}",
+            recorded[0].1
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_alignment_skips_root_chunks() {
+        // A chunk without parent_id should not produce any alignment.
+        let root_id = uuid::Uuid::new_v4();
+        let root_co = crate::ingestion::chunker::ChunkOutput {
+            id: root_id,
+            parent_id: None,
+            text: "root only".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Section,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 0,
+            byte_end: 9,
+        };
+
+        let chunk_outputs = vec![root_co];
+        let embeddings = vec![vec![1.0, 2.0, 3.0]];
+
+        let mut id_map = std::collections::HashMap::new();
+        id_map.insert(root_id, ChunkId::from_uuid(root_id));
+
+        let repo = MockChunkRepo::new();
+        compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &repo).await;
+
+        let recorded = repo.recorded();
+        assert!(
+            recorded.is_empty(),
+            "root chunk should not get parent_alignment"
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_alignment_multiple_children() {
+        let parent_id = uuid::Uuid::new_v4();
+        let child1_id = uuid::Uuid::new_v4();
+        let child2_id = uuid::Uuid::new_v4();
+
+        let parent_co = crate::ingestion::chunker::ChunkOutput {
+            id: parent_id,
+            parent_id: None,
+            text: "parent".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Section,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 0,
+            byte_end: 6,
+        };
+        let child1_co = crate::ingestion::chunker::ChunkOutput {
+            id: child1_id,
+            parent_id: Some(parent_id),
+            text: "child1".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Paragraph,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 6,
+            byte_end: 12,
+        };
+        let child2_co = crate::ingestion::chunker::ChunkOutput {
+            id: child2_id,
+            parent_id: Some(parent_id),
+            text: "child2".to_string(),
+            level: crate::ingestion::chunker::ChunkLevel::Paragraph,
+            heading_path: vec![],
+            context_prefix_len: 0,
+            byte_start: 12,
+            byte_end: 18,
+        };
+
+        let chunk_outputs = vec![parent_co, child1_co, child2_co];
+        // parent = [1, 0, 0], child1 = [1, 0, 0] (sim=1),
+        // child2 = [0.5, 0.5, 0] (sim ≈ 0.707)
+        let embeddings = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![1.0, 0.0, 0.0],
+            vec![0.5, 0.5, 0.0],
+        ];
+
+        let mut id_map = std::collections::HashMap::new();
+        id_map.insert(parent_id, ChunkId::from_uuid(parent_id));
+        id_map.insert(child1_id, ChunkId::from_uuid(child1_id));
+        id_map.insert(child2_id, ChunkId::from_uuid(child2_id));
+
+        let repo = MockChunkRepo::new();
+        compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &repo).await;
+
+        let recorded = repo.recorded();
+        assert_eq!(recorded.len(), 2, "two children should have alignments");
+
+        // Find child1 and child2 results (order may vary)
+        let c1 = recorded
+            .iter()
+            .find(|(id, _)| *id == ChunkId::from_uuid(child1_id));
+        let c2 = recorded
+            .iter()
+            .find(|(id, _)| *id == ChunkId::from_uuid(child2_id));
+
+        assert!(c1.is_some(), "child1 alignment should be recorded");
+        assert!(c2.is_some(), "child2 alignment should be recorded");
+
+        assert!(
+            (c1.map(|x| x.1).unwrap_or(0.0) - 1.0).abs() < 1e-10,
+            "child1 (identical to parent) should have similarity 1.0"
+        );
+
+        let expected_sim2 = 0.5_f64 / (0.5_f64 * 0.5 + 0.5 * 0.5).sqrt();
+        assert!(
+            (c2.map(|x| x.1).unwrap_or(0.0) - expected_sim2).abs() < 1e-6,
+            "child2 should have expected cosine similarity"
+        );
     }
 }

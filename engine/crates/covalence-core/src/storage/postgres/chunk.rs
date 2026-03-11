@@ -223,6 +223,19 @@ impl ChunkRepo for PgRepo {
         Ok(result.rows_affected())
     }
 
+    async fn update_parent_alignment(&self, id: ChunkId, alignment: f64) -> Result<()> {
+        sqlx::query(
+            "UPDATE chunks \
+             SET parent_alignment = $2 \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(alignment)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn update_landscape(
         &self,
         id: ChunkId,
@@ -241,6 +254,27 @@ impl ChunkRepo for PgRepo {
         .bind(parent_alignment)
         .bind(extraction_method)
         .bind(&landscape_metrics)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn update_landscape_metrics(
+        &self,
+        id: ChunkId,
+        metrics: serde_json::Value,
+    ) -> Result<()> {
+        // Merge new keys into the existing JSONB object using
+        // PostgreSQL's `||` concatenation operator. If the column
+        // is NULL, COALESCE seeds it with an empty object.
+        sqlx::query(
+            "UPDATE chunks \
+             SET landscape_metrics = \
+                 COALESCE(landscape_metrics, '{}'::jsonb) || $2 \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&metrics)
         .execute(&self.pool)
         .await?;
         Ok(())
