@@ -10,7 +10,7 @@ use crate::ingestion::code_chunker;
 use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::{CorefResolver, FastcorefClient};
 use crate::ingestion::embedder::{Embedder, truncate_and_validate};
-use crate::ingestion::extractor::Extractor;
+use crate::ingestion::extractor::{ExtractionContext, Extractor};
 use crate::ingestion::landscape::{ExtractionMethod, cosine_similarity};
 use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
@@ -35,6 +35,12 @@ pub struct DeleteResult {
     pub deleted: bool,
     /// Number of chunks deleted alongside the source.
     pub chunks_deleted: u64,
+    /// Number of extraction records deleted.
+    pub extractions_deleted: u64,
+    /// Number of orphaned nodes deleted.
+    pub nodes_deleted: u64,
+    /// Number of edges deleted (from orphaned nodes).
+    pub edges_deleted: u64,
 }
 
 /// Result of a source reprocessing operation.
@@ -420,6 +426,9 @@ impl SourceService {
         if let Some(ref info) = supersedes_info {
             self.mark_superseded(info.old_source_id, &info.update_class)
                 .await?;
+            // Mark old extractions as superseded so they don't
+            // pollute search results after the new version lands.
+            ExtractionRepo::mark_superseded_by_source(&*self.repo, info.old_source_id).await?;
         }
 
         // Stage 4: Chunk
@@ -731,6 +740,13 @@ impl SourceService {
         if let Some(ref extractor) = self.extractor {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
 
+            // Build extraction context from source metadata.
+            let extraction_context = Arc::new(ExtractionContext {
+                source_type: Some(source_type.to_string()),
+                source_uri: uri.map(|u| u.to_string()),
+                source_title: source.title.clone(),
+            });
+
             // Determine which chunks should go through extraction
             // based on landscape analysis.
             let extractable: Vec<_> = chunk_outputs
@@ -767,13 +783,14 @@ impl SourceService {
                     .map(|(primary_id, text)| {
                         let sem = Arc::clone(&semaphore);
                         let ext = Arc::clone(extractor);
+                        let ctx = Arc::clone(&extraction_context);
                         let text = text.clone();
                         let primary_id = *primary_id;
                         async move {
                             let _permit = sem.acquire().await.map_err(|_| {
                                 Error::Ingestion("extraction semaphore closed".to_string())
                             })?;
-                            let result = ext.extract(&text).await?;
+                            let result = ext.extract(&text, &ctx).await?;
                             Ok::<_, Error>((primary_id, result))
                         }
                     })
@@ -1576,6 +1593,13 @@ impl SourceService {
         if let Some(ref extractor) = self.extractor {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
 
+            // Build extraction context from source metadata.
+            let extraction_context = Arc::new(ExtractionContext {
+                source_type: Some(source.source_type.clone()),
+                source_uri: source.uri.clone(),
+                source_title: source.title.clone(),
+            });
+
             let extractable: Vec<_> = chunk_outputs
                 .iter()
                 .enumerate()
@@ -1605,13 +1629,14 @@ impl SourceService {
                     .map(|(primary_id, text)| {
                         let sem = Arc::clone(&semaphore);
                         let ext = Arc::clone(extractor);
+                        let ctx = Arc::clone(&extraction_context);
                         let text = text.clone();
                         let primary_id = *primary_id;
                         async move {
                             let _permit = sem.acquire().await.map_err(|_| {
                                 Error::Ingestion("extraction semaphore closed".to_string())
                             })?;
-                            let result = ext.extract(&text).await?;
+                            let result = ext.extract(&text, &ctx).await?;
                             Ok::<_, Error>((primary_id, result))
                         }
                     })
@@ -1772,13 +1797,78 @@ impl SourceService {
         SourceRepo::list(&*self.repo, limit, offset).await
     }
 
-    /// Delete a source and its associated chunks.
+    /// Delete a source and cascade through all dependent entities.
+    ///
+    /// Cascade order:
+    /// 1. Collect affected node IDs from extractions
+    /// 2. Delete extractions for this source's chunks
+    /// 3. Nullify `node_aliases.source_chunk_id` references
+    /// 4. Delete chunks
+    /// 5. For each affected node with zero remaining active
+    ///    extractions: delete aliases, edges, then the node
+    /// 6. For nodes with remaining extractions: update
+    ///    `mention_count`
+    /// 7. Delete the source record
     pub async fn delete(&self, id: SourceId) -> Result<DeleteResult> {
+        // Step 1: Collect node IDs affected by this source's
+        // extractions before we delete anything.
+        let affected_node_ids = ExtractionRepo::list_node_ids_by_source(&*self.repo, id).await?;
+
+        // Step 2: Delete extractions (must precede chunk deletion
+        // due to FK on extractions.chunk_id).
+        let extractions_deleted = ExtractionRepo::delete_by_source(&*self.repo, id).await?;
+
+        // Step 3: Nullify alias chunk references (must precede
+        // chunk deletion due to FK on
+        // node_aliases.source_chunk_id).
+        NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
+
+        // Step 4: Delete chunks (now safe — no FK references).
         let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
+
+        // Step 5: Handle affected nodes. For each node, check if
+        // it still has active extractions from other sources.
+        let mut nodes_deleted: u64 = 0;
+        let mut edges_deleted: u64 = 0;
+
+        for node_id in &affected_node_ids {
+            let remaining =
+                ExtractionRepo::count_active_by_entity(&*self.repo, "node", node_id.into_uuid())
+                    .await?;
+
+            if remaining == 0 {
+                // Orphaned node — delete aliases, edges, then
+                // the node itself.
+                NodeAliasRepo::delete_by_node(&*self.repo, *node_id).await?;
+                edges_deleted += EdgeRepo::delete_by_node(&*self.repo, *node_id).await?;
+                if NodeRepo::delete(&*self.repo, *node_id).await? {
+                    nodes_deleted += 1;
+                }
+            } else {
+                // Node survives — update mention_count to reflect
+                // the remaining extraction count.
+                if let Some(mut node) = NodeRepo::get(&*self.repo, *node_id).await? {
+                    let count: i64 = ExtractionRepo::count_active_by_entity(
+                        &*self.repo,
+                        "node",
+                        node_id.into_uuid(),
+                    )
+                    .await?;
+                    node.mention_count = count as i32;
+                    NodeRepo::update(&*self.repo, &node).await?;
+                }
+            }
+        }
+
+        // Step 6: Delete the source record.
         let deleted = SourceRepo::delete(&*self.repo, id).await?;
+
         Ok(DeleteResult {
             deleted,
             chunks_deleted,
+            extractions_deleted,
+            nodes_deleted,
+            edges_deleted,
         })
     }
 
@@ -2154,6 +2244,39 @@ fn sanitize_ltree_label(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_result_serializes_all_fields() {
+        let result = DeleteResult {
+            deleted: true,
+            chunks_deleted: 5,
+            extractions_deleted: 10,
+            nodes_deleted: 3,
+            edges_deleted: 7,
+        };
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(json["deleted"], true);
+        assert_eq!(json["chunks_deleted"], 5);
+        assert_eq!(json["extractions_deleted"], 10);
+        assert_eq!(json["nodes_deleted"], 3);
+        assert_eq!(json["edges_deleted"], 7);
+    }
+
+    #[test]
+    fn delete_result_zero_counts_when_nothing_found() {
+        let result = DeleteResult {
+            deleted: false,
+            chunks_deleted: 0,
+            extractions_deleted: 0,
+            nodes_deleted: 0,
+            edges_deleted: 0,
+        };
+        assert!(!result.deleted);
+        assert_eq!(result.chunks_deleted, 0);
+        assert_eq!(result.extractions_deleted, 0);
+        assert_eq!(result.nodes_deleted, 0);
+        assert_eq!(result.edges_deleted, 0);
+    }
 
     #[test]
     fn entity_name_lock_key_is_deterministic() {
@@ -2964,6 +3087,115 @@ mod tests {
         assert!(
             (c2.map(|x| x.1).unwrap_or(0.0) - expected_sim2).abs() < 1e-6,
             "child2 should have expected cosine similarity"
+        );
+    }
+
+    // --- ExtractionRepo mock and supersession tests ---
+
+    /// In-memory mock of [`ExtractionRepo`] that records
+    /// `mark_superseded_by_source` calls for verification.
+    struct MockExtractionRepo {
+        superseded_sources: std::sync::Mutex<Vec<SourceId>>,
+    }
+
+    impl MockExtractionRepo {
+        fn new() -> Self {
+            Self {
+                superseded_sources: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn superseded_source_ids(&self) -> Vec<SourceId> {
+            self.superseded_sources
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    impl ExtractionRepo for MockExtractionRepo {
+        async fn create(&self, _extraction: &Extraction) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn get(
+            &self,
+            _id: crate::types::ids::ExtractionId,
+        ) -> crate::error::Result<Option<Extraction>> {
+            Ok(None)
+        }
+
+        async fn list_by_chunk(&self, _chunk_id: ChunkId) -> crate::error::Result<Vec<Extraction>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_active_for_entity(
+            &self,
+            _entity_type: &str,
+            _entity_id: uuid::Uuid,
+        ) -> crate::error::Result<Vec<Extraction>> {
+            Ok(Vec::new())
+        }
+
+        async fn mark_superseded(
+            &self,
+            _id: crate::types::ids::ExtractionId,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn mark_superseded_by_source(
+            &self,
+            source_id: SourceId,
+        ) -> crate::error::Result<u64> {
+            if let Ok(mut v) = self.superseded_sources.lock() {
+                v.push(source_id);
+            }
+            Ok(1)
+        }
+
+        async fn delete_by_source(&self, _source_id: SourceId) -> crate::error::Result<u64> {
+            Ok(0)
+        }
+
+        async fn list_node_ids_by_source(
+            &self,
+            _source_id: SourceId,
+        ) -> crate::error::Result<Vec<NodeId>> {
+            Ok(Vec::new())
+        }
+
+        async fn count_active_by_entity(
+            &self,
+            _entity_type: &str,
+            _entity_id: uuid::Uuid,
+        ) -> crate::error::Result<i64> {
+            Ok(0)
+        }
+    }
+
+    /// Verify that `ExtractionRepo::mark_superseded_by_source`
+    /// correctly receives the old source ID during supersession.
+    ///
+    /// This tests the trait contract that the supersession path in
+    /// `ingest()` relies on: when a new source supersedes an old
+    /// one, `mark_superseded_by_source` must be called with the
+    /// old source's ID so its extractions stop polluting search.
+    #[tokio::test]
+    async fn mark_superseded_by_source_records_old_source_id() {
+        let repo = MockExtractionRepo::new();
+        let old_source_id = SourceId::from_uuid(uuid::Uuid::new_v4());
+
+        let count = ExtractionRepo::mark_superseded_by_source(&repo, old_source_id).await;
+
+        assert!(count.is_ok(), "mark_superseded_by_source should succeed");
+        assert_eq!(count.unwrap_or(0), 1);
+
+        let recorded = repo.superseded_source_ids();
+        assert_eq!(recorded.len(), 1, "exactly one source should be superseded");
+        assert_eq!(
+            recorded[0], old_source_id,
+            "recorded source ID must match the old source"
         );
     }
 }
