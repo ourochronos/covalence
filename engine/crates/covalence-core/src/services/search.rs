@@ -234,7 +234,23 @@ impl SearchService {
                 match self.vector.search(&probe_query).await {
                     Ok(results) => {
                         let scores: Vec<f64> = results.iter().map(|r| r.score).collect();
-                        let selected = select_strategy(&scores);
+                        let mut selected = select_strategy(&scores);
+                        // Guard: Global strategy relies on
+                        // community summaries (articles). If
+                        // none exist, fall back to Exploratory
+                        // which is the right choice for broad
+                        // queries (graph-heavy traversal).
+                        if selected == SearchStrategy::Global {
+                            let has_articles =
+                                self.global.search(&probe_query).await.is_ok_and(|r| !r.is_empty());
+                            if !has_articles {
+                                selected = SearchStrategy::Exploratory;
+                                tracing::debug!(
+                                    "skewroute: Global → \
+                                     Exploratory (no articles)"
+                                );
+                            }
+                        }
                         if selected != SearchStrategy::Balanced {
                             tracing::debug!(
                                 ?selected,
@@ -718,7 +734,18 @@ impl SearchService {
                 match self.vector.search(&probe_query).await {
                     Ok(results) => {
                         let scores: Vec<f64> = results.iter().map(|r| r.score).collect();
-                        select_strategy(&scores)
+                        let mut selected = select_strategy(&scores);
+                        if selected == SearchStrategy::Global {
+                            let has_articles = self
+                                .global
+                                .search(&probe_query)
+                                .await
+                                .is_ok_and(|r| !r.is_empty());
+                            if !has_articles {
+                                selected = SearchStrategy::Exploratory;
+                            }
+                        }
+                        selected
                     }
                     Err(_) => strategy.clone(),
                 }
