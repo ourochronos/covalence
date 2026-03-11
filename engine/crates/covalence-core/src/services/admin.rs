@@ -291,12 +291,15 @@ impl AdminService {
             created_at: chrono::Utc::now(),
             completed_at: None,
         };
-        let consolidator = GraphBatchConsolidator::new(
+        let mut consolidator = GraphBatchConsolidator::new(
             Arc::clone(&self.repo),
             Arc::clone(&self.graph),
             None,
-            None,
+            self.embedder.clone(),
         );
+        if let Some(ref cfg) = self.config {
+            consolidator = consolidator.with_table_dims(cfg.embedding.table_dims.clone());
+        }
         consolidator.run_batch(&mut job).await?;
         tracing::info!(
             job_id = %job.id,

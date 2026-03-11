@@ -172,19 +172,29 @@ impl GraphBatchConsolidator {
         hasher.update(output.body.as_bytes());
         let content_hash = hasher.finalize().to_vec();
 
-        let article = Article::new(output.title, output.body, content_hash, all_node_ids);
+        Ok(Article::new(output.title, output.body, content_hash, all_node_ids))
+    }
 
-        // Embed the article summary if an embedder is available
+    /// Embed an article after it has been created in PG.
+    ///
+    /// The embedding must happen after `ArticleRepo::create` so the
+    /// row exists for the UPDATE.
+    async fn embed_article(&self, article: &Article) -> Result<()> {
         if let Some(ref embedder) = self.embedder {
-            let texts = vec![output.summary];
-            let embeddings = embedder.embed(&texts).await?;
+            // Embed a summary snippet for search
+            let summary = if article.body.len() > 500 {
+                format!("{}: {}...", article.title, &article.body[..500])
+            } else {
+                format!("{}: {}", article.title, article.body)
+            };
+            let embeddings = embedder.embed(&[summary]).await?;
             if let Some(emb) = embeddings.first() {
-                let truncated = truncate_and_validate(emb, self.table_dims.article, "articles")?;
+                let truncated =
+                    truncate_and_validate(emb, self.table_dims.article, "articles")?;
                 ArticleRepo::update_embedding(&*self.repo, article.id, &truncated).await?;
             }
         }
-
-        Ok(article)
+        Ok(())
     }
 
     /// Log any detected contentions.
@@ -237,11 +247,13 @@ impl BatchConsolidator for GraphBatchConsolidator {
             if !job.source_ids.is_empty() {
                 let article = self.compile_article(&job.source_ids, 0).await?;
                 ArticleRepo::create(&*self.repo, &article).await?;
+                self.embed_article(&article).await?;
             }
         } else {
             for (&community_id, source_ids) in &clusters {
                 let article = self.compile_article(source_ids, community_id).await?;
                 ArticleRepo::create(&*self.repo, &article).await?;
+                self.embed_article(&article).await?;
             }
         }
 
