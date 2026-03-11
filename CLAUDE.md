@@ -127,11 +127,45 @@ make ingest-prod     # All of the above
 
 When working on Covalence:
 - **Use dev for all development work.** `make run-dev` or `make run` (alias).
-- **Use prod only for querying the knowledge graph** to inform development decisions.
 - **Never modify prod data** without explicit user approval.
 - **After adding migrations**, run `make migrate` (dev) first, verify, then `make promote` for prod.
-- **To query prod**, use `cove --api-url http://localhost:8441 search "query"`.
-- **The prod knowledge graph contains** the Covalence codebase, design specs, and ADRs. Use it to understand existing patterns, find relevant code, and inform architectural decisions.
+- **To query prod**, use `cove --api-url http://localhost:8441 search "query"` or `curl -X POST http://localhost:8441/api/v1/search`.
+
+## Knowledge-First Development
+
+Covalence is its own knowledge substrate. The prod knowledge graph contains the codebase, design specs, ADRs, and research papers that inform the project's design. **Use it.**
+
+### Learn Before You Act
+
+Before implementing a feature, making an architectural decision, or working on any non-trivial change:
+
+1. **Query the prod knowledge graph** for relevant context — existing patterns, spec intent, related research, prior decisions.
+2. **If the relevant research isn't in the graph, ingest it first.** Papers, documentation, RFCs, algorithm descriptions, API references — anything that deepens understanding of the problem space goes into Covalence. This is an investment, not overhead.
+3. **If you discover a knowledge gap** (e.g., "I don't fully understand how conformal prediction works" or "what does the literature say about graph-based forgetting?"), find and ingest the relevant material before proceeding.
+
+### What to Ingest
+
+Ingest broadly. Covalence should understand the theory behind everything it does:
+- **Academic papers** — the source research referenced in specs, plus papers relevant to current work
+- **Technical documentation** — library docs, API references, protocol specs
+- **Domain knowledge** — graph theory, ontology, epistemology, information retrieval, memory systems, distributed systems
+- **Process knowledge** — software engineering practices, testing strategies, CI/CD patterns
+
+Use the ingestion API: `POST /api/v1/sources` with `source_type: "document"`, base64-encoded content, and metadata (title, authors, URI). For arXiv papers, use `WebFetch` to retrieve content. For documentation, fetch and ingest the relevant pages.
+
+### Track What You Find
+
+Every insight, misalignment, or gap discovered through Covalence queries (or any other means) should be tracked:
+- **Misalignment between spec and implementation** → create an issue
+- **Research finding that contradicts a design choice** → create an issue
+- **Knowledge gap that blocks understanding** → ingest the material, then create an issue if it reveals needed changes
+- **Opportunity for improvement** → create an issue
+
+Nothing evaporates. The system improves because we're honest about what needs improving.
+
+### The Goal
+
+Covalence aims to be the best possible AI agent memory and knowledge system. The architecture is sound — it needs to grow and mature through deep understanding of the problem space. We are not making quick fixes. We are solving a complex problem composed of many mostly-solved subproblems, building on solid theory, and solving the remaining open questions along the way.
 
 ## Hard Rules
 
@@ -243,13 +277,15 @@ To add a new ADR:
 
 ## Issue Tracking
 
-All development work is tracked via GitHub issues. This is mandatory.
+All work is tracked via GitHub issues. This is mandatory — not bureaucracy, but integrity. Issues are how we stay honest about what needs doing.
 
 ### When to Create Issues
 
-- **Always create an issue** for: new features, bug fixes, refactoring, infrastructure changes, process changes.
+- **Always create an issue** for: new features, bug fixes, refactoring, infrastructure changes, process changes, research ingestion tasks, spec-implementation misalignments, knowledge gaps.
 - **Fix inline without an issue** only for: typo fixes, formatting, trivial one-line changes that don't affect behavior.
-- **If you discover something broken** while working on something else: create a new issue for it, then decide whether to fix it now (if quick) or defer.
+- **If you discover something** while working on something else — a bug, a misalignment, a gap, an opportunity — create a new issue for it. Decide whether to fix it now (if quick and non-disruptive) or defer. Either way, it's tracked.
+- **If a Covalence query reveals a problem** (e.g., the spec says X but the code does Y), that's an issue.
+- **If research contradicts a design choice**, that's an issue.
 
 ### Issue Workflow
 
