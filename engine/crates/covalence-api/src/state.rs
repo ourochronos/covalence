@@ -14,7 +14,7 @@ use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
     ConverterRegistry, FastcorefClient, GlinerExtractor, LlmExtractor, OpenAiEmbedder,
     PdfConverter, PgResolver, ReaderLmConverter, SidecarExtractor, TwoPassExtractor, VoyageConfig,
-    VoyageEmbedder,
+    VoyageEmbedder, fingerprint_config_from,
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
@@ -253,7 +253,22 @@ impl AppState {
         .with_chunk_config(config.chunk_size, config.chunk_overlap)
         .with_extract_concurrency(config.extract_concurrency)
         .with_extract_batch_config(config.min_extract_tokens, config.extract_batch_tokens)
-        .with_pipeline_config(config.pipeline.clone());
+        .with_pipeline_config(config.pipeline.clone())
+        .with_fingerprint_config(fingerprint_config_from(
+            &config.pipeline,
+            config.chunk_size,
+            config.chunk_overlap,
+            &config.entity_extractor,
+            &config.chat_model,
+            config.min_extract_tokens,
+            config.extract_batch_tokens,
+            config.resolve_trigram_threshold,
+            config.resolve_vector_threshold,
+            &config.embed_model,
+            config.readerlm_url.is_some(),
+            config.pdf_url.is_some(),
+            coref_url.is_some(),
+        ));
 
         if let Some(ref url) = coref_url {
             tracing::info!(url = %url, "Fastcoref preprocessing enabled");
@@ -284,7 +299,9 @@ impl AppState {
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
         let article_service = Arc::new(ArticleService::new(Arc::clone(&repo)));
         let admin_service = Arc::new(
-            AdminService::new(Arc::clone(&repo), Arc::clone(&graph)).with_embedder(embedder),
+            AdminService::new(Arc::clone(&repo), Arc::clone(&graph))
+                .with_embedder(embedder)
+                .with_config(config.clone()),
         );
 
         Ok(Self {

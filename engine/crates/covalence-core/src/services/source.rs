@@ -11,6 +11,7 @@ use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::{CorefResolver, FastcorefClient};
 use crate::ingestion::embedder::{Embedder, truncate_and_validate};
 use crate::ingestion::extractor::{ExtractionContext, Extractor};
+use crate::ingestion::fingerprint::{FingerprintConfig, PipelineFingerprint};
 use crate::ingestion::landscape::{ExtractionMethod, cosine_similarity};
 use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
@@ -90,6 +91,9 @@ pub struct SourceService {
     extract_batch_tokens: usize,
     /// Per-stage pipeline configuration.
     pipeline: PipelineConfig,
+    /// Optional fingerprint config for recording pipeline state on
+    /// each ingestion run.
+    fingerprint_config: Option<FingerprintConfig>,
 }
 
 impl SourceService {
@@ -117,6 +121,7 @@ impl SourceService {
             min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
+            fingerprint_config: None,
         }
     }
 
@@ -141,6 +146,7 @@ impl SourceService {
             min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
+            fingerprint_config: None,
         }
     }
 
@@ -167,6 +173,7 @@ impl SourceService {
             min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
+            fingerprint_config: None,
         }
     }
 
@@ -222,6 +229,33 @@ impl SourceService {
         self.min_extract_tokens = min_tokens;
         self.extract_batch_tokens = batch_tokens;
         self
+    }
+
+    /// Set the pipeline fingerprint configuration.
+    ///
+    /// When set, every `ingest()` and `reprocess()` call records
+    /// the pipeline fingerprint in the source's metadata under
+    /// the `"pipeline_fingerprint"` key.
+    pub fn with_fingerprint_config(mut self, config: FingerprintConfig) -> Self {
+        self.fingerprint_config = Some(config);
+        self
+    }
+
+    /// Compute the current pipeline fingerprint (if configured).
+    fn current_fingerprint(&self) -> Option<PipelineFingerprint> {
+        self.fingerprint_config
+            .as_ref()
+            .map(PipelineFingerprint::compute)
+    }
+
+    /// Store the pipeline fingerprint in a source's metadata.
+    ///
+    /// Inserts or replaces the `"pipeline_fingerprint"` key in
+    /// the metadata JSON object.
+    fn stamp_fingerprint(metadata: &mut serde_json::Value, fingerprint: &PipelineFingerprint) {
+        if let serde_json::Value::Object(map) = metadata {
+            map.insert("pipeline_fingerprint".to_string(), fingerprint.to_json());
+        }
     }
 
     /// Ingest content from a URL through the full pipeline.
@@ -418,6 +452,11 @@ impl SourceService {
             source.supersedes_id = Some(info.old_source_id);
             source.update_class = Some(info.update_class.as_str().to_string());
             source.content_version = info.new_version;
+        }
+
+        // Stamp pipeline fingerprint into source metadata.
+        if let Some(fp) = self.current_fingerprint() {
+            Self::stamp_fingerprint(&mut source.metadata, &fp);
         }
 
         SourceRepo::create(&*self.repo, &source).await?;
@@ -1391,6 +1430,12 @@ impl SourceService {
         let normalized_hash = Sha256::digest(normalized.as_bytes()).to_vec();
         source.normalized_content = Some(normalized.clone());
         source.normalized_hash = Some(normalized_hash);
+
+        // Stamp pipeline fingerprint into source metadata.
+        if let Some(fp) = self.current_fingerprint() {
+            Self::stamp_fingerprint(&mut source.metadata, &fp);
+        }
+
         SourceRepo::update(&*self.repo, &source).await?;
 
         // Stage 4: Chunk

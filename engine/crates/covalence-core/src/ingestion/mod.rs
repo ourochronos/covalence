@@ -11,6 +11,7 @@ pub mod converter;
 pub mod coreference;
 pub mod embedder;
 pub mod extractor;
+pub mod fingerprint;
 pub mod gliner_extractor;
 pub mod landscape;
 pub mod llm_extractor;
@@ -39,6 +40,9 @@ pub use embedder::{Embedder, MockEmbedder};
 pub use extractor::{
     ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,
     MockExtractor,
+};
+pub use fingerprint::{
+    FingerprintConfig, FingerprintDrift, PipelineFingerprint, fingerprint_config_from,
 };
 pub use gliner_extractor::GlinerExtractor;
 pub use landscape::{
