@@ -6,24 +6,38 @@ use chrono::DateTime;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    FeedbackResponse, SearchFeedbackRequest, SearchRequest, SearchResultResponse,
+    ContextItemResponse, ContextResponse, FeedbackResponse, SearchApiResponse,
+    SearchFeedbackRequest, SearchGranularity, SearchMode, SearchRequest, SearchResultResponse,
 };
 use crate::state::AppState;
 
 /// Execute a multi-dimensional fused search.
+///
+/// Supports two delivery modes via the `mode` field:
+/// - `results` (default): returns ranked `SearchResultResponse`
+///   items.
+/// - `context`: assembles results into a deduplicated,
+///   budget-trimmed context window.
+///
+/// The `granularity` field controls content resolution:
+/// - `section` (default): paragraph chunks are promoted to
+///   their parent section content.
+/// - `paragraph`: matched chunk content as-is.
+/// - `source`: full source `normalized_content`.
 #[utoipa::path(
     post,
     path = "/search",
     request_body = SearchRequest,
     responses(
-        (status = 200, description = "Search results", body = Vec<SearchResultResponse>),
+        (status = 200, description = "Search results or assembled context",
+         body = SearchApiResponse),
     ),
     tag = "search"
 )]
 pub async fn search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
-) -> Result<Json<Vec<SearchResultResponse>>, ApiError> {
+) -> Result<Json<SearchApiResponse>, ApiError> {
     let strategy = match req.strategy.as_deref() {
         Some("precise") => covalence_core::search::strategy::SearchStrategy::Precise,
         Some("exploratory") => covalence_core::search::strategy::SearchStrategy::Exploratory,
@@ -66,27 +80,116 @@ pub async fn search(
         };
 
     let limit = req.limit.unwrap_or(10);
-    let results = state
+    let mut results = state
         .search_service
         .search(&req.query, strategy, limit, filters)
         .await?;
 
-    Ok(Json(
-        results
-            .into_iter()
-            .map(|r| SearchResultResponse {
-                id: r.id,
-                fused_score: r.fused_score,
-                confidence: r.confidence,
-                entity_type: r.entity_type,
-                name: r.name,
-                snippet: r.snippet,
-                source_uri: r.source_uri,
-                dimension_scores: r.dimension_scores,
-                dimension_ranks: r.dimension_ranks,
-            })
-            .collect(),
-    ))
+    // --- Granularity adjustment ---
+    apply_granularity(&state, &req.granularity, &mut results).await;
+
+    // --- Delivery mode ---
+    match req.mode {
+        SearchMode::Context => {
+            let assembled = state.search_service.assemble_context(&results, None).await;
+            Ok(Json(SearchApiResponse::Context(ContextResponse {
+                items: assembled
+                    .items
+                    .into_iter()
+                    .map(|item| ContextItemResponse {
+                        ref_number: item.ref_number,
+                        content: item.content,
+                        source_title: item.source_title,
+                        source_id: item.source_id,
+                        score: item.score,
+                        token_count: item.token_count,
+                    })
+                    .collect(),
+                total_tokens: assembled.total_tokens,
+                items_dropped: assembled.items_dropped,
+                duplicates_removed: assembled.duplicates_removed,
+            })))
+        }
+        SearchMode::Results => Ok(Json(SearchApiResponse::Results(
+            results
+                .into_iter()
+                .map(|r| SearchResultResponse {
+                    id: r.id,
+                    fused_score: r.fused_score,
+                    confidence: r.confidence,
+                    entity_type: r.entity_type,
+                    name: r.name,
+                    snippet: r.snippet,
+                    content: r.content,
+                    source_uri: r.source_uri,
+                    dimension_scores: r.dimension_scores,
+                    dimension_ranks: r.dimension_ranks,
+                })
+                .collect(),
+        ))),
+    }
+}
+
+/// Apply granularity adjustments to search result content.
+///
+/// - `Section`: for paragraph-level chunks, replace content with
+///   the parent section's content.
+/// - `Paragraph`: no change (default enrichment is paragraph).
+/// - `Source`: replace content with full source normalized_content.
+async fn apply_granularity(
+    state: &AppState,
+    granularity: &SearchGranularity,
+    results: &mut [covalence_core::search::fusion::FusedResult],
+) {
+    use covalence_core::storage::traits::{ChunkRepo, SourceRepo};
+    use covalence_core::types::ids::ChunkId;
+
+    match granularity {
+        SearchGranularity::Section => {
+            // For paragraph-level chunks, walk up to parent
+            // section and use its content.
+            for result in results.iter_mut() {
+                let is_chunk = result.result_type.as_deref().is_none_or(|rt| rt == "chunk");
+                if !is_chunk {
+                    continue;
+                }
+                if let Ok(Some(chunk)) =
+                    ChunkRepo::get(&*state.repo, ChunkId::from_uuid(result.id)).await
+                {
+                    if chunk.level != "paragraph" {
+                        continue;
+                    }
+                    if let Some(parent_id) = chunk.parent_chunk_id {
+                        if let Ok(Some(parent)) = ChunkRepo::get(&*state.repo, parent_id).await {
+                            result.content = Some(parent.content.clone());
+                        }
+                    }
+                }
+            }
+        }
+        SearchGranularity::Paragraph => {
+            // Content is already at paragraph level from
+            // enrichment — no adjustment needed.
+        }
+        SearchGranularity::Source => {
+            // Replace content with full source normalized_content.
+            for result in results.iter_mut() {
+                let is_chunk = result.result_type.as_deref().is_none_or(|rt| rt == "chunk");
+                if !is_chunk {
+                    continue;
+                }
+                if let Ok(Some(chunk)) =
+                    ChunkRepo::get(&*state.repo, ChunkId::from_uuid(result.id)).await
+                {
+                    if let Ok(Some(source)) = SourceRepo::get(&*state.repo, chunk.source_id).await {
+                        if let Some(ref nc) = source.normalized_content {
+                            result.content = Some(nc.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Submit search feedback.
@@ -95,7 +198,8 @@ pub async fn search(
     path = "/search/feedback",
     request_body = SearchFeedbackRequest,
     responses(
-        (status = 200, description = "Feedback recorded", body = FeedbackResponse),
+        (status = 200, description = "Feedback recorded",
+         body = FeedbackResponse),
     ),
     tag = "search"
 )]

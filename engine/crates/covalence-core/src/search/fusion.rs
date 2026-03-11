@@ -44,6 +44,9 @@ pub struct FusedResult {
     pub name: Option<String>,
     /// Best available text snippet.
     pub snippet: Option<String>,
+    /// Full content of the matched entity (chunk content, article
+    /// body, or node description). Populated during enrichment.
+    pub content: Option<String>,
     /// Source URI (for chunk results).
     pub source_uri: Option<String>,
     /// The type of result: "chunk", "node", or "article".
@@ -81,6 +84,7 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
                 entity_type: None,
                 name: None,
                 snippet: None,
+                content: None,
                 source_uri: None,
                 result_type: None,
                 dimension_scores: HashMap::new(),
@@ -204,5 +208,62 @@ mod tests {
         // Should have contributions from both dimensions.
         let expected = 1.0 / (DEFAULT_K + 1.0) + 1.0 / (DEFAULT_K + 3.0);
         assert!((r.fused_score - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn fused_result_content_field_defaults_to_none() {
+        let id = Uuid::new_v4();
+        let list = vec![make_result(id, 0.9, 1, "vector")];
+        let results = rrf_fuse(&[list], &[1.0], DEFAULT_K);
+        assert_eq!(results.len(), 1);
+        // Content is populated later during enrichment, so
+        // it should be None after fusion.
+        assert!(results[0].content.is_none());
+    }
+
+    #[test]
+    fn fused_result_serialization_includes_content() {
+        let result = FusedResult {
+            id: Uuid::new_v4(),
+            fused_score: 0.5,
+            confidence: None,
+            entity_type: None,
+            name: None,
+            snippet: None,
+            content: Some("full chunk content".to_string()),
+            source_uri: None,
+            result_type: None,
+            dimension_scores: HashMap::new(),
+            dimension_ranks: HashMap::new(),
+        };
+        let json = serde_json::to_value(&result).expect("serialization");
+        assert_eq!(json["content"], "full chunk content");
+    }
+
+    #[test]
+    fn fused_result_deserialization_with_content() {
+        let json = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "fused_score": 0.5,
+            "content": "some content",
+            "dimension_scores": {},
+            "dimension_ranks": {}
+        });
+        let result: FusedResult = serde_json::from_value(json).expect("deserialization");
+        assert_eq!(result.content.as_deref(), Some("some content"));
+    }
+
+    #[test]
+    fn fused_result_deserialization_without_content() {
+        // Backward compatibility: existing JSON without
+        // content field should deserialize fine.
+        let json = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "fused_score": 0.5,
+            "dimension_scores": {},
+            "dimension_ranks": {}
+        });
+        let result: FusedResult = serde_json::from_value(json).expect("deserialization");
+        assert!(result.content.is_none());
     }
 }

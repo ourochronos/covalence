@@ -396,6 +396,7 @@ impl SearchService {
                             entity_type: None,
                             name: None,
                             snippet: None,
+                            content: None,
                             source_uri: None,
                             result_type: None,
                             dimension_scores: HashMap::new(),
@@ -425,6 +426,7 @@ impl SearchService {
                     {
                         result.name = Some(node.canonical_name);
                         result.entity_type = Some(node.node_type);
+                        result.content = node.description.clone();
                         result.confidence =
                             node.confidence_breakdown.map(|o| o.projected_probability());
                     }
@@ -435,6 +437,7 @@ impl SearchService {
                     {
                         result.name = Some(article.title);
                         result.entity_type = Some("article".to_string());
+                        result.content = Some(article.body.clone());
                         result.confidence = article
                             .confidence_breakdown
                             .map(|o| o.projected_probability());
@@ -450,10 +453,12 @@ impl SearchService {
                 }
                 _ => {
                     // Chunk or unknown — try chunk lookup for
-                    // source_uri, then node lookup for compat.
+                    // source_uri and content, then node lookup
+                    // for compat.
                     if let Ok(Some(chunk)) =
                         ChunkRepo::get(&*self.repo, ChunkId::from_uuid(result.id)).await
                     {
+                        result.content = Some(chunk.content.clone());
                         if let Ok(Some(source)) =
                             SourceRepo::get(&*self.repo, chunk.source_id).await
                         {
@@ -465,6 +470,11 @@ impl SearchService {
                     {
                         result.name = Some(node.canonical_name);
                         result.entity_type = Some(node.node_type);
+                        // Only set content from node if not
+                        // already set from chunk.
+                        if result.content.is_none() {
+                            result.content = node.description.clone();
+                        }
                         result.confidence =
                             node.confidence_breakdown.map(|o| o.projected_probability());
                     }
@@ -747,8 +757,9 @@ impl SearchService {
             .iter()
             .map(|r| {
                 let content = r
-                    .snippet
+                    .content
                     .clone()
+                    .or_else(|| r.snippet.clone())
                     .or_else(|| r.name.clone())
                     .unwrap_or_default();
                 // Rough token estimate: ~4 chars per token.

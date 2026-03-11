@@ -126,6 +126,33 @@ pub struct ChunkResponse {
 
 // --- Search ---
 
+/// Search delivery mode.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMode {
+    /// Return individual ranked results (default).
+    #[default]
+    Results,
+    /// Assemble results into a deduplicated, budget-trimmed
+    /// context window suitable for LLM generation.
+    Context,
+}
+
+/// Content granularity for search results.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchGranularity {
+    /// Walk up to the parent section chunk (default). For
+    /// paragraph-level chunks, the content field is replaced
+    /// with the parent section's content.
+    #[default]
+    Section,
+    /// Use the matched chunk content as-is.
+    Paragraph,
+    /// Use the full source `normalized_content`.
+    Source,
+}
+
 /// Request body for search.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SearchRequest {
@@ -144,6 +171,13 @@ pub struct SearchRequest {
     pub date_range_start: Option<String>,
     /// End of date range filter (ISO 8601).
     pub date_range_end: Option<String>,
+    /// Delivery mode: `results` (default) or `context`.
+    #[serde(default)]
+    pub mode: SearchMode,
+    /// Content granularity: `section` (default), `paragraph`,
+    /// or `source`.
+    #[serde(default)]
+    pub granularity: SearchGranularity,
 }
 
 /// A single fused search result.
@@ -161,12 +195,59 @@ pub struct SearchResultResponse {
     pub name: Option<String>,
     /// Best available text snippet.
     pub snippet: Option<String>,
+    /// Full content of the matched entity. For chunks this is
+    /// the chunk text (or parent section / full source depending
+    /// on `granularity`). For articles it is the body. For nodes
+    /// it is the description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     /// Source URI (for chunk results).
     pub source_uri: Option<String>,
     /// Per-dimension scores.
     pub dimension_scores: std::collections::HashMap<String, f64>,
     /// Per-dimension ranks.
     pub dimension_ranks: std::collections::HashMap<String, usize>,
+}
+
+/// A single item in an assembled context window.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContextItemResponse {
+    /// 1-indexed reference number for citation.
+    pub ref_number: usize,
+    /// The content text.
+    pub content: String,
+    /// Source title for attribution.
+    pub source_title: Option<String>,
+    /// Source identifier for provenance.
+    pub source_id: Option<String>,
+    /// Relevance score.
+    pub score: f64,
+    /// Token count of this item.
+    pub token_count: usize,
+}
+
+/// Response for context assembly mode.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContextResponse {
+    /// Ordered context items with reference numbers.
+    pub items: Vec<ContextItemResponse>,
+    /// Total token count of assembled context.
+    pub total_tokens: usize,
+    /// Number of items dropped due to budget.
+    pub items_dropped: usize,
+    /// Number of duplicates removed.
+    pub duplicates_removed: usize,
+}
+
+/// Unified search response supporting both result and context
+/// delivery modes.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum SearchApiResponse {
+    /// Standard ranked results.
+    Results(Vec<SearchResultResponse>),
+    /// Assembled context window.
+    Context(ContextResponse),
 }
 
 // --- Nodes ---
@@ -625,4 +706,99 @@ pub struct AuditLogResponse {
     pub target_type: Option<String>,
     pub target_id: Option<Uuid>,
     pub created_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_mode_defaults_to_results() {
+        let mode = SearchMode::default();
+        assert!(matches!(mode, SearchMode::Results));
+    }
+
+    #[test]
+    fn search_granularity_defaults_to_section() {
+        let gran = SearchGranularity::default();
+        assert!(matches!(gran, SearchGranularity::Section));
+    }
+
+    #[test]
+    fn search_mode_serde_roundtrip() {
+        let json = serde_json::to_string(&SearchMode::Context).unwrap();
+        assert_eq!(json, "\"context\"");
+        let mode: SearchMode = serde_json::from_str(&json).unwrap();
+        assert!(matches!(mode, SearchMode::Context));
+    }
+
+    #[test]
+    fn search_granularity_serde_roundtrip() {
+        let json = serde_json::to_string(&SearchGranularity::Source).unwrap();
+        assert_eq!(json, "\"source\"");
+        let gran: SearchGranularity = serde_json::from_str(&json).unwrap();
+        assert!(matches!(gran, SearchGranularity::Source));
+    }
+
+    #[test]
+    fn search_request_defaults_mode_and_granularity() {
+        // When mode and granularity are omitted from JSON, they
+        // should default to Results and Section respectively.
+        let json = serde_json::json!({
+            "query": "test query"
+        });
+        let req: SearchRequest = serde_json::from_value(json).unwrap();
+        assert!(matches!(req.mode, SearchMode::Results));
+        assert!(matches!(req.granularity, SearchGranularity::Section));
+    }
+
+    #[test]
+    fn search_request_with_mode_and_granularity() {
+        let json = serde_json::json!({
+            "query": "test query",
+            "mode": "context",
+            "granularity": "paragraph"
+        });
+        let req: SearchRequest = serde_json::from_value(json).unwrap();
+        assert!(matches!(req.mode, SearchMode::Context));
+        assert!(matches!(req.granularity, SearchGranularity::Paragraph));
+    }
+
+    #[test]
+    fn search_result_response_omits_null_content() {
+        let resp = SearchResultResponse {
+            id: uuid::Uuid::new_v4(),
+            fused_score: 0.5,
+            confidence: None,
+            entity_type: None,
+            name: None,
+            snippet: None,
+            content: None,
+            source_uri: None,
+            dimension_scores: std::collections::HashMap::new(),
+            dimension_ranks: std::collections::HashMap::new(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        // content should be omitted when None due to
+        // skip_serializing_if.
+        assert!(json.get("content").is_none());
+    }
+
+    #[test]
+    fn search_result_response_includes_content_when_present() {
+        let resp = SearchResultResponse {
+            id: uuid::Uuid::new_v4(),
+            fused_score: 0.5,
+            confidence: None,
+            entity_type: None,
+            name: None,
+            snippet: None,
+            content: Some("full content here".to_string()),
+            source_uri: None,
+            dimension_scores: std::collections::HashMap::new(),
+            dimension_ranks: std::collections::HashMap::new(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["content"], "full content here");
+    }
 }

@@ -408,6 +408,7 @@ pub async fn replay_trace(
                 entity_type: r.entity_type,
                 name: r.name,
                 snippet: r.snippet,
+                content: r.content,
                 source_uri: r.source_uri,
                 dimension_scores: r.dimension_scores,
                 dimension_ranks: r.dimension_ranks,
