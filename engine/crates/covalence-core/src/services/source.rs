@@ -411,6 +411,27 @@ impl SourceService {
             self.chunk_overlap,
         );
 
+        // Stage 4.5: Post-chunking quality gate.
+        //
+        // Flag sources that produce excessively fragmented output.
+        // This catches garbage HTML that slipped through conversion
+        // (e.g., nav/footer text producing hundreds of tiny chunks).
+        if chunk_outputs.len() > 10 {
+            let char_counts: Vec<usize> = chunk_outputs.iter().map(|co| co.text.len()).collect();
+            let mut sorted = char_counts.clone();
+            sorted.sort_unstable();
+            let median_chars = sorted[sorted.len() / 2];
+
+            if median_chars < 100 {
+                tracing::warn!(
+                    source_id = %source.id,
+                    chunks = chunk_outputs.len(),
+                    median_chars,
+                    "post-chunking quality gate: excessively fragmented output"
+                );
+            }
+        }
+
         // Build a map from chunker UUIDs to ChunkIds
         let mut id_map = std::collections::HashMap::new();
         for co in &chunk_outputs {

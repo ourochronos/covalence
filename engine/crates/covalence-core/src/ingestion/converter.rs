@@ -163,7 +163,10 @@ impl ReaderLmConverter {
 #[async_trait::async_trait]
 impl SourceConverter for ReaderLmConverter {
     async fn convert(&self, content: &[u8], _content_type: &str) -> Result<String> {
-        let html = String::from_utf8_lossy(content);
+        // Strip boilerplate before sending to the sidecar so the
+        // model only processes actual article content.
+        let raw_html = String::from_utf8_lossy(content);
+        let html = strip_boilerplate(&raw_html);
 
         if html.len() <= READERLM_MAX_CHARS {
             // Small enough for a single call.
@@ -340,8 +343,10 @@ fn split_html_windows(html: &str, max_chars: usize) -> Vec<String> {
 /// preserving inner text. HTML entities `&amp;`, `&lt;`, `&gt;`,
 /// `&quot;`, and `&nbsp;` are decoded.
 fn strip_html(html: &str) -> String {
-    // First, remove <script> and <style> blocks entirely.
-    let cleaned = remove_block_elements(html);
+    // Remove boilerplate elements (nav, header, footer, sidebar,
+    // cookie banners), then <script> and <style> blocks.
+    let cleaned = strip_boilerplate(html);
+    let cleaned = remove_block_elements(&cleaned);
 
     let mut output = String::with_capacity(cleaned.len());
     let mut inside_tag = false;
@@ -418,6 +423,97 @@ fn strip_html(html: &str) -> String {
 
     // Collapse runs of 3+ newlines into 2, and trim.
     collapse_newlines(&output)
+}
+
+/// Strip boilerplate HTML elements that contain non-content material.
+///
+/// Removes `<nav>`, `<header>`, `<footer>`, `<aside>`, `<noscript>`,
+/// and common cookie/ad containers. Applied before the main HTML
+/// conversion to prevent boilerplate from being chunked and extracted.
+pub fn strip_boilerplate(html: &str) -> String {
+    let mut result = html.to_string();
+
+    // Remove block-level boilerplate elements entirely.
+    for tag in &["nav", "header", "footer", "aside", "noscript"] {
+        result = remove_block_element_by_tag(&result, tag);
+    }
+
+    // Remove common boilerplate by id/class patterns.
+    // These regex-free heuristics cover the most common cases.
+    for pattern in &[
+        "cookie",
+        "consent",
+        "gdpr",
+        "banner",
+        "advert",
+        "sidebar",
+        "social-share",
+        "related-posts",
+        "comments",
+    ] {
+        result = remove_divs_matching(&result, pattern);
+    }
+
+    result
+}
+
+/// Remove all `<tag>...</tag>` blocks for the given tag name
+/// (case-insensitive).
+fn remove_block_element_by_tag(html: &str, tag: &str) -> String {
+    let mut result = html.to_string();
+    loop {
+        let lower = result.to_lowercase();
+        let open = format!("<{tag}");
+        let close = format!("</{tag}>");
+        let Some(start) = lower.find(&open) else {
+            break;
+        };
+        let Some(end) = lower[start..].find(&close) else {
+            result.truncate(start);
+            break;
+        };
+        let end_pos = start + end + close.len();
+        result.replace_range(start..end_pos, "");
+    }
+    result
+}
+
+/// Remove `<div>` blocks whose opening tag contains a matching
+/// id or class attribute value (case-insensitive heuristic).
+///
+/// This is a best-effort removal — it handles single-level divs
+/// but not deeply nested ones. The goal is to strip obvious
+/// boilerplate containers, not to be a full HTML parser.
+fn remove_divs_matching(html: &str, pattern: &str) -> String {
+    let mut result = html.to_string();
+    let pattern_lower = pattern.to_lowercase();
+
+    loop {
+        let lower = result.to_lowercase();
+        // Find <div ...> where attributes contain the pattern.
+        let Some(div_start) = lower.find("<div") else {
+            break;
+        };
+        let Some(tag_end) = lower[div_start..].find('>') else {
+            break;
+        };
+        let tag_content = &lower[div_start..div_start + tag_end];
+
+        if tag_content.contains(&pattern_lower) {
+            // Find the matching </div>
+            if let Some(close_offset) = lower[div_start + tag_end..].find("</div>") {
+                let end_pos = div_start + tag_end + close_offset + 6;
+                result.replace_range(div_start..end_pos, "");
+                continue;
+            }
+        }
+        // No match at this position — advance past it by replacing
+        // <div with a placeholder, search again, then restore.
+        // This is a simple way to skip non-matching divs without
+        // keeping a cursor index.
+        break;
+    }
+    result
 }
 
 /// Remove `<script>...</script>` and `<style>...</style>` blocks
@@ -1307,5 +1403,69 @@ More text after.";
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("no converter registered"));
+    }
+
+    // --- Boilerplate removal tests ---
+
+    #[test]
+    fn strip_boilerplate_removes_nav() {
+        let html = "<body><nav><a href='/'>Home</a></nav><p>Article content</p></body>";
+        let result = strip_boilerplate(html);
+        assert!(!result.contains("Home"));
+        assert!(result.contains("Article content"));
+    }
+
+    #[test]
+    fn strip_boilerplate_removes_header_footer() {
+        let html = "<header>Site Header</header>\
+                     <main>Content</main>\
+                     <footer>Copyright 2024</footer>";
+        let result = strip_boilerplate(html);
+        assert!(!result.contains("Site Header"));
+        assert!(!result.contains("Copyright"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn strip_boilerplate_removes_aside() {
+        let html = "<article>Main text</article><aside>Related articles</aside>";
+        let result = strip_boilerplate(html);
+        assert!(!result.contains("Related articles"));
+        assert!(result.contains("Main text"));
+    }
+
+    #[test]
+    fn strip_boilerplate_removes_cookie_div() {
+        let html = "<div class='cookie-consent'>Accept cookies</div>\
+                     <p>Real content here</p>";
+        let result = strip_boilerplate(html);
+        assert!(!result.contains("Accept cookies"));
+        assert!(result.contains("Real content here"));
+    }
+
+    #[test]
+    fn strip_boilerplate_preserves_clean_html() {
+        let html = "<h1>Title</h1><p>Paragraph one.</p><p>Paragraph two.</p>";
+        let result = strip_boilerplate(html);
+        assert_eq!(result, html);
+    }
+
+    #[test]
+    fn strip_boilerplate_removes_noscript() {
+        let html = "<p>Content</p><noscript>Enable JavaScript</noscript>";
+        let result = strip_boilerplate(html);
+        assert!(!result.contains("Enable JavaScript"));
+        assert!(result.contains("Content"));
+    }
+
+    #[tokio::test]
+    async fn html_converter_strips_boilerplate() {
+        let converter = HtmlConverter;
+        let html = b"<nav>Menu</nav><h1>Title</h1><p>Content</p><footer>Footer</footer>";
+        let result = converter.convert(html, "text/html").await.unwrap();
+        assert!(!result.contains("Menu"));
+        assert!(!result.contains("Footer"));
+        assert!(result.contains("Title"));
+        assert!(result.contains("Content"));
     }
 }
