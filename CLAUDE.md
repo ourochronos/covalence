@@ -213,7 +213,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 482 passing tests (439 core + 43 eval), 11 ignored integration tests
+# Current: 728 passing tests (675 core + 10 api + 43 eval), 17 ignored integration tests
 
 # Integration tests (requires running PG on port 5435)
 cd engine && cargo test --workspace -- --ignored
@@ -305,4 +305,4 @@ Reference issue numbers in commit messages. Format: `<verb> <what> (#<issue>)`.
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–9 complete.** 482 tests passing. Zero code TODOs remaining. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability (#21), graph context disambiguation, late chunking via Voyage contextual embeddings, dimension validation (#23), full MCP/memory/consolidation wiring. See GitHub issues for ongoing enhancements.
+Current phase: **M0-M11 + Waves 1–9 complete.** 728 tests passing. Zero code TODOs remaining. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability (#21), graph context disambiguation, late chunking via Voyage contextual embeddings, dimension validation (#23), full MCP/memory/consolidation wiring. See GitHub issues for ongoing enhancements.
