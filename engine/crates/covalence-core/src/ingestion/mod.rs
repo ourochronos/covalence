@@ -4,6 +4,7 @@
 //! extract → landscape → resolve.
 
 pub mod accept;
+pub mod ast_extractor;
 pub mod chunker;
 pub mod code_chunker;
 pub mod converter;
@@ -26,6 +27,7 @@ pub mod url_fetcher;
 pub mod voyage;
 
 pub use accept::{AcceptResult, compute_content_hash};
+pub use ast_extractor::AstExtractor;
 pub use chunker::{ChunkLevel, ChunkOutput, chunk_document};
 pub use code_chunker::{CodeLanguage, code_to_markdown, detect_code_language, mime_from_path};
 pub use converter::{
