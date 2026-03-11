@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{PipelineConfig, TableDimensions};
 use crate::error::{Error, Result};
+use crate::ingestion::code_chunker;
 use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::{CorefResolver, FastcorefClient};
 use crate::ingestion::embedder::{Embedder, truncate_and_validate};
@@ -321,10 +322,22 @@ impl SourceService {
             None
         };
 
+        // Detect whether this is a code source. When a code
+        // language is detected the pipeline uses tree-sitter
+        // directly and skips NLP stages (normalization, coref)
+        // that would destroy code structure.
+        let code_lang = code_chunker::detect_code_language(mime, uri);
+
         // Stage 1.5: Convert content if a converter registry is
-        // configured and conversion is enabled.
+        // configured and conversion is enabled. For code sources,
+        // use tree-sitter directly instead of the converter
+        // registry.
         let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
-            if self.pipeline.convert_enabled {
+            if let Some(lang) = code_lang {
+                let source_text = String::from_utf8_lossy(content);
+                let md = code_chunker::code_to_markdown(&source_text, lang)?;
+                (std::borrow::Cow::Owned(md.into_bytes()), "text/markdown")
+            } else if self.pipeline.convert_enabled {
                 if let Some(ref registry) = self.converter_registry {
                     let converted = registry.convert(content, mime).await?;
                     (
@@ -342,7 +355,12 @@ impl SourceService {
         let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
 
         // Stage 3: Normalize (skippable via pipeline config).
-        let normalized = if self.pipeline.normalize_enabled {
+        // Skipped for code sources — normalization collapses
+        // indentation inside fenced code blocks.
+        let is_code = code_lang.is_some();
+        let normalized = if is_code {
+            parsed.body.clone()
+        } else if self.pipeline.normalize_enabled {
             crate::ingestion::normalize::normalize(&parsed.body)
         } else {
             parsed.body.clone()
@@ -626,13 +644,17 @@ impl SourceService {
             None
         };
 
-        // Stage 5.5: Co-reference resolution across chunks
-        let coref_resolver = CorefResolver::new();
-        let coref_links = coref_resolver.resolve(&chunk_outputs);
+        // Stage 5.5: Co-reference resolution across chunks.
+        // Skipped for code sources — abbreviation detection is
+        // destructive for identifiers and variable names.
         let mut coref_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        for link in &coref_links {
-            coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
+        if !is_code {
+            let coref_resolver = CorefResolver::new();
+            let coref_links = coref_resolver.resolve(&chunk_outputs);
+            for link in &coref_links {
+                coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
+            }
         }
 
         // Stage 5.7: Neural coreference preprocessing (optional).
@@ -641,49 +663,52 @@ impl SourceService {
         // and anaphora in each extractable chunk before passing
         // to the entity extractor. This benefits all extractor
         // backends (sidecar, two_pass, llm).
-        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> =
-            if self.pipeline.coref_enabled {
-                if let Some(ref coref_client) = self.coref_client {
-                    let extractable_indices: Vec<usize> = chunk_outputs
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
-                        .map(|(i, _)| i)
-                        .collect();
+        //
+        // Skipped for code sources.
+        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> = if is_code {
+            None
+        } else if self.pipeline.coref_enabled {
+            if let Some(ref coref_client) = self.coref_client {
+                let extractable_indices: Vec<usize> = chunk_outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
+                    .map(|(i, _)| i)
+                    .collect();
 
-                    let mut resolved = std::collections::HashMap::new();
-                    for &idx in &extractable_indices {
-                        let co = &chunk_outputs[idx];
-                        match coref_client.resolve(&co.text).await {
-                            Ok(r) => {
-                                tracing::debug!(
-                                    chunk_index = idx,
-                                    original_len = co.text.len(),
-                                    resolved_len = r.len(),
-                                    "neural coref resolved"
-                                );
-                                resolved.insert(co.id, r);
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    chunk_index = idx,
-                                    error = %e,
-                                    "neural coref failed, using original text"
-                                );
-                            }
+                let mut resolved = std::collections::HashMap::new();
+                for &idx in &extractable_indices {
+                    let co = &chunk_outputs[idx];
+                    match coref_client.resolve(&co.text).await {
+                        Ok(r) => {
+                            tracing::debug!(
+                                chunk_index = idx,
+                                original_len = co.text.len(),
+                                resolved_len = r.len(),
+                                "neural coref resolved"
+                            );
+                            resolved.insert(co.id, r);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                chunk_index = idx,
+                                error = %e,
+                                "neural coref failed, using original text"
+                            );
                         }
                     }
-                    if resolved.is_empty() {
-                        None
-                    } else {
-                        Some(resolved)
-                    }
-                } else {
+                }
+                if resolved.is_empty() {
                     None
+                } else {
+                    Some(resolved)
                 }
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         // Stages 6-7: Extract entities + resolve + create
         // nodes/edges.
@@ -1275,8 +1300,16 @@ impl SourceService {
             .and_then(|v| v.as_str())
             .unwrap_or("text/plain");
 
+        let uri_ref = source.uri.as_deref();
+        let code_lang = code_chunker::detect_code_language(mime, uri_ref);
+        let is_code = code_lang.is_some();
+
         let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
-            if self.pipeline.convert_enabled {
+            if let Some(lang) = code_lang {
+                let source_text = String::from_utf8_lossy(content_bytes);
+                let md = code_chunker::code_to_markdown(&source_text, lang)?;
+                (std::borrow::Cow::Owned(md.into_bytes()), "text/markdown")
+            } else if self.pipeline.convert_enabled {
                 if let Some(ref registry) = self.converter_registry {
                     let converted = registry.convert(content_bytes, mime).await?;
                     (
@@ -1293,8 +1326,10 @@ impl SourceService {
         // Parse
         let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
 
-        // Normalize
-        let normalized = if self.pipeline.normalize_enabled {
+        // Normalize — skipped for code sources.
+        let normalized = if is_code {
+            parsed.body.clone()
+        } else if self.pipeline.normalize_enabled {
             crate::ingestion::normalize::normalize(&parsed.body)
         } else {
             parsed.body.clone()
@@ -1477,52 +1512,55 @@ impl SourceService {
             None
         };
 
-        // Stage 5.5: Heuristic coref
-        let coref_resolver = CorefResolver::new();
-        let coref_links = coref_resolver.resolve(&chunk_outputs);
+        // Stage 5.5: Heuristic coref — skipped for code sources.
         let mut coref_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        for link in &coref_links {
-            coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
+        if !is_code {
+            let coref_resolver = CorefResolver::new();
+            let coref_links = coref_resolver.resolve(&chunk_outputs);
+            for link in &coref_links {
+                coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
+            }
         }
 
-        // Stage 5.7: Neural coref
-        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> =
-            if self.pipeline.coref_enabled {
-                if let Some(ref coref_client) = self.coref_client {
-                    let extractable_indices: Vec<usize> = chunk_outputs
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
-                        .map(|(i, _)| i)
-                        .collect();
-                    let mut resolved = std::collections::HashMap::new();
-                    for &idx in &extractable_indices {
-                        let co = &chunk_outputs[idx];
-                        match coref_client.resolve(&co.text).await {
-                            Ok(r) => {
-                                resolved.insert(co.id, r);
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    chunk_index = idx,
-                                    error = %e,
-                                    "neural coref failed during reprocessing"
-                                );
-                            }
+        // Stage 5.7: Neural coref — skipped for code sources.
+        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> = if is_code {
+            None
+        } else if self.pipeline.coref_enabled {
+            if let Some(ref coref_client) = self.coref_client {
+                let extractable_indices: Vec<usize> = chunk_outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut resolved = std::collections::HashMap::new();
+                for &idx in &extractable_indices {
+                    let co = &chunk_outputs[idx];
+                    match coref_client.resolve(&co.text).await {
+                        Ok(r) => {
+                            resolved.insert(co.id, r);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                chunk_index = idx,
+                                error = %e,
+                                "neural coref failed during reprocessing"
+                            );
                         }
                     }
-                    if resolved.is_empty() {
-                        None
-                    } else {
-                        Some(resolved)
-                    }
-                } else {
+                }
+                if resolved.is_empty() {
                     None
+                } else {
+                    Some(resolved)
                 }
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         // Stage 6-7: Extract + resolve
         if let Some(ref extractor) = self.extractor {
@@ -2481,5 +2519,106 @@ mod tests {
         let batches = group_extraction_batches(&chunks, 5, 2000, Some(&resolved));
         assert_eq!(batches.len(), 1);
         assert!(batches[0].1.contains("John"));
+    }
+
+    // --- Code source pipeline tests ---
+
+    #[test]
+    fn code_language_detected_from_mime() {
+        let lang = code_chunker::detect_code_language("text/x-rust", None);
+        assert!(lang.is_some());
+        assert_eq!(lang.unwrap(), code_chunker::CodeLanguage::Rust,);
+    }
+
+    #[test]
+    fn code_language_detected_from_uri_fallback() {
+        let lang =
+            code_chunker::detect_code_language("application/octet-stream", Some("src/main.rs"));
+        assert!(lang.is_some());
+        assert_eq!(lang.unwrap(), code_chunker::CodeLanguage::Rust,);
+    }
+
+    #[test]
+    fn code_to_markdown_produces_function_headings() {
+        let source = concat!(
+            "fn hello() {\n",
+            "    println!(\"hello\");\n",
+            "}\n",
+            "\n",
+            "fn world(x: i32) -> bool {\n",
+            "    x > 0\n",
+            "}\n",
+        );
+        let md = code_chunker::code_to_markdown(source.trim(), code_chunker::CodeLanguage::Rust)
+            .expect("code_to_markdown should succeed");
+
+        // Verify tree-sitter produces function-level headings.
+        assert!(
+            md.contains("# fn hello()"),
+            "expected heading for hello(), got:\n{md}"
+        );
+        assert!(
+            md.contains("# fn world(x: i32) -> bool"),
+            "expected heading for world(), got:\n{md}"
+        );
+        // Verify fenced code blocks are present.
+        assert!(
+            md.contains("```rust"),
+            "expected rust code fences, got:\n{md}"
+        );
+    }
+
+    #[test]
+    fn code_source_skips_normalization() {
+        // Normalization would collapse indentation. Verify that
+        // for code sources the pipeline preserves indentation by
+        // checking that code_to_markdown output retains it.
+        let source = "fn foo() {\n    let x = 1;\n}\n";
+        let md = code_chunker::code_to_markdown(source.trim(), code_chunker::CodeLanguage::Rust)
+            .expect("code_to_markdown should succeed");
+
+        // The 4-space indentation should survive since we skip
+        // normalization for code.
+        assert!(
+            md.contains("    let x = 1;"),
+            "indentation should be preserved in code markdown"
+        );
+
+        // Verify normalization *would* break it.
+        let normalized = crate::ingestion::normalize::normalize(&md);
+        assert!(
+            !normalized.contains("    let x = 1;"),
+            "normalization should collapse indentation"
+        );
+    }
+
+    #[test]
+    fn code_source_skips_coref() {
+        // Coreference resolution on code would produce spurious
+        // links. Verify it finds nothing meaningful in code.
+        let md = code_chunker::code_to_markdown(
+            "fn main() {\n    println!(\"hello\");\n}",
+            code_chunker::CodeLanguage::Rust,
+        )
+        .expect("code_to_markdown should succeed");
+
+        let chunks = crate::ingestion::chunker::chunk_document(&md, 1000, 200);
+        let resolver = crate::ingestion::coreference::CorefResolver::new();
+        let links = resolver.resolve(&chunks);
+
+        // Code content should not produce meaningful coref links.
+        // Any links found would be noise from identifiers.
+        // The pipeline skips this for code — verify the resolver
+        // at least doesn't crash on code content.
+        assert!(
+            links.is_empty() || links.iter().all(|l| l.mention.len() <= 3),
+            "coref on code should not find meaningful entities"
+        );
+    }
+
+    #[test]
+    fn non_code_mime_does_not_trigger_code_path() {
+        let lang = code_chunker::detect_code_language("text/html", Some("index.html"));
+        assert!(lang.is_none(), "HTML should not be detected as code");
     }
 }

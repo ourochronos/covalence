@@ -195,6 +195,10 @@ func detectMIME(path string) string {
 		return "application/json"
 	case ".pdf":
 		return "application/pdf"
+	case ".rs":
+		return "text/x-rust"
+	case ".py":
+		return "text/x-python"
 	default:
 		return "text/plain"
 	}
