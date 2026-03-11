@@ -19,6 +19,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         sources::list_sources,
         sources::get_source_chunks,
         sources::delete_source,
+        sources::reprocess_source,
         // Search
         search::search,
         search::search_feedback,
@@ -60,6 +61,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::CreateSourceResponse,
         dto::SourceResponse,
         dto::DeleteSourceResponse,
+        dto::ReprocessSourceResponse,
         dto::ChunkResponse,
         dto::PaginationParams,
         dto::SearchRequest,

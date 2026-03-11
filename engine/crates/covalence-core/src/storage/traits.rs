@@ -221,6 +221,15 @@ pub trait ExtractionRepo: Send + Sync {
 
     /// Mark an extraction as superseded.
     fn mark_superseded(&self, id: ExtractionId) -> impl Future<Output = Result<()>> + Send;
+
+    /// Mark all extractions for a source's chunks as superseded.
+    ///
+    /// Used during source reprocessing to supersede the previous
+    /// extraction run before creating new extraction records.
+    fn mark_superseded_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<u64>> + Send;
 }
 
 /// Repository for [`NodeAlias`] entities.

@@ -25,6 +25,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sources", get(sources::list_sources))
         .route("/sources/{id}", get(sources::get_source))
         .route("/sources/{id}", delete(sources::delete_source))
+        .route("/sources/{id}/reprocess", post(sources::reprocess_source))
         .route("/sources/{id}/chunks", get(sources::get_source_chunks))
         // Search
         .route("/search", post(search::search))

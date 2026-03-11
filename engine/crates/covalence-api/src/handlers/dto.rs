@@ -98,6 +98,21 @@ pub struct DeleteSourceResponse {
     pub chunks_deleted: u64,
 }
 
+/// Response for source reprocessing.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReprocessSourceResponse {
+    /// Source ID that was reprocessed.
+    pub source_id: Uuid,
+    /// Number of old extractions marked as superseded.
+    pub extractions_superseded: u64,
+    /// Number of old chunks deleted.
+    pub chunks_deleted: u64,
+    /// Number of new chunks created.
+    pub chunks_created: usize,
+    /// New content version after reprocessing.
+    pub content_version: i32,
+}
+
 /// Response for a chunk entity.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChunkResponse {

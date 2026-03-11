@@ -36,6 +36,21 @@ pub struct DeleteResult {
     pub chunks_deleted: u64,
 }
 
+/// Result of a source reprocessing operation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReprocessResult {
+    /// Source ID that was reprocessed.
+    pub source_id: uuid::Uuid,
+    /// Number of old extractions marked as superseded.
+    pub extractions_superseded: u64,
+    /// Number of old chunks deleted.
+    pub chunks_deleted: u64,
+    /// Number of new chunks created.
+    pub chunks_created: usize,
+    /// New content version after reprocessing.
+    pub content_version: i32,
+}
+
 /// Service for source ingestion and management.
 pub struct SourceService {
     repo: Arc<PgRepo>,
@@ -1179,6 +1194,503 @@ impl SourceService {
             NodeAliasRepo::create(&*self.repo, &alias).await?;
         }
         Ok(())
+    }
+
+    /// Reprocess a source through the current pipeline configuration.
+    ///
+    /// Re-runs the ingestion pipeline (convert, normalize, chunk,
+    /// embed, extract) on the source's existing raw content using
+    /// the current pipeline config. Previous extractions are marked
+    /// as superseded and old chunks are replaced.
+    ///
+    /// Entity resolution ensures convergent behavior: nodes that
+    /// match existing graph entities are merged (mention count
+    /// bumped), new entities are added, and previously extracted
+    /// entities that are not re-found are left in place (absence
+    /// is not evidence of incorrectness).
+    pub async fn reprocess(&self, id: SourceId) -> Result<ReprocessResult> {
+        let mut source =
+            SourceRepo::get(&*self.repo, id)
+                .await?
+                .ok_or_else(|| Error::NotFound {
+                    entity_type: "source",
+                    id: id.to_string(),
+                })?;
+
+        let raw_content = source.raw_content.as_ref().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "source {} has no raw_content, cannot reprocess",
+                id
+            ))
+        })?;
+        let content_bytes = raw_content.as_bytes();
+
+        tracing::info!(
+            source_id = %id,
+            version = source.content_version,
+            "starting source reprocessing"
+        );
+
+        // Step 1: Mark old extractions as superseded.
+        let extractions_superseded =
+            ExtractionRepo::mark_superseded_by_source(&*self.repo, id).await?;
+        tracing::debug!(
+            extractions_superseded,
+            "marked old extractions as superseded"
+        );
+
+        // Step 2: Delete old chunks (cascade). New chunks will be
+        // created by the pipeline below.
+        let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
+        tracing::debug!(chunks_deleted, "deleted old chunks");
+
+        // Step 3: Increment content version.
+        source.content_version += 1;
+
+        // Step 4: Re-run pipeline from convert stage.
+        let mime = source
+            .metadata
+            .get("format_origin")
+            .and_then(|v| v.as_str())
+            .unwrap_or("text/plain");
+
+        let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
+            if self.pipeline.convert_enabled {
+                if let Some(ref registry) = self.converter_registry {
+                    let converted = registry.convert(content_bytes, mime).await?;
+                    (
+                        std::borrow::Cow::Owned(converted.into_bytes()),
+                        "text/markdown",
+                    )
+                } else {
+                    (std::borrow::Cow::Borrowed(content_bytes), mime)
+                }
+            } else {
+                (std::borrow::Cow::Borrowed(content_bytes), mime)
+            };
+
+        // Parse
+        let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
+
+        // Normalize
+        let normalized = if self.pipeline.normalize_enabled {
+            crate::ingestion::normalize::normalize(&parsed.body)
+        } else {
+            parsed.body.clone()
+        };
+
+        // Update normalized content and hash on the source.
+        let normalized_hash = Sha256::digest(normalized.as_bytes()).to_vec();
+        source.normalized_content = Some(normalized.clone());
+        source.normalized_hash = Some(normalized_hash);
+        SourceRepo::update(&*self.repo, &source).await?;
+
+        // Stage 4: Chunk
+        let chunk_outputs = crate::ingestion::chunker::chunk_document(
+            &normalized,
+            self.chunk_size,
+            self.chunk_overlap,
+        );
+        let chunks_created = chunk_outputs.len();
+
+        // Build chunk ID map
+        let mut id_map = std::collections::HashMap::new();
+        for co in &chunk_outputs {
+            id_map.insert(co.id, ChunkId::from_uuid(co.id));
+        }
+
+        // Build chunks for batch insert
+        let chunks: Vec<Chunk> = chunk_outputs
+            .iter()
+            .enumerate()
+            .map(|(ordinal, co)| {
+                let chunk_id = id_map[&co.id];
+                let level = match co.level {
+                    crate::ingestion::chunker::ChunkLevel::Section => ModelChunkLevel::Section,
+                    crate::ingestion::chunker::ChunkLevel::Paragraph => ModelChunkLevel::Paragraph,
+                };
+
+                let unique_content = &co.text[co.context_prefix_len..];
+                let content_hash = Sha256::digest(unique_content.as_bytes()).to_vec();
+                let token_count = co.text.split_whitespace().count() as i32;
+                let hierarchy = co
+                    .heading_path
+                    .iter()
+                    .map(|h| sanitize_ltree_label(h))
+                    .collect::<Vec<_>>()
+                    .join(".");
+
+                let chunk_meta = detect_chunk_content_types(&co.text);
+
+                let mut chunk = Chunk::new(
+                    source.id,
+                    level,
+                    ordinal as i32,
+                    co.text.clone(),
+                    content_hash,
+                    token_count,
+                );
+                chunk.id = chunk_id;
+                chunk.byte_start = Some(co.byte_start as i32);
+                chunk.byte_end = Some(co.byte_end as i32);
+                chunk.content_offset = Some(co.context_prefix_len as i32);
+                if let Some(parent_uuid) = co.parent_id {
+                    if let Some(&pid) = id_map.get(&parent_uuid) {
+                        chunk = chunk.with_parent(pid);
+                    }
+                }
+                if !hierarchy.is_empty() {
+                    chunk = chunk.with_hierarchy(hierarchy);
+                }
+                chunk = chunk.with_metadata(chunk_meta);
+                chunk
+            })
+            .collect();
+
+        ChunkRepo::batch_create(&*self.repo, &chunks).await?;
+
+        let example_chunks: std::collections::HashSet<uuid::Uuid> = chunk_outputs
+            .iter()
+            .filter(|co| has_example_markers(&co.text))
+            .map(|co| co.id)
+            .collect();
+
+        // Stage 5: Embed chunks + landscape analysis
+        let landscape_results = if let Some(ref embedder) = self.embedder {
+            let texts: Vec<String> = chunk_outputs.iter().map(|co| co.text.clone()).collect();
+            let embeddings = embedder.embed_document_chunks(&texts).await?;
+
+            for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
+                let chunk_id = id_map[&co.id];
+                match truncate_and_validate(emb, self.table_dims.chunk, "chunks") {
+                    Ok(truncated) => {
+                        if let Err(e) =
+                            ChunkRepo::update_embedding(&*self.repo, chunk_id, &truncated).await
+                        {
+                            tracing::warn!(
+                                chunk_id = %chunk_id,
+                                error = %e,
+                                "failed to store chunk embedding"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            chunk_id = %chunk_id,
+                            error = %e,
+                            "chunk embedding dimension mismatch"
+                        );
+                    }
+                }
+            }
+
+            // Re-embed source-level vector
+            match embedder.embed(std::slice::from_ref(&normalized)).await {
+                Ok(source_embeddings) => {
+                    if let Some(emb) = source_embeddings.first() {
+                        match truncate_and_validate(emb, self.table_dims.source, "sources") {
+                            Ok(truncated) => {
+                                let f32_vec: Vec<f32> =
+                                    truncated.iter().map(|&v| v as f32).collect();
+                                if let Err(e) =
+                                    SourceRepo::update_embedding(&*self.repo, id, &f32_vec).await
+                                {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to update source embedding"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "source embedding dimension mismatch"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to embed source for reprocessing"
+                    );
+                }
+            }
+
+            // Landscape analysis
+            if self.pipeline.landscape_enabled {
+                let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
+                    .iter()
+                    .map(|co| {
+                        co.parent_id.and_then(|pid| {
+                            let parent_idx = chunk_outputs.iter().position(|p| p.id == pid)?;
+                            Some(&embeddings[parent_idx])
+                        })
+                    })
+                    .collect();
+                let landscape = crate::ingestion::landscape::analyze_landscape(
+                    &embeddings,
+                    &parent_embeddings,
+                    None,
+                );
+                for lr in &landscape {
+                    if lr.chunk_index < chunk_outputs.len() {
+                        let chunk_id = id_map[&chunk_outputs[lr.chunk_index].id];
+                        let metrics_json = serde_json::to_value(&lr.metrics).ok();
+                        ChunkRepo::update_landscape(
+                            &*self.repo,
+                            chunk_id,
+                            lr.parent_alignment,
+                            lr.extraction_method.as_str(),
+                            metrics_json,
+                        )
+                        .await?;
+                    }
+                }
+                Some(landscape)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Stage 5.5: Heuristic coref
+        let coref_resolver = CorefResolver::new();
+        let coref_links = coref_resolver.resolve(&chunk_outputs);
+        let mut coref_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for link in &coref_links {
+            coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
+        }
+
+        // Stage 5.7: Neural coref
+        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> =
+            if self.pipeline.coref_enabled {
+                if let Some(ref coref_client) = self.coref_client {
+                    let extractable_indices: Vec<usize> = chunk_outputs
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
+                        .map(|(i, _)| i)
+                        .collect();
+                    let mut resolved = std::collections::HashMap::new();
+                    for &idx in &extractable_indices {
+                        let co = &chunk_outputs[idx];
+                        match coref_client.resolve(&co.text).await {
+                            Ok(r) => {
+                                resolved.insert(co.id, r);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    chunk_index = idx,
+                                    error = %e,
+                                    "neural coref failed during reprocessing"
+                                );
+                            }
+                        }
+                    }
+                    if resolved.is_empty() {
+                        None
+                    } else {
+                        Some(resolved)
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        // Stage 6-7: Extract + resolve
+        if let Some(ref extractor) = self.extractor {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
+
+            let extractable: Vec<_> = chunk_outputs
+                .iter()
+                .enumerate()
+                .filter(|(i, _co)| should_extract(*i, landscape_results.as_deref()))
+                .map(|(_i, co)| co)
+                .collect();
+
+            let batches = group_extraction_batches(
+                &extractable,
+                self.min_extract_tokens,
+                self.extract_batch_tokens,
+                resolved_texts.as_ref(),
+            );
+
+            tracing::debug!(
+                extractable = extractable.len(),
+                batches = batches.len(),
+                "reprocessing extraction batching"
+            );
+
+            let concurrency_size = self.extract_concurrency * 2;
+            let mut extraction_results: Vec<Result<(uuid::Uuid, _)>> = Vec::new();
+
+            for batch_slice in batches.chunks(concurrency_size) {
+                let batch_futures: Vec<_> = batch_slice
+                    .iter()
+                    .map(|(primary_id, text)| {
+                        let sem = Arc::clone(&semaphore);
+                        let ext = Arc::clone(extractor);
+                        let text = text.clone();
+                        let primary_id = *primary_id;
+                        async move {
+                            let _permit = sem.acquire().await.map_err(|_| {
+                                Error::Ingestion("extraction semaphore closed".to_string())
+                            })?;
+                            let result = ext.extract(&text).await?;
+                            Ok::<_, Error>((primary_id, result))
+                        }
+                    })
+                    .collect();
+                let batch_results = futures::future::join_all(batch_futures).await;
+                extraction_results.extend(batch_results);
+            }
+
+            let mut name_to_node: std::collections::HashMap<String, NodeId> =
+                std::collections::HashMap::new();
+
+            for extraction_result in extraction_results {
+                let (chunk_uuid, extraction) = match extraction_result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "extraction failed during reprocessing"
+                        );
+                        continue;
+                    }
+                };
+                let chunk_id = id_map[&chunk_uuid];
+                let is_example_chunk = example_chunks.contains(&chunk_uuid);
+
+                for entity in &extraction.entities {
+                    let node_id = self.resolve_and_store_entity(entity, chunk_id).await?;
+                    name_to_node.insert(entity.name.to_lowercase(), node_id);
+
+                    if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
+                        name_to_node.entry(referent.clone()).or_insert(node_id);
+                        self.ensure_alias(&entity.name, node_id, chunk_id).await?;
+                    }
+                }
+
+                for rel in &extraction.relationships {
+                    let src_key = coref_map
+                        .get(&rel.source_name.to_lowercase())
+                        .cloned()
+                        .unwrap_or_else(|| rel.source_name.to_lowercase());
+                    let tgt_key = coref_map
+                        .get(&rel.target_name.to_lowercase())
+                        .cloned()
+                        .unwrap_or_else(|| rel.target_name.to_lowercase());
+
+                    let source_node = match name_to_node.get(&src_key) {
+                        Some(&nid) => nid,
+                        None => continue,
+                    };
+                    let target_node = match name_to_node.get(&tgt_key) {
+                        Some(&nid) => nid,
+                        None => continue,
+                    };
+
+                    if source_node == target_node {
+                        continue;
+                    }
+
+                    let resolved_rel_type = if let Some(ref rtr) = self.rel_type_resolver {
+                        rtr.resolve_rel_type(&rel.rel_type).await?
+                    } else {
+                        rel.rel_type.clone()
+                    };
+
+                    let mut edge = Edge::new(source_node, target_node, resolved_rel_type);
+                    let conf = if is_example_chunk {
+                        (rel.confidence * 0.5).clamp(0.0, 1.0)
+                    } else {
+                        rel.confidence
+                    };
+                    edge.confidence = conf;
+                    EdgeRepo::create(&*self.repo, &edge).await?;
+
+                    let ext_record = Extraction::new(
+                        chunk_id,
+                        ExtractedEntityType::Edge,
+                        edge.id.into_uuid(),
+                        "llm".to_string(),
+                        conf,
+                    );
+                    ExtractionRepo::create(&*self.repo, &ext_record).await?;
+                }
+            }
+
+            // Re-embed nodes that need it
+            if let Some(ref embedder) = self.embedder {
+                let node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
+                if !node_ids.is_empty() {
+                    let mut texts: Vec<String> = Vec::with_capacity(node_ids.len());
+                    let mut valid_ids: Vec<NodeId> = Vec::with_capacity(node_ids.len());
+
+                    for &nid in &node_ids {
+                        if let Some(node) = NodeRepo::get(&*self.repo, nid).await? {
+                            let text = match &node.description {
+                                Some(desc) if !desc.is_empty() => {
+                                    format!("{}: {}", node.canonical_name, desc)
+                                }
+                                _ => node.canonical_name.clone(),
+                            };
+                            texts.push(text);
+                            valid_ids.push(nid);
+                        }
+                    }
+
+                    if !texts.is_empty() {
+                        match embedder.embed(&texts).await {
+                            Ok(embeddings) => {
+                                for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
+                                    if let Ok(truncated) =
+                                        truncate_and_validate(emb, self.table_dims.node, "nodes")
+                                    {
+                                        let _ = NodeRepo::update_embedding(
+                                            &*self.repo,
+                                            *nid,
+                                            &truncated,
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to embed nodes during reprocessing"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            source_id = %id,
+            version = source.content_version,
+            extractions_superseded,
+            chunks_deleted,
+            chunks_created,
+            "source reprocessing complete"
+        );
+
+        Ok(ReprocessResult {
+            source_id: id.into_uuid(),
+            extractions_superseded,
+            chunks_deleted,
+            chunks_created,
+            content_version: source.content_version,
+        })
     }
 
     /// Get a source by ID.

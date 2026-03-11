@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::handlers::dto::{
     ChunkResponse, CreateSourceRequest, CreateSourceResponse, DeleteSourceResponse,
-    PaginationParams, SourceResponse,
+    PaginationParams, ReprocessSourceResponse, SourceResponse,
 };
 use crate::state::AppState;
 
@@ -198,6 +198,36 @@ pub async fn get_source_chunks(
             })
             .collect(),
     ))
+}
+
+/// Reprocess a source through the current pipeline.
+///
+/// Re-runs ingestion (convert, normalize, chunk, embed, extract)
+/// using the source's existing raw content and the current pipeline
+/// config. Old extractions are superseded, old chunks are replaced,
+/// and entity resolution ensures convergent graph state.
+#[utoipa::path(
+    post,
+    path = "/sources/{id}/reprocess",
+    params(("id" = Uuid, Path, description = "Source ID")),
+    responses(
+        (status = 200, description = "Source reprocessed", body = ReprocessSourceResponse),
+        (status = 404, description = "Source not found"),
+    ),
+    tag = "sources"
+)]
+pub async fn reprocess_source(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ReprocessSourceResponse>, ApiError> {
+    let result = state.source_service.reprocess(id.into()).await?;
+    Ok(Json(ReprocessSourceResponse {
+        source_id: result.source_id,
+        extractions_superseded: result.extractions_superseded,
+        chunks_deleted: result.chunks_deleted,
+        chunks_created: result.chunks_created,
+        content_version: result.content_version,
+    }))
 }
 
 /// Delete a source and its chunks.

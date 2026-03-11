@@ -5,7 +5,7 @@ use sqlx::Row;
 use crate::error::Result;
 use crate::models::extraction::Extraction;
 use crate::storage::traits::ExtractionRepo;
-use crate::types::ids::{ChunkId, ExtractionId};
+use crate::types::ids::{ChunkId, ExtractionId, SourceId};
 
 use super::PgRepo;
 
@@ -94,6 +94,21 @@ impl ExtractionRepo for PgRepo {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn mark_superseded_by_source(&self, source_id: SourceId) -> Result<u64> {
+        let result = sqlx::query(
+            "UPDATE extractions
+             SET is_superseded = true
+             WHERE chunk_id IN (
+                 SELECT id FROM chunks WHERE source_id = $1
+             )
+             AND NOT is_superseded",
+        )
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 
