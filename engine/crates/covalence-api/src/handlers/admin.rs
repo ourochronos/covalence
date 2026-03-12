@@ -434,6 +434,7 @@ pub async fn replay_trace(
                 snippet: r.snippet,
                 content: r.content,
                 source_uri: r.source_uri,
+                source_title: r.source_title,
                 dimension_scores: r.dimension_scores,
                 dimension_ranks: r.dimension_ranks,
             })

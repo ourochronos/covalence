@@ -206,6 +206,8 @@ pub struct SearchResultResponse {
     pub content: Option<String>,
     /// Source URI (for chunk results).
     pub source_uri: Option<String>,
+    /// Source title (for chunk results).
+    pub source_title: Option<String>,
     /// Per-dimension scores.
     pub dimension_scores: std::collections::HashMap<String, f64>,
     /// Per-dimension ranks.
@@ -816,6 +818,7 @@ mod tests {
             snippet: None,
             content: None,
             source_uri: None,
+            source_title: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
         };
@@ -836,6 +839,7 @@ mod tests {
             snippet: None,
             content: Some("full content here".to_string()),
             source_uri: None,
+            source_title: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
         };

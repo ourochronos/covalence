@@ -446,6 +446,7 @@ impl SearchService {
                             snippet: None,
                             content: None,
                             source_uri: None,
+                            source_title: None,
                             result_type: None,
                             dimension_scores: HashMap::new(),
                             dimension_ranks: HashMap::new(),
@@ -507,10 +508,12 @@ impl SearchService {
                         ChunkRepo::get(&*self.repo, ChunkId::from_uuid(result.id)).await
                     {
                         result.content = Some(chunk.content.clone());
+                        result.entity_type = Some("chunk".to_string());
                         if let Ok(Some(source)) =
                             SourceRepo::get(&*self.repo, chunk.source_id).await
                         {
                             result.source_uri = source.uri;
+                            result.source_title = source.title;
                         }
                     }
                     if let Ok(Some(node)) =
