@@ -121,14 +121,27 @@ impl SourceService {
         // Stage 2: Parse
         let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
 
-        // Stage 3: Normalize (skipped for code sources).
-        let normalized = if is_code {
+        // Stage 3: Normalize via composable pass chain.
+        //
+        // The profile registry selects the right normalization chain
+        // based on source type + URI (e.g., arXiv gets MathJax
+        // stripping, code gets minimal normalization).
+        let normalized = if !self.pipeline.normalize_enabled {
             parsed.body.clone()
-        } else if self.pipeline.normalize_enabled {
-            let n = crate::ingestion::normalize::normalize(&parsed.body);
-            crate::ingestion::normalize::strip_artifacts(&n)
         } else {
-            parsed.body.clone()
+            let source_type = if is_code {
+                crate::models::source::SourceType::Code
+            } else {
+                crate::models::source::SourceType::Document
+            };
+            let registry = crate::ingestion::source_profile::ProfileRegistry::new();
+            let profile = registry.match_profile(&source_type, uri);
+            tracing::debug!(
+                profile = profile.name,
+                uri = uri.unwrap_or("-"),
+                "selected normalization profile"
+            );
+            profile.normalize_chain().run(&parsed.body)
         };
 
         let normalized_hash = Sha256::digest(normalized.as_bytes()).to_vec();

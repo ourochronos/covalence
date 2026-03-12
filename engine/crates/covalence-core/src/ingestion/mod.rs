@@ -16,6 +16,7 @@ pub mod gliner_extractor;
 pub mod landscape;
 pub mod llm_extractor;
 pub mod normalize;
+pub mod source_profile;
 pub mod openai_embedder;
 pub mod parser;
 pub mod pg_resolver;
@@ -51,7 +52,12 @@ pub use landscape::{
     compute_chunk_landscape_metrics_default, cosine_similarity,
 };
 pub use llm_extractor::LlmExtractor;
-pub use normalize::normalize;
+pub use normalize::{
+    ArtifactLinePass, BlankLineCollapsePass, ControlCharPass, InlineArtifactPass, MathJaxPass,
+    NormalizeChain, NormalizePass, TrimPass, UnicodeNfcPass, WhitespacePass, normalize,
+    strip_artifacts,
+};
+pub use source_profile::{ProfileRegistry, SourceProfile};
 pub use openai_embedder::OpenAiEmbedder;
 pub use parser::{ParsedDocument, parse};
 pub use pg_resolver::PgResolver;

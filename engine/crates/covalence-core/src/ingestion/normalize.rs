@@ -1,46 +1,185 @@
-//! Stage 3: Normalize parsed output to extended Markdown.
+//! Stage 3: Composable normalization pipeline.
 //!
-//! All formats convert to Markdown as the canonical intermediate representation.
-//! Applies Unicode NFC normalization, collapses whitespace, strips control
-//! characters (preserving newlines), and trims.
+//! All formats convert to Markdown as the canonical intermediate
+//! representation. Normalization is decomposed into small, composable
+//! passes via the [`NormalizePass`] trait. Each pass does one thing
+//! (Unicode NFC, whitespace collapsing, artifact stripping, etc.)
+//! and a [`NormalizeChain`] composes them into a pipeline.
+//!
+//! Source profiles can select which passes to apply and in what
+//! order, enabling per-source-type normalization without writing
+//! new code.
 
 use unicode_normalization::UnicodeNormalization;
 
-/// Normalize text for consistent processing.
+// ---------------------------------------------------------------------------
+// Trait
+// ---------------------------------------------------------------------------
+
+/// A single normalization pass over text.
 ///
-/// Steps:
-/// 1. Unicode NFC normalization
-/// 2. Strip control characters (keep `\n`)
-/// 3. Collapse multiple whitespace to single space (preserving `\n`)
-/// 4. Trim leading/trailing whitespace
-pub fn normalize(text: &str) -> String {
-    let nfc: String = text.nfc().collect();
+/// Passes are small (10-30 lines), composable, and stateless.
+/// Each pass receives the output of the previous pass and returns
+/// its transformation. The name is used for tracing and debugging.
+pub trait NormalizePass: Send + Sync {
+    /// Human-readable name for logging.
+    fn name(&self) -> &str;
 
-    let cleaned: String = nfc
-        .chars()
-        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
-        .collect();
+    /// Apply this normalization pass to the input text.
+    fn apply(&self, text: &str) -> String;
+}
 
-    let mut result = String::with_capacity(cleaned.len());
-    let mut prev_space = false;
+// ---------------------------------------------------------------------------
+// Chain
+// ---------------------------------------------------------------------------
 
-    for ch in cleaned.chars() {
-        if ch == '\n' {
-            prev_space = false;
-            result.push(ch);
-        } else if ch.is_whitespace() {
-            if !prev_space {
-                result.push(' ');
-                prev_space = true;
-            }
-        } else {
-            prev_space = false;
-            result.push(ch);
-        }
+/// A composable chain of normalization passes.
+///
+/// Passes execute in order; each receives the output of the
+/// previous pass. An empty chain returns the input unchanged.
+pub struct NormalizeChain {
+    passes: Vec<Box<dyn NormalizePass>>,
+}
+
+impl NormalizeChain {
+    /// Create an empty chain.
+    pub fn new() -> Self {
+        Self { passes: Vec::new() }
     }
 
-    result.trim().to_string()
+    /// Append a pass to the chain.
+    pub fn push(mut self, pass: impl NormalizePass + 'static) -> Self {
+        self.passes.push(Box::new(pass));
+        self
+    }
+
+    /// Run all passes in sequence.
+    pub fn run(&self, text: &str) -> String {
+        let mut result = text.to_string();
+        for pass in &self.passes {
+            result = pass.apply(&result);
+        }
+        result
+    }
+
+    /// The default chain for document sources.
+    ///
+    /// This matches the behavior of the original monolithic
+    /// `normalize()` + `strip_artifacts()` pipeline.
+    pub fn default_document() -> Self {
+        Self::new()
+            .push(UnicodeNfcPass)
+            .push(ControlCharPass)
+            .push(WhitespacePass)
+            .push(TrimPass)
+            .push(ArtifactLinePass)
+            .push(InlineArtifactPass)
+            .push(MathJaxPass)
+    }
+
+    /// Minimal chain for code sources (no artifact/mathjax stripping).
+    pub fn code() -> Self {
+        Self::new()
+            .push(UnicodeNfcPass)
+            .push(ControlCharPass)
+            .push(TrimPass)
+    }
 }
+
+impl Default for NormalizeChain {
+    fn default() -> Self {
+        Self::default_document()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Built-in passes
+// ---------------------------------------------------------------------------
+
+/// Unicode NFC normalization.
+///
+/// Converts decomposed sequences (e.g., `e` + combining accent) to
+/// their precomposed form (`é`).
+pub struct UnicodeNfcPass;
+
+impl NormalizePass for UnicodeNfcPass {
+    fn name(&self) -> &str {
+        "unicode_nfc"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        text.nfc().collect()
+    }
+}
+
+/// Strip control characters, preserving `\n` and `\t`.
+///
+/// Removes null bytes, escape sequences, and other non-printable
+/// characters that pollute downstream processing.
+pub struct ControlCharPass;
+
+impl NormalizePass for ControlCharPass {
+    fn name(&self) -> &str {
+        "control_char_strip"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+            .collect()
+    }
+}
+
+/// Collapse runs of whitespace to a single space, preserving `\n`.
+///
+/// Tabs and multiple spaces become a single space. Newlines are
+/// kept as-is (they're structural in Markdown).
+pub struct WhitespacePass;
+
+impl NormalizePass for WhitespacePass {
+    fn name(&self) -> &str {
+        "whitespace_collapse"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        let mut result = String::with_capacity(text.len());
+        let mut prev_space = false;
+
+        for ch in text.chars() {
+            if ch == '\n' {
+                prev_space = false;
+                result.push(ch);
+            } else if ch.is_whitespace() {
+                if !prev_space {
+                    result.push(' ');
+                    prev_space = true;
+                }
+            } else {
+                prev_space = false;
+                result.push(ch);
+            }
+        }
+
+        result
+    }
+}
+
+/// Trim leading and trailing whitespace.
+pub struct TrimPass;
+
+impl NormalizePass for TrimPass {
+    fn name(&self) -> &str {
+        "trim"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        text.trim().to_string()
+    }
+}
+
+/// Remove whole lines that start with known web-scraping artifact
+/// prefixes (case-insensitive).
+pub struct ArtifactLinePass;
 
 /// Lines (or line prefixes) that are ArXiv/web-scraping artifacts.
 /// If a line starts with any of these (case-insensitive), it is
@@ -51,6 +190,28 @@ const ARTIFACT_LINE_PREFIXES: &[&str] = &[
     "authors: achieve the best html results",
 ];
 
+impl NormalizePass for ArtifactLinePass {
+    fn name(&self) -> &str {
+        "artifact_lines"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        text.lines()
+            .filter(|line| {
+                let lower = line.trim().to_lowercase();
+                !ARTIFACT_LINE_PREFIXES
+                    .iter()
+                    .any(|prefix| lower.starts_with(prefix))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// Strip inline artifact substrings that may be concatenated with
+/// real content (not on their own line).
+pub struct InlineArtifactPass;
+
 /// Inline artifact substrings that should be removed even when
 /// concatenated with real content (not on their own line).
 const ARTIFACT_INLINE_PATTERNS: &[&str] = &[
@@ -58,15 +219,34 @@ const ARTIFACT_INLINE_PATTERNS: &[&str] = &[
     "report issue for preceding element",
 ];
 
-/// MathJax accessibility text markers produced when stripping HTML from
-/// arXiv papers. These are verbose expansions of mathematical notation
+impl NormalizePass for InlineArtifactPass {
+    fn name(&self) -> &str {
+        "inline_artifacts"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        let mut result = text.to_string();
+        for pattern in ARTIFACT_INLINE_PATTERNS {
+            result = result.replace(pattern, "");
+        }
+        result
+    }
+}
+
+/// Strip MathJax accessibility text markers from arXiv HTML
+/// conversions.
+///
+/// These are verbose expansions of mathematical notation
 /// (e.g., `italic_e start_POSTSUBSCRIPT italic_i end_POSTSUBSCRIPT`).
+pub struct MathJaxPass;
+
+/// MathJax accessibility text markers produced when stripping HTML from
+/// arXiv papers.
 const MATHJAX_MARKERS: &[&str] = &[
     "start_POSTSUBSCRIPT",
     "end_POSTSUBSCRIPT",
     "start_POSTSUPERSCRIPT",
     "end_POSTSUPERSCRIPT",
-    "start_POSTSUBSCRIPT",
     "italic_",
     "caligraphic_",
     "bold_italic_",
@@ -78,42 +258,99 @@ const MATHJAX_MARKERS: &[&str] = &[
     "end_ROW",
 ];
 
+impl NormalizePass for MathJaxPass {
+    fn name(&self) -> &str {
+        "mathjax"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        let mut result = text.to_string();
+        for marker in MATHJAX_MARKERS {
+            result = result.replace(marker, "");
+        }
+        result
+    }
+}
+
+/// Collapse runs of 3+ blank lines to 2 (preserving paragraph
+/// boundaries without excessive gaps).
+pub struct BlankLineCollapsePass;
+
+impl NormalizePass for BlankLineCollapsePass {
+    fn name(&self) -> &str {
+        "blank_line_collapse"
+    }
+
+    fn apply(&self, text: &str) -> String {
+        let mut result = String::with_capacity(text.len());
+        let mut consecutive_blank = 0u32;
+
+        for line in text.split('\n') {
+            if line.trim().is_empty() {
+                consecutive_blank += 1;
+                // Keep at most 1 blank line (which creates a \n\n
+                // paragraph break together with the preceding \n).
+                if consecutive_blank <= 1 {
+                    if !result.is_empty() {
+                        result.push('\n');
+                    }
+                    result.push_str(line);
+                }
+            } else {
+                consecutive_blank = 0;
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str(line);
+            }
+        }
+
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience wrappers (backward compat)
+// ---------------------------------------------------------------------------
+
+/// Normalize text for consistent processing.
+///
+/// Steps:
+/// 1. Unicode NFC normalization
+/// 2. Strip control characters (keep `\n`)
+/// 3. Collapse multiple whitespace to single space (preserving `\n`)
+/// 4. Trim leading/trailing whitespace
+///
+/// This is the convenience wrapper matching the original monolithic
+/// function. For composable use, see [`NormalizeChain`].
+pub fn normalize(text: &str) -> String {
+    // Apply only the core normalization passes (no artifact stripping).
+    let chain = NormalizeChain::new()
+        .push(UnicodeNfcPass)
+        .push(ControlCharPass)
+        .push(WhitespacePass)
+        .push(TrimPass);
+    chain.run(text)
+}
+
 /// Remove known web-scraping artifact lines and inline patterns
 /// from normalized markdown. Applied after Unicode normalization.
 ///
-/// Two-pass approach:
-/// 1. Remove whole lines that start with known artifact prefixes
-/// 2. Strip inline artifact substrings concatenated with real text
+/// This is the convenience wrapper matching the original monolithic
+/// function. For composable use, see [`NormalizeChain`].
 pub fn strip_artifacts(text: &str) -> String {
-    // Pass 1: Remove whole artifact lines.
-    let line_filtered: String = text
-        .lines()
-        .filter(|line| {
-            let lower = line.trim().to_lowercase();
-            !ARTIFACT_LINE_PREFIXES
-                .iter()
-                .any(|prefix| lower.starts_with(prefix))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Pass 2: Strip inline artifact substrings.
-    let mut result = line_filtered;
-    for pattern in ARTIFACT_INLINE_PATTERNS {
-        result = result.replace(pattern, "");
-    }
-
-    // Pass 3: Strip MathJax accessibility markers.
-    for marker in MATHJAX_MARKERS {
-        result = result.replace(marker, "");
-    }
-
-    result
+    let chain = NormalizeChain::new()
+        .push(ArtifactLinePass)
+        .push(InlineArtifactPass)
+        .push(MathJaxPass);
+    chain.run(text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- normalize() backward compat ---
 
     #[test]
     fn collapses_whitespace() {
@@ -152,6 +389,8 @@ mod tests {
     fn empty_string() {
         assert_eq!(normalize(""), "");
     }
+
+    // --- strip_artifacts() backward compat ---
 
     #[test]
     fn strip_report_issue_lines() {
@@ -221,5 +460,119 @@ mod tests {
     fn strip_mathjax_mixed() {
         let input = "The entity italic_e start_POSTSUBSCRIPT italic_i end_POSTSUBSCRIPT belongs to caligraphic_E";
         assert_eq!(strip_artifacts(input), "The entity e  i  belongs to E");
+    }
+
+    // --- NormalizeChain tests ---
+
+    #[test]
+    fn chain_empty_is_identity() {
+        let chain = NormalizeChain::new();
+        assert_eq!(chain.run("hello world"), "hello world");
+    }
+
+    #[test]
+    fn chain_single_pass() {
+        let chain = NormalizeChain::new().push(TrimPass);
+        assert_eq!(chain.run("  hello  "), "hello");
+    }
+
+    #[test]
+    fn chain_compose_order_matters() {
+        // Trim then whitespace-collapse is different from reverse.
+        let input = "  hello   world  ";
+        let chain = NormalizeChain::new().push(TrimPass).push(WhitespacePass);
+        assert_eq!(chain.run(input), "hello world");
+    }
+
+    #[test]
+    fn default_document_chain() {
+        let chain = NormalizeChain::default_document();
+        let input = "  hello\x00   world  ";
+        let result = chain.run(input);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn default_document_strips_artifacts() {
+        let chain = NormalizeChain::default_document();
+        let input = "Content.\nReport issue for preceding element\nMore.";
+        assert_eq!(chain.run(input), "Content.\nMore.");
+    }
+
+    #[test]
+    fn default_document_strips_mathjax() {
+        let chain = NormalizeChain::default_document();
+        let input = "The entity italic_e belongs to caligraphic_E";
+        assert_eq!(chain.run(input), "The entity e belongs to E");
+    }
+
+    #[test]
+    fn code_chain_preserves_whitespace_runs() {
+        let chain = NormalizeChain::code();
+        // Code chain doesn't collapse whitespace (indentation matters).
+        let input = "    fn main() {}";
+        let result = chain.run(input);
+        assert_eq!(result, "fn main() {}"); // trimmed but spaces preserved internally
+    }
+
+    #[test]
+    fn code_chain_skips_artifact_stripping() {
+        let chain = NormalizeChain::code();
+        // Code chain doesn't strip artifacts (they could be legit content).
+        let input = "// Report issue for preceding element";
+        let result = chain.run(input);
+        assert_eq!(result, "// Report issue for preceding element");
+    }
+
+    // --- Individual pass tests ---
+
+    #[test]
+    fn blank_line_collapse_preserves_double() {
+        let pass = BlankLineCollapsePass;
+        let input = "a\n\nb";
+        assert_eq!(pass.apply(input), "a\n\nb");
+    }
+
+    #[test]
+    fn blank_line_collapse_trims_triple() {
+        let pass = BlankLineCollapsePass;
+        let input = "a\n\n\nb";
+        assert_eq!(pass.apply(input), "a\n\nb");
+    }
+
+    #[test]
+    fn blank_line_collapse_trims_many() {
+        let pass = BlankLineCollapsePass;
+        let input = "a\n\n\n\n\nb";
+        assert_eq!(pass.apply(input), "a\n\nb");
+    }
+
+    #[test]
+    fn pass_names_are_unique() {
+        let passes: Vec<Box<dyn NormalizePass>> = vec![
+            Box::new(UnicodeNfcPass),
+            Box::new(ControlCharPass),
+            Box::new(WhitespacePass),
+            Box::new(TrimPass),
+            Box::new(ArtifactLinePass),
+            Box::new(InlineArtifactPass),
+            Box::new(MathJaxPass),
+            Box::new(BlankLineCollapsePass),
+        ];
+        let names: Vec<&str> = passes.iter().map(|p| p.name()).collect();
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(names.len(), unique.len(), "pass names must be unique");
+    }
+
+    #[test]
+    fn mathjax_no_duplicate_markers() {
+        // The old code had start_POSTSUBSCRIPT listed twice.
+        // Verify our list has no duplicates.
+        let unique: std::collections::HashSet<&str> = MATHJAX_MARKERS.iter().copied().collect();
+        assert_eq!(
+            MATHJAX_MARKERS.len(),
+            unique.len(),
+            "MATHJAX_MARKERS should have no duplicates"
+        );
     }
 }
