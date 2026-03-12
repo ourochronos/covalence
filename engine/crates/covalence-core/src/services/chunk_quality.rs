@@ -242,9 +242,15 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
 ///
 /// Unlike [`is_bibliography_entry`] (which catches individual short
 /// citations), this catches full reference sections — long chunks
-/// where the majority of lines are citation-like. A line is
-/// "citation-like" if it starts with `- `, `[N]`, or a numbered
-/// list item and contains a `(YYYY)` year pattern.
+/// where the majority of lines are citation-like or citation-adjacent.
+///
+/// A line is "citation-like" if it matches any of:
+/// - List item (`- `, `* `, `[N]`) with a `(YYYY)` year pattern
+/// - "Retrieved" URL line
+/// - Standalone arrow/citation marker like `(1)↑`
+/// - Contains "arXiv preprint" or "arXiv:" (preprint reference)
+/// - Is a standalone year line like `2023.` or `(2024)`
+/// - Contains a DOI URL
 pub(crate) fn is_reference_section(text: &str) -> bool {
     let trimmed = text.trim();
     // Only applies to substantial chunks (the small ones are handled
@@ -267,22 +273,35 @@ pub(crate) fn is_reference_section(text: &str) -> bool {
         .filter(|line| {
             let is_list_item =
                 line.starts_with("- ") || line.starts_with("* ") || line.starts_with('[');
-            // Also match continuation lines with year patterns
-            // (multi-line citations where the year is on a later line).
             let has_year = line.as_bytes().windows(6).any(|w| {
                 w[0] == b'(' && w[1..5].iter().all(|b| b.is_ascii_digit()) && w[5] == b')'
             });
-            // Pattern: list item with a year, or a "Retrieved" URL line,
-            // or a standalone arrow/citation marker like "(1)↑"
+            let lower = line.to_lowercase();
+
+            // Primary: list item with year, or "Retrieved" line,
+            // or standalone arrow marker.
             (is_list_item && has_year)
                 || line.starts_with("Retrieved ")
                 || (line.len() < 15 && line.contains('\u{2191}'))
+                // arXiv preprint reference lines
+                || lower.contains("arxiv preprint arxiv:")
+                || lower.contains("arxiv preprint,")
+                // DOI reference lines
+                || lower.contains("doi.org/")
+                // Standalone year lines like "2023." or "(2024)."
+                || (line.len() < 10 && has_year)
+                // Arrow markers with year (multi-line citations)
+                || (line.contains('\u{2191}') && has_year)
+                // List item that is a citation header (has ↑ marker)
+                || (is_list_item && line.contains('\u{2191}'))
         })
         .count();
 
     let ratio = citation_count as f64 / lines.len() as f64;
-    // If >40% of lines are citation-like, it's a reference section.
-    ratio > 0.4
+    // If >30% of lines are citation-like, it's a reference section.
+    // (lowered from 40% because multi-line citations have many
+    // continuation lines that are author names/paper titles.)
+    ratio > 0.3
 }
 
 /// Detect "title-only" chunks: chunks where the content is just a
@@ -641,6 +660,29 @@ mod tests {
             - Bennett (2021)\u{2191}\n\
             J. Bennett. 2021.\n\
             Yet another reference entry.";
+        assert!(is_reference_section(text));
+    }
+
+    #[test]
+    fn reference_section_multiline_arxiv() {
+        // Multi-line citation format from GraphRAG paper (arXiv style).
+        // Each citation spans 3-4 lines: header with ↑, author line, title, arXiv ref.
+        let text = "- Achiam et al., (2023)\u{2191}\n\
+            Achiam, J., Adler, S., Agarwal, S., Ahmad, L.\n\
+            Gpt-4 technical report.\n\
+            arXiv preprint arXiv:2303.08774.\n\
+            - Anil et al., (2023)\u{2191}\n\
+            Anil, R., Borgeaud, S., Wu, Y., Alayrac, J.-B.\n\
+            Gemini: a family of highly capable multimodal models.\n\
+            arXiv preprint arXiv:2312.11805.\n\
+            - Baek et al., (2023)\u{2191}\n\
+            Baek, J., Aji, A. F., and Saffari, A.\n\
+            Knowledge-augmented language model prompting.\n\
+            arXiv preprint arXiv:2305.18846.\n\
+            - Brown et al., (2020)\u{2191}\n\
+            Brown, T., Mann, B., Ryder, N., Subbiah, M.\n\
+            Language models are few-shot learners.\n\
+            Advances in neural information processing systems.";
         assert!(is_reference_section(text));
     }
 
