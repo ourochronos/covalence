@@ -2475,6 +2475,13 @@ fn is_boilerplate_line(line: &str) -> bool {
     if line.len() < 15 && (lower.ends_with(':') || lower.ends_with("...")) {
         return true;
     }
+    // Navigation/ToC links: numbered items pointing to sections.
+    // Pattern: "01. [Section](url)" or "[Section](url#anchor)"
+    let trimmed = line.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let trimmed = trimmed.trim();
+    if trimmed.starts_with('[') && trimmed.contains("](") && trimmed.contains("://") {
+        return true;
+    }
     false
 }
 
@@ -2613,6 +2620,24 @@ mod tests {
     #[test]
     fn boilerplate_report_issue_arxiv() {
         assert!(is_boilerplate_line("Report issue for preceding element"));
+    }
+
+    #[test]
+    fn boilerplate_toc_nav_links() {
+        assert!(is_boilerplate_line(
+            "01. [Abstract](https://arxiv.org/html/2506.02509#abstract \"Abstract\")"
+        ));
+        assert!(is_boilerplate_line(
+            "[1 Introduction](https://arxiv.org/html/2506.02509v1#S1 \"Title\")"
+        ));
+    }
+
+    #[test]
+    fn not_boilerplate_inline_link() {
+        // A sentence with a link is NOT boilerplate.
+        assert!(!is_boilerplate_line(
+            "See the original paper for details."
+        ));
     }
 
     #[test]
