@@ -89,12 +89,12 @@ impl QueryCache {
         // distance threshold, matching strategy.
         let sql = "\
             SELECT id, response, \
-                   (embedding <=> $1::halfvec)::float8 AS dist \
+                   (query_embedding <=> $1::halfvec)::float8 AS dist \
             FROM query_cache \
             WHERE strategy_used = $2 \
               AND created_at > NOW() - ($3::float8 || ' seconds')::interval \
-              AND (embedding <=> $1::halfvec)::float8 < $4 \
-            ORDER BY embedding <=> $1::halfvec \
+              AND (query_embedding <=> $1::halfvec)::float8 < $4 \
+            ORDER BY query_embedding <=> $1::halfvec \
             LIMIT 1";
 
         let row: Option<(Uuid, serde_json::Value, f64)> = sqlx::query_as(sql)
@@ -156,7 +156,7 @@ impl QueryCache {
 
         sqlx::query(
             "INSERT INTO query_cache \
-             (id, query_text, embedding, strategy_used, \
+             (id, query_text, query_embedding, strategy_used, \
               response, hit_count, created_at) \
              VALUES ($1, $2, $3::halfvec, $4, $5, 0, NOW())",
         )

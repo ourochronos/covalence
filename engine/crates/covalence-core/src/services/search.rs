@@ -918,7 +918,7 @@ impl SearchService {
         trace.emit();
 
         if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
-            let strategy_str = strategy_name(&effective_strategy);
+            let strategy_str = strategy_name(&strategy);
             if let Err(e) = cache.store(query, emb, strategy_str, &fused).await {
                 tracing::warn!(
                     error = %e,

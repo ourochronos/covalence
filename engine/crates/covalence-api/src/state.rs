@@ -290,7 +290,8 @@ impl AppState {
             embedder.clone(),
             config.embedding.table_dims.clone(),
         )
-        .with_abstention_config(abstention_config);
+        .with_abstention_config(abstention_config)
+        .with_cache(covalence_core::search::cache::CacheConfig::default());
         // CC fusion is the default (outperforms RRF in A/B testing).
         // Set COVALENCE_CC_FUSION=false to revert to RRF.
         let use_cc = std::env::var("COVALENCE_CC_FUSION")
