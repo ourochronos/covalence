@@ -508,6 +508,24 @@ pub struct GcResponse {
     pub aliases_removed: u64,
 }
 
+/// Request body for co-occurrence edge synthesis.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CooccurrenceRequest {
+    /// Minimum co-occurrence count to create an edge (default 1).
+    pub min_cooccurrences: Option<i64>,
+    /// Only create edges for nodes with degree ≤ this value (default 2).
+    pub max_degree: Option<i64>,
+}
+
+/// Response for co-occurrence edge synthesis.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CooccurrenceResponse {
+    /// Number of synthetic edges created.
+    pub edges_created: u64,
+    /// Number of candidate pairs evaluated.
+    pub candidates_evaluated: u64,
+}
+
 /// Health check response.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {

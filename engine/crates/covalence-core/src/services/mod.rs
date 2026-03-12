@@ -10,7 +10,7 @@ pub mod node;
 pub mod search;
 pub mod source;
 
-pub use admin::{AdminService, GcResult};
+pub use admin::{AdminService, CooccurrenceResult, GcResult};
 pub use article::ArticleService;
 pub use consolidation::GraphDeepConsolidator;
 pub use edge::EdgeService;

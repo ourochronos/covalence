@@ -133,6 +133,15 @@ pub struct KnowledgeGap {
     pub referenced_by: Vec<String>,
 }
 
+/// Result of co-occurrence edge synthesis.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CooccurrenceResult {
+    /// Number of synthetic edges created.
+    pub edges_created: u64,
+    /// Number of candidate pairs evaluated.
+    pub candidates_evaluated: u64,
+}
+
 /// Compute knowledge gap candidates from the graph sidecar.
 ///
 /// Returns tuples of `(uuid, name, type, in_degree, out_degree)` for
@@ -512,6 +521,119 @@ impl AdminService {
         AuditLogRepo::create(&*self.repo, &audit).await?;
 
         Ok(())
+    }
+
+    /// Synthesize co-occurrence edges from extraction provenance.
+    ///
+    /// Entities extracted from the same chunk co-occur in the source
+    /// text. This method creates `co_occurs` edges between entity
+    /// pairs that share at least `min_cooccurrences` chunks and where
+    /// at least one entity has degree ≤ `max_degree` (poorly connected).
+    ///
+    /// Edges are marked `is_synthetic = true` with weight proportional
+    /// to co-occurrence frequency. Existing edges (of any type) between
+    /// the pair are respected — no duplicates are created.
+    ///
+    /// Returns counts of edges created vs skipped.
+    pub async fn synthesize_cooccurrence_edges(
+        &self,
+        min_cooccurrences: i64,
+        max_degree: i64,
+    ) -> Result<CooccurrenceResult> {
+        // Single SQL query: find co-occurring entity pairs where at
+        // least one entity is poorly connected. This avoids pulling
+        // all 151K pairs into Rust — the DB does the heavy filtering.
+        let rows: Vec<(uuid::Uuid, uuid::Uuid, i64)> = sqlx::query_as(
+            "WITH pair_freq AS ( \
+                SELECT e1.entity_id AS n1, e2.entity_id AS n2, \
+                       count(DISTINCT e1.chunk_id) AS freq \
+                FROM extractions e1 \
+                JOIN extractions e2 \
+                  ON e1.chunk_id = e2.chunk_id \
+                 AND e1.entity_id < e2.entity_id \
+                WHERE e1.entity_type = 'node' \
+                  AND e2.entity_type = 'node' \
+                  AND e1.is_superseded = false \
+                  AND e2.is_superseded = false \
+                GROUP BY e1.entity_id, e2.entity_id \
+                HAVING count(DISTINCT e1.chunk_id) >= $1 \
+            ), \
+            node_degree AS ( \
+                SELECT n.id, \
+                       (SELECT count(*) FROM edges e \
+                        WHERE e.source_node_id = n.id \
+                           OR e.target_node_id = n.id) AS deg \
+                FROM nodes n \
+            ) \
+            SELECT pf.n1, pf.n2, pf.freq \
+            FROM pair_freq pf \
+            JOIN node_degree d1 ON d1.id = pf.n1 \
+            JOIN node_degree d2 ON d2.id = pf.n2 \
+            WHERE (d1.deg <= $2 OR d2.deg <= $2) \
+              AND NOT EXISTS ( \
+                  SELECT 1 FROM edges e \
+                  WHERE (e.source_node_id = pf.n1 AND e.target_node_id = pf.n2) \
+                     OR (e.source_node_id = pf.n2 AND e.target_node_id = pf.n1) \
+              )",
+        )
+        .bind(min_cooccurrences)
+        .bind(max_degree)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let total_candidates = rows.len() as u64;
+        let mut edges_created: u64 = 0;
+
+        for (n1, n2, freq) in &rows {
+            let source_id = crate::types::ids::NodeId::from_uuid(*n1);
+            let target_id = crate::types::ids::NodeId::from_uuid(*n2);
+
+            let mut edge =
+                crate::models::edge::Edge::new(source_id, target_id, "co_occurs".to_string());
+            edge.is_synthetic = true;
+            // Weight: normalized co-occurrence frequency, capped at 1.0.
+            edge.weight = (*freq as f64 / 5.0).min(1.0);
+            // Confidence: proportional to frequency, lower baseline.
+            edge.confidence = (0.3 + (*freq as f64 * 0.1)).min(0.9);
+            edge.properties = serde_json::json!({
+                "cooccurrence_count": freq,
+                "synthesis_method": "extraction_provenance",
+            });
+
+            EdgeRepo::create(&*self.repo, &edge).await?;
+            edges_created += 1;
+        }
+
+        if edges_created > 0 {
+            tracing::info!(
+                edges_created,
+                total_candidates,
+                min_cooccurrences,
+                max_degree,
+                "co-occurrence edge synthesis complete, reloading graph"
+            );
+            full_reload(self.repo.pool(), self.graph.clone()).await?;
+        } else {
+            tracing::info!("co-occurrence synthesis: no new edges to create");
+        }
+
+        // Log the operation.
+        let audit = AuditLog::new(
+            AuditAction::AdminAction,
+            "admin:synthesize_cooccurrence".to_string(),
+            serde_json::json!({
+                "edges_created": edges_created,
+                "total_candidates": total_candidates,
+                "min_cooccurrences": min_cooccurrences,
+                "max_degree": max_degree,
+            }),
+        );
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        Ok(CooccurrenceResult {
+            edges_created,
+            candidates_evaluated: total_candidates,
+        })
     }
 
     /// Run provenance-based garbage collection.

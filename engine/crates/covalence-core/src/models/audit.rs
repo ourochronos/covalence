@@ -41,6 +41,8 @@ pub enum AuditAction {
     NodeAnnotate,
     /// Search feedback was submitted.
     SearchFeedback,
+    /// A generic administrative action (e.g. edge synthesis, reindex).
+    AdminAction,
 }
 
 impl AuditAction {
@@ -62,6 +64,7 @@ impl AuditAction {
             Self::EdgeCorrect => "EDGE_CORRECT",
             Self::EdgeDelete => "EDGE_DELETE",
             Self::NodeAnnotate => "NODE_ANNOTATE",
+            Self::AdminAction => "ADMIN_ACTION",
             Self::SearchFeedback => "SEARCH_FEEDBACK",
         }
     }
@@ -85,6 +88,7 @@ impl AuditAction {
             "EDGE_DELETE" => Some(Self::EdgeDelete),
             "NODE_ANNOTATE" => Some(Self::NodeAnnotate),
             "SEARCH_FEEDBACK" => Some(Self::SearchFeedback),
+            "ADMIN_ACTION" => Some(Self::AdminAction),
             _ => None,
         }
     }

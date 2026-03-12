@@ -63,7 +63,11 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/traces", get(admin::list_traces))
         .route("/admin/traces/{id}/replay", post(admin::replay_trace))
         .route("/admin/knowledge-gaps", get(admin::knowledge_gaps))
-        .route("/admin/config-audit", post(admin::config_audit));
+        .route("/admin/config-audit", post(admin::config_audit))
+        .route(
+            "/admin/edges/synthesize",
+            post(admin::synthesize_cooccurrence),
+        );
 
     Router::new()
         // Swagger UI + OpenAPI spec at root

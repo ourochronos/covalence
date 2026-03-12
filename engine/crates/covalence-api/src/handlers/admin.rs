@@ -6,11 +6,12 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, CommunityParams, CommunityResponse, ConfigAuditResponse, ConsolidateResponse,
-    DomainLinkResponse, DomainResponse, GcResponse, GraphStatsResponse, HealthResponse,
-    KnowledgeGapItem, KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse,
-    OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse, PaginationParams,
-    PublishResponse, ReloadResponse, SearchTraceResponse, SidecarHealthResponse, TopologyResponse,
+    AuditLogResponse, CooccurrenceRequest, CooccurrenceResponse, CommunityParams,
+    CommunityResponse, ConfigAuditResponse, ConsolidateResponse, DomainLinkResponse,
+    DomainResponse, GcResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem,
+    KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem,
+    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
+    ReloadResponse, SearchTraceResponse, SidecarHealthResponse, TopologyResponse,
     TraceReplayResponse,
 };
 use crate::state::AppState;
@@ -439,6 +440,36 @@ pub async fn replay_trace(
                 dimension_ranks: r.dimension_ranks,
             })
             .collect(),
+    }))
+}
+
+/// Synthesize co-occurrence edges from extraction provenance.
+///
+/// Creates `co_occurs` edges between entities extracted from the
+/// same chunk. Only targets poorly-connected nodes (degree ≤
+/// `max_degree`) to avoid flooding the graph.
+#[utoipa::path(
+    post,
+    path = "/admin/edges/synthesize",
+    request_body = CooccurrenceRequest,
+    responses(
+        (status = 200, description = "Synthesis results", body = CooccurrenceResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn synthesize_cooccurrence(
+    State(state): State<AppState>,
+    Json(req): Json<CooccurrenceRequest>,
+) -> Result<Json<CooccurrenceResponse>, ApiError> {
+    let min_cooccurrences = req.min_cooccurrences.unwrap_or(1);
+    let max_degree = req.max_degree.unwrap_or(2);
+    let result = state
+        .admin_service
+        .synthesize_cooccurrence_edges(min_cooccurrences, max_degree)
+        .await?;
+    Ok(Json(CooccurrenceResponse {
+        edges_created: result.edges_created,
+        candidates_evaluated: result.candidates_evaluated,
     }))
 }
 
