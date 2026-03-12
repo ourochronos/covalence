@@ -693,6 +693,7 @@ impl SearchService {
         // to its discrimination power (score spread).
         // Based on: "Balancing the Blend" (2508.01405) — a weak
         // retrieval path substantially degrades fused accuracy.
+        let mut dampened_weight = 0.0_f64;
         for (list, weight) in ranked_lists.iter().zip(weights.iter_mut()) {
             if list.len() < 2 {
                 continue;
@@ -712,13 +713,16 @@ impl SearchService {
             // discriminating. Scale its weight by the spread ratio.
             if spread < 0.05 {
                 let dampening = spread / 0.05;
+                let original = *weight;
+                *weight *= dampening;
+                dampened_weight += original - *weight;
                 tracing::debug!(
                     spread,
                     dampening,
-                    original_weight = *weight,
+                    original_weight = original,
+                    new_weight = *weight,
                     "quality gate dampened non-discriminating dimension"
                 );
-                *weight *= dampening;
             }
         }
 
@@ -737,18 +741,19 @@ impl SearchService {
             }
         }
 
-        // --- Step 5c: Redistribute weight from empty dimensions ---
-        // If a dimension returned 0 results (e.g., global with no
-        // community summaries), its weight is wasted in RRF.
-        // Redistribute it proportionally to non-empty dimensions so
-        // strategy-selected weights remain meaningful.
+        // --- Step 5c: Redistribute weight from empty/dampened dims ---
+        // Weight from empty dimensions (no results) and dampened
+        // dimensions (quality-gated to near-zero) is redistributed
+        // proportionally to active dimensions so effective weights
+        // still sum to the strategy's intended total.
         let empty_weight: f64 = ranked_lists
             .iter()
             .zip(weights.iter())
             .filter(|(list, _)| list.is_empty())
             .map(|(_, &w)| w)
             .sum();
-        if empty_weight > 0.0 {
+        let total_redistribute = empty_weight + dampened_weight;
+        if total_redistribute > 0.0 {
             let active_weight: f64 = weights
                 .iter()
                 .zip(ranked_lists.iter())
@@ -758,13 +763,16 @@ impl SearchService {
             if active_weight > 0.0 {
                 for (w, list) in weights.iter_mut().zip(ranked_lists.iter()) {
                     if !list.is_empty() {
-                        *w += empty_weight * (*w / active_weight);
+                        *w += total_redistribute * (*w / active_weight);
                     }
                 }
                 tracing::debug!(
-                    redistributed = empty_weight,
-                    active_dimensions = ranked_lists.iter().filter(|l| !l.is_empty()).count(),
-                    "redistributed weight from empty dimensions"
+                    redistributed = total_redistribute,
+                    from_empty = empty_weight,
+                    from_dampened = dampened_weight,
+                    active_dimensions =
+                        ranked_lists.iter().filter(|l| !l.is_empty()).count(),
+                    "redistributed weight from empty/dampened dimensions"
                 );
             }
         }
