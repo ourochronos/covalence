@@ -729,12 +729,32 @@ Deep audit of 4 major modules (ingestion, epistemic, consolidation, storage/grap
     - causal.rs: 3 tests (from_str_opt, invalid values, roundtrip)
     - ids.rs: 6 tests (uniqueness, UUID roundtrip, From/Into, Display, serde, Hash/Eq)
 
+35. **Convergence timeout detection + memory recall filters** (bd86f6d)
+    - convergence.rs: compute_epistemic_closure returns ClosureResult with converged flag, logs warning on timeout
+    - mcp.rs: memory_recall now applies topic filter via query prefix, supports min_confidence
+    - memory.rs: HTTP recall applies min_confidence filter, caps limit at 200
+    - source.rs: surface NodeRepo::update_embedding errors instead of let _ = drop
+
+36. **Trust rank div-by-zero + landscape bounds + temporal future timestamps** (d35fdf1)
+    - algorithms.rs: guard against zero/negative seed weight sum in trust_rank
+    - landscape.rs: replace unchecked parent_embeddings[i] with safe .get(i)
+    - temporal.rs: demote future timestamps (>60s) to 0.1 instead of max recency 1.0
+    - propagation.rs: log when cumulative_fuse returns None
+    - Added 4 tests (trust_rank zero weights, landscape bounds safety)
+
+37. **CLI memory recall field name mismatch** (e669167)
+    - memory.go: read "relevance" instead of "score" (was showing 0.0000 for all results)
+
+38. **API input validation hardening** (93d33e7)
+    - Cap landmark limit at 200, knowledge_gaps limit at 200, neighborhood hops at 10
+    - Validate min_confidence and relevance are finite and in [0.0, 1.0]
+
 ### Stats
 
-- **Tests:** 831 (771 core + 13 API + 47 eval), up from 795. +36 new tests. Clippy clean.
+- **Tests:** 835 (775 core + 13 API + 47 eval), up from 795. +40 new tests. Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 636e892, 42c5fc6, 47c9846, 08f1820, 578c95e, 51fe283, 31f8669, 1ddd302, 631155a, b1bb35e, 1eee418, b10f3d1 (12 commits, all pushed)
-- **Files modified:** 34 files across 4 crates
+- **Commits:** 16 total (12 from session 5a + 4 from session 5b), all pushed
+- **Files modified:** ~42 files across 4 crates + CLI
 
 ### Open Areas
 
@@ -745,6 +765,4 @@ Deep audit of 4 major modules (ingestion, epistemic, consolidation, storage/grap
 - Ingest spec reference papers (#92)
 - Pipeline stage queues (#64)
 - N+1 query pattern in ontology apply_clusters (one UPDATE per member label per cluster)
-- Convergence function doesn't distinguish timeout vs converged (epistemic/convergence.rs)
-- Memory recall: _topic parameter parsed but unused (mcp.rs:396), stored_at always empty (memory.rs:83)
-- Future timestamps get maximum recency score in temporal search dimension
+- Memory recall stored_at always empty (memory.rs:83) — FusedResult lacks created_at field
