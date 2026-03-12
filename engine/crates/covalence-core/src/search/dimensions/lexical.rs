@@ -38,6 +38,42 @@ impl LexicalDimension {
         Self { pool }
     }
 
+    /// Search nodes via `name_tsv` (canonical name + description).
+    async fn search_nodes(&self, query: &SearchQuery) -> Result<Vec<(Uuid, f64)>> {
+        let rows = sqlx::query_as::<_, (Uuid, f64)>(
+            "SELECT id, \
+                    ts_rank_cd(name_tsv, query)::float8 AS score \
+             FROM nodes, \
+                  plainto_tsquery('english', $1) query \
+             WHERE name_tsv @@ query \
+             ORDER BY score DESC \
+             LIMIT $2",
+        )
+        .bind(&query.text)
+        .bind(query.limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Search articles via `body_tsv` (title + body).
+    async fn search_articles(&self, query: &SearchQuery) -> Result<Vec<(Uuid, f64)>> {
+        let rows = sqlx::query_as::<_, (Uuid, f64)>(
+            "SELECT id, \
+                    ts_rank_cd(body_tsv, query)::float8 AS score \
+             FROM articles, \
+                  plainto_tsquery('english', $1) query \
+             WHERE body_tsv @@ query \
+             ORDER BY score DESC \
+             LIMIT $2",
+        )
+        .bind(&query.text)
+        .bind(query.limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Search chunks via tsvector with fallback strategies.
     ///
     /// Returns results with snippets from `ts_headline` when using
@@ -120,38 +156,15 @@ impl SearchDimension for LexicalDimension {
             return Ok(Vec::new());
         }
 
-        // Search chunks via tsvector.
-        let chunk_results = self.search_chunks(query).await?;
-
-        // Search nodes via name_tsv (canonical_name + description).
-        let node_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-                    ts_rank_cd(name_tsv, query)::float8 AS score \
-             FROM nodes, \
-                  plainto_tsquery('english', $1) query \
-             WHERE name_tsv @@ query \
-             ORDER BY score DESC \
-             LIMIT $2",
-        )
-        .bind(&query.text)
-        .bind(query.limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Search articles via body_tsv (title + body).
-        let article_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-                    ts_rank_cd(body_tsv, query)::float8 AS score \
-             FROM articles, \
-                  plainto_tsquery('english', $1) query \
-             WHERE body_tsv @@ query \
-             ORDER BY score DESC \
-             LIMIT $2",
-        )
-        .bind(&query.text)
-        .bind(query.limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        // Run all three sub-searches concurrently.
+        let (chunk_results, node_rows, article_rows) = tokio::join!(
+            self.search_chunks(query),
+            self.search_nodes(query),
+            self.search_articles(query),
+        );
+        let chunk_results = chunk_results?;
+        let node_rows = node_rows?;
+        let article_rows = article_rows?;
 
         // Merge all results and re-rank by score descending.
         let mut combined: Vec<(Uuid, f64, &str, Option<String>)> = Vec::new();
