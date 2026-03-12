@@ -636,10 +636,8 @@ impl SourceService {
                     if let Some(emb) = source_embeddings.first() {
                         match truncate_and_validate(emb, self.table_dims.source, "sources") {
                             Ok(truncated) => {
-                                let emb_f32: Vec<f32> =
-                                    truncated.iter().map(|&v| v as f32).collect();
                                 if let Err(e) =
-                                    SourceRepo::update_embedding(&*self.repo, source.id, &emb_f32)
+                                    SourceRepo::update_embedding(&*self.repo, source.id, &truncated)
                                         .await
                                 {
                                     tracing::warn!(
@@ -1570,10 +1568,8 @@ impl SourceService {
                     if let Some(emb) = source_embeddings.first() {
                         match truncate_and_validate(emb, self.table_dims.source, "sources") {
                             Ok(truncated) => {
-                                let f32_vec: Vec<f32> =
-                                    truncated.iter().map(|&v| v as f32).collect();
                                 if let Err(e) =
-                                    SourceRepo::update_embedding(&*self.repo, id, &f32_vec).await
+                                    SourceRepo::update_embedding(&*self.repo, id, &truncated).await
                                 {
                                     tracing::warn!(
                                         error = %e,
@@ -2100,10 +2096,9 @@ fn group_extraction_batches(
         // Flush if adding this chunk would exceed the budget
         // (but only if we already have content).
         if current_primary.is_some() && current_tokens + tokens > batch_tokens {
-            batches.push((
-                current_primary.take().unwrap(),
-                std::mem::take(&mut current_text),
-            ));
+            if let Some(primary) = current_primary.take() {
+                batches.push((primary, std::mem::take(&mut current_text)));
+            }
             current_tokens = 0;
         }
 

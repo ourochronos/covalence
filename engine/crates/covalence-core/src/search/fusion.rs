@@ -73,6 +73,14 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
         return Vec::new();
     }
 
+    if ranked_lists.len() != weights.len() {
+        tracing::warn!(
+            lists = ranked_lists.len(),
+            weights = weights.len(),
+            "rrf_fuse: weight/list length mismatch, defaulting missing weights to 1.0"
+        );
+    }
+
     // Accumulate scores per entity ID.
     let mut fused: HashMap<Uuid, FusedResult> = HashMap::new();
 
@@ -131,6 +139,14 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
 pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<FusedResult> {
     if ranked_lists.is_empty() {
         return Vec::new();
+    }
+
+    if ranked_lists.len() != weights.len() {
+        tracing::warn!(
+            lists = ranked_lists.len(),
+            weights = weights.len(),
+            "cc_fuse: weight/list length mismatch, defaulting missing weights to 1.0"
+        );
     }
 
     let mut fused: HashMap<Uuid, FusedResult> = HashMap::new();
@@ -460,5 +476,41 @@ mod tests {
         // All identical → all get 1.0.
         assert!((results[0].fused_score - 1.0).abs() < 1e-10);
         assert!((results[1].fused_score - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn rrf_fuse_weight_mismatch_defaults_to_one() {
+        // When fewer weights than lists, missing weights default to
+        // 1.0. This is a graceful degradation, not a panic.
+        let id1 = Uuid::new_v4();
+        let list_a = vec![make_result(id1, 0.9, 1, "vector")];
+        let list_b = vec![make_result(id1, 0.8, 1, "lexical")];
+        // Only one weight for two lists.
+        let results = rrf_fuse(&[list_a, list_b], &[2.0], DEFAULT_K);
+        assert_eq!(results.len(), 1);
+        // Second dimension should use weight=1.0 (default).
+        let expected = 2.0 / (DEFAULT_K + 1.0) + 1.0 / (DEFAULT_K + 1.0);
+        assert!(
+            (results[0].fused_score - expected).abs() < 1e-10,
+            "expected {expected}, got {}",
+            results[0].fused_score
+        );
+    }
+
+    #[test]
+    fn cc_fuse_weight_mismatch_defaults_to_one() {
+        let id1 = Uuid::new_v4();
+        let list_a = vec![make_result(id1, 0.9, 1, "vector")];
+        let list_b = vec![make_result(id1, 0.8, 1, "lexical")];
+        // Only one weight for two lists.
+        let results = cc_fuse(&[list_a, list_b], &[2.0]);
+        assert_eq!(results.len(), 1);
+        // Single element per list → norm_score = 1.0 for both.
+        // fused = 2.0 * 1.0 + 1.0 * 1.0 = 3.0
+        assert!(
+            (results[0].fused_score - 3.0).abs() < 1e-10,
+            "expected 3.0, got {}",
+            results[0].fused_score
+        );
     }
 }

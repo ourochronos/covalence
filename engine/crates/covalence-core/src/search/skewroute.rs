@@ -12,12 +12,11 @@ use super::strategy::SearchStrategy;
 /// scores identical) and 1 = perfect inequality (one dominant
 /// result). Returns 0.0 for empty or single-element inputs.
 pub fn gini_coefficient(scores: &[f64]) -> f64 {
-    let n = scores.len();
-    if n < 2 {
+    // Filter non-finite values (NaN, Inf) before computing.
+    let mut sorted: Vec<f64> = scores.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.len() < 2 {
         return 0.0;
     }
-
-    let mut sorted = scores.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let total: f64 = sorted.iter().sum();
@@ -25,7 +24,7 @@ pub fn gini_coefficient(scores: &[f64]) -> f64 {
         return 0.0;
     }
 
-    let n_f = n as f64;
+    let n_f = sorted.len() as f64;
     let weighted_sum: f64 = sorted
         .iter()
         .enumerate()
@@ -264,6 +263,29 @@ mod tests {
             detect_intent("what is the latest research"),
             Some(SearchStrategy::Recent)
         );
+    }
+
+    #[test]
+    fn gini_coefficient_filters_nan() {
+        // NaN and Inf values should be filtered, not corrupt the
+        // result.
+        let scores = vec![1.0, 2.0, f64::NAN, 3.0, f64::INFINITY];
+        let g = gini_coefficient(&scores);
+        assert!(g.is_finite(), "gini with NaN/Inf input should be finite, got {g}");
+        // Should equal gini of [1.0, 2.0, 3.0]
+        let clean = vec![1.0, 2.0, 3.0];
+        let g_clean = gini_coefficient(&clean);
+        assert!(
+            (g - g_clean).abs() < 1e-10,
+            "gini should match clean scores: {g} vs {g_clean}"
+        );
+    }
+
+    #[test]
+    fn gini_coefficient_all_nan() {
+        let scores = vec![f64::NAN, f64::NAN, f64::INFINITY];
+        let g = gini_coefficient(&scores);
+        assert_eq!(g, 0.0, "all non-finite scores should return 0.0");
     }
 
     #[test]

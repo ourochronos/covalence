@@ -258,25 +258,49 @@ impl NodeService {
         {
             let mut g = self.graph.write().await;
             for source_id in &source_ids {
-                let _ = g.remove_node(source_id.into_uuid());
+                if let Err(e) = g.remove_node(source_id.into_uuid()) {
+                    tracing::warn!(
+                        node_id = %source_id,
+                        error = %e,
+                        "failed to remove merged source node from sidecar"
+                    );
+                }
             }
             // Rebuild target node in sidecar
-            let _ = g.remove_node(target_id.into_uuid());
-            let _ = g.add_node(NodeMeta {
+            if let Err(e) = g.remove_node(target_id.into_uuid()) {
+                tracing::warn!(
+                    node_id = %target_id,
+                    error = %e,
+                    "failed to remove target node from sidecar before rebuild"
+                );
+            }
+            if let Err(e) = g.add_node(NodeMeta {
                 id: target_id.into_uuid(),
                 node_type: target.node_type.clone(),
                 canonical_name: target.canonical_name.clone(),
                 clearance_level: target.clearance_level.as_i32(),
-            });
+            }) {
+                tracing::warn!(
+                    node_id = %target_id,
+                    error = %e,
+                    "failed to add rebuilt target node to sidecar"
+                );
+            }
             // Re-add edges for target from PG
             let out_edges = EdgeRepo::list_from_node(&*self.repo, target_id).await?;
             let in_edges = EdgeRepo::list_to_node(&*self.repo, target_id).await?;
             for edge in out_edges.iter().chain(in_edges.iter()) {
-                let _ = g.add_edge(
+                if let Err(e) = g.add_edge(
                     edge.source_node_id.into_uuid(),
                     edge.target_node_id.into_uuid(),
                     edge_to_meta(edge),
-                );
+                ) {
+                    tracing::warn!(
+                        edge_id = %edge.id,
+                        error = %e,
+                        "failed to add edge to sidecar during merge rebuild"
+                    );
+                }
             }
         }
 
@@ -362,13 +386,25 @@ impl NodeService {
         // Update sidecar.
         {
             let mut g = self.graph.write().await;
-            let _ = g.remove_node(id.into_uuid());
-            let _ = g.add_node(NodeMeta {
+            if let Err(e) = g.remove_node(id.into_uuid()) {
+                tracing::warn!(
+                    node_id = %id,
+                    error = %e,
+                    "failed to remove node from sidecar before correction rebuild"
+                );
+            }
+            if let Err(e) = g.add_node(NodeMeta {
                 id: id.into_uuid(),
                 node_type: node.node_type.clone(),
                 canonical_name: node.canonical_name.clone(),
                 clearance_level: node.clearance_level.as_i32(),
-            });
+            }) {
+                tracing::warn!(
+                    node_id = %id,
+                    error = %e,
+                    "failed to add corrected node to sidecar"
+                );
+            }
         }
 
         let audit = AuditLog::new(
@@ -468,12 +504,18 @@ impl NodeService {
             // Add new node to sidecar
             {
                 let mut g = self.graph.write().await;
-                let _ = g.add_node(NodeMeta {
+                if let Err(e) = g.add_node(NodeMeta {
                     id: new_id.into_uuid(),
                     node_type: new_node.node_type.clone(),
                     canonical_name: new_node.canonical_name.clone(),
                     clearance_level: new_node.clearance_level.as_i32(),
-                });
+                }) {
+                    tracing::warn!(
+                        node_id = %new_id,
+                        error = %e,
+                        "failed to add split node to sidecar"
+                    );
+                }
             }
         }
 
@@ -486,17 +528,29 @@ impl NodeService {
         // Remove original from sidecar and re-add edges for new nodes
         {
             let mut g = self.graph.write().await;
-            let _ = g.remove_node(id.into_uuid());
+            if let Err(e) = g.remove_node(id.into_uuid()) {
+                tracing::warn!(
+                    node_id = %id,
+                    error = %e,
+                    "failed to remove original node from sidecar during split"
+                );
+            }
 
             for new_id in &new_ids {
                 let out_edges = EdgeRepo::list_from_node(&*self.repo, *new_id).await?;
                 let in_edges = EdgeRepo::list_to_node(&*self.repo, *new_id).await?;
                 for edge in out_edges.iter().chain(in_edges.iter()) {
-                    let _ = g.add_edge(
+                    if let Err(e) = g.add_edge(
                         edge.source_node_id.into_uuid(),
                         edge.target_node_id.into_uuid(),
                         edge_to_meta(edge),
-                    );
+                    ) {
+                        tracing::warn!(
+                            edge_id = %edge.id,
+                            error = %e,
+                            "failed to add edge to sidecar during split rebuild"
+                        );
+                    }
                 }
             }
         }

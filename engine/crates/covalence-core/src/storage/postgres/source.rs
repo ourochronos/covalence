@@ -174,7 +174,7 @@ impl SourceRepo for PgRepo {
         Ok(row.get("count"))
     }
 
-    async fn update_embedding(&self, id: SourceId, embedding: &[f32]) -> Result<()> {
+    async fn update_embedding(&self, id: SourceId, embedding: &[f64]) -> Result<()> {
         let pgvec = format!(
             "[{}]",
             embedding

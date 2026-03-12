@@ -50,7 +50,7 @@ pub trait SourceRepo: Send + Sync {
     fn update_embedding(
         &self,
         id: SourceId,
-        embedding: &[f32],
+        embedding: &[f64],
     ) -> impl Future<Output = Result<()>> + Send;
 }
 
