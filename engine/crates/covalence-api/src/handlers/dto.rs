@@ -407,6 +407,8 @@ pub struct EdgeResponse {
 pub struct GraphStatsResponse {
     pub node_count: usize,
     pub edge_count: usize,
+    pub semantic_edge_count: usize,
+    pub synthetic_edge_count: usize,
     pub density: f64,
     pub component_count: usize,
 }
@@ -484,6 +486,8 @@ pub struct DomainLinkResponse {
 pub struct ReloadResponse {
     pub node_count: usize,
     pub edge_count: usize,
+    pub semantic_edge_count: usize,
+    pub synthetic_edge_count: usize,
     pub density: f64,
     pub component_count: usize,
 }

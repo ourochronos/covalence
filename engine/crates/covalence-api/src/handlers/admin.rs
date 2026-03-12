@@ -29,6 +29,8 @@ pub async fn graph_stats(State(state): State<AppState>) -> Json<GraphStatsRespon
     Json(GraphStatsResponse {
         node_count: stats.node_count,
         edge_count: stats.edge_count,
+        semantic_edge_count: stats.semantic_edge_count,
+        synthetic_edge_count: stats.synthetic_edge_count,
         density: stats.density,
         component_count: stats.component_count,
     })
@@ -151,6 +153,8 @@ pub async fn reload_graph(State(state): State<AppState>) -> Result<Json<ReloadRe
     Ok(Json(ReloadResponse {
         node_count: stats.node_count,
         edge_count: stats.edge_count,
+        semantic_edge_count: stats.semantic_edge_count,
+        synthetic_edge_count: stats.synthetic_edge_count,
         density: stats.density,
         component_count: stats.component_count,
     }))

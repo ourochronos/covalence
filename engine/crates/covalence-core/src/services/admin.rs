@@ -32,6 +32,10 @@ pub struct GraphStats {
     pub node_count: usize,
     /// Number of edges in the sidecar.
     pub edge_count: usize,
+    /// Number of semantic (non-synthetic) edges.
+    pub semantic_edge_count: usize,
+    /// Number of synthetic (co-occurrence) edges.
+    pub synthetic_edge_count: usize,
     /// Graph density (edges / max possible edges).
     pub density: f64,
     /// Number of weakly connected components.
@@ -254,9 +258,20 @@ impl AdminService {
             0.0
         };
         let component_count = count_weak_components(g.graph());
+
+        // Count synthetic vs semantic edges
+        let synthetic_edge_count = g
+            .graph()
+            .edge_weights()
+            .filter(|e| e.is_synthetic)
+            .count();
+        let semantic_edge_count = e - synthetic_edge_count;
+
         GraphStats {
             node_count: n,
             edge_count: e,
+            semantic_edge_count,
+            synthetic_edge_count,
             density,
             component_count,
         }
