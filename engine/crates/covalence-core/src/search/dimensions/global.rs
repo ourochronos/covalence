@@ -71,7 +71,7 @@ impl SearchDimension for GlobalDimension {
         // First, try community summary nodes.
         let summary_rows = sqlx::query_as::<_, (Uuid, f64)>(
             "SELECT id, \
-             1.0 - (embedding <=> $1::halfvec) AS score \
+             GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
              FROM nodes \
              WHERE embedding IS NOT NULL \
                AND node_type = 'community_summary' \
@@ -102,7 +102,7 @@ impl SearchDimension for GlobalDimension {
         // Fall back to articles (compiled from communities).
         let article_rows = sqlx::query_as::<_, (Uuid, f64)>(
             "SELECT id, \
-             1.0 - (embedding <=> $1::halfvec) AS score \
+             GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
              FROM articles \
              WHERE embedding IS NOT NULL \
              ORDER BY embedding <=> $1::halfvec \
