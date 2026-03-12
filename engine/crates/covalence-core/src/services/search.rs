@@ -11,7 +11,7 @@ use crate::config::TableDimensions;
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::ingestion::embedder::Embedder;
-use crate::search::abstention::{AbstentionCheck, AbstentionConfig, check_abstention};
+use crate::search::abstention::{AbstentionConfig, check_abstention};
 use crate::search::cache::{CacheConfig, QueryCache};
 use crate::search::context::{AssembledContext, ContextConfig, RawContextItem, assemble_context};
 use crate::search::dimensions::{
@@ -44,17 +44,6 @@ pub struct SearchFilters {
     pub node_types: Option<Vec<String>>,
     /// Restrict to a temporal date range.
     pub date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
-}
-
-/// Wrapper around fused results that includes search metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResponse {
-    /// The fused search results.
-    pub results: Vec<FusedResult>,
-    /// Abstention check result (if context was insufficient).
-    pub abstention: Option<AbstentionCheck>,
-    /// Query execution trace.
-    pub trace: QueryTrace,
 }
 
 /// Service for orchestrating multi-dimensional search and RRF fusion.
@@ -783,134 +772,6 @@ impl SearchService {
     /// This is the richer variant of [`search`] that returns
     /// metadata alongside results. The `search` method remains
     /// the primary API for backward compatibility.
-    pub async fn search_with_metadata(
-        &self,
-        query: &str,
-        strategy: SearchStrategy,
-        limit: usize,
-        filters: Option<SearchFilters>,
-    ) -> Result<SearchResponse> {
-        let start = Instant::now();
-        let time_range = filters.as_ref().and_then(|f| f.date_range);
-
-        // Embed the query.
-        let query_embedding = if let Some(ref embedder) = self.embedder {
-            match embedder.embed(&[query.to_string()]).await {
-                Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        // Adaptive strategy.
-        let effective_strategy = if strategy == SearchStrategy::Auto {
-            if let Some(ref emb) = query_embedding {
-                let probe_query = SearchQuery {
-                    text: query.to_string(),
-                    strategy: SearchStrategy::Balanced,
-                    limit: 20,
-                    time_range,
-                    embedding: Some(emb.clone()),
-                    ..SearchQuery::default()
-                };
-                match self.vector.search(&probe_query).await {
-                    Ok(results) => {
-                        let scores: Vec<f64> = results.iter().map(|r| r.score).collect();
-                        let mut selected = select_strategy(&scores);
-                        if selected == SearchStrategy::Global {
-                            let has_articles = self
-                                .global
-                                .search(&probe_query)
-                                .await
-                                .is_ok_and(|r| !r.is_empty());
-                            if !has_articles {
-                                selected = SearchStrategy::Exploratory;
-                            }
-                        }
-                        selected
-                    }
-                    Err(_) => strategy.clone(),
-                }
-            } else {
-                strategy.clone()
-            }
-        } else {
-            strategy.clone()
-        };
-
-        let search_query = SearchQuery {
-            text: query.to_string(),
-            strategy: effective_strategy.clone(),
-            limit,
-            time_range,
-            embedding: query_embedding,
-            ..SearchQuery::default()
-        };
-
-        let (vec_r, lex_r, tmp_r, grp_r, str_r, glb_r) = tokio::join!(
-            self.vector.search(&search_query),
-            self.lexical.search(&search_query),
-            self.temporal.search(&search_query),
-            self.graph_dim.search(&search_query),
-            self.structural.search(&search_query),
-            self.global.search(&search_query),
-        );
-
-        let mut trace = QueryTrace::new(query, &effective_strategy);
-        let w = effective_strategy.weights();
-        let dimensions = [
-            ("vector", vec_r, w.vector),
-            ("lexical", lex_r, w.lexical),
-            ("temporal", tmp_r, w.temporal),
-            ("graph", grp_r, w.graph),
-            ("structural", str_r, w.structural),
-            ("global", glb_r, w.global),
-        ];
-
-        let mut ranked_lists = Vec::new();
-        let mut dim_weights = Vec::new();
-
-        for (name, result, weight) in dimensions {
-            match result {
-                Ok(results) => {
-                    trace.record_dimension(name, results.len());
-                    ranked_lists.push(results);
-                    dim_weights.push(weight);
-                }
-                Err(_) => {
-                    trace.record_dimension(name, 0);
-                }
-            }
-        }
-
-        let mut fused = fusion::rrf_fuse(&ranked_lists, &dim_weights, fusion::DEFAULT_K);
-        trace.fused_count = fused.len();
-
-        // Abstention.
-        let scores: Vec<f64> = fused.iter().map(|r| r.fused_score).collect();
-        let abstention_check = check_abstention(&scores, &self.abstention_config);
-        if abstention_check.should_abstain {
-            trace.abstained = true;
-        }
-
-        // Truncate and finalize.
-        fused.truncate(limit);
-        trace.final_count = fused.len();
-        trace.set_duration(start.elapsed());
-        trace.emit();
-
-        Ok(SearchResponse {
-            results: fused,
-            abstention: if abstention_check.should_abstain {
-                Some(abstention_check)
-            } else {
-                None
-            },
-            trace,
-        })
-    }
-
     /// Assemble fused results into a context string suitable
     /// for LLM generation.
     ///

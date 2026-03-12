@@ -16,5 +16,5 @@ pub use consolidation::GraphDeepConsolidator;
 pub use edge::EdgeService;
 pub use health::{ConfigAudit, SidecarHealth};
 pub use node::{NodeExplanation, NodeService};
-pub use search::{SearchFilters, SearchResponse, SearchService};
+pub use search::{SearchFilters, SearchService};
 pub use source::SourceService;
