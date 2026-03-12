@@ -195,11 +195,7 @@ impl SourceService {
     }
 
     /// Set chunk size, overlap, and minimum section size.
-    pub fn with_chunk_config(
-        mut self,
-        size: usize,
-        overlap: usize,
-    ) -> Self {
+    pub fn with_chunk_config(mut self, size: usize, overlap: usize) -> Self {
         self.chunk_size = size;
         self.chunk_overlap = overlap;
         self

@@ -257,8 +257,7 @@ fn merge_small_siblings<'a>(
             }
 
             // Don't exceed max_size.
-            let combined_len =
-                merged_body.len() + "\n\n".len() + next_trimmed.len();
+            let combined_len = merged_body.len() + "\n\n".len() + next_trimmed.len();
             if combined_len > max_size {
                 break;
             }
@@ -954,13 +953,10 @@ mod tests {
         // "Step A" + "Step B" should merge into one section
         // under parent ["Paper", "Methods"].
         // Remaining: Intro, Methods overview, merged A+B, Results.
-        let merged = sections.iter().find(|s| {
-            s.text.contains("Small A.") && s.text.contains("Small B.")
-        });
-        assert!(
-            merged.is_some(),
-            "small siblings should be merged"
-        );
+        let merged = sections
+            .iter()
+            .find(|s| s.text.contains("Small A.") && s.text.contains("Small B."));
+        assert!(merged.is_some(), "small siblings should be merged");
         // The merged section's heading path should be the parent.
         let m = merged.unwrap();
         assert_eq!(m.heading_path, vec!["Paper", "Methods"]);
@@ -971,9 +967,8 @@ mod tests {
         // Two small siblings whose combined size exceeds max.
         let body_a = "a".repeat(80);
         let body_b = "b".repeat(80);
-        let md = format!(
-            "# Paper\n\n.\n\n## Methods\n\n.\n\n### A\n\n{body_a}\n\n### B\n\n{body_b}"
-        );
+        let md =
+            format!("# Paper\n\n.\n\n## Methods\n\n.\n\n### A\n\n{body_a}\n\n### B\n\n{body_b}");
         // min=200, max=100 — each section is 80 chars, combined
         // would be ~162, which exceeds max_chunk_size=100.
         let chunks = chunk_document_with_merge(&md, 100, 0, 200);
@@ -1020,27 +1015,25 @@ mod tests {
             .iter()
             .filter(|c| c.level == ChunkLevel::Section)
             .collect();
-        let merged = sections.iter().any(|s| {
-            s.text.contains("Small data.") && s.text.contains("Small analysis.")
-        });
+        let merged = sections
+            .iter()
+            .any(|s| s.text.contains("Small data.") && s.text.contains("Small analysis."));
         assert!(!merged, "siblings under different parents should not merge");
     }
 
     #[test]
     fn merge_skips_large_sections() {
         let big = "x".repeat(300);
-        let md = format!(
-            "# Paper\n\n.\n\n## M\n\n.\n\n### A\n\n{big}\n\n### B\n\nSmall B."
-        );
+        let md = format!("# Paper\n\n.\n\n## M\n\n.\n\n### A\n\n{big}\n\n### B\n\nSmall B.");
         // A is 300 chars (>200 min), B is small. A should not merge.
         let chunks = chunk_document_with_merge(&md, 1000, 0, 200);
         let sections: Vec<_> = chunks
             .iter()
             .filter(|c| c.level == ChunkLevel::Section)
             .collect();
-        let merged = sections.iter().any(|s| {
-            s.text.contains(&big) && s.text.contains("Small B.")
-        });
+        let merged = sections
+            .iter()
+            .any(|s| s.text.contains(&big) && s.text.contains("Small B."));
         assert!(!merged, "large section should not merge with small");
     }
 

@@ -196,21 +196,18 @@ impl ArticleCompiler for LlmCompiler {
             .unwrap_or(content)
             .trim();
 
-        let parsed: serde_json::Value =
-            serde_json::from_str(content).or_else(|e| {
-                // Attempt repair: if the JSON is truncated, try closing
-                // open strings/braces. This handles the common case where
-                // the model hits max_tokens mid-body.
-                tracing::warn!(
-                    community_id = input.community_id,
-                    "LLM returned invalid JSON ({e}), attempting repair"
-                );
-                repair_truncated_json(content).ok_or_else(|| {
-                    crate::error::Error::Consolidation(format!(
-                        "LLM returned invalid JSON: {e}"
-                    ))
-                })
-            })?;
+        let parsed: serde_json::Value = serde_json::from_str(content).or_else(|e| {
+            // Attempt repair: if the JSON is truncated, try closing
+            // open strings/braces. This handles the common case where
+            // the model hits max_tokens mid-body.
+            tracing::warn!(
+                community_id = input.community_id,
+                "LLM returned invalid JSON ({e}), attempting repair"
+            );
+            repair_truncated_json(content).ok_or_else(|| {
+                crate::error::Error::Consolidation(format!("LLM returned invalid JSON: {e}"))
+            })
+        })?;
 
         let title = parsed["title"]
             .as_str()

@@ -162,10 +162,7 @@ pub(crate) fn is_author_block(text: &str) -> bool {
     let has_prefix_email = prefix
         .iter()
         .any(|l| l.contains('@') || l.contains("mailto:"));
-    let has_later_heading = lines
-        .iter()
-        .skip(1)
-        .any(|l| l.starts_with('#'));
+    let has_later_heading = lines.iter().skip(1).any(|l| l.starts_with('#'));
     if has_prefix_email && has_later_heading {
         return true;
     }
@@ -257,14 +254,15 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
         if lines.len() >= 2 && lines.len() <= 3 && trimmed.len() < 200 {
             let rest = lines[1..].join(" ");
             // Check "digit(" pattern (volume/issue) in non-first lines.
-            let has_vol_issue =
-                rest.as_bytes()
-                    .windows(2)
-                    .any(|w| w[0].is_ascii_digit() && w[1] == b'(');
+            let has_vol_issue = rest
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0].is_ascii_digit() && w[1] == b'(');
             // Check "digit:digit" pattern (volume:page) in non-first lines.
-            let has_vol_page = rest.as_bytes().windows(3).any(|w| {
-                w[0].is_ascii_digit() && w[1] == b':' && w[2].is_ascii_digit()
-            });
+            let has_vol_page = rest
+                .as_bytes()
+                .windows(3)
+                .any(|w| w[0].is_ascii_digit() && w[1] == b':' && w[2].is_ascii_digit());
             if first.ends_with('.') && (has_vol_issue || has_vol_page) {
                 return true;
             }

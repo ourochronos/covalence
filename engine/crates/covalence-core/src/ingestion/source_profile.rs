@@ -77,9 +77,7 @@ impl SourceProfile {
                     .push(TrimPass);
 
                 // Phase 2: artifact stripping.
-                chain = chain
-                    .push(ArtifactLinePass)
-                    .push(InlineArtifactPass);
+                chain = chain.push(ArtifactLinePass).push(InlineArtifactPass);
 
                 // ArXiv sources get MathJax stripping.
                 if self.uri_prefixes.iter().any(|p| p.contains("arxiv")) {
@@ -90,9 +88,7 @@ impl SourceProfile {
                 chain = chain.push(BlankLineCollapsePass);
 
                 // Phase 3: cleanup residual whitespace from stripping.
-                chain = chain
-                    .push(WhitespacePass)
-                    .push(TrimPass);
+                chain = chain.push(WhitespacePass).push(TrimPass);
 
                 chain
             }
@@ -217,11 +213,7 @@ impl ProfileRegistry {
     }
 
     /// Find the best-matching profile for a source.
-    pub fn match_profile(
-        &self,
-        source_type: &SourceType,
-        uri: Option<&str>,
-    ) -> &SourceProfile {
+    pub fn match_profile(&self, source_type: &SourceType, uri: Option<&str>) -> &SourceProfile {
         // Priority 1: URI prefix match.
         if let Some(uri) = uri {
             for profile in &self.profiles {

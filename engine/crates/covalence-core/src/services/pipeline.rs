@@ -89,7 +89,10 @@ impl SourceService {
         // Content-sniff: override MIME if raw content is clearly HTML
         // but was declared as something else (e.g., text/plain).
         let mime = if !mime.contains("html") && sniff_html(content) {
-            tracing::debug!(declared_mime = mime, "content-sniffed as HTML, overriding MIME");
+            tracing::debug!(
+                declared_mime = mime,
+                "content-sniffed as HTML, overriding MIME"
+            );
             "text/html"
         } else {
             mime
@@ -914,7 +917,11 @@ fn sniff_html(content: &[u8]) -> bool {
         .map(|pos| &content[pos..])
         .unwrap_or(content);
 
-    let prefix: Vec<u8> = trimmed.iter().take(15).map(|b| b.to_ascii_lowercase()).collect();
+    let prefix: Vec<u8> = trimmed
+        .iter()
+        .take(15)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
     prefix.starts_with(b"<!doctype") || prefix.starts_with(b"<html")
 }
 
