@@ -798,8 +798,7 @@ impl SearchService {
                             .confidence_breakdown
                             .map(|o| o.projected_probability());
                         if result.snippet.is_none() {
-                            result.snippet =
-                                Some(truncate_with_ellipsis(&article.body, 300));
+                            result.snippet = Some(truncate_with_ellipsis(&article.body, 300));
                         }
                     }
                 }
@@ -816,8 +815,7 @@ impl SearchService {
                         result.source_title = source.title;
                         // Use truncated raw content for snippet.
                         if let Some(ref raw) = source.raw_content {
-                            result.content =
-                                Some(truncate_with_ellipsis(raw, 500));
+                            result.content = Some(truncate_with_ellipsis(raw, 500));
                         }
                     }
                 }
@@ -850,8 +848,7 @@ impl SearchService {
                         // chunk content so vector-only results aren't
                         // blank in the UI.
                         if result.snippet.is_none() {
-                            result.snippet =
-                                Some(truncate_with_ellipsis(&chunk.content, 200));
+                            result.snippet = Some(truncate_with_ellipsis(&chunk.content, 200));
                         }
                         // Parent-context injection: for paragraph-level
                         // chunks, prepend truncated parent content to
@@ -861,8 +858,7 @@ impl SearchService {
                                 if let Ok(Some(parent)) =
                                     ChunkRepo::get(&*self.repo, parent_id).await
                                 {
-                                    let parent_ctx =
-                                        truncate_with_ellipsis(&parent.content, 200);
+                                    let parent_ctx = truncate_with_ellipsis(&parent.content, 200);
                                     let prefix = format!("[{}: {}]", parent.level, parent_ctx);
                                     result.snippet = Some(match result.snippet.take() {
                                         Some(s) => format!("{} {}", prefix, s),
@@ -888,8 +884,7 @@ impl SearchService {
                             result.source_uri = source.uri;
                             result.source_title = source.title;
                             if let Some(ref raw) = source.raw_content {
-                                result.content =
-                                    Some(truncate_with_ellipsis(raw, 500));
+                                result.content = Some(truncate_with_ellipsis(raw, 500));
                             }
                         }
                     }
@@ -978,11 +973,7 @@ impl SearchService {
                 r.snippet
                     .clone()
                     .or_else(|| r.name.clone())
-                    .or_else(|| {
-                        r.content
-                            .as_ref()
-                            .map(|c| truncate_with_ellipsis(c, 500))
-                    })
+                    .or_else(|| r.content.as_ref().map(|c| truncate_with_ellipsis(c, 500)))
                     .unwrap_or_default()
             })
             .collect();

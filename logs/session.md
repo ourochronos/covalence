@@ -797,6 +797,14 @@ Found 11 instances of unsafe byte-slicing (`&s[..N]`) that would panic on multi-
 - Parent content preview — 1 site
 - Reranker content fallback — 1 site
 
+### Improvement 44 — Fix MCP JSON injection + betweenness centrality div-by-zero guard
+
+Two issues found by background scanner agents:
+
+1. **MCP JSON injection** (`covalence-api/src/handlers/mcp.rs:85`): Error message was interpolated into manually-constructed JSON via `format!("{{\"error\": \"{e}\"}}")`. If the error contained quotes or special chars, it produced malformed JSON. Fixed by using `serde_json::json!({"error": e.to_string()}).to_string()`.
+
+2. **Division-by-zero guard** (`covalence-core/src/graph/algorithms.rs:369`): Brandes' betweenness centrality divides by `sigma_w` (shortest path count). While BFS guarantees sigma > 0 for reachable nodes on the stack, added a defensive `if sigma_w > 0.0` guard for robustness against degenerate graph structures.
+
 ---
 
 ### Stats

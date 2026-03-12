@@ -82,7 +82,7 @@ pub async fn call_tool(
             content: vec![McpContent {
                 content_type: "text".to_string(),
                 text: serde_json::to_string(&value)
-                    .unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}")),
+                    .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string()),
             }],
             is_error: false,
         })),

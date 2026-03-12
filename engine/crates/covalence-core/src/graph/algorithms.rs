@@ -364,11 +364,16 @@ pub fn structural_importance(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> HashM
         while let Some(w) = stack.pop() {
             let sigma_w = sigma[&w];
             let delta_w = delta[&w];
-            if let Some(preds) = predecessors.get(&w) {
-                for &v in preds {
-                    let d = (sigma[&v] / sigma_w) * (1.0 + delta_w);
-                    if let Some(dv) = delta.get_mut(&v) {
-                        *dv += d;
+            // Guard against division by zero (should not happen since
+            // only BFS-reachable nodes with sigma > 0 are on the stack,
+            // but defend against degenerate graph structures).
+            if sigma_w > 0.0 {
+                if let Some(preds) = predecessors.get(&w) {
+                    for &v in preds {
+                        let d = (sigma[&v] / sigma_w) * (1.0 + delta_w);
+                        if let Some(dv) = delta.get_mut(&v) {
+                            *dv += d;
+                        }
                     }
                 }
             }
