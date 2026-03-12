@@ -232,6 +232,8 @@ Autonomous sessions should proactively maintain engineering quality:
 - **Keep CI green locally.** Run `make check` before pushing. We don't rely on GitHub Actions for gating — the project isn't released yet — but the local checks are non-negotiable.
 - **Modular design.** Prefer small, focused modules. If a file is growing past ~500 lines, consider splitting. If a function does three things, make it three functions.
 - **Don't ignore failures.** If a consolidation run fails, a test is flaky, or an ingestion produces warnings — investigate immediately or create an issue. Moving past failures silently compounds debt.
+- **Run edge synthesis after bulk ingestion.** New sources create disconnected subgraphs. Run `POST /api/v1/admin/edges/synthesize` with `{"min_cooccurrences": 1}` after ingesting multiple sources to connect them via co-occurrence edges.
+- **Clear the search cache after deploys.** `POST /api/v1/admin/cache/clear` — otherwise stale cached results hide quality improvements.
 
 ### Track What You Find
 
