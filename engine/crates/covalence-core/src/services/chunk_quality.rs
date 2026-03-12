@@ -238,6 +238,54 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
     false
 }
 
+/// Detect large reference/bibliography section chunks.
+///
+/// Unlike [`is_bibliography_entry`] (which catches individual short
+/// citations), this catches full reference sections — long chunks
+/// where the majority of lines are citation-like. A line is
+/// "citation-like" if it starts with `- `, `[N]`, or a numbered
+/// list item and contains a `(YYYY)` year pattern.
+pub(crate) fn is_reference_section(text: &str) -> bool {
+    let trimmed = text.trim();
+    // Only applies to substantial chunks (the small ones are handled
+    // by `is_bibliography_entry`).
+    if trimmed.len() < 300 {
+        return false;
+    }
+
+    let lines: Vec<&str> = trimmed
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() < 5 {
+        return false;
+    }
+
+    let citation_count = lines
+        .iter()
+        .filter(|line| {
+            let is_list_item =
+                line.starts_with("- ") || line.starts_with("* ") || line.starts_with('[');
+            // Also match continuation lines with year patterns
+            // (multi-line citations where the year is on a later line).
+            let has_year = line
+                .as_bytes()
+                .windows(6)
+                .any(|w| w[0] == b'(' && w[1..5].iter().all(|b| b.is_ascii_digit()) && w[5] == b')');
+            // Pattern: list item with a year, or a "Retrieved" URL line,
+            // or a standalone arrow/citation marker like "(1)↑"
+            (is_list_item && has_year)
+                || line.starts_with("Retrieved ")
+                || (line.len() < 15 && line.contains('\u{2191}'))
+        })
+        .count();
+
+    let ratio = citation_count as f64 / lines.len() as f64;
+    // If >40% of lines are citation-like, it's a reference section.
+    ratio > 0.4
+}
+
 /// Returns `true` if any heading in the chunk's path matches a known
 /// web-scraping artifact heading.
 pub(crate) fn has_artifact_heading(heading_path: &[String]) -> bool {
@@ -519,5 +567,62 @@ mod tests {
     #[test]
     fn not_author_block_empty() {
         assert!(!is_author_block(""));
+    }
+
+    // --- Reference section tests ---
+
+    #[test]
+    fn reference_section_detected() {
+        // Simulate a typical academic reference list chunk.
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(format!(
+                "- Author{i} et al. (20{:02}). Some paper title. _Journal_ {i}.",
+                i % 25
+            ));
+        }
+        let text = lines.join("\n");
+        assert!(is_reference_section(&text));
+    }
+
+    #[test]
+    fn reference_section_with_arrows() {
+        // ArXiv-style references with ↑ markers.
+        let text = "- (1)\u{2191}\n\
+            - api (2024)\u{2191}\n\
+            2024.\n\
+            API Pricing of Open-AI.\n\
+            Retrieved December 16, 2024 from https://openai.com/api/pricing/\n\
+            - Ahmed and Abulaish (2012)\u{2191}\n\
+            Faraz Ahmed and Muhammad Abulaish. 2012.\n\
+            An MCL-based approach for spam profile detection.\n\
+            - Amer-Yahia et al. (2023)\u{2191}\n\
+            Sihem Amer-Yahia et al. 2023.\n\
+            Some other paper about data management.\n\
+            - Bennett (2021)\u{2191}\n\
+            J. Bennett. 2021.\n\
+            Yet another reference entry.";
+        assert!(is_reference_section(text));
+    }
+
+    #[test]
+    fn not_reference_section_short() {
+        let text = "- Author (2024). A paper.";
+        assert!(!is_reference_section(text));
+    }
+
+    #[test]
+    fn not_reference_section_real_content() {
+        let text = "Knowledge graphs enable structured representation of facts.\n\
+            They combine entity recognition with relationship extraction.\n\
+            Graph neural networks can propagate information across edges.\n\
+            Retrieval-augmented generation improves factual grounding.\n\
+            Multi-hop reasoning requires traversal of intermediate nodes.\n\
+            Community detection identifies densely connected subgraphs.\n\
+            Temporal annotations track when facts become valid or expire.\n\
+            Confidence scores quantify epistemic uncertainty.\n\
+            Provenance chains link assertions to their source material.\n\
+            Fusion algorithms combine evidence from multiple dimensions.";
+        assert!(!is_reference_section(text));
     }
 }

@@ -776,11 +776,14 @@ impl SearchService {
         {
             use super::chunk_quality::{
                 is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
+                is_reference_section,
             };
 
             let mut demoted = 0usize;
             for result in &mut fused {
-                if result.result_type.as_deref() != Some("chunk") {
+                // Check entity_type (set during enrichment) rather
+                // than result_type (set by dimension, may be missing).
+                if result.entity_type.as_deref() != Some("chunk") {
                     continue;
                 }
                 let content = match result.content.as_deref() {
@@ -788,6 +791,7 @@ impl SearchService {
                     None => continue,
                 };
                 if is_bibliography_entry(content)
+                    || is_reference_section(content)
                     || is_boilerplate_heavy(content)
                     || is_metadata_only(content)
                 {

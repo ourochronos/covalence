@@ -30,7 +30,7 @@ use crate::types::ids::{AliasId, ChunkId, NodeId, SourceId};
 
 use super::chunk_quality::{
     has_artifact_heading, is_author_block, is_bibliography_entry, is_boilerplate_heavy,
-    is_metadata_only,
+    is_metadata_only, is_reference_section,
 };
 use super::ingestion_helpers::{
     SupersedesInfo, compute_parent_alignment, detect_chunk_content_types, detect_update_class,
@@ -544,6 +544,7 @@ impl SourceService {
                     && !is_author_block(&co.text)
                     && !has_artifact_heading(&co.heading_path)
                     && !is_bibliography_entry(&co.text)
+                    && !is_reference_section(&co.text)
             })
             .collect();
         let filtered_count = pre_filter - chunk_outputs.len();
@@ -1514,6 +1515,7 @@ impl SourceService {
                     && !is_author_block(&co.text)
                     && !has_artifact_heading(&co.heading_path)
                     && !is_bibliography_entry(&co.text)
+                    && !is_reference_section(&co.text)
             })
             .collect();
         let chunks_created = chunk_outputs.len();
