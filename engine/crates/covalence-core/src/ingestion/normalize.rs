@@ -241,8 +241,10 @@ impl NormalizePass for InlineArtifactPass {
 pub struct MathJaxPass;
 
 /// MathJax accessibility text markers produced when stripping HTML from
-/// arXiv papers.
+/// arXiv papers. Includes both raw and Markdown-escaped (`\_`) variants
+/// since the HTML→Markdown converter may escape underscores.
 const MATHJAX_MARKERS: &[&str] = &[
+    // Raw markers (from direct HTML text extraction).
     "start_POSTSUBSCRIPT",
     "end_POSTSUBSCRIPT",
     "start_POSTSUPERSCRIPT",
@@ -256,6 +258,20 @@ const MATHJAX_MARKERS: &[&str] = &[
     "end_CELL",
     "start_ROW",
     "end_ROW",
+    // Markdown-escaped variants (\_).
+    r"start\_POSTSUBSCRIPT",
+    r"end\_POSTSUBSCRIPT",
+    r"start\_POSTSUPERSCRIPT",
+    r"end\_POSTSUPERSCRIPT",
+    r"italic\_",
+    r"caligraphic\_",
+    r"bold\_italic\_",
+    r"roman\_",
+    r"bold\_",
+    r"start\_CELL",
+    r"end\_CELL",
+    r"start\_ROW",
+    r"end\_ROW",
 ];
 
 impl NormalizePass for MathJaxPass {
@@ -566,13 +582,27 @@ mod tests {
 
     #[test]
     fn mathjax_no_duplicate_markers() {
-        // The old code had start_POSTSUBSCRIPT listed twice.
-        // Verify our list has no duplicates.
+        // Verify the list has no duplicates.
         let unique: std::collections::HashSet<&str> = MATHJAX_MARKERS.iter().copied().collect();
         assert_eq!(
             MATHJAX_MARKERS.len(),
             unique.len(),
             "MATHJAX_MARKERS should have no duplicates"
         );
+    }
+
+    #[test]
+    fn strip_mathjax_escaped_underscores() {
+        let pass = MathJaxPass;
+        // Markdown-escaped variant from HTML→MD conversion.
+        let input = r"italic\_p-value=0.05";
+        assert_eq!(pass.apply(input), "p-value=0.05");
+    }
+
+    #[test]
+    fn strip_mathjax_escaped_postsubscript() {
+        let pass = MathJaxPass;
+        let input = r"start\_POSTSUBSCRIPT i end\_POSTSUBSCRIPT";
+        assert_eq!(pass.apply(input), " i ");
     }
 }
