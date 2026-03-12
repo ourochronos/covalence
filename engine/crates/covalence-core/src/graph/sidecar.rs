@@ -194,23 +194,55 @@ impl GraphSidecar {
     }
 
     /// Apply an outbox event to update the graph.
+    ///
+    /// Errors are logged at warn level rather than propagated, since
+    /// a single malformed event should not stop the sync loop from
+    /// processing subsequent events.
     pub fn apply_event(&mut self, event: &OutboxEvent) {
         match (event.entity_type.as_str(), event.operation.as_str()) {
             ("node", "INSERT") | ("node", "UPDATE") => {
                 if let Some(ref payload) = event.payload {
-                    let _ = self.apply_node_upsert(event.entity_id, payload);
+                    if let Err(e) = self.apply_node_upsert(event.entity_id, payload) {
+                        tracing::warn!(
+                            seq_id = event.seq_id,
+                            entity_id = %event.entity_id,
+                            error = %e,
+                            "failed to apply node upsert from outbox"
+                        );
+                    }
                 }
             }
             ("node", "DELETE") => {
-                let _ = self.remove_node(event.entity_id);
+                if let Err(e) = self.remove_node(event.entity_id) {
+                    tracing::warn!(
+                        seq_id = event.seq_id,
+                        entity_id = %event.entity_id,
+                        error = %e,
+                        "failed to remove node from outbox"
+                    );
+                }
             }
             ("edge", "INSERT") | ("edge", "UPDATE") => {
                 if let Some(ref payload) = event.payload {
-                    let _ = self.apply_edge_upsert(event.entity_id, payload);
+                    if let Err(e) = self.apply_edge_upsert(event.entity_id, payload) {
+                        tracing::warn!(
+                            seq_id = event.seq_id,
+                            entity_id = %event.entity_id,
+                            error = %e,
+                            "failed to apply edge upsert from outbox"
+                        );
+                    }
                 }
             }
             ("edge", "DELETE") => {
-                let _ = self.remove_edge(event.entity_id);
+                if let Err(e) = self.remove_edge(event.entity_id) {
+                    tracing::warn!(
+                        seq_id = event.seq_id,
+                        entity_id = %event.entity_id,
+                        error = %e,
+                        "failed to remove edge from outbox"
+                    );
+                }
             }
             _ => {
                 tracing::warn!(

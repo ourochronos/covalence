@@ -102,21 +102,26 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
     *g = GraphSidecar::new();
 
     // Insert nodes
+    let mut node_errors = 0usize;
     for row in &node_rows {
-        let _ = g.add_node(NodeMeta {
+        if let Err(e) = g.add_node(NodeMeta {
             id: row.get("id"),
             node_type: row.get("node_type"),
             canonical_name: row.get("canonical_name"),
             clearance_level: row.get("clearance_level"),
-        });
+        }) {
+            tracing::warn!(error = %e, "failed to add node during full reload");
+            node_errors += 1;
+        }
     }
 
     // Insert edges (add_edge populates both the graph and edge_index)
+    let mut edge_errors = 0usize;
     for row in &edge_rows {
         let causal_str: Option<String> = row.get("causal_level");
         let causal_level = causal_str.as_deref().and_then(CausalLevel::from_str_opt);
 
-        let _ = g.add_edge(
+        if let Err(e) = g.add_edge(
             row.get("source_node_id"),
             row.get("target_node_id"),
             EdgeMeta {
@@ -127,6 +132,16 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
                 causal_level,
                 clearance_level: row.get("clearance_level"),
             },
+        ) {
+            tracing::warn!(error = %e, "failed to add edge during full reload");
+            edge_errors += 1;
+        }
+    }
+
+    if node_errors > 0 || edge_errors > 0 {
+        tracing::warn!(
+            node_errors, edge_errors,
+            "full reload completed with errors"
         );
     }
 
