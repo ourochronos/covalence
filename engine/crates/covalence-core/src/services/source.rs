@@ -518,6 +518,7 @@ impl SourceService {
                     && !is_boilerplate_heavy(&co.text)
                     && !is_author_block(&co.text)
                     && !has_artifact_heading(&co.heading_path)
+                    && !is_bibliography_entry(&co.text)
             })
             .collect();
         let filtered_count = pre_filter - chunk_outputs.len();
@@ -525,7 +526,7 @@ impl SourceService {
             tracing::info!(
                 source_id = %source.id,
                 filtered = filtered_count,
-                "removed metadata-only chunks"
+                "removed low-quality chunks"
             );
         }
 
@@ -1487,6 +1488,7 @@ impl SourceService {
                     && !is_boilerplate_heavy(&co.text)
                     && !is_author_block(&co.text)
                     && !has_artifact_heading(&co.heading_path)
+                    && !is_bibliography_entry(&co.text)
             })
             .collect();
         let chunks_created = chunk_outputs.len();
@@ -2397,6 +2399,14 @@ fn is_metadata_only(text: &str) -> bool {
     if trimmed.is_empty() {
         return true;
     }
+
+    // Very short chunks (< 30 non-whitespace chars) are almost
+    // always heading-only or UI fragment artifacts.
+    let non_ws: usize = trimmed.chars().filter(|c| !c.is_whitespace()).count();
+    if non_ws < 30 {
+        return true;
+    }
+
     // Short chunks (< 80 chars) where every line is a bold label or
     // blank are considered metadata-only.
     if trimmed.len() >= 80 {
@@ -2427,6 +2437,13 @@ const BOILERPLATE_LINES: &[&str] = &[
     "< prev",
     "next >",
     "report issue for preceding element",
+    "report github issue",
+    "submit without github",
+    "submit in github",
+    "content selection saved",
+    "back to arxiv",
+    "back to abstract",
+    "why html?",
 ];
 
 /// Check whether a chunk is dominated by web UI boilerplate
@@ -2517,6 +2534,61 @@ fn is_author_block(text: &str) -> bool {
     false
 }
 
+/// Detect bibliography/reference entry chunks.
+///
+/// Short chunks (<300 chars) that match bibliography patterns:
+/// - Start with `"- Author (Year)"` or `"- Author et al. (Year)"`
+/// - Contain an `arXiv preprint` or journal citation
+/// - Are individual citation entries from a References section
+///
+/// These are per-citation fragments from academic papers that add
+/// noise without substantive content.
+fn is_bibliography_entry(text: &str) -> bool {
+    let trimmed = text.trim();
+    // Only applies to short fragments — a full references section
+    // would be longer and should be kept.
+    if trimmed.len() > 300 {
+        return false;
+    }
+    let lines: Vec<&str> = trimmed
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return false;
+    }
+
+    let first = lines[0];
+
+    // Pattern: "- Author (Year)" or "- Author et al. (Year)"
+    if first.starts_with("- ") && first.len() < 80 {
+        // Check for "(YYYY)" pattern
+        if first
+            .chars()
+            .collect::<Vec<_>>()
+            .windows(6)
+            .any(|w| w[0] == '(' && w[1..5].iter().all(|c| c.is_ascii_digit()) && w[5] == ')')
+        {
+            return true;
+        }
+    }
+
+    // Pattern: single citation with "arXiv preprint" or italic journal
+    if lines.len() <= 4 {
+        let joined = lines.join(" ");
+        let lower = joined.to_lowercase();
+        if lower.contains("arxiv preprint") || lower.contains("_arxiv_") {
+            // Looks like a standalone citation entry
+            if trimmed.len() < 200 {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Known artifact headings from web scraping that should cause the
 /// entire chunk to be discarded.
 const ARTIFACT_HEADINGS: &[&str] = &["report issue for preceding element"];
@@ -2561,6 +2633,70 @@ mod tests {
     fn not_metadata_long_text() {
         let long = "**Authors:** A very long author list that exceeds eighty characters in total length and counts as real content";
         assert!(!is_metadata_only(long));
+    }
+
+    #[test]
+    fn metadata_only_very_short_chunks() {
+        // ArXiv UI fragments that slip through as chunks
+        assert!(is_metadata_only("##### Report GitHub Issue"));
+        assert!(is_metadata_only("×\n\nTitle:"));
+        assert!(is_metadata_only("Description:"));
+    }
+
+    #[test]
+    fn not_metadata_substantive_short() {
+        // 30+ non-whitespace chars = substantive
+        assert!(!is_metadata_only(
+            "Knowledge graphs enable reasoning about entities."
+        ));
+    }
+
+    #[test]
+    fn boilerplate_arxiv_ui_fragments() {
+        assert!(is_boilerplate_line("Report GitHub Issue"));
+        assert!(is_boilerplate_line("Submit without GitHubSubmit in GitHub"));
+        assert!(is_boilerplate_line(
+            "Content selection saved. Describe the issue below:"
+        ));
+        assert!(is_boilerplate_line("Back to arXiv"));
+        assert!(is_boilerplate_line("Why HTML?"));
+    }
+
+    #[test]
+    fn bibliography_entry_with_year() {
+        assert!(is_bibliography_entry(
+            "- Aggarwal et al. (2001)\nCharu C Aggarwal, Alexander Hinneburg."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_arxiv() {
+        assert!(is_bibliography_entry(
+            "GPT-4 Technical Report.\n\n_ArXiv_, abs/2303.08774, 2023."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_standalone_citation() {
+        assert!(is_bibliography_entry(
+            "- OpenAI (2023)\nOpenAI.\n\nGPT-4 Technical Report."
+        ));
+    }
+
+    #[test]
+    fn not_bibliography_substantive_content() {
+        let text = "Knowledge graphs are a powerful way to represent structured \
+                    information. They consist of nodes representing entities and edges \
+                    representing relationships between them. This enables sophisticated \
+                    reasoning about the world.";
+        assert!(!is_bibliography_entry(text));
+    }
+
+    #[test]
+    fn not_bibliography_long_references() {
+        // A full references section (>300 chars) should be kept.
+        let long = "- Author (2020)\n".repeat(30);
+        assert!(!is_bibliography_entry(&long));
     }
 
     #[test]
