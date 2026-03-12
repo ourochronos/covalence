@@ -613,14 +613,45 @@ Prod engine running on :8431 with 266 sources, 1554 nodes, 11,094 edges, 88 arti
 9. **Effective fusion weight logging** (af97968)
    - Debug-level log of effective weights after redistribution and quality gating
 
+10. **Content-based snippet fallback + CLI source title** (82e3dac, f2667f9)
+    - Vector-only chunks now get content-based snippets (first 200 chars)
+    - CLI search shows source title alongside chunk name in content display
+
+11. **Graph seed multi-term scoring** (4e92f4e)
+    - Seeds matching more query terms rank higher (e.g., "Search Service" matching both "search" and "service" ranks above nodes matching only one)
+
+12. **Structural dimension stopword filtering** (7e6cc8b)
+    - Structural dim now filters stopwords and short terms from query text before matching node names, consistent with graph dimension
+
+13. **NaN guard in CC fusion** (7e6cc8b)
+    - Defensive check: non-finite normalized scores treated as 0.0 in CC fusion
+
+14. **Context dedup embedding dimension check** (7e6cc8b)
+    - Skip cosine comparison when embeddings have different dimensions (e.g., chunk=1024 vs node=256)
+
+15. **Shared stopword/term filtering refactor** (a6ff8fb)
+    - Extracted `extract_query_terms()` to `dimensions/mod.rs`, shared by graph and structural dimensions
+
+16. **Abstention threshold fix for CC fusion** (f1ca150)
+    - Old threshold (0.001) was calibrated for RRF scores (0.001-0.05 range)
+    - CC fusion default produces scores in 0.1-1.0 range, making abstention effectively disabled
+    - Updated to 0.05 which catches genuinely poor retrieval
+
+17. **Keyword-based intent detection** (ca7c292)
+    - `detect_intent()` supplements SkewRoute with keyword analysis:
+      - Recency keywords (latest, recent, newest) → Recent strategy
+      - Entity/definition queries (what is, explain) → Exploratory strategy
+    - Runs before SkewRoute; ambiguous queries fall through to score-based selection
+
 ### Stats
 
-- **Tests:** 783 (730 core + 10 API + 43 eval), up from 762. Clippy clean.
-- **Commits:** 72a3f3c, 44159f5, af97968, 35b9afe, bc3e29f, 8332380, 140b18d
+- **Tests:** 795 (742 core + 10 API + 43 eval), up from 762. Clippy clean.
+- **Commits:** 72a3f3c, 44159f5, af97968, 35b9afe, bc3e29f, 8332380, 140b18d, 00737f9, f2667f9, 82e3dac, 4e92f4e, 7e6cc8b, a6ff8fb, f1ca150, ca7c292
 
 ### Open Areas
 
 - Reprocess contaminated sources to apply new chunk filters (~234 arxiv boilerplate chunks still in DB)
+- "Financial Outlook" entity extracted from example data in spec/05-ingestion.md — false entity from example text
 - Graph quality: separating system design from bibliographic noise (#78)
 - RAPTOR hierarchical retrieval (#74)
 - Ingest spec reference papers (#92)
