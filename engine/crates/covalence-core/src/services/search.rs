@@ -116,11 +116,37 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
             {
                 return false;
             }
+            // Skip bare numbered list items: "3.", "4.", "1)"
+            if l.len() < 5
+                && l.chars()
+                    .all(|c| c.is_ascii_digit() || c == '.' || c == ')')
+            {
+                return false;
+            }
             true
-        })
-        .unwrap_or(trimmed.lines().next().unwrap_or(trimmed));
+        });
 
-    let meaningful = meaningful.trim();
+    // If no meaningful line was found (all lines were metadata),
+    // use the first line as a last resort, stripping bold markers.
+    let meaningful = match meaningful {
+        Some(line) => line.trim(),
+        None => {
+            let first = trimmed.lines().next().unwrap_or(trimmed).trim();
+            // Strip bold labels for display: "**Authors:** X" → "Authors: X"
+            let cleaned = strip_inline_markdown(first);
+            let cleaned = cleaned.trim();
+            if cleaned.is_empty() {
+                return String::new();
+            }
+            // Truncate and return directly — skip heading logic.
+            return if cleaned.len() <= MAX_CHUNK_NAME_LEN {
+                cleaned.to_string()
+            } else {
+                format!("{}...", &cleaned[..MAX_CHUNK_NAME_LEN - 3])
+            };
+        }
+    };
+
     if meaningful.is_empty() {
         return String::new();
     }
@@ -1262,6 +1288,26 @@ mod tests {
         assert_eq!(
             derive_chunk_name(content),
             "Knowledge graphs are important."
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_all_metadata_lines() {
+        // When all lines are metadata, fall back to the first line
+        // with bold markers stripped.
+        let content = "**Authors:** (2506.00049)\n**arxiv:** 2506.00049";
+        assert_eq!(
+            derive_chunk_name(content),
+            "Authors: (2506.00049)"
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_skips_bare_numbered_item() {
+        let content = "3.\nThe actual content starts here.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "The actual content starts here."
         );
     }
 

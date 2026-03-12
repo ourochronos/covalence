@@ -498,6 +498,24 @@ impl SourceService {
             }
         }
 
+        // Filter out metadata-only chunks (e.g., chunks whose content
+        // is entirely bold-label lines like "**Authors:** ..." with no
+        // substantive text). These are ingestion artifacts from content
+        // appearing before the first heading.
+        let pre_filter = chunk_outputs.len();
+        let chunk_outputs: Vec<_> = chunk_outputs
+            .into_iter()
+            .filter(|co| !is_metadata_only(&co.text))
+            .collect();
+        let filtered_count = pre_filter - chunk_outputs.len();
+        if filtered_count > 0 {
+            tracing::info!(
+                source_id = %source.id,
+                filtered = filtered_count,
+                "removed metadata-only chunks"
+            );
+        }
+
         // Build a map from chunker UUIDs to ChunkIds
         let mut id_map = std::collections::HashMap::new();
         for co in &chunk_outputs {
@@ -1444,6 +1462,12 @@ impl SourceService {
             self.chunk_size,
             self.chunk_overlap,
         );
+
+        // Filter metadata-only chunks.
+        let chunk_outputs: Vec<_> = chunk_outputs
+            .into_iter()
+            .filter(|co| !is_metadata_only(&co.text))
+            .collect();
         let chunks_created = chunk_outputs.len();
 
         // Build chunk ID map
@@ -2336,9 +2360,63 @@ fn sanitize_ltree_label(s: &str) -> String {
     }
 }
 
+/// Check if a chunk's content is purely metadata with no substantive
+/// text. Returns `true` for chunks whose lines are all bold labels
+/// (`**Key:** value`), blank lines, or heading markers with no body.
+///
+/// These chunks are ingestion artifacts from metadata appearing before
+/// the first heading in a source document.
+fn is_metadata_only(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // Short chunks (< 80 chars) where every line is a bold label or
+    // blank are considered metadata-only.
+    if trimmed.len() >= 80 {
+        return false;
+    }
+    trimmed.lines().all(|line| {
+        let l = line.trim();
+        l.is_empty()
+            || (l.starts_with("**") && l.contains(":**"))
+            || (l.starts_with('[') && l.len() < 20
+                && l.chars().skip(1).take(4).all(|c| c.is_ascii_digit()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_only_bold_labels() {
+        assert!(is_metadata_only("**Authors:** John\n**arxiv:** 123"));
+    }
+
+    #[test]
+    fn metadata_only_empty() {
+        assert!(is_metadata_only(""));
+        assert!(is_metadata_only("  \n  "));
+    }
+
+    #[test]
+    fn metadata_only_short_arxiv() {
+        assert!(is_metadata_only("[2506.12345]"));
+    }
+
+    #[test]
+    fn not_metadata_has_content() {
+        assert!(!is_metadata_only(
+            "**Authors:** John\nThis paper discusses knowledge graphs."
+        ));
+    }
+
+    #[test]
+    fn not_metadata_long_text() {
+        let long = "**Authors:** A very long author list that exceeds eighty characters in total length and counts as real content";
+        assert!(!is_metadata_only(long));
+    }
 
     #[test]
     fn delete_result_serializes_all_fields() {
