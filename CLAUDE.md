@@ -136,18 +136,29 @@ When working on Covalence:
 
 Covalence builds Covalence. The system is its own knowledge substrate — we develop it *through* it. Every session should use Covalence to inform its own improvement, and improve Covalence's ability to inform the next session.
 
+The vision (`VISION.md`) defines what success looks like. The spec describes how to get there. The code implements the spec. The loop ensures all three converge.
+
 ### The Cycle
 
 Each autonomous session follows this loop. The loop itself is a target of improvement — if a step is weak, fix the step.
 
-1. **Query** — Before working on anything non-trivial, search Covalence for relevant knowledge. Use `cove search "query"` against prod (port 8441). If search doesn't return useful results, that's signal about search quality, not about the knowledge being absent. Also use the graph's self-diagnostic tools: `/admin/knowledge-gaps` (high-in-degree, low-out-degree entities), `/admin/metrics`, graph stats. Let the graph tell you where it's weak — don't just search for topics you already know about.
-2. **Identify gaps** — What questions can't be answered from the graph? What research is missing? What does the system not know about itself? Be systematic: check which architectural concepts have zero external research backing. Check for low-confidence entities, isolated nodes, concepts referenced but never explained. Ad hoc "I searched 3 things and noticed a gap" is not sufficient.
-3. **Ingest** — Find and ingest research to fill gaps. Papers, documentation, RFCs, algorithm references. This is investment, not overhead. The graph should understand the theory behind everything it does. **Prefer depth over breadth** — one paper read thoroughly and applied thoughtfully beats five papers skimmed. Verify a paper is relevant (read the abstract, check the methodology) before committing to ingestion.
-4. **Learn** — This is the most important step and the one most likely to be shortcut. Read the ingested material deeply enough to extract non-obvious insights. Don't just grab the headline concept — understand the methodology, the tradeoffs, what they tried that didn't work, and what adjacent ideas they reference. If you can't articulate what you learned beyond a one-sentence summary, you haven't learned enough to build well.
-5. **Build** — Implement improvements to Covalence, including improvements to the loop itself. Fix the weakest link first. Measure before building: query prod data to quantify the problem (e.g., "32% of sections are under 100 chars") so you know what success looks like.
-6. **Evaluate** — Did the change actually improve things? This must be measurable, not vibes. Before/after comparisons on concrete metrics: chunk size distributions, retrieval scores on a fixed query set, eval harness results. "I can search for the papers now" is not evidence that quality improved. If you can't measure the improvement, you don't know if it happened.
-7. **Reflect** — What about the loop itself could be better? Which step was weakest this cycle? What was wasted effort? Be specific and honest.
-8. **Update directives** — If the Reflect step revealed a process improvement, a new anti-pattern, a stale directive, or a lesson that future sessions need, update CLAUDE.md and/or memory right now. Don't defer this — the insight is freshest immediately after the work. Also close or update any GitHub issues touched during the cycle.
+1. **Assess** — Start from the vision, not from the code. Query Covalence to understand the current state: search quality, entity precision, graph health. Use `/admin/metrics`, graph stats, knowledge-gaps. Ask: what's the biggest gap between where we are and where VISION.md says we should be?
+2. **Identify the highest-impact gap** — Not the most interesting thing, not the easiest thing — the thing that most blocks progress toward the vision. Be systematic: use source-layer queries to compare spec coverage, check quality metrics, look at what's broken. If the substrate (knowledge quality) is poor, fix that before building features on top of it.
+3. **Research** — Find and ingest material relevant to the gap. Papers, documentation, RFCs. **Prefer depth over breadth** — one paper read thoroughly beats five skimmed. Verify relevance before committing to ingestion.
+4. **Learn** — The most important step. Read deeply enough to extract non-obvious insights — methodology, tradeoffs, failures, adjacent ideas. If you can't articulate what you learned beyond a one-sentence summary, you haven't learned enough.
+5. **Build** — Implement the improvement. Measure before building so you know what success looks like. Fix the weakest link first.
+6. **Evaluate** — Measurable, not vibes. Before/after comparisons on concrete metrics. "It works now" is not evidence of improvement.
+7. **Reflect** — What about the loop itself could be better? What was wasted effort? Be specific.
+8. **Update** — Update CLAUDE.md, VISION.md, memory, and issues. The insight is freshest immediately after the work.
+
+### Vision-Driven Prioritization
+
+The vision defines four priorities in order: (1) knowledge quality, (2) observability, (3) agent integration, (4) self-improvement infrastructure. When choosing what to work on, always ask: is the foundation solid enough to support this work? Building a web dashboard while search returns bibliography noise wastes effort. Building agent integration while entity extraction creates garbage pollutes agent memory.
+
+**Quality gates before features:**
+- Entity precision >90% before building new query modes
+- Search precision@5 >0.8 before building the web search interface
+- Chunk quality >95% before expanding ingestion to new source types
 
 ### CLI-First Interaction
 
@@ -265,7 +276,7 @@ The goal is not just to build Covalence but to make each session measurably more
 
 ### The Goal
 
-Covalence aims to be the best possible AI agent memory and knowledge system. The architecture is sound — it needs to grow and mature through deep understanding of the problem space. We are not making quick fixes. We are solving a complex problem composed of many mostly-solved subproblems, building on solid theory, and solving the remaining open questions along the way.
+See `VISION.md` for the full vision. In short: Covalence solves both an academic problem (interconnected GraphRAG quality issues unified by epistemic uncertainty) and a market problem (AI agents need persistent, structured, trustworthy memory). The architecture is sound — it needs to mature through quality, not features.
 
 ## Hard Rules
 
