@@ -181,11 +181,27 @@ fn build_overlap_text(prev: Option<&str>, current: &str, overlap: usize) -> (Str
         _ => return (current.to_string(), 0),
     };
 
-    // Take the last `overlap` bytes, snapping backward to a
-    // valid UTF-8 char boundary so we never slice mid-character.
+    // Take the last `overlap` bytes, snapping forward to a word
+    // boundary so the overlap prefix never starts mid-word.
     let mut start = prev.len().saturating_sub(overlap);
+    // First snap to a valid UTF-8 char boundary.
     while start > 0 && !prev.is_char_boundary(start) {
         start -= 1;
+    }
+    // Then snap forward to a word boundary (whitespace or start
+    // of string). Without this, overlap prefixes produce chunks
+    // like "pological confidence" from "topological confidence".
+    if start > 0 {
+        if let Some(ws_pos) = prev[start..].find(char::is_whitespace) {
+            // Skip past the whitespace character to start at the
+            // next word.
+            let ws_char_len = prev[start + ws_pos..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            start += ws_pos + ws_char_len;
+        }
     }
     let suffix = &prev[start..];
 
@@ -723,5 +739,59 @@ mod tests {
         assert!(detect_heading("Not a heading").is_none());
         assert!(detect_heading("#NoSpace").is_none());
         assert!(detect_heading("").is_none());
+    }
+
+    #[test]
+    fn overlap_snaps_to_word_boundary() {
+        // Previous paragraph ends with "topological confidence"
+        // Overlap of 15 would land inside "topological" →
+        // "ical confidence". After the fix, it should snap to
+        // "confidence" (start of next word).
+        let para_a = "We use topological confidence measures";
+        let para_b = "This paragraph continues.";
+        let md = format!("# Section\n\n{para_a}\n\n{para_b}");
+
+        let chunks = chunk_document(&md, 10, 15);
+        let paragraphs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Paragraph)
+            .collect();
+
+        assert!(paragraphs.len() >= 2);
+
+        let second = &paragraphs[1];
+        let prefix = &second.text[..second.context_prefix_len];
+        // The overlap prefix should NOT start mid-word.
+        // It should start at "confidence" (after snapping forward).
+        assert!(
+            !prefix.starts_with("ical"),
+            "overlap should not start mid-word, got: {prefix:?}"
+        );
+        // The prefix should start with a complete word.
+        let first_word_char = prefix.trim().chars().next().unwrap_or(' ');
+        assert!(
+            first_word_char.is_alphanumeric(),
+            "prefix should start with a complete word, got: {prefix:?}"
+        );
+    }
+
+    #[test]
+    fn overlap_word_boundary_no_whitespace_in_suffix() {
+        // Edge case: overlap lands in a string with no whitespace
+        // after the start position. Should fall through gracefully.
+        let para_a = "abcdefghijklmnopqrstuvwxyz";
+        let para_b = "Second paragraph.";
+        let md = format!("# Section\n\n{para_a}\n\n{para_b}");
+        // Overlap of 10 lands at position 16 in a 26-char string
+        // with no spaces. The find() returns None (no whitespace
+        // in suffix), so start stays where it was.
+        let chunks = chunk_document(&md, 5, 10);
+        let paragraphs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Paragraph)
+            .collect();
+        assert!(paragraphs.len() >= 2);
+        // Should not panic.
+        assert!(paragraphs[1].context_prefix_len > 0);
     }
 }

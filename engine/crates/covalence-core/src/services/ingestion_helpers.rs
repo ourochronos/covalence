@@ -345,7 +345,7 @@ pub(crate) fn sanitize_ltree_label(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::models::chunk::Chunk;
-    use crate::models::chunk::ChunkLevel as ModelChunkLevel;
+
 
     // --- Entity name lock key tests ---
 
