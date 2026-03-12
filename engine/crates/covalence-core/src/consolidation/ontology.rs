@@ -158,7 +158,13 @@ pub fn cluster_labels(
     // Build OntologyCluster for each HDBSCAN cluster.
     let mut clusters: Vec<OntologyCluster> = cluster_map
         .into_values()
-        .map(|mut indices| {
+        .filter_map(|mut indices| {
+            // Guard: skip empty index groups (shouldn't happen, but
+            // defensive against HDBSCAN edge cases).
+            if indices.is_empty() {
+                return None;
+            }
+
             // Sort by descending mention count so the most frequent
             // label becomes canonical.
             indices.sort_by(|&a, &b| labels[b].count.cmp(&labels[a].count));
@@ -168,13 +174,13 @@ pub fn cluster_labels(
                 indices.iter().map(|&i| labels[i].label.clone()).collect();
             let member_count: usize = indices.iter().map(|&i| labels[i].count).sum();
 
-            OntologyCluster {
+            Some(OntologyCluster {
                 id: Uuid::new_v4(),
                 level,
                 canonical_label: labels[canonical_idx].label.clone(),
                 member_labels,
                 member_count,
-            }
+            })
         })
         .collect();
 
@@ -397,8 +403,8 @@ pub async fn apply_clusters(
         .bind(level_str)
         .bind(&cluster.canonical_label)
         .bind(&member_labels_json)
-        .bind(cluster.member_count as i32)
-        .bind(min_cluster_size as i32)
+        .bind(cluster.member_count as i64)
+        .bind(min_cluster_size as i64)
         .execute(pool)
         .await
         .map_err(Error::Database)?;

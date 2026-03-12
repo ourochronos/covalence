@@ -807,12 +807,28 @@ Two issues found by background scanner agents:
 
 ---
 
+### Improvement 45 — Fix 10 UTF-8 + overflow bugs across ingestion + consolidation
+
+Three classes of bugs found and fixed:
+
+1. **URL fetcher UTF-8 misalignment** (`ingestion/url_fetcher.rs`): `extract_html_title()`, `extract_meta_content()`, and `extract_meta_property()` computed byte offsets from `html.to_lowercase()` but used them to slice the original `html`. Since `to_lowercase()` can change byte lengths for non-ASCII chars (e.g., 'İ' 2→3 bytes), byte positions diverge when non-ASCII appears before the HTML tag, causing panics. **Fix:** Changed to `to_ascii_lowercase()` which only lowercases A-Z (same byte length), preserving byte-offset alignment. Added 5 tests with non-ASCII, CJK, accented chars.
+
+2. **Code label truncation panics** (`ingestion/code_chunker.rs` lines 198/222/275, `ingestion/ast_extractor.rs` line 723): `&sig[..117]` panics when byte 117 falls inside a multi-byte character (e.g., Unicode identifiers in Python, comments with accented chars). **Fix:** Added `is_char_boundary()` snapping loop before each slice. Added 3 tests with multi-byte Unicode signatures.
+
+3. **Ontology clustering bugs** (`consolidation/ontology.rs`):
+   - Line 166: `indices[0]` could panic if HDBSCAN produced an empty cluster group. Changed `.map()` to `.filter_map()` with empty guard.
+   - Lines 400-401: `member_count as i32` and `min_cluster_size as i32` silently overflow for large values. Changed to `as i64`.
+
+**Files changed:** 4 files, 10 bug sites fixed, 8 new tests added.
+
+---
+
 ### Stats
 
-- **Tests:** 916 (856 core + 13 API + 47 eval), up from 795. +121 net new tests (129 added, 8 dead removed). Clippy clean.
+- **Tests:** 924 (864 core + 13 API + 47 eval), up from 795. +129 net new tests (137 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 20 total (12 from session 5a + 8 from session 5b/5c), all pushed
-- **Files modified:** ~50 files across 4 crates + CLI
+- **Commits:** 21 total (12 from session 5a + 9 from session 5b/5c), all pushed
+- **Files modified:** ~55 files across 4 crates + CLI
 
 ### Open Areas
 

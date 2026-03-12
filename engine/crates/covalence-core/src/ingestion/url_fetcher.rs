@@ -210,7 +210,11 @@ fn extract_text_metadata(text: &str) -> UrlMetadata {
 
 /// Extract `<title>...</title>` from HTML.
 fn extract_html_title(html: &str) -> Option<String> {
-    let lower = html.to_lowercase();
+    // Use ASCII-only lowercasing to preserve byte-offset alignment
+    // between `lower` and `html`. Full `to_lowercase()` can change
+    // byte lengths for non-ASCII chars (e.g., 'İ' → "i̇"), making
+    // byte positions from `lower` invalid for slicing `html`.
+    let lower = html.to_ascii_lowercase();
     let start = lower.find("<title")?;
     let after_tag = lower[start..].find('>')?;
     let content_start = start + after_tag + 1;
@@ -226,7 +230,7 @@ fn extract_html_title(html: &str) -> Option<String> {
 
 /// Extract content from `<meta name="X" content="...">`.
 fn extract_meta_content(html: &str, name: &str) -> Option<String> {
-    let lower = html.to_lowercase();
+    let lower = html.to_ascii_lowercase();
     let pattern = format!("name=\"{name}\"");
     let pos = lower.find(&pattern)?;
 
@@ -254,7 +258,7 @@ fn extract_meta_content(html: &str, name: &str) -> Option<String> {
 
 /// Extract content from `<meta property="X" content="...">`.
 fn extract_meta_property(html: &str, property: &str) -> Option<String> {
-    let lower = html.to_lowercase();
+    let lower = html.to_ascii_lowercase();
     let pattern = format!("property=\"{property}\"");
     let pos = lower.find(&pattern)?;
 
@@ -439,5 +443,49 @@ mod tests {
     #[test]
     fn decode_entities() {
         assert_eq!(decode_html_entities("a &amp; b &lt; c"), "a & b < c");
+    }
+
+    #[test]
+    fn extract_title_with_non_ascii_before_tag() {
+        // Non-ASCII chars before <title> could misalign byte offsets
+        // if we used full to_lowercase() (e.g., 'İ' changes byte
+        // length when lowercased). to_ascii_lowercase() avoids this.
+        let html = "<html><!-- Ünïcödé --><title>My Title</title></html>";
+        assert_eq!(extract_html_title(html), Some("My Title".to_string()));
+    }
+
+    #[test]
+    fn extract_title_with_non_ascii_in_title() {
+        let html = "<title>Über den Dächern</title>";
+        assert_eq!(
+            extract_html_title(html),
+            Some("Über den Dächern".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_with_cjk_content() {
+        let html = "<html><head><title>知识图谱</title></head></html>";
+        assert_eq!(extract_html_title(html), Some("知识图谱".to_string()));
+    }
+
+    #[test]
+    fn extract_meta_with_non_ascii_prefix() {
+        // Non-ASCII before the meta tag must not misalign offsets.
+        let html = r#"<html><!-- Ünïcödé --><meta name="author" content="José García"></html>"#;
+        assert_eq!(
+            extract_meta_content(html, "author"),
+            Some("José García".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_meta_property_with_non_ascii() {
+        let html =
+            r#"<html><!-- Ünïcödé --><meta property="article:author" content="Müller"></html>"#;
+        assert_eq!(
+            extract_meta_property(html, "article:author"),
+            Some("Müller".to_string())
+        );
     }
 }

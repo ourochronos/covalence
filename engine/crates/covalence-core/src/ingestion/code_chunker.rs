@@ -193,9 +193,14 @@ fn extract_rust_label(source: &str, node: &tree_sitter::Node) -> String {
             // Extract up to the opening brace.
             if let Some(pos) = text.find('{') {
                 let sig = text[..pos].trim();
-                // Truncate very long signatures.
+                // Truncate very long signatures (snap to char
+                // boundary to avoid panics on non-ASCII).
                 if sig.len() > 120 {
-                    format!("{}...", &sig[..117])
+                    let mut end = 117;
+                    while end > 0 && !sig.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &sig[..end])
                 } else {
                     sig.to_string()
                 }
@@ -219,7 +224,11 @@ fn extract_rust_label(source: &str, node: &tree_sitter::Node) -> String {
             if let Some(pos) = text.find('{') {
                 let header = text[..pos].trim();
                 if header.len() > 120 {
-                    format!("{}...", &header[..117])
+                    let mut end = 117;
+                    while end > 0 && !header.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &header[..end])
                 } else {
                     header.to_string()
                 }
@@ -272,7 +281,11 @@ fn extract_python_label(source: &str, node: &tree_sitter::Node) -> String {
             let first_line = text.lines().next().unwrap_or(kind).trim();
             let sig = first_line.strip_suffix(':').unwrap_or(first_line).trim();
             if sig.len() > 120 {
-                format!("{}...", &sig[..117])
+                let mut end = 117;
+                while end > 0 && !sig.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...", &sig[..end])
             } else {
                 sig.to_string()
             }
@@ -538,5 +551,42 @@ impl Display for Foo {
 "#;
         let md = code_to_markdown(source.trim(), CodeLanguage::Rust).unwrap();
         assert!(md.contains("# impl Display for Foo"));
+    }
+
+    #[test]
+    fn extract_rust_label_long_unicode_signature_no_panic() {
+        // A function signature > 120 bytes with multi-byte chars at
+        // the truncation boundary must not panic.
+        let sig_body = "ü".repeat(60); // 60 × 2 bytes = 120 bytes
+        let source = format!("fn {sig_body}() {{\n}}\n");
+
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        let root = tree.root_node();
+        let func_node = root.child(0).unwrap();
+
+        // Should not panic on multi-byte boundary.
+        let label = extract_rust_label(&source, &func_node);
+        assert!(label.ends_with("..."), "got: {label}");
+    }
+
+    #[test]
+    fn extract_python_label_long_unicode_no_panic() {
+        let name = "é".repeat(70); // 70 × 2 bytes = 140 bytes
+        let source = format!("def {name}():\n    pass\n");
+
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        let root = tree.root_node();
+        let func_node = root.child(0).unwrap();
+
+        let label = extract_python_label(&source, &func_node);
+        assert!(label.ends_with("..."), "got: {label}");
     }
 }

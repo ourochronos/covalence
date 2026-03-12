@@ -720,7 +720,12 @@ fn extract_signature_before_brace(text: &str) -> String {
     if let Some(pos) = text.find('{') {
         let sig = text[..pos].trim();
         if sig.len() > 120 {
-            format!("{}...", &sig[..117])
+            // Snap to char boundary to avoid panics on non-ASCII.
+            let mut end = 117;
+            while end > 0 && !sig.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...", &sig[..end])
         } else {
             sig.to_string()
         }
@@ -1359,5 +1364,18 @@ fn process() {
     #[test]
     fn default_trait_impl() {
         let _extractor: AstExtractor = Default::default();
+    }
+
+    #[test]
+    fn extract_signature_unicode_no_panic() {
+        // Signature > 120 bytes with multi-byte chars must not panic
+        // at the truncation boundary.
+        let sig_body = "ä".repeat(65); // 65 × 2 bytes = 130 bytes
+        let text = format!("fn {sig_body}() {{\n    todo!()\n}}");
+        let result = extract_signature_before_brace(&text);
+        assert!(
+            result.ends_with("..."),
+            "expected truncated sig, got: {result}"
+        );
     }
 }
