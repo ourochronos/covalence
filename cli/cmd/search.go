@@ -24,9 +24,11 @@ var searchCmd = &cobra.Command{
 		client := internal.NewClient(apiURL)
 
 		body := map[string]interface{}{
-			"query":    args[0],
-			"strategy": searchStrategy,
-			"limit":    searchLimit,
+			"query": args[0],
+			"limit": searchLimit,
+		}
+		if searchStrategy != "auto" {
+			body["strategy"] = searchStrategy
 		}
 		if searchMinConfidence > 0 {
 			body["min_confidence"] = searchMinConfidence
@@ -144,8 +146,8 @@ func handleContextMode(client *internal.Client, body map[string]interface{}) err
 }
 
 func init() {
-	searchCmd.Flags().StringVar(&searchStrategy, "strategy", "balanced",
-		"Search strategy (balanced, precise, exploratory, recent, graph_first, global)")
+	searchCmd.Flags().StringVar(&searchStrategy, "strategy", "auto",
+		"Search strategy (auto, balanced, precise, exploratory, recent, graph_first, global)")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 10,
 		"Maximum results to return")
 	searchCmd.Flags().Float64Var(&searchMinConfidence, "min-confidence", 0,
