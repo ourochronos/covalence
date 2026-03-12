@@ -141,8 +141,7 @@ mod tests {
 
     #[test]
     fn strip_authors_best_practices() {
-        let input =
-            "Authors: achieve the best HTML results from your LaTeX\nActual content";
+        let input = "Authors: achieve the best HTML results from your LaTeX\nActual content";
         assert_eq!(strip_artifacts(input), "Actual content");
     }
 
@@ -160,7 +159,8 @@ mod tests {
 
     #[test]
     fn strip_inline_artifact_concatenated() {
-        let input = "higher capability in identifying refactorings.Report issue for preceding element";
+        let input =
+            "higher capability in identifying refactorings.Report issue for preceding element";
         assert_eq!(
             strip_artifacts(input),
             "higher capability in identifying refactorings."
@@ -170,9 +170,6 @@ mod tests {
     #[test]
     fn strip_inline_artifact_mid_text() {
         let input = "Some text.Report issue for preceding element\nMore content here.";
-        assert_eq!(
-            strip_artifacts(input),
-            "Some text.\nMore content here."
-        );
+        assert_eq!(strip_artifacts(input), "Some text.\nMore content here.");
     }
 }

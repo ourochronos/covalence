@@ -234,8 +234,7 @@ fn split_sections(markdown: &str) -> Vec<(Vec<&str>, String)> {
     for line in markdown.lines() {
         if let Some((level, title)) = detect_heading(line) {
             // Flush the current section.
-            let path: Vec<&str> =
-                heading_stack.iter().map(|(_, t)| *t).collect();
+            let path: Vec<&str> = heading_stack.iter().map(|(_, t)| *t).collect();
             if !current_body.is_empty() || !path.is_empty() {
                 sections.push((path, current_body.clone()));
             }
@@ -243,10 +242,7 @@ fn split_sections(markdown: &str) -> Vec<(Vec<&str>, String)> {
 
             // Pop the stack back to the parent of this heading level.
             // E.g., if we see H2, pop everything at level >= 2.
-            while heading_stack
-                .last()
-                .is_some_and(|(l, _)| *l >= level)
-            {
+            while heading_stack.last().is_some_and(|(l, _)| *l >= level) {
                 heading_stack.pop();
             }
             heading_stack.push((level, title));
@@ -622,10 +618,7 @@ mod tests {
         let chunks = chunk_document(md, 500, 0);
         let data = chunks
             .iter()
-            .find(|c| {
-                c.heading_path.last()
-                    == Some(&"Data Collection".to_string())
-            })
+            .find(|c| c.heading_path.last() == Some(&"Data Collection".to_string()))
             .unwrap();
         assert_eq!(
             data.heading_path,
@@ -682,15 +675,10 @@ mod tests {
             .unwrap();
         let analysis = chunks
             .iter()
-            .find(|c| {
-                c.heading_path.last() == Some(&"Analysis".to_string())
-            })
+            .find(|c| c.heading_path.last() == Some(&"Analysis".to_string()))
             .unwrap();
         assert_eq!(data.heading_path, vec!["Paper", "Methods", "Data"]);
-        assert_eq!(
-            analysis.heading_path,
-            vec!["Paper", "Results", "Analysis"]
-        );
+        assert_eq!(analysis.heading_path, vec!["Paper", "Results", "Analysis"]);
     }
 
     #[test]

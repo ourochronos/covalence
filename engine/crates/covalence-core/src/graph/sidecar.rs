@@ -102,10 +102,7 @@ impl EdgeMeta {
     fn damping_factor(&self) -> f64 {
         if self.is_synthetic {
             SYNTHETIC_EDGE_DAMPING
-        } else if BIBLIOGRAPHIC_REL_TYPES
-            .iter()
-            .any(|&t| t == self.rel_type)
-        {
+        } else if BIBLIOGRAPHIC_REL_TYPES.iter().any(|&t| t == self.rel_type) {
             BIBLIOGRAPHIC_EDGE_DAMPING
         } else {
             1.0
@@ -617,7 +614,13 @@ mod tests {
 
     #[test]
     fn effective_weight_bibliographic_edge() {
-        for rel in &["authored", "published_in", "works_at", "has_preprint_id", "edited_by"] {
+        for rel in &[
+            "authored",
+            "published_in",
+            "works_at",
+            "has_preprint_id",
+            "edited_by",
+        ] {
             let edge = EdgeMeta {
                 id: Uuid::new_v4(),
                 rel_type: (*rel).into(),

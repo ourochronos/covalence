@@ -73,8 +73,8 @@ pub fn router(state: AppState) -> Router {
     // Resolve the dashboard directory relative to the working
     // directory. The binary is typically run from the repo root,
     // so `dashboard/` is a sibling of `engine/`.
-    let dashboard_dir = std::env::var("COVALENCE_DASHBOARD_DIR")
-        .unwrap_or_else(|_| "dashboard".to_string());
+    let dashboard_dir =
+        std::env::var("COVALENCE_DASHBOARD_DIR").unwrap_or_else(|_| "dashboard".to_string());
 
     Router::new()
         // Swagger UI + OpenAPI spec at root

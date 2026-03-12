@@ -96,10 +96,7 @@ fn truncate_with_ellipsis(s: &str, max_bytes: usize) -> String {
 /// to `truncate_with_ellipsis` if no query terms appear in the content.
 fn kwic_snippet(content: &str, query: &str, window_bytes: usize) -> String {
     let content_lower = content.to_lowercase();
-    let terms: Vec<&str> = query
-        .split_whitespace()
-        .filter(|t| t.len() >= 3)
-        .collect();
+    let terms: Vec<&str> = query.split_whitespace().filter(|t| t.len() >= 3).collect();
 
     if terms.is_empty() {
         return truncate_with_ellipsis(content, window_bytes);
@@ -790,8 +787,7 @@ impl SearchService {
                     redistributed = total_redistribute,
                     from_empty = empty_weight,
                     from_dampened = dampened_weight,
-                    active_dimensions =
-                        ranked_lists.iter().filter(|l| !l.is_empty()).count(),
+                    active_dimensions = ranked_lists.iter().filter(|l| !l.is_empty()).count(),
                     "redistributed weight from empty/dampened dimensions"
                 );
             }
@@ -1034,9 +1030,11 @@ impl SearchService {
             const MAX_NEIGHBORS: usize = 10;
             let graph = self.graph.read().await;
             for result in &mut fused {
-                if result.entity_type.as_deref().is_none_or(|t| {
-                    t == "chunk" || t == "article" || t == "source"
-                }) {
+                if result
+                    .entity_type
+                    .as_deref()
+                    .is_none_or(|t| t == "chunk" || t == "article" || t == "source")
+                {
                     continue;
                 }
                 let Some(idx) = graph.node_index(result.id) else {

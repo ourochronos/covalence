@@ -427,9 +427,7 @@ impl SourceService {
         // Code sources get special treatment: the parsed title is
         // always "Preamble" (from the generated markdown), which is
         // not useful. Use the filename instead.
-        let uri_filename = uri.and_then(|u| {
-            u.rsplit('/').next().map(|f| f.to_string())
-        });
+        let uri_filename = uri.and_then(|u| u.rsplit('/').next().map(|f| f.to_string()));
         source.title = metadata
             .get("title")
             .and_then(|v| v.as_str())
@@ -1402,18 +1400,13 @@ impl SourceService {
         // Step 1: Delete old extractions (must happen before chunk
         // deletion to satisfy the FK constraint
         // extractions.chunk_id → chunks.id).
-        let extractions_superseded =
-            ExtractionRepo::delete_by_source(&*self.repo, id).await?;
-        tracing::debug!(
-            extractions_superseded,
-            "deleted old extractions"
-        );
+        let extractions_superseded = ExtractionRepo::delete_by_source(&*self.repo, id).await?;
+        tracing::debug!(extractions_superseded, "deleted old extractions");
 
         // Step 1b: Nullify source_chunk_id on node_aliases that
         // reference chunks belonging to this source (FK constraint
         // node_aliases.source_chunk_id → chunks.id).
-        let aliases_cleared =
-            NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
+        let aliases_cleared = NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
         tracing::debug!(aliases_cleared, "cleared alias chunk refs");
 
         // Step 2: Delete old chunks. New chunks will be created by
@@ -2526,9 +2519,7 @@ fn is_author_block(text: &str) -> bool {
 
 /// Known artifact headings from web scraping that should cause the
 /// entire chunk to be discarded.
-const ARTIFACT_HEADINGS: &[&str] = &[
-    "report issue for preceding element",
-];
+const ARTIFACT_HEADINGS: &[&str] = &["report issue for preceding element"];
 
 /// Returns `true` if any heading in the chunk's path matches a known
 /// web-scraping artifact heading.
@@ -2635,9 +2626,7 @@ mod tests {
     #[test]
     fn not_boilerplate_inline_link() {
         // A sentence with a link is NOT boilerplate.
-        assert!(!is_boilerplate_line(
-            "See the original paper for details."
-        ));
+        assert!(!is_boilerplate_line("See the original paper for details."));
     }
 
     #[test]
@@ -2657,10 +2646,7 @@ mod tests {
 
     #[test]
     fn artifact_heading_clean_path() {
-        let path = vec![
-            "Introduction".to_string(),
-            "Methods".to_string(),
-        ];
+        let path = vec!["Introduction".to_string(), "Methods".to_string()];
         assert!(!has_artifact_heading(&path));
     }
 

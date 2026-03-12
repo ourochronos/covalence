@@ -94,7 +94,10 @@ pub fn bfs_neighborhood_full(
 
                 // Apply deny-list: skip edges whose type matches.
                 if let Some(deny) = edge_deny {
-                    if deny.iter().any(|d| d.eq_ignore_ascii_case(&edge_meta.rel_type)) {
+                    if deny
+                        .iter()
+                        .any(|d| d.eq_ignore_ascii_case(&edge_meta.rel_type))
+                    {
                         continue;
                     }
                 }
@@ -423,14 +426,7 @@ mod tests {
         assert_eq!(all.len(), 2);
 
         // With deny=["authored"]: finds only B
-        let denied = bfs_neighborhood_full(
-            &g,
-            a,
-            3,
-            None,
-            false,
-            Some(&["authored"]),
-        );
+        let denied = bfs_neighborhood_full(&g, a, 3, None, false, Some(&["authored"]));
         assert_eq!(denied.len(), 1);
         assert_eq!(denied[0].0, b);
     }

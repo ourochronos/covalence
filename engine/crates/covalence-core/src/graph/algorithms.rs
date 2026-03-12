@@ -224,14 +224,15 @@ pub fn trust_rank(
             if edges.is_empty() {
                 continue;
             }
-            let total_confidence: f64 =
-                edges.iter().map(|e| graph[e.id()].effective_confidence()).sum();
+            let total_confidence: f64 = edges
+                .iter()
+                .map(|e| graph[e.id()].effective_confidence())
+                .sum();
             if total_confidence <= 0.0 {
                 continue;
             }
             for edge in &edges {
-                let edge_share = damping * scores[&idx]
-                    * graph[edge.id()].effective_confidence()
+                let edge_share = damping * scores[&idx] * graph[edge.id()].effective_confidence()
                     / total_confidence;
                 if let Some(s) = new_scores.get_mut(&edge.target()) {
                     *s += edge_share;

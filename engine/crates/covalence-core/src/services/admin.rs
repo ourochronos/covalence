@@ -260,11 +260,7 @@ impl AdminService {
         let component_count = count_weak_components(g.graph());
 
         // Count synthetic vs semantic edges
-        let synthetic_edge_count = g
-            .graph()
-            .edge_weights()
-            .filter(|e| e.is_synthetic)
-            .count();
+        let synthetic_edge_count = g.graph().edge_weights().filter(|e| e.is_synthetic).count();
         let semantic_edge_count = e - synthetic_edge_count;
 
         GraphStats {
