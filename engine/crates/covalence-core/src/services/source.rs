@@ -505,7 +505,11 @@ impl SourceService {
         let pre_filter = chunk_outputs.len();
         let chunk_outputs: Vec<_> = chunk_outputs
             .into_iter()
-            .filter(|co| !is_metadata_only(&co.text) && !is_boilerplate_heavy(&co.text))
+            .filter(|co| {
+                !is_metadata_only(&co.text)
+                    && !is_boilerplate_heavy(&co.text)
+                    && !has_artifact_heading(&co.heading_path)
+            })
             .collect();
         let filtered_count = pre_filter - chunk_outputs.len();
         if filtered_count > 0 {
@@ -1461,10 +1465,14 @@ impl SourceService {
             self.chunk_overlap,
         );
 
-        // Filter metadata-only chunks.
+        // Filter metadata-only, boilerplate, and artifact-heading chunks.
         let chunk_outputs: Vec<_> = chunk_outputs
             .into_iter()
-            .filter(|co| !is_metadata_only(&co.text) && !is_boilerplate_heavy(&co.text))
+            .filter(|co| {
+                !is_metadata_only(&co.text)
+                    && !is_boilerplate_heavy(&co.text)
+                    && !has_artifact_heading(&co.heading_path)
+            })
             .collect();
         let chunks_created = chunk_outputs.len();
 
@@ -2403,6 +2411,7 @@ const BOILERPLATE_LINES: &[&str] = &[
     "submission history",
     "< prev",
     "next >",
+    "report issue for preceding element",
 ];
 
 /// Check whether a chunk is dominated by web UI boilerplate
@@ -2445,6 +2454,21 @@ fn is_boilerplate_line(line: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Known artifact headings from web scraping that should cause the
+/// entire chunk to be discarded.
+const ARTIFACT_HEADINGS: &[&str] = &[
+    "report issue for preceding element",
+];
+
+/// Returns `true` if any heading in the chunk's path matches a known
+/// web-scraping artifact heading.
+fn has_artifact_heading(heading_path: &[String]) -> bool {
+    heading_path.iter().any(|h| {
+        let lower = h.to_lowercase();
+        ARTIFACT_HEADINGS.iter().any(|a| lower.contains(a))
+    })
 }
 
 #[cfg(test)]
@@ -2523,6 +2547,41 @@ mod tests {
         assert!(is_boilerplate_line("**Authors:** John"));
         assert!(is_boilerplate_line("Subjects:"));
         assert!(!is_boilerplate_line("Knowledge graphs enable reasoning."));
+    }
+
+    #[test]
+    fn boilerplate_report_issue_arxiv() {
+        assert!(is_boilerplate_line("Report issue for preceding element"));
+    }
+
+    #[test]
+    fn artifact_heading_filter() {
+        let path = vec!["Report issue for preceding element".to_string()];
+        assert!(has_artifact_heading(&path));
+    }
+
+    #[test]
+    fn artifact_heading_nested() {
+        let path = vec![
+            "My Paper".to_string(),
+            "Report issue for preceding element".to_string(),
+        ];
+        assert!(has_artifact_heading(&path));
+    }
+
+    #[test]
+    fn artifact_heading_clean_path() {
+        let path = vec![
+            "Introduction".to_string(),
+            "Methods".to_string(),
+        ];
+        assert!(!has_artifact_heading(&path));
+    }
+
+    #[test]
+    fn artifact_heading_empty_path() {
+        let path: Vec<String> = vec![];
+        assert!(!has_artifact_heading(&path));
     }
 
     #[test]
