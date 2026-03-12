@@ -12,6 +12,8 @@ import (
 )
 
 var sourceListLimit int
+var sourceAddURLTitle string
+var sourceAddURLAuthor string
 
 var sourceCmd = &cobra.Command{
 	Use:   "source",
@@ -169,10 +171,52 @@ var sourceChunksCmd = &cobra.Command{
 	},
 }
 
+var sourceAddURLCmd = &cobra.Command{
+	Use:   "add-url [url]",
+	Short: "Ingest a source from a URL",
+	Long:  "Fetch content from a URL and ingest it. The server auto-detects MIME type, source classification, and metadata.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		url := args[0]
+
+		body := map[string]interface{}{
+			"url": url,
+		}
+		if sourceAddURLTitle != "" {
+			body["title"] = sourceAddURLTitle
+		}
+		if sourceAddURLAuthor != "" {
+			body["author"] = sourceAddURLAuthor
+		}
+
+		client := newClient()
+		var result map[string]interface{}
+		if err := client.Post("/sources", body, &result); err != nil {
+			return fmt.Errorf("API error: %w", err)
+		}
+
+		if jsonOutput {
+			return internal.PrintJSON(result)
+		}
+
+		if id, ok := result["id"]; ok {
+			fmt.Printf("Source ingested: %v\n", id)
+		} else {
+			fmt.Println("Source ingested successfully")
+		}
+		return nil
+	},
+}
+
 func init() {
 	sourceListCmd.Flags().IntVar(&sourceListLimit, "limit", 20,
 		"Maximum sources to return")
+	sourceAddURLCmd.Flags().StringVar(&sourceAddURLTitle, "title", "",
+		"Override auto-detected title")
+	sourceAddURLCmd.Flags().StringVar(&sourceAddURLAuthor, "author", "",
+		"Override auto-detected author")
 	sourceCmd.AddCommand(sourceAddCmd)
+	sourceCmd.AddCommand(sourceAddURLCmd)
 	sourceCmd.AddCommand(sourceListCmd)
 	sourceCmd.AddCommand(sourceGetCmd)
 	sourceCmd.AddCommand(sourceDeleteCmd)

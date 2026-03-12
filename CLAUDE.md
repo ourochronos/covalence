@@ -39,6 +39,7 @@ engine/crates/covalence-eval/       Binary crate — layer-by-layer evaluation h
 cli/                                Go CLI (Cobra) — binary name: cove
   cmd/                              Subcommands: source, search, node, admin
   internal/                         HTTP client + output helpers
+dashboard/                          Web dashboard (stats, observability, future interaction)
 spec/                               Design specs (read-only reference)
 docs/adr/                           Architecture Decision Records
 ```
@@ -131,27 +132,102 @@ When working on Covalence:
 - **After adding migrations**, run `make migrate` (dev) first, verify, then `make promote` for prod.
 - **To query prod**, use `cove --api-url http://localhost:8441 search "query"` or `curl -X POST http://localhost:8441/api/v1/search`.
 
-## Knowledge-First Development
+## The Meta Loop
 
-Covalence is its own knowledge substrate. The prod knowledge graph contains the codebase, design specs, ADRs, and research papers that inform the project's design. **Use it.**
+Covalence builds Covalence. The system is its own knowledge substrate — we develop it *through* it. Every session should use Covalence to inform its own improvement, and improve Covalence's ability to inform the next session.
 
-### Learn Before You Act
+### The Cycle
 
-Before implementing a feature, making an architectural decision, or working on any non-trivial change:
+Each autonomous session follows this loop. The loop itself is a target of improvement — if a step is weak, fix the step.
 
-1. **Query the prod knowledge graph** for relevant context — existing patterns, spec intent, related research, prior decisions.
-2. **If the relevant research isn't in the graph, ingest it first.** Papers, documentation, RFCs, algorithm descriptions, API references — anything that deepens understanding of the problem space goes into Covalence. This is an investment, not overhead.
-3. **If you discover a knowledge gap** (e.g., "I don't fully understand how conformal prediction works" or "what does the literature say about graph-based forgetting?"), find and ingest the relevant material before proceeding.
+1. **Query** — Before working on anything non-trivial, search Covalence for relevant knowledge. Use `cove search "query"` against prod (port 8441). If search doesn't return useful results, that's signal about search quality, not about the knowledge being absent.
+2. **Identify gaps** — What questions can't be answered from the graph? What research is missing? What does the system not know about itself?
+3. **Ingest** — Find and ingest research to fill gaps. Papers, documentation, RFCs, algorithm references. This is investment, not overhead. The graph should understand the theory behind everything it does.
+4. **Learn** — Use the ingested knowledge to inform implementation decisions. Don't just ingest and move on — read the results, let them shape the work.
+5. **Build** — Implement improvements to Covalence, including improvements to the loop itself. Fix the weakest link first.
+6. **Evaluate** — Did the change actually improve things? Query again. Compare results. Run the eval harness if relevant.
+7. **Reflect** — What about the loop itself could be better? Update these directives if you discover a better process.
+
+### CLI-First Interaction
+
+Use the `cove` CLI as the primary interface to Covalence. This dogfoods the CLI and surfaces usability issues.
+
+```bash
+# Search (against prod)
+cove --api-url http://localhost:8441 search "subjective logic confidence propagation"
+cove --api-url http://localhost:8441 search "entity resolution" --strategy precise
+cove --api-url http://localhost:8441 search "chunking strategies" --mode context
+
+# Inspect sources and graph
+cove --api-url http://localhost:8441 source list
+cove --api-url http://localhost:8441 node list --type concept --limit 20
+cove --api-url http://localhost:8441 graph stats
+
+# Ingest a local file
+cove --api-url http://localhost:8441 source add /path/to/paper.md
+
+# Admin
+cove --api-url http://localhost:8441 admin health
+cove --api-url http://localhost:8441 admin metrics
+```
+
+If the CLI is missing a feature you need (e.g., URL-based ingestion, bulk operations), add it. That's the loop working.
+
+### Fetching Content for Ingestion
+
+When ingesting web content:
+- **ArXiv and CloudFlare-fronted sites** support the `Accept: text/markdown` header, which returns clean markdown directly. Always use this when fetching from these sources — it bypasses the entire HTML conversion pipeline and eliminates boilerplate noise.
+- **For other sites**, fetch HTML and save locally, then ingest via `cove source add`. The converter pipeline handles HTML→Markdown.
+- **For PDFs**, download the file and ingest directly — the PDF sidecar handles conversion.
+- **Prefer markdown over HTML over PDF** when multiple formats are available. Markdown flows through the pipeline with the least loss.
 
 ### What to Ingest
 
-Ingest broadly. Covalence should understand the theory behind everything it does:
-- **Academic papers** — the source research referenced in specs, plus papers relevant to current work
-- **Technical documentation** — library docs, API references, protocol specs
-- **Domain knowledge** — graph theory, ontology, epistemology, information retrieval, memory systems, distributed systems
-- **Process knowledge** — software engineering practices, testing strategies, CI/CD patterns
+Ingest broadly across three categories:
 
-Use the ingestion API: `POST /api/v1/sources` with `source_type: "document"`, base64-encoded content, and metadata (title, authors, URI). For arXiv papers, use `WebFetch` to retrieve content. For documentation, fetch and ingest the relevant pages.
+**Domain knowledge** — the theory behind what Covalence does:
+- Graph theory, knowledge graphs, hybrid retrieval, GraphRAG
+- Subjective Logic, epistemic uncertainty, Dempster-Shafer theory
+- Entity resolution, coreference, ontology alignment
+- Embedding models, dimensionality reduction, Matryoshka representations
+- Information retrieval, ranking, fusion algorithms
+- Memory systems, forgetting, consolidation (cognitive science + CS)
+- Community detection, graph partitioning, spectral methods
+
+**Software engineering** — how to build well:
+- Modular design, composability, separation of concerns
+- API design patterns, REST conventions, error handling
+- Testing strategies (unit, integration, property-based, fuzzing)
+- Refactoring techniques, code smells, design patterns
+- Rust-specific idioms, async patterns, trait design, error handling
+- Go CLI patterns, command design, user experience
+- Web frontend architecture (for the dashboard — see below)
+- Database schema design, migration patterns, query optimization
+
+**Process knowledge** — how to improve systems like this:
+- Retrieval-augmented generation patterns and anti-patterns
+- Knowledge management system design
+- Evaluation methodology for retrieval systems
+- AI agent architectures, tool use, autonomous operation
+- Meta-cognition and reflective AI patterns
+
+Every paper ingested makes the next session smarter. Compound returns.
+
+### Keep the Repo in the Graph
+
+The Covalence codebase itself should be ingested into Covalence. This enables using search to find improvement opportunities, architectural patterns, and code quality issues. After significant changes (new modules, refactors, new crates), re-ingest the affected files so the graph stays current.
+
+Use `make ingest-codebase` for bulk re-ingestion, or `cove source add` for individual files.
+
+### Engineering Discipline
+
+Autonomous sessions should proactively maintain engineering quality:
+- **Refactor when you see the need.** If code is duplicated, poorly structured, or violating patterns documented here, fix it. Don't ask — just do it and explain in the commit.
+- **Use issues.** Every non-trivial piece of work gets an issue. Reference it in commits. Close it when done. This is how Chris tracks what happened between sessions.
+- **Respect conventions.** Run `cargo fmt`, `cargo clippy`, and tests before committing. Follow the naming conventions in this file and in `our-infra`.
+- **Test in dev first.** Use `make run-dev` for development. Don't touch prod data without explicit approval. Use `make promote` to move verified changes to prod.
+- **Keep CI green locally.** Run `make check` before pushing. We don't rely on GitHub Actions for gating — the project isn't released yet — but the local checks are non-negotiable.
+- **Modular design.** Prefer small, focused modules. If a file is growing past ~500 lines, consider splitting. If a function does three things, make it three functions.
 
 ### Track What You Find
 
@@ -160,8 +236,19 @@ Every insight, misalignment, or gap discovered through Covalence queries (or any
 - **Research finding that contradicts a design choice** → create an issue
 - **Knowledge gap that blocks understanding** → ingest the material, then create an issue if it reveals needed changes
 - **Opportunity for improvement** → create an issue
+- **Loop friction** — anything that slows down the query→ingest→build cycle → fix it or create an issue
 
 Nothing evaporates. The system improves because we're honest about what needs improving.
+
+### Improving the Loop
+
+The meta loop is subject to its own optimization. Explicitly look for:
+- **Friction in the cycle** — if querying is slow, fix search. If ingestion drops quality, fix the pipeline. If the CLI is awkward, improve it.
+- **Missing feedback signals** — are we actually measuring whether ingested research improves outcomes? If not, build that measurement.
+- **Knowledge decay** — is old research still accurate? Do opinions need updating? Is consolidation surfacing the right articles?
+- **Process patterns** — what worked well in this session? What was wasted effort? Update these directives accordingly.
+
+The goal is not just to build Covalence but to make each session measurably more effective than the last. The loop is the product as much as the code is.
 
 ### The Goal
 
@@ -213,7 +300,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 728 passing tests (675 core + 10 api + 43 eval), 17 ignored integration tests
+# Current: 936 passing tests (870 core + 19 api + 47 eval), 17 ignored integration tests
 
 # Integration tests (requires running PG on port 5435)
 cd engine && cargo test --workspace -- --ignored
@@ -302,7 +389,32 @@ Use existing labels: `enhancement`, `bug`, `future`, `deferred`, `spec`. Create 
 
 Reference issue numbers in commit messages. Format: `<verb> <what> (#<issue>)`.
 
+## Web Dashboard
+
+Covalence should have a web interface for observability and eventually interaction. This lives in a `dashboard/` directory at the repo root.
+
+### Phase 1 — Stats & Observability (current priority)
+A read-only dashboard showing:
+- Knowledge graph stats (sources, nodes, edges, chunks, articles)
+- Search dimension health and recent query performance
+- Ingestion pipeline status and recent activity
+- Graph topology visualization (communities, connectivity)
+- Epistemic health (confidence distributions, opinion coverage)
+
+### Phase 2 — Interaction (future)
+- Search interface with strategy selection and result exploration
+- Source browser with chunk/provenance drill-down
+- Node/edge explorer with graph neighborhood visualization
+
+### Phase 3 — Configuration (future)
+- Environment management (dev/prod switching)
+- Embedding provider configuration
+- Consolidation scheduling
+- Ingestion pipeline tuning
+
+The dashboard is served by the existing Axum engine (alongside the API and Swagger UI). Keep it simple — static assets or a lightweight frontend framework. The API already exposes everything the dashboard needs.
+
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–9 complete.** 728 tests passing. Zero code TODOs remaining. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability (#21), graph context disambiguation, late chunking via Voyage contextual embeddings, dimension validation (#23), full MCP/memory/consolidation wiring. See GitHub issues for ongoing enhancements.
+Current phase: **M0-M11 + Waves 1–9 complete.** 936 tests passing. Zero code TODOs remaining. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability (#21), graph context disambiguation, late chunking via Voyage contextual embeddings, dimension validation (#23), full MCP/memory/consolidation wiring. See GitHub issues for ongoing enhancements.

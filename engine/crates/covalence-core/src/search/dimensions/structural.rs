@@ -303,13 +303,8 @@ mod tests {
         let results = dim.search(&query_stopwords_only).await.unwrap();
         // All nodes should have the same relative ordering as pure
         // PageRank (no boost applied because terms were filtered).
-        let query_no_text = SearchQuery {
-            limit: 10,
-            ..SearchQuery::default()
-        };
-        let dim2 = StructuralDimension::new(Arc::new(RwLock::new(GraphSidecar::new())));
-        // Instead, verify that center still ranks #1 (pure PageRank)
-        // when only stopwords are in the query.
+        // Center still ranks #1 (pure PageRank) when only stopwords
+        // are in the query.
         assert_eq!(results[0].id, _center);
     }
 

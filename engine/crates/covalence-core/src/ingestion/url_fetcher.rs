@@ -43,7 +43,15 @@ pub async fn fetch_url(url: &str) -> Result<FetchResult> {
         .build()
         .map_err(|e| Error::Ingestion(format!("failed to build HTTP client: {e}")))?;
 
-    let response: reqwest::Response = client.get(url).send().await.map_err(|e| {
+    // Request markdown from CloudFlare-fronted sites. This returns
+    // clean markdown directly, bypassing the HTML conversion pipeline
+    // and eliminating boilerplate noise.
+    let mut request = client.get(url);
+    if wants_markdown(url) {
+        request = request.header(reqwest::header::ACCEPT, "text/markdown");
+    }
+
+    let response: reqwest::Response = request.send().await.map_err(|e| {
         if e.is_timeout() {
             Error::Ingestion(format!("URL fetch timed out: {url}"))
         } else if e.is_connect() {
@@ -110,6 +118,22 @@ pub async fn fetch_url(url: &str) -> Result<FetchResult> {
         source_type,
         metadata,
     })
+}
+
+/// Check whether a URL is served through CloudFlare and supports the
+/// `Accept: text/markdown` header for clean markdown responses.
+///
+/// Known CloudFlare-fronted domains that return markdown:
+/// - arxiv.org (abstract pages, paper pages)
+fn wants_markdown(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    // ArXiv abstract/paper pages are CloudFlare-fronted.
+    // PDF URLs should NOT get the markdown header (they serve
+    // binary content directly).
+    if lower.contains("arxiv.org") && !lower.contains("/pdf/") {
+        return true;
+    }
+    false
 }
 
 /// Parse the MIME type from a Content-Type header value.
@@ -487,5 +511,28 @@ mod tests {
             extract_meta_property(html, "article:author"),
             Some("Müller".to_string())
         );
+    }
+
+    #[test]
+    fn wants_markdown_arxiv_abstract() {
+        assert!(wants_markdown("https://arxiv.org/abs/2404.16130"));
+        assert!(wants_markdown("https://arxiv.org/abs/2404.16130v2"));
+    }
+
+    #[test]
+    fn wants_markdown_arxiv_html() {
+        assert!(wants_markdown("https://arxiv.org/html/2404.16130"));
+    }
+
+    #[test]
+    fn wants_markdown_arxiv_pdf_excluded() {
+        // PDF URLs should NOT get the markdown header.
+        assert!(!wants_markdown("https://arxiv.org/pdf/2404.16130"));
+    }
+
+    #[test]
+    fn wants_markdown_non_cloudflare() {
+        assert!(!wants_markdown("https://example.com/page"));
+        assert!(!wants_markdown("https://github.com/user/repo"));
     }
 }
