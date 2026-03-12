@@ -1042,6 +1042,20 @@ impl SearchService {
         trace.set_duration(start.elapsed());
         trace.emit();
 
+        // Persist trace to DB for offline analysis.
+        let db_trace = crate::models::trace::SearchTrace::new(
+            trace.query_text.clone(),
+            trace.strategy.clone(),
+            serde_json::to_value(&trace.dimension_counts).unwrap_or_default(),
+            trace.final_count as i32,
+            trace.execution_ms as i32,
+        );
+        if let Err(e) =
+            crate::storage::traits::SearchTraceRepo::create(&*self.repo, &db_trace).await
+        {
+            tracing::warn!(error = %e, "failed to persist search trace");
+        }
+
         if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
             let strategy_str = strategy_name(&strategy);
             if let Err(e) = cache.store(query, emb, strategy_str, &fused).await {
