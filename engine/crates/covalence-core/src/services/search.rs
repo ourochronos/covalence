@@ -41,14 +41,49 @@ const MAX_CHUNK_NAME_LEN: usize = 80;
 /// Derive a readable name from chunk content.
 ///
 /// Strategy:
-/// 1. If the content starts with a Markdown heading (`# ...`), use it.
-/// 2. Otherwise, take the first sentence (up to first `.`, `!`, `?`, or
-///    newline), truncated to [`MAX_CHUNK_NAME_LEN`].
+/// 1. Skip leading lines that are metadata (bold labels, links, refs).
+/// 2. If a Markdown heading (`# ...`) is found, use it.
+/// 3. Otherwise, take the first meaningful sentence, truncated to
+///    [`MAX_CHUNK_NAME_LEN`].
 fn derive_chunk_name(content: &str) -> String {
     let trimmed = content.trim();
 
+    // Try to find the first meaningful line: skip bold labels
+    // (`**Key:** ...`), link-only lines (`[ref](url)`), and very
+    // short lines (< 10 chars) that are usually metadata.
+    let meaningful = trimmed
+        .lines()
+        .find(|line| {
+            let l = line.trim();
+            if l.is_empty() {
+                return false;
+            }
+            // Skip bold-label lines: **Label:** value
+            if l.starts_with("**") && l.contains(":**") {
+                return false;
+            }
+            // Skip bare markdown links: [text](url)
+            if l.starts_with('[') && l.contains("](") && l.len() < 100 {
+                return false;
+            }
+            // Skip arxiv-style references: [2506.12345]
+            if l.starts_with('[')
+                && l.len() < 20
+                && l.chars().skip(1).take(4).all(|c| c.is_ascii_digit())
+            {
+                return false;
+            }
+            true
+        })
+        .unwrap_or(trimmed.lines().next().unwrap_or(trimmed));
+
+    let meaningful = meaningful.trim();
+    if meaningful.is_empty() {
+        return String::new();
+    }
+
     // Check for Markdown heading.
-    if let Some(heading) = trimmed.strip_prefix('#') {
+    if let Some(heading) = meaningful.strip_prefix('#') {
         let heading = heading.trim_start_matches('#').trim();
         if let Some(end) = heading.find('\n') {
             return heading[..end].trim().to_string();
@@ -59,23 +94,47 @@ fn derive_chunk_name(content: &str) -> String {
         return format!("{}...", &heading[..MAX_CHUNK_NAME_LEN - 3]);
     }
 
+    // Strip inline markdown formatting: **bold**, *italic*, `code`.
+    let clean = strip_inline_markdown(meaningful);
+    let clean = clean.trim();
+
     // First sentence: up to the first sentence-ending punctuation or
     // newline, whichever comes first.
-    let sentence_end = trimmed
+    let sentence_end = clean
         .find(['.', '!', '?', '\n'])
         .map(|i| i + 1) // include the punctuation
-        .unwrap_or(trimmed.len());
+        .unwrap_or(clean.len());
 
     if sentence_end <= MAX_CHUNK_NAME_LEN {
-        let name = trimmed[..sentence_end].trim();
-        if name.len() < trimmed.len() && !name.ends_with('.') {
+        let name = clean[..sentence_end].trim();
+        if name.len() < clean.len() && !name.ends_with('.') {
             format!("{name}...")
         } else {
             name.to_string()
         }
     } else {
-        format!("{}...", &trimmed[..MAX_CHUNK_NAME_LEN - 3])
+        format!("{}...", &clean[..MAX_CHUNK_NAME_LEN - 3])
     }
+}
+
+/// Strip basic inline markdown: `**bold**`, `*italic*`, `` `code` ``.
+fn strip_inline_markdown(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            // Skip **
+            i += 2;
+        } else if chars[i] == '*' || chars[i] == '`' {
+            // Skip single * or `
+            i += 1;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Post-fusion filters for narrowing search results.
@@ -1045,7 +1104,66 @@ mod tests {
 
     #[test]
     fn derive_chunk_name_newline_before_period() {
+        // Per-line processing: "First line" is the whole first line.
         let content = "First line\nSecond line.";
-        assert_eq!(derive_chunk_name(content), "First line...");
+        assert_eq!(derive_chunk_name(content), "First line");
+    }
+
+    #[test]
+    fn derive_chunk_name_skips_bold_label() {
+        let content = "**Status:** Draft\nThe real description starts here.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "The real description starts here."
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_skips_arxiv_ref() {
+        let content = "[2506.12345]\nAbstract of the paper.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "Abstract of the paper."
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_strips_bold() {
+        let content = "The **Subjective Logic** framework defines opinions.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "The Subjective Logic framework defines opinions."
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_strips_inline_code() {
+        let content = "Use the `derive_chunk_name` function.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "Use the derive_chunk_name function."
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_skips_link_line() {
+        let content = "[Paper](https://arxiv.org)\nKnowledge graphs are important.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "Knowledge graphs are important."
+        );
+    }
+
+    #[test]
+    fn strip_inline_markdown_bold() {
+        assert_eq!(strip_inline_markdown("**bold** text"), "bold text");
+    }
+
+    #[test]
+    fn strip_inline_markdown_mixed() {
+        assert_eq!(
+            strip_inline_markdown("**bold** and *italic* and `code`"),
+            "bold and italic and code"
+        );
     }
 }
