@@ -689,6 +689,28 @@ impl SearchService {
                             result.source_uri = source.uri;
                             result.source_title = source.title;
                         }
+                        // Parent-context injection: for paragraph-level
+                        // chunks, prepend truncated parent content to
+                        // the snippet (avoids a second chunk fetch).
+                        if chunk.level == "paragraph" {
+                            if let Some(parent_id) = chunk.parent_chunk_id {
+                                if let Ok(Some(parent)) =
+                                    ChunkRepo::get(&*self.repo, parent_id).await
+                                {
+                                    let parent_ctx = if parent.content.len() > 200 {
+                                        format!("{}...", &parent.content[..200])
+                                    } else {
+                                        parent.content.clone()
+                                    };
+                                    let prefix =
+                                        format!("[{}: {}]", parent.level, parent_ctx);
+                                    result.snippet = Some(match result.snippet.take() {
+                                        Some(s) => format!("{} {}", prefix, s),
+                                        None => prefix,
+                                    });
+                                }
+                            }
+                        }
                     }
                     // If still no entity_type, try source lookup
                     // (vector dimension produces source results
@@ -731,39 +753,6 @@ impl SearchService {
                         }
                         result.confidence =
                             node.confidence_breakdown.map(|o| o.projected_probability());
-                    }
-                }
-            }
-        }
-
-        // Parent-context injection: for paragraph-level chunks,
-        // prepend truncated parent (section) content to the
-        // snippet.
-        for result in &mut fused {
-            let is_chunk = result.result_type.as_deref().is_none_or(|rt| rt == "chunk");
-            if !is_chunk {
-                continue;
-            }
-            if let Ok(Some(chunk)) =
-                ChunkRepo::get(&*self.repo, ChunkId::from_uuid(result.id)).await
-            {
-                if chunk.level != "paragraph" {
-                    continue;
-                }
-                if let Some(parent_id) = chunk.parent_chunk_id {
-                    if let Ok(Some(parent)) = ChunkRepo::get(&*self.repo, parent_id).await {
-                        let parent_ctx = if parent.content.len() > 200 {
-                            format!("{}...", &parent.content[..200])
-                        } else {
-                            parent.content.clone()
-                        };
-                        let prefix = format!("[{}: {}]", parent.level, parent_ctx);
-                        result.snippet = Some(match result.snippet.take() {
-                            Some(s) => {
-                                format!("{} {}", prefix, s)
-                            }
-                            None => prefix,
-                        });
                     }
                 }
             }
