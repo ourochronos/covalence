@@ -95,7 +95,7 @@ pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
     let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
+    if norm_a < 1e-12 || norm_b < 1e-12 {
         return 0.0;
     }
     dot / (norm_a * norm_b)
@@ -519,6 +519,17 @@ mod tests {
         let a = vec![1.0, 0.0];
         let b = vec![1.0];
         assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_near_zero_norm() {
+        // Very small components that produce a near-zero norm.
+        // Should return 0.0 instead of inf/NaN.
+        let a = vec![1e-15, 1e-15];
+        let b = vec![1.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!(sim.is_finite(), "near-zero norm produced non-finite: {sim}");
+        assert_eq!(sim, 0.0);
     }
 
     #[test]

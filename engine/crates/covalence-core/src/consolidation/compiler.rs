@@ -53,9 +53,16 @@ impl ArticleCompiler for ConcatCompiler {
             body.push_str(chunk);
         }
 
-        // Build a simple summary from the first 200 chars
+        // Build a simple summary from the first ~200 characters.
+        // Use char boundary to avoid panicking on multi-byte UTF-8.
         let summary = if body.len() > 200 {
-            format!("{}...", &body[..200])
+            let end = body
+                .char_indices()
+                .take_while(|&(i, _)| i < 200)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(body.len());
+            format!("{}...", &body[..end])
         } else {
             body.clone()
         };
@@ -134,7 +141,10 @@ impl ArticleCompiler for LlmCompiler {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body: String = resp.text().await.unwrap_or_default();
+            let body: String = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response body>".to_string());
             return Err(crate::error::Error::Consolidation(format!(
                 "LLM API error {status}: {body}"
             )));
@@ -169,7 +179,13 @@ impl ArticleCompiler for LlmCompiler {
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
                 if body.len() > 200 {
-                    format!("{}...", &body[..200])
+                    let end = body
+                        .char_indices()
+                        .take_while(|&(i, _)| i < 200)
+                        .last()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .unwrap_or(body.len());
+                    format!("{}...", &body[..end])
                 } else {
                     body.clone()
                 }
@@ -212,6 +228,24 @@ mod tests {
         assert!(output.body.contains("First part"));
         assert!(output.body.contains("Second part"));
         assert!(output.body.contains("---"));
+    }
+
+    #[tokio::test]
+    async fn concat_compiler_multibyte_summary_truncation() {
+        let compiler = ConcatCompiler;
+        // Build body with multi-byte chars that would panic on naive
+        // &body[..200] slicing.
+        let emoji_body = "🎉".repeat(100); // 4 bytes each = 400 bytes
+        let input = CompilationInput {
+            community_id: 0,
+            chunks: vec![emoji_body],
+            entity_names: vec![],
+        };
+        let output = compiler.compile(&input).await.unwrap();
+        // Should truncate without panicking and end with "..."
+        assert!(output.summary.ends_with("..."));
+        // Summary must be valid UTF-8 (implicit — String type)
+        assert!(output.summary.len() < output.body.len());
     }
 
     #[tokio::test]

@@ -219,6 +219,27 @@ mod tests {
     }
 
     #[test]
+    fn temporal_overlap_adjacent_ranges() {
+        // A: [Jan, Mar), B: [Mar, Jun) — half-open intervals do NOT
+        // overlap at the boundary.
+        let from_a = Some(dt(2025, 1, 1));
+        let until_a = Some(dt(2025, 3, 1));
+        let from_b = Some(dt(2025, 3, 1));
+        let until_b = Some(dt(2025, 6, 1));
+        assert!(!temporal_overlap(from_a, until_a, from_b, until_b));
+    }
+
+    #[test]
+    fn temporal_overlap_a_contains_b() {
+        // A: [Jan, Dec), B: [Mar, Jun)
+        let from_a = Some(dt(2025, 1, 1));
+        let until_a = Some(dt(2025, 12, 1));
+        let from_b = Some(dt(2025, 3, 1));
+        let until_b = Some(dt(2025, 6, 1));
+        assert!(temporal_overlap(from_a, until_a, from_b, until_b));
+    }
+
+    #[test]
     fn detect_conflicts_no_conflict() {
         // Same target node → no contradiction
         let new_edge = EdgeId::new();

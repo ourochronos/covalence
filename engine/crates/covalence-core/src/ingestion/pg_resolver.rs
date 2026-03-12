@@ -216,7 +216,7 @@ impl PgResolver {
 
         if let Some(r) = row {
             let sim: f64 = r.get("sim");
-            if sim as f32 >= self.vector_threshold {
+            if sim >= self.vector_threshold as f64 {
                 let id: NodeId = r.get("id");
                 let canonical_name: String = r.get("canonical_name");
                 return Ok(Some(ResolvedEntity {

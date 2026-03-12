@@ -384,8 +384,9 @@ pub async fn apply_clusters(
             ClusterLevel::RelationType => "rel_type",
         };
 
-        let member_labels_json = serde_json::to_value(&cluster.member_labels)
-            .unwrap_or(serde_json::Value::Array(vec![]));
+        let member_labels_json = serde_json::to_value(&cluster.member_labels).map_err(|e| {
+            Error::Consolidation(format!("failed to serialize member labels: {e}"))
+        })?;
 
         sqlx::query(
             "INSERT INTO ontology_clusters \

@@ -88,9 +88,7 @@ impl GraphBatchConsolidator {
             // to find which nodes came from which source. For now,
             // we collect all graph nodes and let community detection
             // handle the grouping.
-            let chunks = ChunkRepo::list_by_source(&*self.repo, sid)
-                .await
-                .unwrap_or_default();
+            let chunks = ChunkRepo::list_by_source(&*self.repo, sid).await?;
 
             // Gather node IDs from the graph that might be related.
             // This is a simplified heuristic: search for nodes whose
@@ -133,9 +131,7 @@ impl GraphBatchConsolidator {
         let mut entity_names = Vec::new();
 
         for &sid in source_ids {
-            let chunks = ChunkRepo::list_by_source(&*self.repo, sid)
-                .await
-                .unwrap_or_default();
+            let chunks = ChunkRepo::list_by_source(&*self.repo, sid).await?;
 
             for chunk in &chunks {
                 all_content.push(chunk.content.clone());
@@ -183,7 +179,14 @@ impl GraphBatchConsolidator {
         if let Some(ref embedder) = self.embedder {
             // Embed a summary snippet for search
             let summary = if article.body.len() > 500 {
-                format!("{}: {}...", article.title, &article.body[..500])
+                let end = article
+                    .body
+                    .char_indices()
+                    .take_while(|&(i, _)| i < 500)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(article.body.len());
+                format!("{}: {}...", article.title, &article.body[..end])
             } else {
                 format!("{}: {}", article.title, article.body)
             };
