@@ -6,6 +6,7 @@ pub(crate) mod chunk_quality;
 pub mod consolidation;
 pub mod edge;
 pub mod health;
+pub(crate) mod ingestion_helpers;
 pub mod memory;
 pub mod node;
 pub mod search;
