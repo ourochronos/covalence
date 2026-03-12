@@ -67,9 +67,7 @@ pub fn source_layer_from_uri(uri: &str) -> Option<&'static str> {
         Some("spec")
     } else if uri.starts_with("file://docs/adr/") {
         Some("design")
-    } else if uri.starts_with("file://engine/")
-        || uri.starts_with("file://cli/")
-    {
+    } else if uri.starts_with("file://engine/") || uri.starts_with("file://cli/") {
         Some("code")
     } else if uri.starts_with("http://") || uri.starts_with("https://") {
         Some("research")
@@ -975,13 +973,14 @@ impl SearchService {
             }
             if let Some(ref layers) = f.source_layers {
                 fused.retain(|r| {
-                    // Pass through results with no source_uri (nodes,
-                    // articles without provenance). Filter chunks/sources
-                    // by their derived layer.
+                    // When filtering by layer, only keep results
+                    // that positively match. Results without a
+                    // source_uri or with an unrecognized URI are
+                    // excluded — the user wants a specific layer.
                     r.source_uri
                         .as_ref()
                         .and_then(|uri| source_layer_from_uri(uri))
-                        .is_none_or(|layer| layers.iter().any(|l| l == layer))
+                        .is_some_and(|layer| layers.iter().any(|l| l == layer))
                 });
             }
         }
