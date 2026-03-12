@@ -173,6 +173,8 @@ pub struct SearchRequest {
     pub min_confidence: Option<f64>,
     /// Restrict to specific node types.
     pub node_types: Option<Vec<String>>,
+    /// Restrict to specific source types (e.g. "document", "code").
+    pub source_types: Option<Vec<String>>,
     /// Start of date range filter (ISO 8601).
     pub date_range_start: Option<String>,
     /// End of date range filter (ISO 8601).
@@ -211,6 +213,9 @@ pub struct SearchResultResponse {
     pub source_uri: Option<String>,
     /// Source title (for chunk results).
     pub source_title: Option<String>,
+    /// Source type (e.g. "code", "document").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
     /// Per-dimension scores.
     pub dimension_scores: std::collections::HashMap<String, f64>,
     /// Per-dimension ranks.
@@ -865,6 +870,7 @@ mod tests {
             content: None,
             source_uri: None,
             source_title: None,
+            source_type: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: None,
@@ -889,6 +895,7 @@ mod tests {
             content: Some("full content here".to_string()),
             source_uri: None,
             source_title: None,
+            source_type: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: None,
@@ -909,6 +916,7 @@ mod tests {
             content: None,
             source_uri: None,
             source_title: None,
+            source_type: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: Some(vec![

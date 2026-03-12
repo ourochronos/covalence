@@ -92,16 +92,20 @@ pub async fn search(
         }
     }
 
-    let filters =
-        if req.min_confidence.is_some() || req.node_types.is_some() || date_range.is_some() {
-            Some(covalence_core::services::SearchFilters {
-                min_confidence: req.min_confidence,
-                node_types: req.node_types,
-                date_range,
-            })
-        } else {
-            None
-        };
+    let filters = if req.min_confidence.is_some()
+        || req.node_types.is_some()
+        || req.source_types.is_some()
+        || date_range.is_some()
+    {
+        Some(covalence_core::services::SearchFilters {
+            min_confidence: req.min_confidence,
+            node_types: req.node_types,
+            date_range,
+            source_types: req.source_types,
+        })
+    } else {
+        None
+    };
 
     let limit = req.limit.unwrap_or(10).min(200);
     let mut results = state
@@ -157,6 +161,7 @@ pub async fn search(
                         content: r.content,
                         source_uri: r.source_uri,
                         source_title: r.source_title,
+                        source_type: r.source_type,
                         dimension_scores: r.dimension_scores,
                         dimension_ranks: r.dimension_ranks,
                         graph_context,

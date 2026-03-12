@@ -8,12 +8,13 @@ import (
 )
 
 var (
-	searchStrategy    string
-	searchLimit       int
+	searchStrategy      string
+	searchLimit         int
 	searchMinConfidence float64
-	searchNodeTypes   []string
-	searchMode        string
-	searchGranularity string
+	searchNodeTypes     []string
+	searchSourceTypes   []string
+	searchMode          string
+	searchGranularity   string
 )
 
 var searchCmd = &cobra.Command{
@@ -35,6 +36,9 @@ var searchCmd = &cobra.Command{
 		}
 		if len(searchNodeTypes) > 0 {
 			body["node_types"] = searchNodeTypes
+		}
+		if len(searchSourceTypes) > 0 {
+			body["source_types"] = searchSourceTypes
 		}
 		if searchMode != "results" {
 			body["mode"] = searchMode
@@ -178,6 +182,8 @@ func init() {
 		"Minimum confidence threshold (0.0-1.0)")
 	searchCmd.Flags().StringSliceVar(&searchNodeTypes, "node-types", nil,
 		"Filter by node types (comma-separated)")
+	searchCmd.Flags().StringSliceVar(&searchSourceTypes, "source-types", nil,
+		"Filter by source types (comma-separated, e.g. document,code)")
 	searchCmd.Flags().StringVar(&searchMode, "mode", "results",
 		"Delivery mode: results (default) or context")
 	searchCmd.Flags().StringVar(&searchGranularity, "granularity", "section",

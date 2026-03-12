@@ -63,6 +63,10 @@ pub struct FusedResult {
     pub source_uri: Option<String>,
     /// Source title (for chunk results).
     pub source_title: Option<String>,
+    /// Source type (e.g. "code", "document"). Populated during
+    /// enrichment for chunk and source results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
     /// The type of result: "chunk", "node", or "article".
     pub result_type: Option<String>,
     /// When this entity was ingested/created (ISO 8601).
@@ -116,6 +120,7 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
                 content: None,
                 source_uri: None,
                 source_title: None,
+                source_type: None,
                 result_type: None,
                 created_at: None,
                 dimension_scores: HashMap::new(),
@@ -208,6 +213,7 @@ pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<Fused
                 content: None,
                 source_uri: None,
                 source_title: None,
+                source_type: None,
                 result_type: None,
                 created_at: None,
                 dimension_scores: HashMap::new(),
@@ -373,6 +379,7 @@ mod tests {
             content: Some("full chunk content".to_string()),
             source_uri: None,
             source_title: None,
+            source_type: None,
             result_type: None,
             created_at: None,
             dimension_scores: HashMap::new(),

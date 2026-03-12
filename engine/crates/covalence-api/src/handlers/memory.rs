@@ -82,6 +82,7 @@ pub async fn recall_memory(
             min_confidence: req.min_confidence,
             node_types: None,
             date_range: None,
+            source_types: None,
         })
     } else {
         None

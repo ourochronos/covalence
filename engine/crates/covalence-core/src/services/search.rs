@@ -44,6 +44,9 @@ pub struct SearchFilters {
     pub node_types: Option<Vec<String>>,
     /// Restrict to a temporal date range.
     pub date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    /// Restrict to specific source types (e.g. "document", "code").
+    /// Applies only to chunk and source results.
+    pub source_types: Option<Vec<String>>,
 }
 
 /// Service for orchestrating multi-dimensional search and RRF fusion.
@@ -543,6 +546,7 @@ impl SearchService {
                             content: None,
                             source_uri: None,
                             source_title: None,
+                            source_type: None,
                             result_type: None,
                             created_at: None,
                             dimension_scores: HashMap::new(),
@@ -604,6 +608,7 @@ impl SearchService {
                         result.entity_type = Some("source".to_string());
                         result.source_uri = source.uri;
                         result.source_title = source.title;
+                        result.source_type = Some(source.source_type.clone());
                         result.created_at = Some(source.ingested_at.to_rfc3339());
                         // Use truncated raw content for snippet.
                         if let Some(ref raw) = source.raw_content {
@@ -627,6 +632,7 @@ impl SearchService {
                         {
                             result.source_uri = source.uri;
                             result.source_title = source.title.clone();
+                            result.source_type = Some(source.source_type.clone());
                             result.created_at = Some(source.ingested_at.to_rfc3339());
                             source.title
                         } else {
@@ -676,6 +682,7 @@ impl SearchService {
                             result.entity_type = Some("source".to_string());
                             result.source_uri = source.uri;
                             result.source_title = source.title;
+                            result.source_type = Some(source.source_type.clone());
                             result.created_at = Some(source.ingested_at.to_rfc3339());
                             if let Some(ref raw) = source.raw_content {
                                 result.content = Some(truncate_with_ellipsis(raw, 500));
@@ -919,6 +926,15 @@ impl SearchService {
             }
             if let Some(ref types) = f.node_types {
                 fused.retain(|r| r.entity_type.as_ref().is_some_and(|t| types.contains(t)));
+            }
+            if let Some(ref types) = f.source_types {
+                fused.retain(|r| {
+                    // Pass through non-source/chunk results (nodes,
+                    // articles) since they have no source_type.
+                    r.source_type
+                        .as_ref()
+                        .is_none_or(|st| types.contains(st))
+                });
             }
         }
 
