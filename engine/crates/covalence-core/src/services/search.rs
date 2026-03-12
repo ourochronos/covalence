@@ -125,17 +125,34 @@ fn kwic_snippet(content: &str, query: &str, window_bytes: usize) -> String {
 
     // Center the window around the match.
     let half = window_bytes / 2;
-    let start = match_pos.saturating_sub(half);
+    let mut start = match_pos.saturating_sub(half);
     // Walk to a char boundary.
-    let mut start = start;
     while start > 0 && !content.is_char_boundary(start) {
         start -= 1;
     }
+    // Snap forward to a word boundary (avoid starting mid-word).
+    if start > 0 {
+        if let Some(space) = content[start..].find(|c: char| c.is_whitespace()) {
+            let candidate = start + space + 1;
+            // Only snap forward if we don't skip too far (< 30 chars).
+            if candidate < content.len() && candidate - start < 30 {
+                start = candidate;
+            }
+        }
+    }
 
-    let end = (start + window_bytes).min(content.len());
-    let mut end = end;
+    let mut end = (start + window_bytes).min(content.len());
     while end < content.len() && !content.is_char_boundary(end) {
         end += 1;
+    }
+    // Snap backward to a word boundary (avoid ending mid-word).
+    if end < content.len() {
+        if let Some(space) = content[..end].rfind(|c: char| c.is_whitespace()) {
+            // Only snap back if we don't lose too much (< 30 chars).
+            if end - space < 30 {
+                end = space;
+            }
+        }
     }
 
     let slice = &content[start..end];
@@ -1666,5 +1683,22 @@ mod tests {
     #[test]
     fn kwic_empty_content() {
         assert_eq!(kwic_snippet("", "test", 100), "");
+    }
+
+    #[test]
+    fn kwic_snaps_to_word_boundaries() {
+        let content = "The knowledge graph enables powerful entity resolution \
+            and relationship extraction from unstructured sources.";
+        let snippet = kwic_snippet(content, "entity resolution", 60);
+        assert!(snippet.contains("entity resolution"));
+        // Should not start or end mid-word.
+        if snippet.starts_with("...") {
+            let body = &snippet[3..];
+            // First char of body should be non-whitespace (start of word).
+            assert!(
+                body.starts_with(|c: char| !c.is_whitespace()),
+                "snippet should start at word boundary: {snippet}"
+            );
+        }
     }
 }
