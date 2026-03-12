@@ -35,6 +35,49 @@ use crate::types::ids::{ArticleId, ChunkId, NodeId};
 /// chunks and articles without removing them entirely.
 const ENTITY_DEMOTION_FACTOR: f64 = 0.3;
 
+/// Maximum length for derived chunk names.
+const MAX_CHUNK_NAME_LEN: usize = 80;
+
+/// Derive a readable name from chunk content.
+///
+/// Strategy:
+/// 1. If the content starts with a Markdown heading (`# ...`), use it.
+/// 2. Otherwise, take the first sentence (up to first `.`, `!`, `?`, or
+///    newline), truncated to [`MAX_CHUNK_NAME_LEN`].
+fn derive_chunk_name(content: &str) -> String {
+    let trimmed = content.trim();
+
+    // Check for Markdown heading.
+    if let Some(heading) = trimmed.strip_prefix('#') {
+        let heading = heading.trim_start_matches('#').trim();
+        if let Some(end) = heading.find('\n') {
+            return heading[..end].trim().to_string();
+        }
+        if heading.len() <= MAX_CHUNK_NAME_LEN {
+            return heading.to_string();
+        }
+        return format!("{}...", &heading[..MAX_CHUNK_NAME_LEN - 3]);
+    }
+
+    // First sentence: up to the first sentence-ending punctuation or
+    // newline, whichever comes first.
+    let sentence_end = trimmed
+        .find(['.', '!', '?', '\n'])
+        .map(|i| i + 1) // include the punctuation
+        .unwrap_or(trimmed.len());
+
+    if sentence_end <= MAX_CHUNK_NAME_LEN {
+        let name = trimmed[..sentence_end].trim();
+        if name.len() < trimmed.len() && !name.ends_with('.') {
+            format!("{name}...")
+        } else {
+            name.to_string()
+        }
+    } else {
+        format!("{}...", &trimmed[..MAX_CHUNK_NAME_LEN - 3])
+    }
+}
+
 /// Post-fusion filters for narrowing search results.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchFilters {
@@ -579,6 +622,8 @@ impl SearchService {
                     {
                         result.content = Some(chunk.content.clone());
                         result.entity_type = Some("chunk".to_string());
+                        // Derive a readable name from chunk content.
+                        result.name = Some(derive_chunk_name(&chunk.content));
                         if let Ok(Some(source)) =
                             SourceRepo::get(&*self.repo, chunk.source_id).await
                         {
@@ -919,5 +964,59 @@ fn strategy_name(strategy: &SearchStrategy) -> &'static str {
         SearchStrategy::GraphFirst => "graph_first",
         SearchStrategy::Global => "global",
         SearchStrategy::Custom(_) => "custom",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_chunk_name_heading() {
+        let content = "# Introduction\nThis is the body.";
+        assert_eq!(derive_chunk_name(content), "Introduction");
+    }
+
+    #[test]
+    fn derive_chunk_name_multi_hash_heading() {
+        let content = "### Configuration Options\nSome config details.";
+        assert_eq!(derive_chunk_name(content), "Configuration Options");
+    }
+
+    #[test]
+    fn derive_chunk_name_first_sentence() {
+        let content = "The ingestion pipeline processes documents. It has 9 stages.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "The ingestion pipeline processes documents."
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_no_period() {
+        let content = "Some short text without punctuation";
+        assert_eq!(
+            derive_chunk_name(content),
+            "Some short text without punctuation"
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_long_truncates() {
+        let long = "a".repeat(200);
+        let name = derive_chunk_name(&long);
+        assert!(name.len() <= MAX_CHUNK_NAME_LEN);
+        assert!(name.ends_with("..."));
+    }
+
+    #[test]
+    fn derive_chunk_name_empty() {
+        assert_eq!(derive_chunk_name(""), "");
+    }
+
+    #[test]
+    fn derive_chunk_name_newline_before_period() {
+        let content = "First line\nSecond line.";
+        assert_eq!(derive_chunk_name(content), "First line...");
     }
 }
