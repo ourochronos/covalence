@@ -376,3 +376,117 @@ Hierarchical chunks from the same source have identical first N characters (sour
 
 **Stats:** 264 sources, 1547 nodes, 2659 edges, 86 articles.
 
+---
+
+## Session 3 — 2026-03-12
+
+Continuing the meta-loop autonomously. Chris is asleep.
+
+### Starting State
+
+Prod engine running on :8431 with 264 sources, 1547 nodes, 2659 edges, 86 articles, 522 graph components (very fragmented). 737 tests passing. CC fusion implemented but not yet default.
+
+---
+
+### 01:10 — Co-occurrence Edge Synthesis (#71)
+
+The graph was extremely fragmented: 522 components, 500 isolated nodes (208 functions, 131 concepts, 77 structs). 32% of all nodes had zero edges. Graph search, structural search, and community detection were all underperforming because of this.
+
+**Root cause:** Entity extraction identifies entities but the relationship extractor doesn't create enough edges. Code entities (functions, structs, impl_blocks) especially lack edges.
+
+**Solution:** Provenance-based co-occurrence edge synthesis. The `extractions` table links entities to chunks — entities extracted from the same chunk co-occur in the source text. New `POST /admin/edges/synthesize` endpoint:
+
+1. SQL query finds co-occurring entity pairs from `extractions` table
+2. Filters: at least one entity must have degree ≤ `max_degree` (poorly connected)
+3. Creates `co_occurs` edges with `is_synthetic = true`
+4. Weight proportional to co-occurrence frequency: `min(1.0, freq/5.0)`
+5. Confidence proportional: `min(0.9, 0.3 + freq*0.1)`
+6. Reloads graph sidecar after synthesis
+
+**Two-pass deployment:**
+- Pass 1: `min_cooccurrences=2, max_degree=2` → 1,961 edges created
+- Pass 2: `min_cooccurrences=1, max_degree=0` → 6,417 edges for remaining isolated nodes
+
+**Results:**
+- Isolated nodes: 500 → 18 (96% reduction)
+- Graph components: 522 → 35 (93% reduction)
+- Edge count: 2,659 → 11,037 (4.2x increase)
+- Graph density: 0.0011 → 0.0046 (4.2x increase)
+
+Re-ran consolidation → 106 articles (from 86) with better community structure.
+
+---
+
+### 01:25 — Chunk Name Derivation (#72)
+
+Chunks showed as "(no name)" in search results. Added `derive_chunk_name()`:
+- If content starts with a Markdown heading (`# ...`), uses the heading text
+- Otherwise, uses the first sentence (up to `.`, `!`, `?`, or newline)
+- Long names truncated to 80 characters with ellipsis
+
+**Before:** `(no name)` for every chunk result
+**After:** `"Algorithms"`, `"Search Dimensions"`, `"Representation: Subjective Logic Opinions"` etc.
+
+Added 7 tests for the function. Test count: 737 → 744.
+
+---
+
+### 01:28 — CC Fusion as Default + Article Title Dedup (#73)
+
+**CC fusion default:** A/B testing consistently showed CC outperforms RRF:
+- Score spread: 3.4x (CC) vs 1.9x (RRF)
+- Better content chunk surfacing, multi-dimensional entity nodes appearing
+
+Switched default from RRF to CC. `COVALENCE_CC_FUSION=false` to revert.
+
+**Article title dedup:** Different graph communities produce articles with identical titles during consolidation (14 duplicate titles found). Added pass 3 in source diversification that deduplicates articles by title, keeping the highest-scored instance.
+
+Also cleaned up 18 duplicate articles in PG (106 → 88 articles).
+
+---
+
+### 01:35 — Search Quality Assessment
+
+After all improvements, search quality is significantly better:
+
+| Query | #1 Result | Dimensions |
+|-------|-----------|------------|
+| "reciprocal rank fusion" | Article: "RRF for Multi-Dimensional Search" | 3 (lex+vec+global) |
+| "Subjective Logic opinion" | Chunk from Subjective Logic source | 2 (lex+vec) |
+| "ingestion pipeline stages" | Article: "Advanced Knowledge Graph Ingestion Pipeline" | 3 (global+vec+lex) |
+| "entity resolution trigram" | Code chunk with trigram threshold | 1 (vec) |
+| "how does search work in covalence" | Chunk: "Lexical Search" from spec 06 | 1 (vec) |
+
+Graph, structural, and temporal dimensions are all active:
+- Graph + structural appear on concept nodes (#18-26 in wider result set)
+- Temporal correctly dampened by quality gating (all chunks ingested around same time)
+- Entity demotion pushes bare nodes below content chunks (correct behavior)
+
+**Current knowledge gaps** (from `/admin/knowledge-gaps`):
+1. Long-context LLMs (83 refs, 13 out) — know about it but don't explain it
+2. Confidence scoring (79 refs, 16 out) — core concept needs more depth
+3. Embedding operations (81 refs, 23 out)
+4. Multi-source corroboration (41 refs, 1 out) — important epistemic concept
+
+---
+
+### Session 3 Summary
+
+**4 improvements:**
+
+1. **Co-occurrence edge synthesis** (#71) — provenance-based edge creation, 96% reduction in isolated nodes
+2. **Chunk name derivation** (#72) — readable names instead of "(no name)" for all chunk results
+3. **CC fusion as default** (#73) — better score discrimination, COVALENCE_CC_FUSION=false to revert
+4. **Article title dedup** (#73) — same-title articles deduplicated in search results and PG
+
+**Test count:** 744 (was 737 at session start). +7 from derive_chunk_name tests. Clippy clean.
+
+**Stats:** 264 sources, 1547 nodes, 11,037 edges (was 2,659), 88 articles, 35 components (was 522).
+
+**Open areas for future work:**
+- RAPTOR hierarchical retrieval (#74)
+- Cross-encoder reranking to replace 60/40 heuristic
+- Research ingestion to fill knowledge gaps
+- Pipeline stage queues (#64)
+- Late chunking (#72), coarse-to-fine retrieval (#69)
+
