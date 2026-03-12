@@ -69,11 +69,15 @@ impl SourceProfile {
         match self.source_type {
             SourceType::Code => NormalizeChain::code(),
             _ => {
+                // Phase 1: core normalization.
                 let mut chain = NormalizeChain::new()
                     .push(UnicodeNfcPass)
                     .push(ControlCharPass)
                     .push(WhitespacePass)
-                    .push(TrimPass)
+                    .push(TrimPass);
+
+                // Phase 2: artifact stripping.
+                chain = chain
                     .push(ArtifactLinePass)
                     .push(InlineArtifactPass);
 
@@ -84,6 +88,11 @@ impl SourceProfile {
 
                 // All document sources get blank line collapsing.
                 chain = chain.push(BlankLineCollapsePass);
+
+                // Phase 3: cleanup residual whitespace from stripping.
+                chain = chain
+                    .push(WhitespacePass)
+                    .push(TrimPass);
 
                 chain
             }

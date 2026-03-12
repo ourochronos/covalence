@@ -64,17 +64,24 @@ impl NormalizeChain {
 
     /// The default chain for document sources.
     ///
-    /// This matches the behavior of the original monolithic
-    /// `normalize()` + `strip_artifacts()` pipeline.
+    /// Two-phase approach:
+    /// 1. Core normalization (NFC, control chars, whitespace, trim)
+    /// 2. Artifact stripping (lines, inline, MathJax)
+    /// 3. Cleanup (collapse residual multi-spaces from stripping, trim)
     pub fn default_document() -> Self {
         Self::new()
+            // Phase 1: core normalization.
             .push(UnicodeNfcPass)
             .push(ControlCharPass)
             .push(WhitespacePass)
             .push(TrimPass)
+            // Phase 2: artifact stripping.
             .push(ArtifactLinePass)
             .push(InlineArtifactPass)
             .push(MathJaxPass)
+            // Phase 3: cleanup after stripping.
+            .push(WhitespacePass)
+            .push(TrimPass)
     }
 
     /// Minimal chain for code sources (no artifact/mathjax stripping).
@@ -352,13 +359,18 @@ pub fn normalize(text: &str) -> String {
 /// Remove known web-scraping artifact lines and inline patterns
 /// from normalized markdown. Applied after Unicode normalization.
 ///
+/// Also collapses residual multi-spaces left by marker removal
+/// and trims the result.
+///
 /// This is the convenience wrapper matching the original monolithic
 /// function. For composable use, see [`NormalizeChain`].
 pub fn strip_artifacts(text: &str) -> String {
     let chain = NormalizeChain::new()
         .push(ArtifactLinePass)
         .push(InlineArtifactPass)
-        .push(MathJaxPass);
+        .push(MathJaxPass)
+        .push(WhitespacePass)
+        .push(TrimPass);
     chain.run(text)
 }
 
@@ -457,13 +469,13 @@ mod tests {
     #[test]
     fn strip_mathjax_postsubscript() {
         let input = "e start_POSTSUBSCRIPT i end_POSTSUBSCRIPT in E";
-        assert_eq!(strip_artifacts(input), "e  i  in E");
+        assert_eq!(strip_artifacts(input), "e i in E");
     }
 
     #[test]
     fn strip_mathjax_postsuperscript() {
         let input = "x start_POSTSUPERSCRIPT 2 end_POSTSUPERSCRIPT";
-        assert_eq!(strip_artifacts(input), "x  2 ");
+        assert_eq!(strip_artifacts(input), "x 2");
     }
 
     #[test]
@@ -475,7 +487,7 @@ mod tests {
     #[test]
     fn strip_mathjax_mixed() {
         let input = "The entity italic_e start_POSTSUBSCRIPT italic_i end_POSTSUBSCRIPT belongs to caligraphic_E";
-        assert_eq!(strip_artifacts(input), "The entity e  i  belongs to E");
+        assert_eq!(strip_artifacts(input), "The entity e i belongs to E");
     }
 
     // --- NormalizeChain tests ---
