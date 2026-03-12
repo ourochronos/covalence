@@ -1229,12 +1229,215 @@ Post-compaction (Session 8b):
 
 75. **Broadened bibliography detection** — Extended `is_bibliography_entry()` with 3 new pattern categories: journal/proceedings italic fragments (`_Proc. VLDB Endow._`), short doi.org URL citations, and publisher name markers (Springer, IEEE, ACM Press, etc.). Also catches "Report Issue" UI fragments from arXiv HTML. 4 new tests.
 
+76. **Chunk name derivation fixes** — Three fixes:
+    - Skip code fence lines (`\`\`\`rust`) in meaningful-line detection: code chunks now named "impl SearchService {" instead of "rust"
+    - Skip numbered list prefixes (8., 10.) in sentence boundary detection: "8. Apply topological confidence..." no longer produces name "8."
+    - Added re-sort after post-enrichment quality demotion so demoted chunks sink immediately
+
+77. **Extract search text helpers module** — Moved 7 pure text-processing functions, 2 constants, `GENERIC_HEADINGS` list, and 50 tests from `search.rs` (1837→1080 lines, 41% reduction) into `services/search_helpers.rs`. Functions: `truncate_with_ellipsis`, `kwic_snippet`, `derive_chunk_name_qualified`, `qualify_heading`, `strip_section_number`, `strip_inline_markdown`, `strategy_name`.
+
+78. **Research ingestion** — Ingested 2 papers:
+    - "Late Chunking: Contextual Chunk Embeddings Using Long-Context Embedding Models" (Günther et al., 2025) — addresses #72
+    - "Subjective Logic Encodings" (Vasilakes, Zerva, Ananiadou, 2025) — foundational SL theory for epistemic model
+
 ### Test counts
 
-1018 tests (21 api + 950 core + 47 eval), all passing. Clippy and fmt clean.
+1020 tests (21 api + 952 core + 47 eval), all passing. Clippy and fmt clean.
+
+### File sizes after decomposition
+
+| File | Before | After | Reduction |
+|------|--------|-------|-----------|
+| source.rs | 3353 | 2318 | 31% |
+| search.rs | 1837 | 1080 | 41% |
+
+79. **Cross-source content dedup** — Added Pass 1b to search diversification that deduplicates chunks with identical content prefixes (first 100 chars) across different sources. Catches duplicate results from codebase re-ingestion. "impl SearchService {" went from 4 results to 1.
+
+### Test counts
+
+1020 tests (21 api + 952 core + 47 eval), all passing. Clippy and fmt clean.
 
 ### Commits
 
 - `deb269b` Extract ingestion helpers from source.rs into dedicated module
 - `6d11c9c` Add post-enrichment quality demotion for low-quality chunks
 - `f20f1c5` Broaden bibliography detection for citation fragments
+- `080ddff` Fix chunk name derivation for code fences and numbered lists
+- `ea759b1` Extract search text helpers into dedicated module
+- `28d16d0` Add cross-source content dedup to search diversification
+
+---
+
+### Session 8d Summary
+
+**7 improvements shipped (improvements 73-79):**
+
+73. Extract ingestion helpers module (source.rs 3353→2318 lines)
+74. Post-enrichment quality demotion (Step 8a2 for search)
+75. Broadened bibliography detection (3 new pattern categories)
+76. Chunk name derivation fixes (code fences, numbered lists, re-sort)
+77. Extract search text helpers (search.rs 1837→1080 lines)
+78. Research ingestion (Late Chunking + SL Encodings papers)
+79. Cross-source content dedup (duplicate chunk elimination)
+
+**Key metrics:**
+- 1020 tests (21 api + 952 core + 47 eval), all passing, clippy clean
+- source.rs: 3353 → 2318 lines (31% reduction)
+- search.rs: 1837 → 1080 lines (41% reduction)
+- 4 new modules: ingestion_helpers.rs, search_helpers.rs (+ chunk_quality.rs from 8c)
+- 2 research papers ingested
+- 6 commits pushed to remote
+
+**Search quality wins:**
+- Bibliography/boilerplate chunks demoted at search time (not just ingestion)
+- Code chunks named by code content instead of language tag
+- Numbered list items no longer produce "8." as chunk names
+- Duplicate chunks from re-ingestion deduplicated across sources
+
+---
+
+### Session 8e — Data Quality & Observability
+
+4 more improvements shipped (improvements 80-83):
+
+80. **Superseded source chunk cleanup** (46aaf63)
+    - CRITICAL BUG: `ingest()` created new source versions but left old chunks in the DB
+    - 6,441 stale chunks (29.6% of all 21,779) were polluting search results
+    - Fixed to match `reprocess()` cleanup: extractions deleted → alias refs cleared → chunks deleted
+    - Cleaned up existing stale data in prod
+
+81. **Source title repair** (46aaf63)
+    - 273 code source titles fixed: 204 "Preamble", 22 "Untitled Document", 47 with `use`/`mod` statements
+    - Code files now titled by filename (e.g., "search.rs") or module doc comment
+    - Immediate improvement to search result readability
+
+82. **Chunk overlap word-boundary snapping** (0b4f0aa)
+    - Overlap text builder snapped to UTF-8 char boundaries but not word boundaries
+    - Chunks started mid-word ("pological confidence" from "topological confidence")
+    - Now snaps forward to next whitespace boundary
+    - Reprocessed all 11 spec documents with fixed chunker
+
+83. **Superseded source embedding cleanup** (0661d6a)
+    - Old source versions retained embeddings → appeared in vector search
+    - Added `SourceRepo::clear_embedding()` called during supersession
+    - Cleaned 127 stale source embeddings in prod
+
+84. **Search trace persistence** (96d380c)
+    - QueryTrace was only emitted as tracing::info! log
+    - Now persisted to `search_traces` table for offline analysis
+    - Non-blocking: persistence failures logged as warnings
+
+### Commits
+
+- `46aaf63` Delete stale chunks when superseding sources in ingest()
+- `0b4f0aa` Snap chunk overlap prefix to word boundaries
+- `0661d6a` Clear superseded source embeddings during ingestion
+- `96d380c` Persist search traces to DB for offline analysis
+
+### Key Metrics
+
+- **Tests:** 1022 (21 api + 954 core + 47 eval), all passing, clippy clean
+- **Chunks:** 21,779 → 15,586 (removed 6,441 stale + natural churn)
+- **Sources:** 411 (273 titles fixed, 127 embeddings cleared)
+- **Nodes:** 3,333 (up from 3,267)
+- **Edges:** 75,010
+- **Stale chunks:** 0 (was 6,441)
+- **Superseded sources with embeddings:** 0 (was 127)
+- **Search traces persisted:** Yes (was log-only)
+- **9 code files re-ingested** with latest versions
+- **11 spec documents reprocessed** with word-boundary fix
+
+---
+
+### Session 8f — Search Quality & Observability
+
+5 more improvements shipped (improvements 85-89):
+
+85. **Enhanced admin metrics endpoint** (96f64fc)
+    - Expanded from 3 fields to 9: graph_nodes, graph_edges, semantic_edge_count, synthetic_edge_count, component_count, source_count, chunk_count, article_count, search_trace_count
+    - Added direct SQL COUNT queries for chunks, articles, search_traces
+    - CLI admin metrics display updated with aligned output
+
+86. **Source type filter and field on search API** (a724b8c)
+    - Added `source_type` field to `FusedResult` and `SearchResultResponse`
+    - Added `source_types` filter to `SearchRequest` (e.g., `--source-types document` excludes code chunks)
+    - Populated during enrichment from chunk→source lookup
+    - CLI `--source-types` flag for filtering
+
+87. **Reference section detection and demotion field fix** (016f06d)
+    - Added `is_reference_section()`: detects bibliography chunks where >40% of lines are citation-like
+    - Fixed quality demotion to check `entity_type` (set during enrichment) instead of `result_type` (set by dimension, unreliable)
+    - 4 new tests for reference section detection
+
+88. **Cache clear endpoint** (731b8cd)
+    - Added `POST /admin/cache/clear` to flush the PostgreSQL-backed semantic query cache
+    - Needed after deployments that change search scoring behavior
+    - Returns `{"entries_cleared": N}`
+
+89. **Quality demotion pipeline reorder** (731b8cd)
+    - Moved low-quality chunk demotion from Step 8a2 to Step 9b (after reranking)
+    - The reranker blend formula (`fused * 0.6 + rerank * 0.4`) was restoring demoted scores
+    - Now demotion is the final scoring pass — demoted chunks stay demoted
+
+90. **Source.rs pipeline decomposition** (5181600)
+    - Extracted shared ingestion pipeline (chunk→embed→extract→resolve) into `pipeline.rs`
+    - source.rs reduced from 2336 → ~975 lines (58% reduction, ~800 lines dedup eliminated)
+    - Both `ingest()` and `reprocess()` now delegate to `run_pipeline()`
+    - Key abstractions: `PreparedContent`, `PipelineInput`, `PipelineOutput`
+    - Fixed latent bug: `reprocess()` was re-embedding ALL nodes unconditionally (missing `has_embedding_ids` check)
+    - SourceService fields changed to `pub(crate)` to allow `impl SourceService` in pipeline.rs
+
+### Commits
+
+- `96f64fc` Expand admin metrics endpoint with full observability data
+- `a724b8c` Add source_type filter and field to search API
+- `016f06d` Add reference section detection and fix chunk demotion field
+- `731b8cd` Add cache clear endpoint and move quality demotion after reranking
+- `5181600` Extract shared ingestion pipeline into pipeline.rs (#90)
+- `7f22681` Add title-only chunk quality filter
+- `54ba196` Improve reference section detection for multi-line arXiv citations
+- `125ba7d` Expand bibliography detection: journal volume/page citations
+- `7b58c2a` Add author block to search-time quality demotion
+
+---
+
+## Session 8g — Search Quality Overhaul
+
+Data-driven quality improvement: ran test queries, identified 3 low-quality results in top 5, systematically fixed each.
+
+91. **Title-only chunk filter** (7f22681)
+    - New `is_title_only()` filter: detects chunks with ≤2 meaningful lines (strips whitespace, HTML comments)
+    - Applied at both ingestion and search-time demotion
+    - Catches arXiv-scraped pages that emit title + whitespace padding + HTML fragments
+    - 6 new tests
+
+92. **Improved reference section detection** (54ba196)
+    - Expanded `is_reference_section()` to count arXiv preprint lines, DOI URLs, arrow markers
+    - Lowered threshold from 40% to 30% (multi-line citations have many continuation lines)
+    - Catches 307-line reference chunks that weren't being flagged (0.355 ratio > new 0.30 threshold)
+    - 1 new test for multi-line arXiv citation format
+
+93. **Journal volume/page citation detection** (125ba7d)
+    - New pattern: "Title.\n\nJournal, vol(issue):pages." (e.g., "Physics reports, 486(3-5):75–174.")
+    - Checks `digit(` and `digit:digit` patterns in non-first lines (avoids false positives)
+    - 2 new tests
+
+94. **Author block search-time demotion** (7b58c2a)
+    - Added `is_author_block` to search-time quality demotion (was only in ingestion pipeline)
+    - Catches legacy author block chunks ingested before the filter was added
+    - Result: test query went from 3/5 low-quality results to 0/5
+
+95. **Phase 1 research ingestion — issue #92 complete**
+    - Ingested all 8 arXiv papers from Phase 1 + 1 bonus (2404.16130 GraphRAG paper)
+    - Papers: 2508.17222 (RAG vulnerability), 2602.08668 (GRAGPoison), 2603.05207 (k-core), 2502.13862 (petgraph), 2404.03868 (EDC), 2409.03284 (iText2KG), 2411.06037 (RAG abstention), 2506.05690 (GraphRAG-Bench), 2404.16130 (GraphRAG)
+    - Graph grew: +90 entities (3333→3423), +760 edges (75010→75770), +613 chunks (15586→16199), +9 sources (411→420)
+    - New knowledge immediately searchable: "GraphRAG vulnerability poisoning" returns GRAGPoison as top result
+
+### Key Metrics
+
+- **Tests:** 1035 (21 api + 967 core + 47 eval), all passing, clippy clean
+- **Sources:** 420, **Nodes:** 3,423, **Edges:** 75,770 (19,959 semantic + 55,811 synthetic)
+- **Components:** 249, **Chunks:** 16,199, **Articles:** 88
+- **Search quality:** "how are graph communities detected" — top 5 now all relevant (was 2/5 relevant)
+- **Pipeline decomposition:** source.rs 58% smaller, shared pipeline eliminates duplication
+- **Issue #92 Phase 1 complete:** all 8 arXiv papers ingested into prod
