@@ -79,3 +79,64 @@ impl SearchFeedback {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_trace_new() {
+        let dims = serde_json::json!({"vector": 10, "lexical": 5});
+        let trace = SearchTrace::new("test query".into(), "balanced".into(), dims.clone(), 15, 42);
+        assert_eq!(trace.query_text, "test query");
+        assert_eq!(trace.strategy, "balanced");
+        assert_eq!(trace.result_count, 15);
+        assert_eq!(trace.execution_ms, 42);
+        assert_eq!(trace.dimension_counts, dims);
+    }
+
+    #[test]
+    fn search_trace_serde_roundtrip() {
+        let trace = SearchTrace::new(
+            "serde".into(),
+            "precise".into(),
+            serde_json::json!({}),
+            0,
+            0,
+        );
+        let json = serde_json::to_string(&trace).unwrap();
+        let restored: SearchTrace = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.query_text, "serde");
+        assert_eq!(restored.strategy, "precise");
+    }
+
+    #[test]
+    fn search_feedback_new() {
+        let result_id = Uuid::new_v4();
+        let fb = SearchFeedback::new(
+            "what is rust".into(),
+            result_id,
+            0.9,
+            Some("very relevant".into()),
+        );
+        assert_eq!(fb.query_text, "what is rust");
+        assert_eq!(fb.result_id, result_id);
+        assert!((fb.relevance - 0.9).abs() < 1e-10);
+        assert_eq!(fb.comment.as_deref(), Some("very relevant"));
+    }
+
+    #[test]
+    fn search_feedback_no_comment() {
+        let fb = SearchFeedback::new("q".into(), Uuid::new_v4(), 0.5, None);
+        assert!(fb.comment.is_none());
+    }
+
+    #[test]
+    fn search_feedback_serde_roundtrip() {
+        let fb = SearchFeedback::new("test".into(), Uuid::new_v4(), 0.75, Some("ok".into()));
+        let json = serde_json::to_string(&fb).unwrap();
+        let restored: SearchFeedback = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.query_text, "test");
+        assert!((restored.relevance - 0.75).abs() < 1e-10);
+    }
+}

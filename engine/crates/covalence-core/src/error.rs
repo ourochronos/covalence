@@ -62,3 +62,79 @@ pub enum Error {
 
 /// Result type alias using the Covalence error.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_found_display() {
+        let err = Error::NotFound {
+            entity_type: "node",
+            id: "abc-123".into(),
+        };
+        assert_eq!(err.to_string(), "node not found: abc-123");
+    }
+
+    #[test]
+    fn invalid_input_display() {
+        let err = Error::InvalidInput("bad data".into());
+        assert_eq!(err.to_string(), "invalid input: bad data");
+    }
+
+    #[test]
+    fn graph_error_display() {
+        let err = Error::Graph("cycle detected".into());
+        assert_eq!(err.to_string(), "graph error: cycle detected");
+    }
+
+    #[test]
+    fn config_error_display() {
+        let err = Error::Config("missing key".into());
+        assert_eq!(err.to_string(), "config error: missing key");
+    }
+
+    #[test]
+    fn ingestion_error_display() {
+        let err = Error::Ingestion("parse failed".into());
+        assert_eq!(err.to_string(), "ingestion error: parse failed");
+    }
+
+    #[test]
+    fn search_error_display() {
+        let err = Error::Search("timeout".into());
+        assert_eq!(err.to_string(), "search error: timeout");
+    }
+
+    #[test]
+    fn embedding_error_display() {
+        let err = Error::Embedding("dim mismatch".into());
+        assert_eq!(err.to_string(), "embedding error: dim mismatch");
+    }
+
+    #[test]
+    fn entity_resolution_error_display() {
+        let err = Error::EntityResolution("ambiguous".into());
+        assert_eq!(err.to_string(), "entity resolution error: ambiguous");
+    }
+
+    #[test]
+    fn consolidation_error_display() {
+        let err = Error::Consolidation("stale lock".into());
+        assert_eq!(err.to_string(), "consolidation error: stale lock");
+    }
+
+    #[test]
+    fn auth_error_display() {
+        let err = Error::Auth("unauthorized".into());
+        assert_eq!(err.to_string(), "auth error: unauthorized");
+    }
+
+    #[test]
+    fn from_serde_json_error() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let err: Error = json_err.into();
+        assert!(matches!(err, Error::Serialization(_)));
+        assert!(err.to_string().contains("serialization error"));
+    }
+}

@@ -589,4 +589,149 @@ mod tests {
         );
         unsafe { std::env::remove_var(key) };
     }
+
+    #[test]
+    fn table_dimensions_default() {
+        let dims = TableDimensions::default();
+        assert_eq!(dims.source, 2048);
+        assert_eq!(dims.chunk, 1024);
+        assert_eq!(dims.article, 1024);
+        assert_eq!(dims.node, 256);
+        assert_eq!(dims.alias, 256);
+    }
+
+    #[test]
+    fn table_dimensions_max_dim() {
+        let dims = TableDimensions::default();
+        assert_eq!(dims.max_dim(), 2048); // source is largest
+
+        let custom = TableDimensions {
+            source: 512,
+            chunk: 4096,
+            article: 1024,
+            node: 256,
+            alias: 256,
+        };
+        assert_eq!(custom.max_dim(), 4096); // chunk is largest
+    }
+
+    #[test]
+    fn embedding_config_max_dim_delegates() {
+        let cfg = EmbeddingConfig::default();
+        assert_eq!(cfg.max_dim(), cfg.table_dims.max_dim());
+    }
+
+    #[test]
+    fn search_config_defaults() {
+        let cfg = SearchConfig::default();
+        assert!((cfg.rrf_k - 60.0).abs() < 1e-10);
+        assert_eq!(cfg.default_limit, 10);
+        assert!((cfg.abstention_threshold - 0.001).abs() < 1e-10);
+    }
+
+    #[test]
+    fn consolidation_config_defaults() {
+        let cfg = ConsolidationConfig::default();
+        assert_eq!(cfg.batch_interval_secs, 300);
+        assert_eq!(cfg.deep_interval_secs, 86_400);
+        assert!((cfg.delta_threshold - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pipeline_config_defaults() {
+        let cfg = PipelineConfig::default();
+        assert!(cfg.convert_enabled);
+        assert!(cfg.normalize_enabled);
+        assert!(cfg.coref_enabled);
+        assert!(cfg.landscape_enabled);
+        assert!(cfg.resolve_enabled);
+        assert_eq!(cfg.ner_window_chars, 1200);
+        assert_eq!(cfg.ner_window_overlap, 200);
+    }
+
+    #[test]
+    fn env_parse_bool_truthy() {
+        let key = "COVALENCE_TEST_BOOL_12345";
+
+        for val in &["true", "1", "yes", "TRUE", "Yes"] {
+            unsafe { std::env::set_var(key, val) };
+            assert!(env_parse_bool(key, false), "should be true for {val}");
+        }
+
+        for val in &["false", "0", "no", "other"] {
+            unsafe { std::env::set_var(key, val) };
+            assert!(!env_parse_bool(key, true), "should be false for {val}");
+        }
+
+        unsafe { std::env::remove_var(key) };
+        assert!(env_parse_bool(key, true), "should use default when unset");
+        assert!(!env_parse_bool(key, false), "should use default when unset");
+    }
+
+    #[test]
+    fn env_parse_f32_clamped_rejects_out_of_bounds() {
+        let key = "COVALENCE_TEST_CLAMP_12345";
+
+        // Within bounds
+        unsafe { std::env::set_var(key, "0.5") };
+        let result = env_parse_f32_clamped(key, 0.5, 0.0, 1.0);
+        assert!(result.is_ok());
+
+        // Out of bounds (too high)
+        unsafe { std::env::set_var(key, "1.5") };
+        let result = env_parse_f32_clamped(key, 0.5, 0.0, 1.0);
+        assert!(result.is_err());
+
+        // Out of bounds (negative)
+        unsafe { std::env::set_var(key, "-0.1") };
+        let result = env_parse_f32_clamped(key, 0.5, 0.0, 1.0);
+        assert!(result.is_err());
+
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn config_debug_redacts_secrets() {
+        // Can't easily construct a full Config without DATABASE_URL,
+        // but we can verify the Debug impl redacts API keys by
+        // building a minimal Config manually.
+        let debug_out = format!(
+            "{:?}",
+            Config {
+                database_url: "postgres://test".into(),
+                bind_addr: "0.0.0.0:8431".into(),
+                api_key: Some("secret-key".into()),
+                openai_api_key: Some("sk-secret".into()),
+                openai_base_url: None,
+                voyage_api_key: Some("vk-secret".into()),
+                voyage_base_url: None,
+                embed_provider: "openai".into(),
+                embed_model: "test-model".into(),
+                chat_model: "gpt-4o".into(),
+                chat_api_key: None,
+                chat_base_url: None,
+                chunk_size: 1000,
+                chunk_overlap: 200,
+                embedding: EmbeddingConfig::default(),
+                extract_concurrency: 8,
+                min_extract_tokens: 30,
+                extract_batch_tokens: 2000,
+                consolidation: ConsolidationConfig::default(),
+                search: SearchConfig::default(),
+                pipeline: PipelineConfig::default(),
+                entity_extractor: "llm".into(),
+                extract_url: None,
+                gliner_threshold: 0.5,
+                coref_url: None,
+                pdf_url: None,
+                readerlm_url: None,
+                resolve_trigram_threshold: 0.4,
+                resolve_vector_threshold: 0.85,
+            }
+        );
+        assert!(debug_out.contains("[REDACTED]"));
+        assert!(!debug_out.contains("secret-key"));
+        assert!(!debug_out.contains("sk-secret"));
+        assert!(!debug_out.contains("vk-secret"));
+    }
 }

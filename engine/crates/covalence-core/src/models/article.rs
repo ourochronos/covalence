@@ -69,3 +69,50 @@ impl Article {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_article_defaults() {
+        let node_ids = vec![NodeId::new(), NodeId::new()];
+        let article = Article::new(
+            "Test Article".into(),
+            "Body text".into(),
+            vec![0u8; 32],
+            node_ids.clone(),
+        );
+
+        assert_eq!(article.title, "Test Article");
+        assert_eq!(article.body, "Body text");
+        assert_eq!(article.confidence, 1.0);
+        assert!(article.confidence_breakdown.is_none());
+        assert!(article.domain_path.is_empty());
+        assert_eq!(article.version, 1);
+        assert_eq!(article.source_node_ids.len(), 2);
+        assert_eq!(article.clearance_level, ClearanceLevel::default());
+        assert_eq!(article.created_at, article.updated_at);
+    }
+
+    #[test]
+    fn with_domain_path() {
+        let article = Article::new("T".into(), "B".into(), vec![], vec![])
+            .with_domain_path(vec!["AI".into(), "Knowledge Graphs".into()]);
+
+        assert_eq!(
+            article.domain_path,
+            vec!["AI".to_string(), "Knowledge Graphs".to_string()]
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let article = Article::new("Title".into(), "Body".into(), vec![1, 2], vec![])
+            .with_domain_path(vec!["Science".into()]);
+        let json = serde_json::to_string(&article).unwrap();
+        let restored: Article = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.title, "Title");
+        assert_eq!(restored.domain_path, vec!["Science"]);
+    }
+}

@@ -97,3 +97,127 @@ impl Edge {
         after_start && before_end && not_invalidated
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn new_edge_defaults() {
+        let src = NodeId::new();
+        let tgt = NodeId::new();
+        let edge = Edge::new(src, tgt, "related_to".into());
+
+        assert_eq!(edge.source_node_id, src);
+        assert_eq!(edge.target_node_id, tgt);
+        assert_eq!(edge.rel_type, "related_to");
+        assert_eq!(edge.weight, 1.0);
+        assert_eq!(edge.confidence, 1.0);
+        assert!(!edge.is_synthetic);
+        assert!(edge.causal_level.is_none());
+        assert!(edge.valid_from.is_none());
+        assert!(edge.valid_until.is_none());
+        assert!(edge.invalid_at.is_none());
+        assert!(edge.invalidated_by.is_none());
+    }
+
+    #[test]
+    fn causal_edge_sets_level() {
+        let src = NodeId::new();
+        let tgt = NodeId::new();
+        let edge = Edge::causal(src, tgt, "causes".into(), CausalLevel::Intervention);
+
+        assert_eq!(edge.causal_level, Some(CausalLevel::Intervention));
+        assert_eq!(edge.rel_type, "causes");
+        assert_eq!(edge.weight, 1.0);
+    }
+
+    #[test]
+    fn is_invalidated_when_invalid_at_set() {
+        let mut edge = Edge::new(NodeId::new(), NodeId::new(), "r".into());
+        assert!(!edge.is_invalidated());
+
+        edge.invalid_at = Some(Utc::now());
+        assert!(edge.is_invalidated());
+    }
+
+    #[test]
+    fn is_valid_at_no_constraints() {
+        let edge = Edge::new(NodeId::new(), NodeId::new(), "r".into());
+        // Edge with no temporal constraints is valid at any time
+        let past = Utc::now() - Duration::days(365);
+        let future = Utc::now() + Duration::days(365);
+        assert!(edge.is_valid_at(past));
+        assert!(edge.is_valid_at(Utc::now()));
+        assert!(edge.is_valid_at(future));
+    }
+
+    #[test]
+    fn is_valid_at_respects_valid_from() {
+        let mut edge = Edge::new(NodeId::new(), NodeId::new(), "r".into());
+        let start = Utc::now();
+        edge.valid_from = Some(start);
+
+        // Before valid_from -> invalid
+        assert!(!edge.is_valid_at(start - Duration::seconds(1)));
+        // At valid_from -> valid
+        assert!(edge.is_valid_at(start));
+        // After valid_from -> valid
+        assert!(edge.is_valid_at(start + Duration::seconds(1)));
+    }
+
+    #[test]
+    fn is_valid_at_respects_valid_until() {
+        let mut edge = Edge::new(NodeId::new(), NodeId::new(), "r".into());
+        let end = Utc::now();
+        edge.valid_until = Some(end);
+
+        // Before valid_until -> valid
+        assert!(edge.is_valid_at(end - Duration::seconds(1)));
+        // At valid_until -> invalid (exclusive)
+        assert!(!edge.is_valid_at(end));
+        // After valid_until -> invalid
+        assert!(!edge.is_valid_at(end + Duration::seconds(1)));
+    }
+
+    #[test]
+    fn is_valid_at_respects_invalid_at() {
+        let mut edge = Edge::new(NodeId::new(), NodeId::new(), "r".into());
+        let invalidation = Utc::now();
+        edge.invalid_at = Some(invalidation);
+
+        // Before invalidation -> valid
+        assert!(edge.is_valid_at(invalidation - Duration::seconds(1)));
+        // At invalidation -> invalid (exclusive)
+        assert!(!edge.is_valid_at(invalidation));
+    }
+
+    #[test]
+    fn is_valid_at_combined_window() {
+        let mut edge = Edge::new(NodeId::new(), NodeId::new(), "r".into());
+        let start = Utc::now() - Duration::days(10);
+        let end = Utc::now() + Duration::days(10);
+        edge.valid_from = Some(start);
+        edge.valid_until = Some(end);
+
+        assert!(!edge.is_valid_at(start - Duration::days(1)));
+        assert!(edge.is_valid_at(start));
+        assert!(edge.is_valid_at(Utc::now()));
+        assert!(!edge.is_valid_at(end));
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let edge = Edge::causal(
+            NodeId::new(),
+            NodeId::new(),
+            "causes".into(),
+            CausalLevel::Counterfactual,
+        );
+        let json = serde_json::to_string(&edge).unwrap();
+        let restored: Edge = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.rel_type, "causes");
+        assert_eq!(restored.causal_level, Some(CausalLevel::Counterfactual));
+    }
+}

@@ -76,3 +76,62 @@ impl Extraction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_type_roundtrip() {
+        assert_eq!(
+            ExtractedEntityType::from_str_opt("node"),
+            Some(ExtractedEntityType::Node)
+        );
+        assert_eq!(
+            ExtractedEntityType::from_str_opt("edge"),
+            Some(ExtractedEntityType::Edge)
+        );
+        assert_eq!(ExtractedEntityType::from_str_opt("other"), None);
+    }
+
+    #[test]
+    fn entity_type_as_str() {
+        assert_eq!(ExtractedEntityType::Node.as_str(), "node");
+        assert_eq!(ExtractedEntityType::Edge.as_str(), "edge");
+    }
+
+    #[test]
+    fn extraction_new_defaults() {
+        let chunk_id = ChunkId::new();
+        let entity_id = uuid::Uuid::new_v4();
+        let ext = Extraction::new(
+            chunk_id,
+            ExtractedEntityType::Node,
+            entity_id,
+            "llm_gpt4".into(),
+            0.95,
+        );
+
+        assert_eq!(ext.chunk_id, chunk_id);
+        assert_eq!(ext.entity_type, "node");
+        assert_eq!(ext.entity_id, entity_id);
+        assert_eq!(ext.extraction_method, "llm_gpt4");
+        assert!((ext.confidence - 0.95).abs() < 1e-10);
+        assert!(!ext.is_superseded);
+    }
+
+    #[test]
+    fn extraction_serde_roundtrip() {
+        let ext = Extraction::new(
+            ChunkId::new(),
+            ExtractedEntityType::Edge,
+            uuid::Uuid::new_v4(),
+            "ner_spacy".into(),
+            0.8,
+        );
+        let json = serde_json::to_string(&ext).unwrap();
+        let restored: Extraction = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.entity_type, "edge");
+        assert_eq!(restored.extraction_method, "ner_spacy");
+    }
+}

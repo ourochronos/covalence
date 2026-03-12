@@ -208,3 +208,117 @@ impl Source {
         self.reliability_score = self.trust_alpha / (self.trust_alpha + self.trust_beta);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_type_roundtrip() {
+        let types = [
+            SourceType::Document,
+            SourceType::WebPage,
+            SourceType::Conversation,
+            SourceType::Code,
+            SourceType::Api,
+            SourceType::Manual,
+            SourceType::ToolOutput,
+            SourceType::Observation,
+        ];
+        for st in &types {
+            let s = st.as_str();
+            let parsed = SourceType::from_str_opt(s);
+            assert_eq!(parsed, Some(st.clone()), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn source_type_from_str_unknown() {
+        assert!(SourceType::from_str_opt("unknown").is_none());
+        assert!(SourceType::from_str_opt("").is_none());
+        assert!(SourceType::from_str_opt("Document").is_none()); // case-sensitive
+    }
+
+    #[test]
+    fn source_type_serde_roundtrip() {
+        let st = SourceType::WebPage;
+        let json = serde_json::to_string(&st).unwrap();
+        assert_eq!(json, "\"web_page\"");
+        let parsed: SourceType = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, SourceType::WebPage);
+    }
+
+    #[test]
+    fn initial_trust_priors() {
+        // Document should have highest trust
+        let (a, b) = SourceType::Document.initial_trust();
+        assert!((a / (a + b) - 0.80).abs() < 0.01);
+
+        // Conversation should be lower
+        let (a, b) = SourceType::Conversation.initial_trust();
+        assert!((a / (a + b) - 0.50).abs() < 0.01);
+
+        // Observation should be lowest
+        let (a, b) = SourceType::Observation.initial_trust();
+        assert!((a / (a + b) - 0.40).abs() < 0.01);
+    }
+
+    #[test]
+    fn update_class_roundtrip() {
+        let classes = [
+            UpdateClass::AppendOnly,
+            UpdateClass::Versioned,
+            UpdateClass::Correction,
+            UpdateClass::Refactor,
+            UpdateClass::Takedown,
+        ];
+        for uc in &classes {
+            let s = uc.as_str();
+            let parsed = UpdateClass::from_str_opt(s);
+            assert_eq!(parsed, Some(uc.clone()), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn update_class_from_str_unknown() {
+        assert!(UpdateClass::from_str_opt("unknown").is_none());
+    }
+
+    #[test]
+    fn requires_invalidation() {
+        assert!(!UpdateClass::AppendOnly.requires_invalidation());
+        assert!(!UpdateClass::Versioned.requires_invalidation());
+        assert!(UpdateClass::Correction.requires_invalidation());
+        assert!(!UpdateClass::Refactor.requires_invalidation());
+        assert!(UpdateClass::Takedown.requires_invalidation());
+    }
+
+    #[test]
+    fn source_new_uses_type_trust() {
+        let source = Source::new(SourceType::Document, vec![0u8; 32]);
+        assert_eq!(source.trust_alpha, 4.0);
+        assert_eq!(source.trust_beta, 1.0);
+        assert!((source.reliability_score - 0.80).abs() < 0.01);
+        assert_eq!(source.content_version, 1);
+        assert_eq!(source.clearance_level, ClearanceLevel::default());
+    }
+
+    #[test]
+    fn recompute_reliability_updates_cached() {
+        let mut source = Source::new(SourceType::Document, vec![0u8; 32]);
+        // Manually change alpha/beta
+        source.trust_alpha = 2.0;
+        source.trust_beta = 3.0;
+        source.recompute_reliability();
+        assert!((source.reliability_score - 0.4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn source_serde_roundtrip() {
+        let source = Source::new(SourceType::Code, vec![1, 2, 3]);
+        let json = serde_json::to_string(&source).unwrap();
+        let restored: Source = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.source_type, "code");
+        assert_eq!(restored.content_hash, vec![1, 2, 3]);
+    }
+}

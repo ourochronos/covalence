@@ -178,3 +178,115 @@ impl ExtractionMethod {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ids::SourceId;
+
+    #[test]
+    fn chunk_level_roundtrip() {
+        let levels = [
+            ChunkLevel::Document,
+            ChunkLevel::Section,
+            ChunkLevel::Paragraph,
+            ChunkLevel::Sentence,
+        ];
+        for level in &levels {
+            let s = level.as_str();
+            let parsed = ChunkLevel::from_str_opt(s);
+            assert_eq!(parsed, Some(level.clone()), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn chunk_level_unknown() {
+        assert!(ChunkLevel::from_str_opt("unknown").is_none());
+        assert!(ChunkLevel::from_str_opt("").is_none());
+    }
+
+    #[test]
+    fn extraction_method_roundtrip() {
+        let methods = [
+            ExtractionMethod::EmbeddingLinkage,
+            ExtractionMethod::DeltaCheck,
+            ExtractionMethod::FullExtraction,
+            ExtractionMethod::FullExtractionWithReview,
+        ];
+        for method in &methods {
+            let s = method.as_str();
+            let parsed = ExtractionMethod::from_str_opt(s);
+            assert_eq!(parsed, Some(method.clone()), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn extraction_method_unknown() {
+        assert!(ExtractionMethod::from_str_opt("unknown").is_none());
+    }
+
+    #[test]
+    fn chunk_new_defaults() {
+        let source_id = SourceId::new();
+        let chunk = Chunk::new(
+            source_id,
+            ChunkLevel::Paragraph,
+            0,
+            "Hello world".into(),
+            vec![0u8; 32],
+            3,
+        );
+
+        assert_eq!(chunk.source_id, source_id);
+        assert_eq!(chunk.level, "paragraph");
+        assert_eq!(chunk.ordinal, 0);
+        assert_eq!(chunk.content, "Hello world");
+        assert_eq!(chunk.token_count, 3);
+        assert!(chunk.parent_chunk_id.is_none());
+        assert!(chunk.contextual_prefix.is_none());
+        assert!(chunk.parent_alignment.is_none());
+        assert!(chunk.extraction_method.is_none());
+        assert!(chunk.byte_start.is_none());
+        assert_eq!(chunk.clearance_level, ClearanceLevel::default());
+    }
+
+    #[test]
+    fn chunk_builder_chain() {
+        let source_id = SourceId::new();
+        let parent_id = ChunkId::new();
+        let meta = serde_json::json!({"heading": "Chapter 1"});
+
+        let chunk = Chunk::new(
+            source_id,
+            ChunkLevel::Section,
+            1,
+            "Content".into(),
+            vec![0u8; 32],
+            2,
+        )
+        .with_parent(parent_id)
+        .with_hierarchy("Doc > Chapter 1".into())
+        .with_metadata(meta.clone());
+
+        assert_eq!(chunk.parent_chunk_id, Some(parent_id));
+        assert_eq!(chunk.structural_hierarchy, "Doc > Chapter 1");
+        assert_eq!(chunk.metadata, meta);
+    }
+
+    #[test]
+    fn chunk_serde_roundtrip() {
+        let chunk = Chunk::new(
+            SourceId::new(),
+            ChunkLevel::Document,
+            0,
+            "Test content".into(),
+            vec![1, 2, 3],
+            5,
+        );
+        let json = serde_json::to_string(&chunk).unwrap();
+        let restored: Chunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.content, "Test content");
+        assert_eq!(restored.level, "document");
+        assert_eq!(restored.token_count, 5);
+    }
+}

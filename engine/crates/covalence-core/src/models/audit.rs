@@ -134,3 +134,91 @@ impl AuditLog {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_action_roundtrip() {
+        let actions = [
+            AuditAction::MergeNodes,
+            AuditAction::SplitNode,
+            AuditAction::PruneBmr,
+            AuditAction::Takedown,
+            AuditAction::ClearancePromote,
+            AuditAction::ClearanceDemote,
+            AuditAction::ArticleRecompile,
+            AuditAction::TrustUpdate,
+            AuditAction::SourceIngest,
+            AuditAction::EdgeCreate,
+            AuditAction::ConfidenceUpdate,
+            AuditAction::NodeCorrect,
+            AuditAction::EdgeCorrect,
+            AuditAction::EdgeDelete,
+            AuditAction::NodeAnnotate,
+            AuditAction::SearchFeedback,
+            AuditAction::AdminAction,
+        ];
+        for action in &actions {
+            let s = action.as_str();
+            let parsed = AuditAction::from_str_opt(s);
+            assert_eq!(parsed, Some(action.clone()), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn audit_action_unknown() {
+        assert!(AuditAction::from_str_opt("UNKNOWN").is_none());
+        assert!(AuditAction::from_str_opt("merge_nodes").is_none()); // case-sensitive
+    }
+
+    #[test]
+    fn audit_action_serde() {
+        let action = AuditAction::MergeNodes;
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(json, "\"MERGE_NODES\"");
+        let parsed: AuditAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, AuditAction::MergeNodes);
+    }
+
+    #[test]
+    fn audit_log_new() {
+        let log = AuditLog::new(
+            AuditAction::SourceIngest,
+            "system:pipeline".into(),
+            serde_json::json!({"source_id": "abc"}),
+        );
+        assert_eq!(log.action, "SOURCE_INGEST");
+        assert_eq!(log.actor, "system:pipeline");
+        assert!(log.target_type.is_none());
+        assert!(log.target_id.is_none());
+    }
+
+    #[test]
+    fn audit_log_with_target() {
+        let target_id = uuid::Uuid::new_v4();
+        let log = AuditLog::new(
+            AuditAction::NodeCorrect,
+            "user:admin".into(),
+            serde_json::json!({}),
+        )
+        .with_target("node", target_id);
+
+        assert_eq!(log.target_type.as_deref(), Some("node"));
+        assert_eq!(log.target_id, Some(target_id));
+    }
+
+    #[test]
+    fn audit_log_serde_roundtrip() {
+        let log = AuditLog::new(
+            AuditAction::Takedown,
+            "system".into(),
+            serde_json::json!({"reason": "retracted"}),
+        );
+        let json = serde_json::to_string(&log).unwrap();
+        let restored: AuditLog = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.action, "TAKEDOWN");
+        assert_eq!(restored.actor, "system");
+    }
+}
