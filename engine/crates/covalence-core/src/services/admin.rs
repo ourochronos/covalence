@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
+use sqlx::Row;
 
 use crate::consolidation::batch::BatchJob;
 use crate::consolidation::graph_batch::GraphBatchConsolidator;
@@ -49,8 +50,20 @@ pub struct Metrics {
     pub graph_nodes: usize,
     /// Number of edges in the graph sidecar.
     pub graph_edges: usize,
+    /// Number of semantic (non-synthetic) edges.
+    pub semantic_edge_count: usize,
+    /// Number of synthetic (co-occurrence) edges.
+    pub synthetic_edge_count: usize,
+    /// Number of weakly connected components.
+    pub component_count: usize,
     /// Number of sources in the database.
     pub source_count: i64,
+    /// Number of chunks in the database.
+    pub chunk_count: i64,
+    /// Number of articles in the database.
+    pub article_count: i64,
+    /// Number of search traces in the database.
+    pub search_trace_count: i64,
 }
 
 /// Health status of the system.
@@ -345,14 +358,37 @@ impl AdminService {
         Ok(())
     }
 
-    /// Get service metrics: graph node/edge counts and source count.
+    /// Get service metrics: graph stats, entity counts, trace count.
     pub async fn metrics(&self) -> Result<Metrics> {
         let stats = self.graph_stats().await;
         let source_count = SourceRepo::count(&*self.repo).await?;
+
+        let chunk_row = sqlx::query("SELECT COUNT(*) as count FROM chunks")
+            .fetch_one(self.repo.pool())
+            .await?;
+        let chunk_count: i64 = chunk_row.get("count");
+
+        let article_row = sqlx::query("SELECT COUNT(*) as count FROM articles")
+            .fetch_one(self.repo.pool())
+            .await?;
+        let article_count: i64 = article_row.get("count");
+
+        let trace_row =
+            sqlx::query("SELECT COUNT(*) as count FROM search_traces")
+                .fetch_one(self.repo.pool())
+                .await?;
+        let search_trace_count: i64 = trace_row.get("count");
+
         Ok(Metrics {
             graph_nodes: stats.node_count,
             graph_edges: stats.edge_count,
+            semantic_edge_count: stats.semantic_edge_count,
+            synthetic_edge_count: stats.synthetic_edge_count,
+            component_count: stats.component_count,
             source_count,
+            chunk_count,
+            article_count,
+            search_trace_count,
         })
     }
 

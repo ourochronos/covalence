@@ -94,9 +94,15 @@ var adminMetricsCmd = &cobra.Command{
 			return internal.PrintJSON(result)
 		}
 
-		fmt.Printf("Graph Nodes: %s\n", getString(result, "graph_nodes"))
-		fmt.Printf("Graph Edges: %s\n", getString(result, "graph_edges"))
-		fmt.Printf("Sources:     %s\n", getString(result, "source_count"))
+		fmt.Printf("Graph Nodes:      %s\n", getString(result, "graph_nodes"))
+		fmt.Printf("Graph Edges:      %s\n", getString(result, "graph_edges"))
+		fmt.Printf("  Semantic:       %s\n", getString(result, "semantic_edge_count"))
+		fmt.Printf("  Synthetic:      %s\n", getString(result, "synthetic_edge_count"))
+		fmt.Printf("Components:       %s\n", getString(result, "component_count"))
+		fmt.Printf("Sources:          %s\n", getString(result, "source_count"))
+		fmt.Printf("Chunks:           %s\n", getString(result, "chunk_count"))
+		fmt.Printf("Articles:         %s\n", getString(result, "article_count"))
+		fmt.Printf("Search Traces:    %s\n", getString(result, "search_trace_count"))
 		return nil
 	},
 }

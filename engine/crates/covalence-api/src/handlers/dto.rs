@@ -561,7 +561,13 @@ pub struct HealthResponse {
 pub struct MetricsResponse {
     pub graph_nodes: usize,
     pub graph_edges: usize,
+    pub semantic_edge_count: usize,
+    pub synthetic_edge_count: usize,
+    pub component_count: usize,
     pub source_count: i64,
+    pub chunk_count: i64,
+    pub article_count: i64,
+    pub search_trace_count: i64,
 }
 
 // --- Knowledge Curation ---

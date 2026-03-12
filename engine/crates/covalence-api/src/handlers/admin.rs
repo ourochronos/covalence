@@ -249,7 +249,13 @@ pub async fn metrics(State(state): State<AppState>) -> Result<Json<MetricsRespon
     Ok(Json(MetricsResponse {
         graph_nodes: m.graph_nodes,
         graph_edges: m.graph_edges,
+        semantic_edge_count: m.semantic_edge_count,
+        synthetic_edge_count: m.synthetic_edge_count,
+        component_count: m.component_count,
         source_count: m.source_count,
+        chunk_count: m.chunk_count,
+        article_count: m.article_count,
+        search_trace_count: m.search_trace_count,
     }))
 }
 
