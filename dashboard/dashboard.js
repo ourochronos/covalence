@@ -75,19 +75,31 @@ async function fetchGraphStats() {
   }
 }
 
+function titleFromUri(uri) {
+  if (!uri) return null;
+  // Extract filename from path-like URIs
+  const parts = uri.split("/");
+  const last = parts[parts.length - 1];
+  if (last && last !== "") return last;
+  return null;
+}
+
 async function fetchSources() {
   try {
-    const sources = await apiFetch("/sources?limit=200");
-    document.getElementById("source-count").textContent = fmt(sources.length);
+    // Use metrics for the total count (accurate, not limited by pagination)
+    const [sources, metrics] = await Promise.all([
+      apiFetch("/sources?limit=8"),
+      apiFetch("/admin/metrics"),
+    ]);
+    document.getElementById("source-count").textContent = fmt(metrics.source_count);
 
-    // Count unique source types
+    // Count unique source types from recent batch
     const types = new Set(sources.map((s) => s.source_type));
     document.getElementById("source-types").textContent = types.size;
 
-    // Recent sources table (last 8)
-    const recent = sources.slice(0, 8);
+    // Recent sources table
     const container = document.getElementById("recent-sources");
-    if (recent.length === 0) {
+    if (sources.length === 0) {
       container.innerHTML = '<span class="dim">No sources</span>';
       return;
     }
@@ -95,12 +107,9 @@ async function fetchSources() {
       <thead><tr>
         <th>ID</th><th>Type</th><th>Title</th><th>Ingested</th>
       </tr></thead><tbody>`;
-    for (const s of recent) {
-      const title = s.title
-        ? s.title.length > 50
-          ? s.title.substring(0, 50) + "..."
-          : s.title
-        : "--";
+    for (const s of sources) {
+      let title = s.title || titleFromUri(s.uri) || "--";
+      if (title.length > 50) title = title.substring(0, 50) + "...";
       html += `<tr>
         <td class="mono">${shortId(s.id)}</td>
         <td>${s.source_type}</td>

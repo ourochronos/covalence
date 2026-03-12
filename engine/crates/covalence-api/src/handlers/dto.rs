@@ -623,6 +623,8 @@ pub struct MetricsResponse {
     pub component_count: usize,
     pub source_count: i64,
     pub chunk_count: i64,
+    /// Number of RAPTOR summary chunks.
+    pub summary_chunk_count: i64,
     pub article_count: i64,
     pub search_trace_count: i64,
 }

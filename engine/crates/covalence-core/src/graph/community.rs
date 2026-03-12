@@ -278,6 +278,40 @@ pub fn detect_landmarks(
         .collect()
 }
 
+/// Generate labels for communities using top landmark node names.
+///
+/// Modifies communities in place, setting `label` from the canonical
+/// names of the top-3 most structurally important nodes.
+pub fn label_communities(
+    graph: &StableDiGraph<NodeMeta, EdgeMeta>,
+    communities: &mut [Community],
+) {
+    let landmarks = detect_landmarks(graph, communities, 3);
+    for comm in communities.iter_mut() {
+        if comm.label.is_some() {
+            continue;
+        }
+        if let Some(ids) = landmarks.get(&comm.id) {
+            let names: Vec<&str> = ids
+                .iter()
+                .filter_map(|id| {
+                    graph.node_indices().find_map(|idx| {
+                        let meta = &graph[idx];
+                        if meta.id == *id {
+                            Some(meta.canonical_name.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            if !names.is_empty() {
+                comm.label = Some(names.join(", "));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,5 +602,31 @@ mod tests {
         let all = detect_communities_with_min_size(g.graph(), 1);
         let total_all: usize = all.iter().map(|c| c.node_ids.len()).sum();
         assert_eq!(total_all, 4);
+    }
+
+    #[test]
+    fn label_communities_from_landmarks() {
+        let mut g = GraphSidecar::new();
+        let a = add_node(&mut g, "Alpha");
+        let b = add_node(&mut g, "Beta");
+        let c = add_node(&mut g, "Gamma");
+        add_edge(&mut g, a, b);
+        add_edge(&mut g, b, a);
+        add_edge(&mut g, b, c);
+        add_edge(&mut g, c, b);
+        add_edge(&mut g, a, c);
+        add_edge(&mut g, c, a);
+
+        let mut comms = detect_communities(g.graph());
+        assert!(!comms.is_empty());
+        assert!(comms[0].label.is_none());
+
+        label_communities(g.graph(), &mut comms);
+        let label = comms[0].label.as_ref().expect("should have label");
+        // Label should contain at least one of the node names.
+        assert!(
+            label.contains("Alpha") || label.contains("Beta") || label.contains("Gamma"),
+            "label should contain node names, got: {label}"
+        );
     }
 }

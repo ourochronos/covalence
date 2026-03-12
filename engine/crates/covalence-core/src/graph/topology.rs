@@ -79,8 +79,9 @@ pub fn build_topology(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> TopologyMap 
         };
     }
 
-    // Step 1: Community detection
-    let communities = detect_communities(graph);
+    // Step 1: Community detection + labeling
+    let mut communities = detect_communities(graph);
+    super::community::label_communities(graph, &mut communities);
 
     // Step 2: PageRank
     let pr_scores = pagerank(graph, 0.85, 50);

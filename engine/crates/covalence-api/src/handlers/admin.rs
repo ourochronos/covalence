@@ -52,8 +52,9 @@ pub async fn graph_communities(
 ) -> Json<Vec<CommunityResponse>> {
     let min_size = params.min_size.unwrap_or(2);
     let graph = state.graph.read().await;
-    let communities =
+    let mut communities =
         covalence_core::graph::community::detect_communities_with_min_size(graph.graph(), min_size);
+    covalence_core::graph::community::label_communities(graph.graph(), &mut communities);
     Json(
         communities
             .into_iter()
@@ -280,6 +281,7 @@ pub async fn metrics(State(state): State<AppState>) -> Result<Json<MetricsRespon
         component_count: m.component_count,
         source_count: m.source_count,
         chunk_count: m.chunk_count,
+        summary_chunk_count: m.summary_chunk_count,
         article_count: m.article_count,
         search_trace_count: m.search_trace_count,
     }))
