@@ -21,5 +21,5 @@ dotenvy = { workspace = true }
 axum = "0.8"
 utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
-tower-http = { version = "0.6", features = ["cors", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "limit"] }
 base64 = "0.22"

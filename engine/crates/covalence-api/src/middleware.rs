@@ -57,7 +57,9 @@ pub async fn require_api_key(
 
 /// Returns `true` for paths that do not require authentication.
 fn is_public_path(path: &str) -> bool {
-    matches!(path, "/health" | "/openapi.json") || path.starts_with("/docs")
+    matches!(path, "/health" | "/openapi.json")
+        || path.starts_with("/docs")
+        || path.starts_with("/dashboard")
 }
 
 /// Build a 401 Unauthorized JSON response.
@@ -100,6 +102,15 @@ mod tests {
     fn docs_assets_are_public() {
         assert!(is_public_path("/docs/swagger-ui.css"));
         assert!(is_public_path("/docs/swagger-ui-bundle.js"));
+    }
+
+    #[test]
+    fn dashboard_is_public() {
+        assert!(is_public_path("/dashboard"));
+        assert!(is_public_path("/dashboard/"));
+        assert!(is_public_path("/dashboard/index.html"));
+        assert!(is_public_path("/dashboard/style.css"));
+        assert!(is_public_path("/dashboard/dashboard.js"));
     }
 
     #[test]

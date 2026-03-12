@@ -3,6 +3,7 @@
 use axum::Router;
 use axum::routing::{delete, get, post};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 
 use crate::handlers::{admin, edges, mcp, memory, nodes, search, sources};
@@ -69,9 +70,17 @@ pub fn router(state: AppState) -> Router {
             post(admin::synthesize_cooccurrence),
         );
 
+    // Resolve the dashboard directory relative to the working
+    // directory. The binary is typically run from the repo root,
+    // so `dashboard/` is a sibling of `engine/`.
+    let dashboard_dir = std::env::var("COVALENCE_DASHBOARD_DIR")
+        .unwrap_or_else(|_| "dashboard".to_string());
+
     Router::new()
         // Swagger UI + OpenAPI spec at root
         .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
+        // Dashboard — static files (public, no auth)
+        .nest_service("/dashboard", ServeDir::new(&dashboard_dir))
         // Root health check (convenience, no auth)
         .route("/health", get(admin::health))
         // Versioned API

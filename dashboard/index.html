@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Covalence Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Covalence</h1>
+    <div id="health-badge" class="badge loading">checking...</div>
+  </header>
+
+  <main>
+    <!-- Graph Stats -->
+    <section class="card" id="graph-card">
+      <h2>Knowledge Graph</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="node-count">--</span>
+          <span class="stat-label">Nodes</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="edge-count">--</span>
+          <span class="stat-label">Edges</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="density">--</span>
+          <span class="stat-label">Density</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="component-count">--</span>
+          <span class="stat-label">Components</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Sources -->
+    <section class="card" id="sources-card">
+      <h2>Sources</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="source-count">--</span>
+          <span class="stat-label">Total</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="source-types">--</span>
+          <span class="stat-label">Types</span>
+        </div>
+      </div>
+      <div id="recent-sources" class="table-container"></div>
+    </section>
+
+    <!-- Communities -->
+    <section class="card" id="communities-card">
+      <h2>Communities</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="community-count">--</span>
+          <span class="stat-label">Detected</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="largest-community">--</span>
+          <span class="stat-label">Largest</span>
+        </div>
+      </div>
+      <div id="community-list" class="list-container"></div>
+    </section>
+
+    <!-- Search Traces -->
+    <section class="card" id="traces-card">
+      <h2>Recent Searches</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="trace-count">--</span>
+          <span class="stat-label">Traced</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="avg-execution-ms">--</span>
+          <span class="stat-label">Avg ms</span>
+        </div>
+      </div>
+      <div id="recent-traces" class="table-container"></div>
+    </section>
+
+    <!-- Knowledge Gaps -->
+    <section class="card" id="gaps-card">
+      <h2>Knowledge Gaps</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="gap-count">--</span>
+          <span class="stat-label">Detected</span>
+        </div>
+      </div>
+      <div id="gap-list" class="list-container"></div>
+    </section>
+
+    <!-- Memory -->
+    <section class="card" id="memory-card">
+      <h2>Memory System</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="memory-count">--</span>
+          <span class="stat-label">Memories</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="entity-count">--</span>
+          <span class="stat-label">Entities</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="relationship-count">--</span>
+          <span class="stat-label">Relations</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Topology -->
+    <section class="card wide" id="topology-card">
+      <h2>Domain Topology</h2>
+      <div id="topology-map" class="topology-container"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Covalence v0.1.0</span>
+    <span id="last-refresh">--</span>
+    <button id="refresh-btn" onclick="refreshAll()">Refresh</button>
+  </footer>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
