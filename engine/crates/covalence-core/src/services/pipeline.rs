@@ -27,7 +27,7 @@ use crate::types::ids::{AliasId, ChunkId, NodeId, SourceId};
 
 use super::chunk_quality::{
     has_artifact_heading, is_author_block, is_bibliography_entry, is_boilerplate_heavy,
-    is_metadata_only, is_reference_section,
+    is_metadata_only, is_reference_section, is_title_only,
 };
 use super::ingestion_helpers::{
     compute_parent_alignment, detect_chunk_content_types, entity_name_lock_key,
@@ -168,6 +168,7 @@ impl SourceService {
             .into_iter()
             .filter(|co| {
                 !is_metadata_only(&co.text)
+                    && !is_title_only(&co.text)
                     && !is_boilerplate_heavy(&co.text)
                     && !is_author_block(&co.text)
                     && !has_artifact_heading(&co.heading_path)

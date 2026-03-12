@@ -285,6 +285,46 @@ pub(crate) fn is_reference_section(text: &str) -> bool {
     ratio > 0.4
 }
 
+/// Detect "title-only" chunks: chunks where the content is just a
+/// heading or title with no body text. These occur when scraped pages
+/// emit a title element followed by empty whitespace or HTML fragments.
+///
+/// A chunk is title-only when it has ≤2 meaningful lines (non-blank,
+/// non-HTML-comment, non-whitespace-only) after cleanup.
+pub(crate) fn is_title_only(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false; // handled by is_metadata_only
+    }
+
+    let meaningful_lines: Vec<&str> = trimmed
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| {
+            !l.is_empty()
+                && !l.starts_with("-->")
+                && !l.starts_with("<!--")
+                && l.chars().any(|c| c.is_alphanumeric())
+        })
+        .collect();
+
+    // 0 or 1 meaningful lines = title-only
+    if meaningful_lines.len() <= 1 {
+        return true;
+    }
+
+    // 2 meaningful lines: if the second is also very short (< 30 chars)
+    // and looks like a subtitle or fragment, still title-only.
+    if meaningful_lines.len() == 2 {
+        let second = meaningful_lines[1];
+        if second.len() < 30 {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Returns `true` if any heading in the chunk's path matches a known
 /// web-scraping artifact heading.
 pub(crate) fn has_artifact_heading(heading_path: &[String]) -> bool {
@@ -623,5 +663,49 @@ mod tests {
             Provenance chains link assertions to their source material.\n\
             Fusion algorithms combine evidence from multiple dimensions.";
         assert!(!is_reference_section(text));
+    }
+
+    // --- Title-only tests ---
+
+    #[test]
+    fn title_only_arxiv_scraped() {
+        // Exact pattern from production: title + whitespace padding + HTML comment
+        let text = "[2309.11798] A Comprehensive Review of Community Detection in Graphs\n \
+            \n \n \n \n \n \n \n \n \n \n \n \n \n \n \n \n\n \n \n \n \n \n\n \n \n \n \n\n \n \n\n \n \n-->";
+        assert!(is_title_only(text));
+    }
+
+    #[test]
+    fn title_only_single_heading() {
+        assert!(is_title_only("# Introduction"));
+        assert!(is_title_only("## Methods and Evaluation"));
+    }
+
+    #[test]
+    fn title_only_with_short_subtitle() {
+        let text = "Graph Neural Networks\nA brief overview";
+        assert!(is_title_only(text));
+    }
+
+    #[test]
+    fn not_title_only_has_body() {
+        let text = "# Introduction\n\nThis paper presents a novel approach to entity resolution \
+            using knowledge graph embeddings. We show that combining vector similarity with \
+            graph neighborhood analysis improves F1 by 12%.";
+        assert!(!is_title_only(text));
+    }
+
+    #[test]
+    fn not_title_only_multi_paragraph() {
+        let text = "Graph algorithms\n\n\
+            Community detection partitions graphs into densely connected subgroups.\n\
+            Several approaches exist, including modularity optimization and spectral methods.";
+        assert!(!is_title_only(text));
+    }
+
+    #[test]
+    fn title_only_empty_handled() {
+        // Empty text is handled by is_metadata_only, not is_title_only
+        assert!(!is_title_only(""));
     }
 }

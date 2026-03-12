@@ -894,7 +894,8 @@ impl SearchService {
         // sections, boilerplate, and metadata-only chunks.
         {
             use super::chunk_quality::{
-                is_bibliography_entry, is_boilerplate_heavy, is_metadata_only, is_reference_section,
+                is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
+                is_reference_section, is_title_only,
             };
 
             let mut demoted = 0usize;
@@ -910,6 +911,7 @@ impl SearchService {
                     || is_reference_section(content)
                     || is_boilerplate_heavy(content)
                     || is_metadata_only(content)
+                    || is_title_only(content)
                 {
                     result.fused_score *= 0.1;
                     demoted += 1;
