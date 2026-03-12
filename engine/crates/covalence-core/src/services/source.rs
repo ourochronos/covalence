@@ -491,6 +491,9 @@ impl SourceService {
                 NodeAliasRepo::clear_source_chunks(&*self.repo, info.old_source_id).await?;
             let chunks_deleted =
                 ChunkRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
+            // Null out old source embedding so it doesn't appear in
+            // vector search results.
+            SourceRepo::clear_embedding(&*self.repo, info.old_source_id).await?;
             tracing::info!(
                 old_source = %info.old_source_id,
                 ext_deleted,

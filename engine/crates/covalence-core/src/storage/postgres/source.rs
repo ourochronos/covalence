@@ -194,6 +194,14 @@ impl SourceRepo for PgRepo {
         .await?;
         Ok(())
     }
+
+    async fn clear_embedding(&self, id: SourceId) -> Result<()> {
+        sqlx::query("UPDATE sources SET embedding = NULL WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {

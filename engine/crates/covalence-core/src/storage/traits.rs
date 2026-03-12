@@ -52,6 +52,10 @@ pub trait SourceRepo: Send + Sync {
         id: SourceId,
         embedding: &[f64],
     ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Clear the embedding for a superseded source so it doesn't
+    /// appear in vector search results.
+    fn clear_embedding(&self, id: SourceId) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Chunk`] entities.
