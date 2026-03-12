@@ -375,6 +375,11 @@ impl NodeService {
             node.description = Some(desc.clone());
         }
         if let Some(conf) = confidence {
+            if !conf.is_finite() || !(0.0..=1.0).contains(&conf) {
+                return Err(crate::error::Error::InvalidInput(format!(
+                    "confidence must be finite and in [0.0, 1.0], got {conf}"
+                )));
+            }
             changes.insert("confidence".into(), serde_json::json!({ "new": conf }));
             // Store as a simple belief opinion.
             node.confidence_breakdown =

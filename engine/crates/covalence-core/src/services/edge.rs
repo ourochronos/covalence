@@ -65,6 +65,11 @@ impl EdgeService {
             edge.rel_type = rt.clone();
         }
         if let Some(conf) = confidence {
+            if !conf.is_finite() || !(0.0..=1.0).contains(&conf) {
+                return Err(crate::error::Error::InvalidInput(format!(
+                    "confidence must be finite and in [0.0, 1.0], got {conf}"
+                )));
+            }
             changes.insert(
                 "confidence".into(),
                 serde_json::json!({

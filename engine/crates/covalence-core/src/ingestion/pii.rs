@@ -38,23 +38,23 @@ pub struct RegexPiiDetector {
 
 impl RegexPiiDetector {
     /// Create a new regex-based PII detector with default patterns.
-    pub fn new() -> Self {
-        Self {
+    ///
+    /// Returns an error if any regex pattern fails to compile (should
+    /// not happen with the hardcoded patterns, but avoids unwrap in
+    /// library code).
+    pub fn new() -> crate::error::Result<Self> {
+        Ok(Self {
             email_re: Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-                .unwrap_or_else(|_| Regex::new("(?:)").unwrap()),
-            phone_re: Regex::new(r"(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}")
-                .unwrap_or_else(|_| Regex::new("(?:)").unwrap()),
+                .map_err(|e| crate::error::Error::Config(format!("email regex: {e}")))?,
+            phone_re: Regex::new(
+                r"(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+            )
+            .map_err(|e| crate::error::Error::Config(format!("phone regex: {e}")))?,
             ssn_re: Regex::new(r"\b\d{3}[-]\d{2}[-]\d{4}\b")
-                .unwrap_or_else(|_| Regex::new("(?:)").unwrap()),
+                .map_err(|e| crate::error::Error::Config(format!("ssn regex: {e}")))?,
             credit_card_re: Regex::new(r"\b(?:\d{4}[-\s]?){3}\d{4}\b")
-                .unwrap_or_else(|_| Regex::new("(?:)").unwrap()),
-        }
-    }
-}
-
-impl Default for RegexPiiDetector {
-    fn default() -> Self {
-        Self::new()
+                .map_err(|e| crate::error::Error::Config(format!("credit card regex: {e}")))?,
+        })
     }
 }
 
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn detect_email() {
-        let detector = RegexPiiDetector::new();
+        let detector = RegexPiiDetector::new().unwrap();
         let text = "Contact me at user@example.com for info.";
         let matches = detector.detect(text);
         assert_eq!(matches.len(), 1);
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn detect_phone() {
-        let detector = RegexPiiDetector::new();
+        let detector = RegexPiiDetector::new().unwrap();
         let text = "Call me at (555) 123-4567 or 555.987.6543.";
         let matches = detector.detect(text);
         assert!(matches.len() >= 2);
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn detect_ssn() {
-        let detector = RegexPiiDetector::new();
+        let detector = RegexPiiDetector::new().unwrap();
         let text = "SSN: 123-45-6789 is sensitive.";
         let matches = detector.detect(text);
         assert_eq!(matches.len(), 1);
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn detect_credit_card() {
-        let detector = RegexPiiDetector::new();
+        let detector = RegexPiiDetector::new().unwrap();
         let text = "Card: 4111-1111-1111-1111 on file.";
         let matches = detector.detect(text);
         assert_eq!(matches.len(), 1);
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn detect_multiple_types() {
-        let detector = RegexPiiDetector::new();
+        let detector = RegexPiiDetector::new().unwrap();
         let text = "Email: test@example.com, SSN: 987-65-4321, \
              Phone: (415) 555-0100";
         let matches = detector.detect(text);
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn no_pii_returns_empty() {
-        let detector = RegexPiiDetector::new();
+        let detector = RegexPiiDetector::new().unwrap();
         let text = "This is a perfectly clean text with no PII.";
         let matches = detector.detect(text);
         assert!(matches.is_empty());
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn matches_sorted_by_position() {
-        let detector = RegexPiiDetector::new();
+        let detector = RegexPiiDetector::new().unwrap();
         let text = "SSN: 111-22-3333, email: a@b.com, phone: (555) 111-2222";
         let matches = detector.detect(text);
         for i in 1..matches.len() {
