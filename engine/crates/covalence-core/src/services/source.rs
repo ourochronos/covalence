@@ -422,12 +422,21 @@ impl SourceService {
         // Create source record
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
-        // Title priority: metadata.title override > parsed title.
+        // Title priority: metadata.title > filename from URI (for
+        // code sources) > parsed title > last URI segment.
+        // Code sources get special treatment: the parsed title is
+        // always "Preamble" (from the generated markdown), which is
+        // not useful. Use the filename instead.
+        let uri_filename = uri.and_then(|u| {
+            u.rsplit('/').next().map(|f| f.to_string())
+        });
         source.title = metadata
             .get("title")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or(parsed.title);
+            .or_else(|| if is_code { uri_filename.clone() } else { None })
+            .or(parsed.title)
+            .or(uri_filename);
         // Author priority: metadata.authors[0] > metadata.author >
         // parsed author.
         source.author = metadata
