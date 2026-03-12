@@ -357,7 +357,46 @@ impl SearchService {
             }
         }
 
-        // --- Step 5b: Redistribute weight from empty dimensions ---
+        // --- Step 5b: Per-dimension quality gating ---
+        // A non-discriminating dimension (where all results have
+        // nearly identical scores) adds noise to fusion without
+        // providing ranking signal. Reduce its weight proportionally
+        // to its discrimination power (score spread).
+        // Based on: "Balancing the Blend" (2508.01405) — a weak
+        // retrieval path substantially degrades fused accuracy.
+        for (list, weight) in ranked_lists.iter().zip(weights.iter_mut()) {
+            if list.len() < 2 {
+                continue;
+            }
+            let max_score = list
+                .iter()
+                .map(|r| r.score)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let min_score = list
+                .iter()
+                .map(|r| r.score)
+                .fold(f64::INFINITY, f64::min);
+            let spread = if max_score > 0.0 {
+                (max_score - min_score) / max_score
+            } else {
+                0.0
+            };
+            // If spread < 0.05 (less than 5% relative difference
+            // between best and worst), the dimension isn't
+            // discriminating. Scale its weight by the spread ratio.
+            if spread < 0.05 {
+                let dampening = spread / 0.05;
+                tracing::debug!(
+                    spread,
+                    dampening,
+                    original_weight = *weight,
+                    "quality gate dampened non-discriminating dimension"
+                );
+                *weight *= dampening;
+            }
+        }
+
+        // --- Step 5c: Redistribute weight from empty dimensions ---
         // If a dimension returned 0 results (e.g., global with no
         // community summaries), its weight is wasted in RRF.
         // Redistribute it proportionally to non-empty dimensions so
@@ -767,11 +806,6 @@ impl SearchService {
     }
 
     /// Execute a search and return the full response including
-    /// abstention status and execution trace.
-    ///
-    /// This is the richer variant of [`search`] that returns
-    /// metadata alongside results. The `search` method remains
-    /// the primary API for backward compatibility.
     /// Assemble fused results into a context string suitable
     /// for LLM generation.
     ///
@@ -799,7 +833,7 @@ impl SearchService {
                 RawContextItem {
                     content,
                     source_id: r.source_uri.clone().or_else(|| r.entity_type.clone()),
-                    source_title: r.name.clone(),
+                    source_title: r.source_title.clone().or_else(|| r.name.clone()),
                     score: r.fused_score,
                     token_count,
                     embedding: None,
