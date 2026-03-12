@@ -43,7 +43,7 @@ fn landmark_node_from_row(row: &sqlx::postgres::PgRow) -> Node {
         description: row.get("description"),
         properties: row.get("properties"),
         confidence_breakdown: confidence_json.as_ref().and_then(Opinion::from_json),
-        clearance_level: ClearanceLevel::from_i32(clearance_i32).unwrap_or_default(),
+        clearance_level: ClearanceLevel::from_i32_or_default(clearance_i32),
         first_seen: row.get("first_seen"),
         last_seen: row.get("last_seen"),
         mention_count: row.get("mention_count"),

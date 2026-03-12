@@ -316,7 +316,7 @@ fn chunk_from_row(row: &sqlx::postgres::PgRow) -> Chunk {
         contextual_prefix: row.get("contextual_prefix"),
         token_count: row.get("token_count"),
         structural_hierarchy: row.get("structural_hierarchy"),
-        clearance_level: ClearanceLevel::from_i32(clearance_i32).unwrap_or_default(),
+        clearance_level: ClearanceLevel::from_i32_or_default(clearance_i32),
         parent_alignment: row.get("parent_alignment"),
         extraction_method: row.get("extraction_method"),
         landscape_metrics: row.get("landscape_metrics"),

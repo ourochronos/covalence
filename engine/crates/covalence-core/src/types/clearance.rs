@@ -30,6 +30,20 @@ impl ClearanceLevel {
         }
     }
 
+    /// Convert from integer, defaulting to `LocalStrict` and logging
+    /// a warning if the value is invalid. Use this in `from_row`
+    /// functions where an invalid DB value should surface as a
+    /// diagnostic rather than silently defaulting.
+    pub fn from_i32_or_default(value: i32) -> Self {
+        Self::from_i32(value).unwrap_or_else(|| {
+            tracing::warn!(
+                value,
+                "invalid clearance_level in database, defaulting to LocalStrict"
+            );
+            Self::default()
+        })
+    }
+
     /// Get the integer value.
     pub fn as_i32(self) -> i32 {
         self as i32

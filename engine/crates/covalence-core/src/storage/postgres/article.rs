@@ -163,7 +163,7 @@ fn article_from_row(row: &sqlx::postgres::PgRow) -> Article {
         version: row.get("version"),
         content_hash: row.get("content_hash"),
         source_node_ids: source_uuids.into_iter().map(NodeId::from_uuid).collect(),
-        clearance_level: ClearanceLevel::from_i32(clearance_i32).unwrap_or_default(),
+        clearance_level: ClearanceLevel::from_i32_or_default(clearance_i32),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }

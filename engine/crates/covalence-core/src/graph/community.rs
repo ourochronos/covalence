@@ -223,7 +223,9 @@ fn compute_component_coherence(
     members: &HashSet<NodeIndex>,
 ) -> f64 {
     if members.len() <= 1 {
-        return 1.0;
+        // A single node has no edges to itself, so coherence is
+        // undefined. Return 0.0 rather than a misleading 1.0.
+        return 0.0;
     }
 
     let mut internal_weight = 0.0;
@@ -513,6 +515,26 @@ mod tests {
                 comm.coherence
             );
         }
+    }
+
+    #[test]
+    fn single_node_coherence_is_zero() {
+        // A single node with no edges to itself should have
+        // coherence 0.0, not a misleading 1.0.
+        let mut g: StableDiGraph<NodeMeta, EdgeMeta> = StableDiGraph::new();
+        let idx = g.add_node(NodeMeta {
+            id: Uuid::new_v4(),
+            node_type: "concept".to_string(),
+            canonical_name: "Solo".to_string(),
+            clearance_level: 0,
+        });
+
+        let members: HashSet<NodeIndex> = std::iter::once(idx).collect();
+        let c = compute_component_coherence(&g, &members);
+        assert!(
+            c.abs() < 1e-10,
+            "single-node coherence should be 0.0, got {c}"
+        );
     }
 
     #[test]

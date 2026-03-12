@@ -240,7 +240,7 @@ fn edge_from_row(row: &sqlx::postgres::PgRow) -> Edge {
         weight: row.get("weight"),
         confidence: row.get("confidence"),
         confidence_breakdown: confidence_json.as_ref().and_then(Opinion::from_json),
-        clearance_level: ClearanceLevel::from_i32(clearance_i32).unwrap_or_default(),
+        clearance_level: ClearanceLevel::from_i32_or_default(clearance_i32),
         is_synthetic: row.get("is_synthetic"),
         valid_from: row.get("valid_from"),
         valid_until: row.get("valid_until"),

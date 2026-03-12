@@ -212,7 +212,7 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
         trust_alpha: row.get("trust_alpha"),
         trust_beta: row.get("trust_beta"),
         reliability_score: row.get("reliability_score"),
-        clearance_level: ClearanceLevel::from_i32(clearance_i32).unwrap_or_default(),
+        clearance_level: ClearanceLevel::from_i32_or_default(clearance_i32),
         update_class: row.get("update_class"),
         supersedes_id: row.get("supersedes_id"),
         content_version: row.get("content_version"),
