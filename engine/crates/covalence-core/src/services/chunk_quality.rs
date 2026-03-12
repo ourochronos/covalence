@@ -120,8 +120,11 @@ pub(crate) fn is_boilerplate_line(line: &str) -> bool {
 /// email addresses with no substantive content.  These appear in scraped
 /// academic papers as the header block before the abstract.
 ///
-/// Heuristic: if ≥40% of non-blank lines contain an email indicator
-/// (`@` or `mailto:`) the chunk is considered an author block.
+/// Uses two heuristics:
+/// - Global: if ≥40% of non-blank lines contain an email indicator.
+/// - Prefix: if any of the first 6 non-blank lines contain an email
+///   address and a heading marker (######) appears later. This catches
+///   chunks where the author block is merged with the abstract.
 pub(crate) fn is_author_block(text: &str) -> bool {
     let lines: Vec<&str> = text
         .lines()
@@ -150,6 +153,21 @@ pub(crate) fn is_author_block(text: &str) -> bool {
         if ratio >= 0.4 {
             return true;
         }
+    }
+
+    // Pattern 3: email in the first 6 lines + heading later.
+    // Catches chunks where the author header is merged with the
+    // abstract (e.g., "Name1 Name2\n...\n@email\n######Abstract\n...").
+    let prefix = &lines[..lines.len().min(6)];
+    let has_prefix_email = prefix
+        .iter()
+        .any(|l| l.contains('@') || l.contains("mailto:"));
+    let has_later_heading = lines
+        .iter()
+        .skip(1)
+        .any(|l| l.starts_with('#'));
+    if has_prefix_email && has_later_heading {
+        return true;
     }
 
     false
@@ -658,6 +676,29 @@ mod tests {
     #[test]
     fn not_author_block_empty() {
         assert!(!is_author_block(""));
+    }
+
+    #[test]
+    fn author_block_merged_with_abstract() {
+        // Real-world case: arxiv paper header merged with abstract.
+        // Email is in the first 6 lines, heading appears later.
+        let text = "Zhuowan Li1 Cheng Li1 Mingyang Zhang1\n\
+                    Qiaozhu Mei2 Michael Bendersky1\n\
+                    1 Google DeepMind 2 University of Michigan\n\
+                    1 {zhuowan,chgli}@google.com 2 qmei@umich.edu\n\
+                    ###### Abstract\n\
+                    Retrieval Augmented Generation (RAG) has been a powerful tool.";
+        assert!(is_author_block(text));
+    }
+
+    #[test]
+    fn not_author_block_email_in_body_no_heading() {
+        // Email in first 6 lines but no later heading — could be
+        // legitimate content with a contact reference.
+        let text = "Contact the team at admin@example.com\n\
+                    for more information about the project.\n\
+                    We are based in San Francisco.";
+        assert!(!is_author_block(text));
     }
 
     // --- Reference section tests ---
