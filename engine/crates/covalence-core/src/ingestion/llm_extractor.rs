@@ -38,6 +38,12 @@ Rules:
 - Use consistent entity names (match the text exactly).
 - Confidence should reflect how clearly the text supports the extraction.
 - Do NOT extract entities from illustrative examples, hypothetical scenarios, or placeholder text (e.g. "suppose Alice sends a message to Bob", "for example, John works at Google"). These are not real facts.
+- Do NOT extract bibliographic references, citations, or items from reference/bibliography sections. Specifically:
+  - Do NOT extract paper titles that appear in citation contexts (e.g. "Retrieval-augmented generation for knowledge-intensive NLP tasks").
+  - Do NOT extract author names that appear only in citation contexts (e.g. "Lewis et al. (2020)", "Smith and Jones").
+  - Do NOT extract journal or conference names from citations (e.g. "Proceedings of NeurIPS", "arXiv preprint").
+  - Do NOT extract dataset names that are only mentioned in passing citations without substantive discussion.
+  - If an entity is BOTH cited AND substantively discussed in the text (i.e., the text explains what it is, how it works, or why it matters), then extract it. A bare mention like "as shown in [Smith 2020]" is NOT substantive discussion.
 - Return valid JSON only, no markdown fences or extra text."#;
 
 /// System prompt for relationship-only extraction (used in two-pass mode).
@@ -304,7 +310,7 @@ const PLACEHOLDER_NAMES: &[&str] = &[
 
 /// Returns true if the entity name is a noisy hub candidate that
 /// should be filtered out (bare years, pure numbers, placeholder
-/// names from examples, etc.).
+/// names from examples, citation patterns, etc.).
 fn is_noisy_entity(name: &str) -> bool {
     let trimmed = name.trim();
     // Reject bare numbers (e.g. "2024", "42")
@@ -324,6 +330,83 @@ fn is_noisy_entity(name: &str) -> bool {
     if PLACEHOLDER_NAMES.contains(&lower.as_str()) {
         return true;
     }
+    // Reject citation patterns: "Author et al. (YYYY)" or
+    // "Author and Author (YYYY)".
+    if is_citation_pattern(trimmed) {
+        return true;
+    }
+    // Reject arXiv identifiers (e.g. "arXiv:2501.00309",
+    // "arXiv preprint arXiv:2404.16130v1").
+    if lower.starts_with("arxiv:") || lower.starts_with("arxiv preprint") {
+        return true;
+    }
+    // Reject DOI references.
+    if lower.starts_with("doi:") || lower.starts_with("https://doi.org/") {
+        return true;
+    }
+    false
+}
+
+/// Returns true if the name looks like an academic citation:
+/// - "Author et al. (YYYY)"
+/// - "Author and Author (YYYY)"
+/// - "Author et al., YYYY"
+/// - "Author (YYYY)"
+fn is_citation_pattern(name: &str) -> bool {
+    // Must end with a year in parens or after a comma.
+    let has_paren_year = name
+        .rfind('(')
+        .and_then(|i| {
+            let after = &name[i + 1..];
+            let year_part = after.trim_end_matches(')').trim();
+            if year_part.len() == 4 && year_part.parse::<u16>().is_ok() {
+                Some(())
+            } else {
+                None
+            }
+        })
+        .is_some();
+
+    let has_comma_year = name
+        .rfind(',')
+        .and_then(|i| {
+            let after = name[i + 1..].trim();
+            if after.len() == 4 && after.parse::<u16>().is_ok() {
+                Some(())
+            } else {
+                None
+            }
+        })
+        .is_some();
+
+    if !has_paren_year && !has_comma_year {
+        return false;
+    }
+
+    // Check for "et al." or "and" — common citation connectors.
+    let lower = name.to_lowercase();
+    if lower.contains("et al") {
+        return true;
+    }
+
+    // "Author and Author (YYYY)" — at least one " and " before the year.
+    if lower.contains(" and ") && has_paren_year {
+        return true;
+    }
+
+    // Single author with year: "Author (YYYY)" — name part is short
+    // (no spaces or just one space for "First Last").
+    if has_paren_year {
+        if let Some(paren_pos) = name.rfind('(') {
+            let author_part = name[..paren_pos].trim();
+            let word_count = author_part.split_whitespace().count();
+            // Single author citations: 1-3 words before "(YYYY)".
+            if (1..=3).contains(&word_count) {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
@@ -614,6 +697,41 @@ mod tests {
         assert!(!is_noisy_entity("GPT-4o"));
         assert!(!is_noisy_entity("Anthropic"));
         assert!(!is_noisy_entity("HDBSCAN"));
+    }
+
+    #[test]
+    fn citation_patterns_filtered() {
+        // "et al." citations.
+        assert!(is_noisy_entity("Lewis et al. (2020)"));
+        assert!(is_noisy_entity("Trivedi et al. (2022)"));
+        assert!(is_noisy_entity("Kočiskỳ et al., 2018"));
+        // Author and Author citations.
+        assert!(is_noisy_entity("Smith and Jones (2021)"));
+        assert!(is_noisy_entity("Wang and Li (2023)"));
+        // Single author citations.
+        assert!(is_noisy_entity("Jøsang (2016)"));
+        assert!(is_noisy_entity("Dasigi (2021)"));
+        // arXiv identifiers.
+        assert!(is_noisy_entity("arXiv:2501.00309"));
+        assert!(is_noisy_entity("arXiv preprint arXiv:2404.16130v1"));
+        // DOI references.
+        assert!(is_noisy_entity("doi:10.1007/978-3-319-42337-1"));
+        assert!(is_noisy_entity("https://doi.org/10.1145/1234567"));
+    }
+
+    #[test]
+    fn real_entities_not_filtered_as_citations() {
+        // Real entity names that contain years but aren't citations.
+        assert!(!is_noisy_entity("GPT-4o"));
+        assert!(!is_noisy_entity("Subjective Logic"));
+        assert!(!is_noisy_entity("Reciprocal Rank Fusion"));
+        assert!(!is_noisy_entity("Louvain community detection"));
+        assert!(!is_noisy_entity("PostgreSQL 17"));
+        // Multi-word entity that happens to have "and" but no year.
+        assert!(!is_noisy_entity("Retrieval and Generation"));
+        // Named entity with parenthetical that isn't a year.
+        assert!(!is_noisy_entity("BERT (base)"));
+        assert!(!is_noisy_entity("GraphRAG (Microsoft)"));
     }
 
     #[test]

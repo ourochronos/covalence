@@ -13,6 +13,7 @@ var (
 	searchMinConfidence float64
 	searchNodeTypes     []string
 	searchSourceTypes   []string
+	searchSourceLayers  []string
 	searchMode          string
 	searchGranularity   string
 )
@@ -39,6 +40,9 @@ var searchCmd = &cobra.Command{
 		}
 		if len(searchSourceTypes) > 0 {
 			body["source_types"] = searchSourceTypes
+		}
+		if len(searchSourceLayers) > 0 {
+			body["source_layers"] = searchSourceLayers
 		}
 		if searchMode != "results" {
 			body["mode"] = searchMode
@@ -184,6 +188,8 @@ func init() {
 		"Filter by node types (comma-separated)")
 	searchCmd.Flags().StringSliceVar(&searchSourceTypes, "source-types", nil,
 		"Filter by source types (comma-separated, e.g. document,code)")
+	searchCmd.Flags().StringSliceVar(&searchSourceLayers, "source-layer", nil,
+		"Filter by source layer (comma-separated: spec,design,code,research)")
 	searchCmd.Flags().StringVar(&searchMode, "mode", "results",
 		"Delivery mode: results (default) or context")
 	searchCmd.Flags().StringVar(&searchGranularity, "granularity", "section",

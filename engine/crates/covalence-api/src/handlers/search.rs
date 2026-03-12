@@ -95,6 +95,7 @@ pub async fn search(
     let filters = if req.min_confidence.is_some()
         || req.node_types.is_some()
         || req.source_types.is_some()
+        || req.source_layers.is_some()
         || date_range.is_some()
     {
         Some(covalence_core::services::SearchFilters {
@@ -102,6 +103,7 @@ pub async fn search(
             node_types: req.node_types,
             date_range,
             source_types: req.source_types,
+            source_layers: req.source_layers,
         })
     } else {
         None

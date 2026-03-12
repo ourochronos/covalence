@@ -423,6 +423,7 @@ async fn dispatch_memory_recall(
             node_types: None,
             date_range: None,
             source_types: None,
+            source_layers: None,
         })
     } else {
         None

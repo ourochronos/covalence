@@ -47,6 +47,35 @@ pub struct SearchFilters {
     /// Restrict to specific source types (e.g. "document", "code").
     /// Applies only to chunk and source results.
     pub source_types: Option<Vec<String>>,
+    /// Restrict to specific source layers derived from source URI.
+    /// Layers: "spec", "design", "code", "research".
+    /// Applies only to chunk and source results.
+    pub source_layers: Option<Vec<String>>,
+}
+
+/// Derive a source layer from a source URI.
+///
+/// Layers classify sources by their role in the project:
+/// - `"spec"` — specification documents (`file://spec/`)
+/// - `"design"` — architecture decision records (`file://docs/adr/`)
+/// - `"code"` — source code (`file://engine/` or `file://cli/`)
+/// - `"research"` — external research (HTTP/HTTPS URLs)
+///
+/// Returns `None` if the URI doesn't match a known pattern.
+pub fn source_layer_from_uri(uri: &str) -> Option<&'static str> {
+    if uri.starts_with("file://spec/") {
+        Some("spec")
+    } else if uri.starts_with("file://docs/adr/") {
+        Some("design")
+    } else if uri.starts_with("file://engine/")
+        || uri.starts_with("file://cli/")
+    {
+        Some("code")
+    } else if uri.starts_with("http://") || uri.starts_with("https://") {
+        Some("research")
+    } else {
+        None
+    }
 }
 
 /// Service for orchestrating multi-dimensional search and RRF fusion.
@@ -944,6 +973,17 @@ impl SearchService {
                     r.source_type.as_ref().is_none_or(|st| types.contains(st))
                 });
             }
+            if let Some(ref layers) = f.source_layers {
+                fused.retain(|r| {
+                    // Pass through results with no source_uri (nodes,
+                    // articles without provenance). Filter chunks/sources
+                    // by their derived layer.
+                    r.source_uri
+                        .as_ref()
+                        .and_then(|uri| source_layer_from_uri(uri))
+                        .is_none_or(|layer| layers.iter().any(|l| l == layer))
+                });
+            }
         }
 
         // --- Step 10b: Source diversification + content dedup ---
@@ -1141,5 +1181,60 @@ impl SearchService {
             out.push_str(&format!("[{}] {}\n\n", item.ref_number, item.content));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_layer_spec() {
+        assert_eq!(
+            source_layer_from_uri("file://spec/01-architecture.md"),
+            Some("spec")
+        );
+        assert_eq!(
+            source_layer_from_uri("file://spec/05-ingestion.md"),
+            Some("spec")
+        );
+    }
+
+    #[test]
+    fn source_layer_design() {
+        assert_eq!(
+            source_layer_from_uri("file://docs/adr/0001-hybrid-property-graph.md"),
+            Some("design")
+        );
+    }
+
+    #[test]
+    fn source_layer_code() {
+        assert_eq!(
+            source_layer_from_uri("file://engine/crates/covalence-core/src/search/fusion.rs"),
+            Some("code")
+        );
+        assert_eq!(
+            source_layer_from_uri("file://cli/cmd/search.go"),
+            Some("code")
+        );
+    }
+
+    #[test]
+    fn source_layer_research() {
+        assert_eq!(
+            source_layer_from_uri("https://arxiv.org/html/2501.00309"),
+            Some("research")
+        );
+        assert_eq!(
+            source_layer_from_uri("http://example.com/paper.pdf"),
+            Some("research")
+        );
+    }
+
+    #[test]
+    fn source_layer_unknown() {
+        assert_eq!(source_layer_from_uri("file://README.md"), None);
+        assert_eq!(source_layer_from_uri("covalence://internal"), None);
     }
 }

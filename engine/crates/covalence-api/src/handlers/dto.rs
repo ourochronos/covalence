@@ -175,6 +175,9 @@ pub struct SearchRequest {
     pub node_types: Option<Vec<String>>,
     /// Restrict to specific source types (e.g. "document", "code").
     pub source_types: Option<Vec<String>>,
+    /// Restrict to specific source layers derived from URI prefix.
+    /// Layers: "spec", "design", "code", "research".
+    pub source_layers: Option<Vec<String>>,
     /// Start of date range filter (ISO 8601).
     pub date_range_start: Option<String>,
     /// End of date range filter (ISO 8601).

@@ -83,6 +83,7 @@ pub async fn recall_memory(
             node_types: None,
             date_range: None,
             source_types: None,
+            source_layers: None,
         })
     } else {
         None
