@@ -207,6 +207,10 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
         {
             return false;
         }
+        // Skip code fence lines: ```rust, ```python, ```
+        if l.starts_with("```") {
+            return false;
+        }
         true
     });
 
@@ -266,6 +270,15 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
                     || after == Some(b')')
                     || after == Some(b']')
                 {
+                    // Skip numbered list prefixes like "8. " or
+                    // "10. " — the text before the period is all
+                    // digits. These are ordinals, not sentences.
+                    let prefix = &clean[..i];
+                    if !prefix.is_empty()
+                        && prefix.bytes().all(|b| b.is_ascii_digit())
+                    {
+                        return None;
+                    }
                     return Some(i + 1);
                 }
             }
@@ -1117,6 +1130,13 @@ impl SearchService {
                     "demoted low-quality chunks in search results"
                 );
                 trace.chunks_quality_demoted = demoted;
+                // Re-sort so demoted chunks sink before entity
+                // demotion and reranking.
+                fused.sort_by(|a, b| {
+                    b.fused_score
+                        .partial_cmp(&a.fused_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
         }
 
@@ -1516,6 +1536,31 @@ mod tests {
         assert_eq!(
             derive_chunk_name(content),
             "Version 2504.09823 introduces new features."
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_code_fence_skipped() {
+        // Code fence language tags should not become the chunk name.
+        let content = "```rust\nimpl SearchService {\n    pub fn new() -> Self {}\n}\n```";
+        let name = derive_chunk_name(content);
+        assert!(!name.starts_with("rust"));
+        assert!(name.contains("SearchService"));
+    }
+
+    #[test]
+    fn derive_chunk_name_numbered_list_item() {
+        // "8. Apply topological confidence..." should not produce "8."
+        let content = "8. Apply topological confidence as a multiplier";
+        assert_eq!(
+            derive_chunk_name(content),
+            "8. Apply topological confidence as a multiplier"
+        );
+        // Also test multi-digit: "10. Return top-N results"
+        let content2 = "10. Return top-N results with provenance.";
+        assert_eq!(
+            derive_chunk_name(content2),
+            "10. Return top-N results with provenance."
         );
     }
 

@@ -1216,3 +1216,25 @@ Post-compaction (Session 8b):
 - `13058ba` Add search dimension tests, wire bridge discovery, clean dead code
 - `5137e7b` Apply cargo fmt to fix pre-existing formatting drift
 - `3df1d85` Add bibliography filter and enhance chunk quality detection
+
+---
+
+## Session 8d — Context Recovery
+
+### Improvements
+
+73. **Extract ingestion helpers module** — Moved 10 pure helper functions, 1 struct, 1 constant, and 55 tests from `source.rs` (3353→2318 lines, 31% reduction) into `services/ingestion_helpers.rs`. Functions: `entity_name_lock_key()`, `SupersedesInfo`, `group_extraction_batches()`, `compute_parent_alignment()`, `should_extract()`, `detect_update_class()`, `content_overlap()`, `detect_chunk_content_types()`, `has_example_markers()`, `sanitize_ltree_label()`.
+
+74. **Post-enrichment quality demotion** — Added Step 8a2 in the search pipeline that demotes low-quality chunks *after* content enrichment (when full text is available). Catches bibliography entries, boilerplate, and metadata-only chunks that slipped through older ingestion without quality filters. Score multiplied by 0.1. Tracked via `chunks_quality_demoted` in QueryTrace.
+
+75. **Broadened bibliography detection** — Extended `is_bibliography_entry()` with 3 new pattern categories: journal/proceedings italic fragments (`_Proc. VLDB Endow._`), short doi.org URL citations, and publisher name markers (Springer, IEEE, ACM Press, etc.). Also catches "Report Issue" UI fragments from arXiv HTML. 4 new tests.
+
+### Test counts
+
+1018 tests (21 api + 950 core + 47 eval), all passing. Clippy and fmt clean.
+
+### Commits
+
+- `deb269b` Extract ingestion helpers from source.rs into dedicated module
+- `6d11c9c` Add post-enrichment quality demotion for low-quality chunks
+- `f20f1c5` Broaden bibliography detection for citation fragments
