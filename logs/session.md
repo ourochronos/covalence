@@ -845,6 +845,16 @@ Three classes of bugs found by background scanner agents:
 
 **Files modified:** `consolidation/graph_batch.rs`
 
+### Improvement 48: Ontology N+1 query fix + memory recall stored_at
+
+**Bug 1 (N+1 query):** `ontology::apply_clusters()` issued one UPDATE per member label per cluster (e.g., 50 clusters × 5 labels = 250 queries). Changed to `WHERE canonical_name = ANY($2)` with a single array bind per cluster — now 50 queries instead of 250.
+
+**Bug 2 (stored_at always empty):** `MemoryItem.stored_at` was always `String::new()` because `FusedResult` had no `created_at` field. Added `created_at: Option<String>` to `FusedResult`, populated during enrichment from `source.ingested_at.to_rfc3339()`, and wired it through to the memory handler.
+
+**Files modified:** `consolidation/ontology.rs`, `search/fusion.rs`, `services/search.rs`, `covalence-api/handlers/memory.rs`
+
+---
+
 **Codebase review complete:** All modules now reviewed:
 - consolidation/ — batch.rs, deep.rs, topic.rs, summary.rs, contention.rs, graph_batch.rs (fixed), ontology.rs (fixed earlier), scheduler.rs, compiler.rs
 - search/ — skewroute.rs, cache.rs, expansion.rs, rerank.rs, context.rs, abstention.rs, trace.rs, fusion.rs, strategy.rs, dimensions/*
@@ -858,8 +868,8 @@ Three classes of bugs found by background scanner agents:
 
 - **Tests:** 930 (870 core + 13 API + 47 eval), up from 795. +135 net new tests (143 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 23 total (12 from session 5a + 11 from session 5b/5c), all pushed
-- **Files modified:** ~59 files across 4 crates + CLI
+- **Commits:** 25 total (12 from session 5a + 13 from session 5b/5c), all pushed
+- **Files modified:** ~63 files across 4 crates + CLI
 
 ### Open Areas
 
@@ -869,5 +879,5 @@ Three classes of bugs found by background scanner agents:
 - RAPTOR hierarchical retrieval (#74)
 - Ingest spec reference papers (#92)
 - Pipeline stage queues (#64)
-- N+1 query pattern in ontology apply_clusters (one UPDATE per member label per cluster)
-- Memory recall stored_at always empty (memory.rs:83) — FusedResult lacks created_at field
+- N+1 query pattern in ontology apply_clusters — FIXED (Improvement 48)
+- Memory recall stored_at always empty — FIXED (Improvement 48)

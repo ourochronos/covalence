@@ -755,6 +755,7 @@ impl SearchService {
                             source_uri: None,
                             source_title: None,
                             result_type: None,
+                            created_at: None,
                             dimension_scores: HashMap::new(),
                             dimension_ranks: HashMap::new(),
                         });
@@ -813,6 +814,7 @@ impl SearchService {
                         result.entity_type = Some("source".to_string());
                         result.source_uri = source.uri;
                         result.source_title = source.title;
+                        result.created_at = Some(source.ingested_at.to_rfc3339());
                         // Use truncated raw content for snippet.
                         if let Some(ref raw) = source.raw_content {
                             result.content = Some(truncate_with_ellipsis(raw, 500));
@@ -835,6 +837,7 @@ impl SearchService {
                         {
                             result.source_uri = source.uri;
                             result.source_title = source.title.clone();
+                            result.created_at = Some(source.ingested_at.to_rfc3339());
                             source.title
                         } else {
                             None
@@ -883,6 +886,7 @@ impl SearchService {
                             result.entity_type = Some("source".to_string());
                             result.source_uri = source.uri;
                             result.source_title = source.title;
+                            result.created_at = Some(source.ingested_at.to_rfc3339());
                             if let Some(ref raw) = source.raw_content {
                                 result.content = Some(truncate_with_ellipsis(raw, 500));
                             }

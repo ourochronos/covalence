@@ -53,6 +53,9 @@ pub struct FusedResult {
     pub source_title: Option<String>,
     /// The type of result: "chunk", "node", or "article".
     pub result_type: Option<String>,
+    /// When this entity was ingested/created (ISO 8601).
+    #[serde(default)]
+    pub created_at: Option<String>,
     /// Per-dimension scores (original scores, not RRF contributions).
     pub dimension_scores: HashMap<String, f64>,
     /// Per-dimension ranks.
@@ -98,6 +101,7 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
                 source_uri: None,
                 source_title: None,
                 result_type: None,
+                created_at: None,
                 dimension_scores: HashMap::new(),
                 dimension_ranks: HashMap::new(),
             });
@@ -188,6 +192,7 @@ pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<Fused
                 source_uri: None,
                 source_title: None,
                 result_type: None,
+                created_at: None,
                 dimension_scores: HashMap::new(),
                 dimension_ranks: HashMap::new(),
             });
@@ -335,6 +340,7 @@ mod tests {
             source_uri: None,
             source_title: None,
             result_type: None,
+            created_at: None,
             dimension_scores: HashMap::new(),
             dimension_ranks: HashMap::new(),
         };

@@ -410,51 +410,47 @@ pub async fn apply_clusters(
         .map_err(Error::Database)?;
 
         // Write back canonical labels to the source tables.
+        // Batch-update all member labels in one query per
+        // cluster (avoids N+1 when clusters have many members).
         match cluster.level {
             ClusterLevel::Entity => {
                 // Link nodes whose canonical_name matches any
                 // member label to this cluster.
-                for label in &cluster.member_labels {
-                    sqlx::query(
-                        "UPDATE nodes SET cluster_id = $1 \
-                         WHERE canonical_name = $2",
-                    )
-                    .bind(cluster.id)
-                    .bind(label)
-                    .execute(pool)
-                    .await
-                    .map_err(Error::Database)?;
-                }
+                sqlx::query(
+                    "UPDATE nodes SET cluster_id = $1 \
+                     WHERE canonical_name = ANY($2)",
+                )
+                .bind(cluster.id)
+                .bind(&cluster.member_labels)
+                .execute(pool)
+                .await
+                .map_err(Error::Database)?;
             }
             ClusterLevel::EntityType => {
                 // Set canonical_type for all nodes whose node_type
                 // is a member of this cluster.
-                for label in &cluster.member_labels {
-                    sqlx::query(
-                        "UPDATE nodes SET canonical_type = $1 \
-                         WHERE node_type = $2",
-                    )
-                    .bind(&cluster.canonical_label)
-                    .bind(label)
-                    .execute(pool)
-                    .await
-                    .map_err(Error::Database)?;
-                }
+                sqlx::query(
+                    "UPDATE nodes SET canonical_type = $1 \
+                     WHERE node_type = ANY($2)",
+                )
+                .bind(&cluster.canonical_label)
+                .bind(&cluster.member_labels)
+                .execute(pool)
+                .await
+                .map_err(Error::Database)?;
             }
             ClusterLevel::RelationType => {
                 // Set canonical_rel_type for all edges whose
                 // rel_type is a member of this cluster.
-                for label in &cluster.member_labels {
-                    sqlx::query(
-                        "UPDATE edges SET canonical_rel_type = $1 \
-                         WHERE rel_type = $2",
-                    )
-                    .bind(&cluster.canonical_label)
-                    .bind(label)
-                    .execute(pool)
-                    .await
-                    .map_err(Error::Database)?;
-                }
+                sqlx::query(
+                    "UPDATE edges SET canonical_rel_type = $1 \
+                     WHERE rel_type = ANY($2)",
+                )
+                .bind(&cluster.canonical_label)
+                .bind(&cluster.member_labels)
+                .execute(pool)
+                .await
+                .map_err(Error::Database)?;
             }
         }
     }

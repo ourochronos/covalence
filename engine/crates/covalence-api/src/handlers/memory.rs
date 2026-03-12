@@ -90,7 +90,7 @@ pub async fn recall_memory(
             topic: None,
             relevance: r.fused_score,
             confidence: r.confidence.unwrap_or(1.0),
-            stored_at: String::new(),
+            stored_at: r.created_at.unwrap_or_default(),
         })
         .collect();
 
