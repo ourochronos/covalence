@@ -92,6 +92,28 @@ func handleResultsMode(client *internal.Client, body map[string]interface{}) err
 			fmt.Printf("\n--- %s ---\n", header)
 			fmt.Println(truncateRunes(content, 500))
 		}
+		// Show graph context for node-type results.
+		if gc, ok := r["graph_context"].([]interface{}); ok && len(gc) > 0 {
+			fmt.Printf("  Related: ")
+			for j, raw := range gc {
+				rel, ok := raw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				rName := getString(rel, "name")
+				rType := getString(rel, "rel_type")
+				dir := getString(rel, "direction")
+				arrow := "->"
+				if dir == "incoming" {
+					arrow = "<-"
+				}
+				if j > 0 {
+					fmt.Print(", ")
+				}
+				fmt.Printf("%s %s %s", arrow, rType, rName)
+			}
+			fmt.Println()
+		}
 	}
 	return nil
 }
