@@ -27,6 +27,11 @@ pub const BOILERPLATE_LINES: &[&str] = &[
     "back to arxiv",
     "back to abstract",
     "why html?",
+    "tex source",
+    "view license",
+    "browse context",
+    "current browse context",
+    "change to browse by",
 ];
 
 /// Known artifact headings from web scraping that should cause the
@@ -112,6 +117,23 @@ pub fn is_boilerplate_line(line: &str) -> bool {
     let trimmed = trimmed.trim();
     if trimmed.starts_with('[') && trimmed.contains("](") && trimmed.contains("://") {
         return true;
+    }
+    // ArXiv navigation fragments: pure punctuation or very short
+    // tokens like "|", "new", "recent", date patterns "| 2025-06".
+    if line.len() <= 3 && !line.chars().any(|c| c.is_alphabetic()) {
+        return true;
+    }
+    // ArXiv date nav: "| YYYY-MM" or "YYYY-MM"
+    if line.len() < 15 {
+        let stripped = line.trim_start_matches('|').trim();
+        if stripped.len() >= 7
+            && stripped.len() <= 10
+            && stripped.as_bytes()[4] == b'-'
+            && stripped[..4].chars().all(|c| c.is_ascii_digit())
+            && stripped[5..7].chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
     }
     false
 }
@@ -594,6 +616,28 @@ mod tests {
     #[test]
     fn boilerplate_heavy_nav_elements() {
         let text = "< prev\nnext >\nView PDF\nDownload PDF";
+        assert!(is_boilerplate_heavy(text));
+    }
+
+    #[test]
+    fn boilerplate_heavy_arxiv_abstract_page() {
+        // Real ArXiv abstract page chunk: title + nav + browse context
+        let text = "View a PDF of the paper titled Some Paper\n\
+                    - View PDF\n\
+                    - HTML (experimental)\n\
+                    - TeX Source\n\
+                    view license\n\
+                    Current browse context: cs.IR\n\
+                    < prev\n\
+                    |\n\
+                    next >\n\
+                    new\n\
+                    |\n\
+                    recent\n\
+                    | 2025-06\n\
+                    Change to browse by:\n\
+                    cs\n\
+                    cs.CL";
         assert!(is_boilerplate_heavy(text));
     }
 
