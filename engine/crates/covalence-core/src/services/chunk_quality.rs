@@ -246,20 +246,24 @@ pub fn is_bibliography_entry(text: &str) -> bool {
     if lines.len() <= 4 {
         let joined = lines.join(" ");
         let lower = joined.to_lowercase();
-        if (lower.contains("arxiv preprint") || lower.contains("_arxiv_")) && trimmed.len() < 200 {
+        if (lower.contains("arxiv preprint") || lower.contains("_arxiv_")) && trimmed.len() < 250 {
             return true;
         }
         // Pattern: short fragment with journal/proceedings italics.
         // Academic citations often appear as:
         //   "Title.\n\n_Proc. VLDB Endow._ 5, 12 (2012), 2018."
         //   "Title.\n\nMorgan & Claypool Publishers."
-        if trimmed.len() < 200 {
+        if trimmed.len() < 250 {
             // Contains italic markup wrapping a journal or proceedings name
             if lower.contains("_proc.") || lower.contains("_proceedings") {
                 return true;
             }
             // Contains doi.org URL (standalone citation reference)
             if lower.contains("doi.org/") && lines.len() <= 3 {
+                return true;
+            }
+            // "Report Issue" boilerplate appended to citation fragments
+            if lower.contains("report issue") && lines.len() <= 3 {
                 return true;
             }
         }
@@ -600,6 +604,19 @@ mod tests {
     #[test]
     fn bibliography_entry_report_issue() {
         assert!(is_bibliography_entry("ing, C. D.: RAPTOR.\n\nReport Issue"));
+    }
+
+    #[test]
+    fn bibliography_entry_long_citation_with_doi() {
+        // Real-world: 235-char citation from ArXiv with DOI + boilerplate.
+        // Previously escaped the <200 char threshold.
+        assert!(is_bibliography_entry(
+            "C. D.: RAPTOR: Recursive Abstractive Processing for \
+             Tree-Organized Retrieval. In: Proceedings of the International \
+             Conference on Learning Representations (2024). \
+             doi.org/10.48550/arXiv.2401.18059\n\n\
+             Report IssueReport Issue for Selection"
+        ));
     }
 
     #[test]

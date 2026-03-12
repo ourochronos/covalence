@@ -91,6 +91,10 @@ pub async fn create_source(
         .into());
     };
 
+    // Invalidate the semantic query cache so newly ingested content
+    // is immediately visible in search results.
+    let _ = state.search_service.clear_cache().await;
+
     Ok((
         axum::http::StatusCode::CREATED,
         Json(CreateSourceResponse { id: id.into_uuid() }),
@@ -221,6 +225,8 @@ pub async fn reprocess_source(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ReprocessSourceResponse>, ApiError> {
     let result = state.source_service.reprocess(id.into()).await?;
+    // Invalidate cache — reprocessed content may have changed embeddings.
+    let _ = state.search_service.clear_cache().await;
     Ok(Json(ReprocessSourceResponse {
         source_id: result.source_id,
         extractions_superseded: result.extractions_superseded,
@@ -245,6 +251,8 @@ pub async fn delete_source(
     Path(id): Path<Uuid>,
 ) -> Result<Json<DeleteSourceResponse>, ApiError> {
     let result = state.source_service.delete(id.into()).await?;
+    // Invalidate cache — deleted content should not appear in results.
+    let _ = state.search_service.clear_cache().await;
     Ok(Json(DeleteSourceResponse {
         deleted: result.deleted,
         chunks_deleted: result.chunks_deleted,
