@@ -1437,7 +1437,8 @@ Data-driven quality improvement: ran test queries, identified 3 low-quality resu
 
 - **Tests:** 1035 (21 api + 967 core + 47 eval), all passing, clippy clean
 - **Sources:** 420, **Nodes:** 3,423, **Edges:** 75,770 (19,959 semantic + 55,811 synthetic)
-- **Components:** 249, **Chunks:** 16,199, **Articles:** 88
+- **Components:** 249, **Chunks:** 16,199, **Articles:** 143 (55 new from consolidation)
 - **Search quality:** "how are graph communities detected" — top 5 now all relevant (was 2/5 relevant)
 - **Pipeline decomposition:** source.rs 58% smaller, shared pipeline eliminates duplication
 - **Issue #92 Phase 1 complete:** all 8 arXiv papers ingested into prod
+- **Consolidation:** 55 new articles synthesized from new paper communities
