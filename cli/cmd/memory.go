@@ -68,7 +68,7 @@ var memoryRecallCmd = &cobra.Command{
 			return internal.PrintJSON(result)
 		}
 
-		headers := []string{"ID", "Score", "Content", "Topic"}
+		headers := []string{"ID", "Relevance", "Content", "Topic"}
 		rows := make([][]string, 0, len(result))
 		for _, m := range result {
 			content := getString(m, "content")
@@ -77,7 +77,7 @@ var memoryRecallCmd = &cobra.Command{
 			}
 			rows = append(rows, []string{
 				shortID(getString(m, "id")),
-				fmt.Sprintf("%.4f", getFloat(m, "score")),
+				fmt.Sprintf("%.4f", getFloat(m, "relevance")),
 				content,
 				getString(m, "topic"),
 			})
