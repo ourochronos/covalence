@@ -121,6 +121,29 @@ impl SearchDimension for GraphDimension {
         // Merge results from all seeds, keeping best score per node.
         let mut best: HashMap<Uuid, f64> = HashMap::new();
 
+        // Compute the maximum semantic degree across all nodes for
+        // normalization. "Semantic degree" counts only non-synthetic,
+        // non-denied edges — the meaningful connections.
+        let max_degree = sidecar
+            .graph
+            .node_indices()
+            .map(|n| {
+                sidecar
+                    .graph
+                    .edges(n)
+                    .filter(|e| {
+                        let m = e.weight();
+                        !m.is_synthetic
+                            && !BIBLIOGRAPHIC_DENY
+                                .iter()
+                                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
+                    })
+                    .count()
+            })
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
+
         for &seed in &seeds {
             let neighbors = bfs_neighborhood_full(
                 &sidecar,
@@ -131,7 +154,30 @@ impl SearchDimension for GraphDimension {
                 Some(BIBLIOGRAPHIC_DENY),
             );
             for (node_id, hops) in neighbors {
-                let score = hop_decay_score(1.0, hops);
+                // Base score from hop decay.
+                let base = hop_decay_score(1.0, hops);
+                // Degree bonus: nodes with more semantic connections
+                // get a small score boost (up to 10% of base). This
+                // breaks ties between same-hop results and ensures
+                // the graph dimension has nonzero score spread.
+                let degree = sidecar
+                    .node_index(node_id)
+                    .map(|idx| {
+                        sidecar
+                            .graph
+                            .edges(idx)
+                            .filter(|e| {
+                                let m = e.weight();
+                                !m.is_synthetic
+                                    && !BIBLIOGRAPHIC_DENY
+                                        .iter()
+                                        .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0) as f64;
+                let degree_bonus = 0.1 * base * (degree / max_degree);
+                let score = base + degree_bonus;
                 let entry = best.entry(node_id).or_insert(0.0);
                 if score > *entry {
                     *entry = score;
