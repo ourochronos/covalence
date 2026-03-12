@@ -1863,12 +1863,20 @@ impl SourceService {
                                     if let Ok(truncated) =
                                         truncate_and_validate(emb, self.table_dims.node, "nodes")
                                     {
-                                        let _ = NodeRepo::update_embedding(
+                                        if let Err(e) = NodeRepo::update_embedding(
                                             &*self.repo,
                                             *nid,
                                             &truncated,
                                         )
-                                        .await;
+                                        .await
+                                        {
+                                            tracing::warn!(
+                                                node_id = %nid,
+                                                error = %e,
+                                                "failed to update node embedding \
+                                                 during reprocessing"
+                                            );
+                                        }
                                     }
                                 }
                             }

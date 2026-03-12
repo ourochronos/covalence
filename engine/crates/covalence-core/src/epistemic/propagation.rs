@@ -74,6 +74,9 @@ pub struct PropagationResult {
     pub composite_scores: HashMap<Uuid, f64>,
     /// Number of convergence iterations performed in stages 3-5.
     pub convergence_iterations: usize,
+    /// Whether the convergence loop stabilized within epsilon.
+    /// False if the iteration limit was reached.
+    pub converged: bool,
 }
 
 /// Run the full 5-stage confidence propagation pipeline.
@@ -116,6 +119,7 @@ pub fn propagate_confidence(
             opinions: HashMap::new(),
             composite_scores: HashMap::new(),
             convergence_iterations: 0,
+            converged: true,
         };
     }
 
@@ -157,8 +161,7 @@ pub fn propagate_confidence(
         })
         .collect();
 
-    let convergence_iterations =
-        compute_epistemic_closure(&mut opinions, &convergence_attacks, config.epsilon);
+    let closure = compute_epistemic_closure(&mut opinions, &convergence_attacks, config.epsilon);
 
     // --- Stage 5: TrustRank calibration ---
     let mut composite_scores: HashMap<Uuid, f64> = HashMap::with_capacity(opinions.len());
@@ -180,7 +183,8 @@ pub fn propagate_confidence(
     PropagationResult {
         opinions,
         composite_scores,
-        convergence_iterations,
+        convergence_iterations: closure.iterations,
+        converged: closure.converged,
     }
 }
 

@@ -396,15 +396,32 @@ async fn dispatch_memory_recall(
         .map(|v| v.min(200) as usize)
         .unwrap_or(10);
 
-    let _topic = args.get("topic").and_then(|v| v.as_str());
+    let topic = args.get("topic").and_then(|v| v.as_str());
+    let min_confidence = args.get("min_confidence").and_then(|v| v.as_f64());
+
+    // Prepend topic to query for topical relevance boost.
+    let effective_query = match topic {
+        Some(t) => format!("[{t}] {query}"),
+        None => query.to_string(),
+    };
+
+    let filters = if min_confidence.is_some() {
+        Some(covalence_core::services::search::SearchFilters {
+            min_confidence,
+            node_types: None,
+            date_range: None,
+        })
+    } else {
+        None
+    };
 
     let results = state
         .search_service
         .search(
-            query,
+            &effective_query,
             covalence_core::search::strategy::SearchStrategy::Auto,
             limit,
-            None,
+            filters,
         )
         .await
         .map_err(|e| e.to_string())?;

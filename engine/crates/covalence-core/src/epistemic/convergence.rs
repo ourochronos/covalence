@@ -85,14 +85,18 @@ impl AttackKind {
 ///
 /// # Returns
 ///
-/// Number of iterations performed.
+/// A `ClosureResult` indicating iterations performed and whether
+/// the computation converged within epsilon.
 pub fn compute_epistemic_closure(
     opinions: &mut HashMap<Uuid, Opinion>,
     attacks: &[Attack],
     epsilon: f64,
-) -> usize {
+) -> ClosureResult {
     if attacks.is_empty() || opinions.is_empty() {
-        return 0;
+        return ClosureResult {
+            iterations: 0,
+            converged: true,
+        };
     }
 
     let mut iterations = 0;
@@ -153,12 +157,33 @@ pub fn compute_epistemic_closure(
             update_opinion_from_projection(opinion, damped_proj);
         }
 
-        if max_delta < epsilon || iterations >= MAX_CLOSURE_ITERATIONS {
-            break;
+        let converged = max_delta < epsilon;
+        if converged || iterations >= MAX_CLOSURE_ITERATIONS {
+            if !converged {
+                tracing::warn!(
+                    iterations,
+                    max_delta,
+                    epsilon,
+                    "epistemic closure did not converge within \
+                     iteration limit"
+                );
+            }
+            return ClosureResult {
+                iterations,
+                converged,
+            };
         }
     }
+}
 
-    iterations
+/// Result of epistemic closure computation.
+#[derive(Debug, Clone, Copy)]
+pub struct ClosureResult {
+    /// Number of iterations performed.
+    pub iterations: usize,
+    /// Whether the computation converged (max delta < epsilon).
+    /// If false, the iteration limit was reached.
+    pub converged: bool,
 }
 
 /// Update an opinion's belief/disbelief/uncertainty to match a target
@@ -216,8 +241,9 @@ mod tests {
     fn test_closure_empty_attacks() {
         let mut opinions = HashMap::new();
         opinions.insert(Uuid::new_v4(), Opinion::new(0.7, 0.1, 0.2, 0.5).unwrap());
-        let iterations = compute_epistemic_closure(&mut opinions, &[], DEFAULT_EPSILON);
-        assert_eq!(iterations, 0);
+        let result = compute_epistemic_closure(&mut opinions, &[], DEFAULT_EPSILON);
+        assert_eq!(result.iterations, 0);
+        assert!(result.converged);
     }
 
     #[test]
@@ -229,8 +255,9 @@ mod tests {
             weight: 1.0,
             kind: AttackKind::Contradicts,
         }];
-        let iterations = compute_epistemic_closure(&mut opinions, &attacks, DEFAULT_EPSILON);
-        assert_eq!(iterations, 0);
+        let result = compute_epistemic_closure(&mut opinions, &attacks, DEFAULT_EPSILON);
+        assert_eq!(result.iterations, 0);
+        assert!(result.converged);
     }
 
     #[test]
@@ -250,9 +277,10 @@ mod tests {
         }];
 
         let original_target_proj = opinions[&target_id].projected_probability();
-        let iterations = compute_epistemic_closure(&mut opinions, &attacks, DEFAULT_EPSILON);
+        let result = compute_epistemic_closure(&mut opinions, &attacks, DEFAULT_EPSILON);
 
-        assert!(iterations > 0);
+        assert!(result.iterations > 0);
+        assert!(result.converged);
         // Target's projected probability should decrease
         assert!(opinions[&target_id].projected_probability() < original_target_proj);
         // Attacker should be unchanged (no attacks targeting it)
@@ -282,10 +310,11 @@ mod tests {
             },
         ];
 
-        let iterations = compute_epistemic_closure(&mut opinions, &attacks, DEFAULT_EPSILON);
+        let result = compute_epistemic_closure(&mut opinions, &attacks, DEFAULT_EPSILON);
 
-        assert!(iterations > 1);
-        assert!(iterations < MAX_CLOSURE_ITERATIONS);
+        assert!(result.iterations > 1);
+        assert!(result.converged);
+        assert!(result.iterations < MAX_CLOSURE_ITERATIONS);
         // Both should be reduced
         assert!(opinions[&id_a].projected_probability() < 0.8);
         assert!(opinions[&id_b].projected_probability() < 0.7);

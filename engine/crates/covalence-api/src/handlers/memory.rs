@@ -61,11 +61,21 @@ pub async fn recall_memory(
     State(state): State<AppState>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> Result<Json<Vec<MemoryItem>>, StatusCode> {
-    let limit = req.limit.unwrap_or(10);
+    let limit = req.limit.unwrap_or(10).min(200);
+
+    let filters = if req.min_confidence.is_some() {
+        Some(covalence_core::services::search::SearchFilters {
+            min_confidence: req.min_confidence,
+            node_types: None,
+            date_range: None,
+        })
+    } else {
+        None
+    };
 
     let results = state
         .search_service
-        .search(&req.query, SearchStrategy::Auto, limit, None)
+        .search(&req.query, SearchStrategy::Auto, limit, filters)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "memory recall failed");
