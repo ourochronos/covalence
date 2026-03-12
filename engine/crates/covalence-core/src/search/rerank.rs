@@ -49,11 +49,20 @@ pub trait Reranker: Send + Sync {
         query: &str,
         documents: &[String],
     ) -> crate::error::Result<Vec<RerankedResult>>;
+
+    /// Whether this reranker is a no-op pass-through.
+    ///
+    /// When true, the search service skips score blending to avoid
+    /// distorting fusion scores with artificial reranker scores.
+    fn is_noop(&self) -> bool {
+        false
+    }
 }
 
 /// Pass-through reranker that preserves original ordering.
 ///
-/// Used when no reranker API key is configured.
+/// Used when no reranker API key is configured. Returns uniform
+/// scores so score blending doesn't distort fusion results.
 pub struct NoopReranker;
 
 #[async_trait::async_trait]
@@ -63,20 +72,16 @@ impl Reranker for NoopReranker {
         _query: &str,
         documents: &[String],
     ) -> crate::error::Result<Vec<RerankedResult>> {
-        let len = documents.len();
-        Ok((0..len)
-            .map(|i| {
-                let score = if len <= 1 {
-                    1.0
-                } else {
-                    1.0 - (i as f64 / len as f64)
-                };
-                RerankedResult {
-                    index: i,
-                    relevance_score: score,
-                }
+        Ok((0..documents.len())
+            .map(|i| RerankedResult {
+                index: i,
+                relevance_score: 1.0,
             })
             .collect())
+    }
+
+    fn is_noop(&self) -> bool {
+        true
     }
 }
 
@@ -249,9 +254,15 @@ mod tests {
         assert_eq!(results[1].index, 1);
         assert_eq!(results[2].index, 2);
 
-        // Scores should be descending
-        assert!(results[0].relevance_score > results[1].relevance_score);
-        assert!(results[1].relevance_score > results[2].relevance_score);
+        // All scores should be uniform (1.0) so blending is a no-op.
+        for r in &results {
+            assert!((r.relevance_score - 1.0).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn noop_reranker_is_noop() {
+        assert!(NoopReranker.is_noop());
     }
 
     #[test]

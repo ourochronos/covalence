@@ -619,6 +619,18 @@ impl SearchService {
             }
         }
 
+        // Log effective weights and top-1 item per dimension for
+        // diagnosing score anomalies.
+        let dim_names = ["vector", "lexical", "temporal", "graph", "structural", "global"];
+        let weight_summary: String = dim_names
+            .iter()
+            .zip(weights.iter())
+            .filter(|(_, w)| **w > 1e-6)
+            .map(|(name, w)| format!("{}={:.3}", &name[..3], w))
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::debug!(weights = %weight_summary, "effective fusion weights");
+
         let mut fused = if self.use_cc_fusion {
             fusion::cc_fuse(&ranked_lists, &weights)
         } else {
@@ -905,14 +917,14 @@ impl SearchService {
             })
             .collect();
 
-        if !documents.is_empty() {
+        if !documents.is_empty() && !self.reranker.is_noop() {
             match self.reranker.rerank(query, &documents).await {
                 Ok(reranked) => {
                     // Blend reranker scores with fusion scores rather
                     // than letting the reranker completely override
                     // multi-dimensional evidence. The reranker provides
                     // text-level relevance; fusion provides multi-signal
-                    // evidence. Multiplying them gives credit to both.
+                    // evidence.
                     let max_rerank = reranked
                         .iter()
                         .map(|r| r.relevance_score)
@@ -938,7 +950,7 @@ impl SearchService {
                     tracing::warn!(
                         error = %e,
                         "reranking failed, \
-                         keeping RRF order"
+                         keeping fusion order"
                     );
                 }
             }
