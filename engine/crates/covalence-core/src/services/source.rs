@@ -401,7 +401,8 @@ impl SourceService {
         let normalized = if is_code {
             parsed.body.clone()
         } else if self.pipeline.normalize_enabled {
-            crate::ingestion::normalize::normalize(&parsed.body)
+            let n = crate::ingestion::normalize::normalize(&parsed.body);
+            crate::ingestion::normalize::strip_artifacts(&n)
         } else {
             parsed.body.clone()
         };
@@ -1441,7 +1442,8 @@ impl SourceService {
         let normalized = if is_code {
             parsed.body.clone()
         } else if self.pipeline.normalize_enabled {
-            crate::ingestion::normalize::normalize(&parsed.body)
+            let n = crate::ingestion::normalize::normalize(&parsed.body);
+            crate::ingestion::normalize::strip_artifacts(&n)
         } else {
             parsed.body.clone()
         };

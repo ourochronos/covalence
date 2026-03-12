@@ -42,6 +42,29 @@ pub fn normalize(text: &str) -> String {
     result.trim().to_string()
 }
 
+/// Lines (or line prefixes) that are ArXiv/web-scraping artifacts.
+/// If a line starts with any of these (case-insensitive), it is
+/// removed entirely.
+const ARTIFACT_LINE_PREFIXES: &[&str] = &[
+    "report issue for preceding element",
+    "html conversions sometimes display errors",
+    "authors: achieve the best html results",
+];
+
+/// Remove known web-scraping artifact lines from normalized
+/// markdown. Applied after Unicode normalization.
+pub fn strip_artifacts(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let lower = line.trim().to_lowercase();
+            !ARTIFACT_LINE_PREFIXES
+                .iter()
+                .any(|prefix| lower.starts_with(prefix))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +105,36 @@ mod tests {
     #[test]
     fn empty_string() {
         assert_eq!(normalize(""), "");
+    }
+
+    #[test]
+    fn strip_report_issue_lines() {
+        let input = "Some content\nReport issue for preceding element\nMore content";
+        assert_eq!(strip_artifacts(input), "Some content\nMore content");
+    }
+
+    #[test]
+    fn strip_html_conversion_warning() {
+        let input = "# Title\nHTML conversions sometimes display errors due to...\nReal text";
+        assert_eq!(strip_artifacts(input), "# Title\nReal text");
+    }
+
+    #[test]
+    fn strip_authors_best_practices() {
+        let input =
+            "Authors: achieve the best HTML results from your LaTeX\nActual content";
+        assert_eq!(strip_artifacts(input), "Actual content");
+    }
+
+    #[test]
+    fn strip_preserves_real_content() {
+        let input = "Knowledge graphs are important.\nThey enable reasoning.";
+        assert_eq!(strip_artifacts(input), input);
+    }
+
+    #[test]
+    fn strip_case_insensitive() {
+        let input = "REPORT ISSUE FOR PRECEDING ELEMENT\nContent";
+        assert_eq!(strip_artifacts(input), "Content");
     }
 }
