@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::TableDimensions;
 use crate::consolidation::batch::{BatchConsolidator, BatchJob, BatchStatus};
-use crate::consolidation::compiler::{ArticleCompiler, CompilationInput, ConcatCompiler};
+use crate::consolidation::compiler::{ArticleCompiler, CompilationInput};
 use crate::consolidation::contention::{Contention, detect_contentions};
 use crate::consolidation::topic::{SourceNodes, cluster_sources_by_community};
 use crate::error::Result;
@@ -36,8 +36,8 @@ pub struct GraphBatchConsolidator {
     repo: Arc<PgRepo>,
     /// Shared graph sidecar for community detection.
     graph: SharedGraph,
-    /// Article compiler (LLM or fallback concatenation).
-    compiler: Arc<dyn ArticleCompiler>,
+    /// Article compiler (LLM). None means skip article creation.
+    compiler: Option<Arc<dyn ArticleCompiler>>,
     /// Optional embedder for article embedding storage.
     embedder: Option<Arc<dyn Embedder>>,
     /// Per-table embedding dimensions for truncation.
@@ -52,8 +52,6 @@ impl GraphBatchConsolidator {
         compiler: Option<Arc<dyn ArticleCompiler>>,
         embedder: Option<Arc<dyn Embedder>>,
     ) -> Self {
-        let compiler =
-            compiler.unwrap_or_else(|| Arc::new(ConcatCompiler) as Arc<dyn ArticleCompiler>);
         Self {
             repo,
             graph,
@@ -119,12 +117,23 @@ impl GraphBatchConsolidator {
     }
 
     /// Compile an article from the chunks belonging to the given
-    /// source IDs.
+    /// source IDs. Returns `None` when no compiler is configured.
     async fn compile_article(
         &self,
         source_ids: &[crate::types::ids::SourceId],
         community_id: usize,
-    ) -> Result<Article> {
+    ) -> Result<Option<Article>> {
+        let compiler = match &self.compiler {
+            Some(c) => c,
+            None => {
+                tracing::debug!(
+                    community_id,
+                    "skipping article compilation — no LLM compiler configured"
+                );
+                return Ok(None);
+            }
+        };
+
         // Collect all chunks from the sources in this cluster
         let mut all_content = Vec::new();
         let mut all_node_ids = Vec::new();
@@ -161,19 +170,19 @@ impl GraphBatchConsolidator {
             chunks: all_content,
             entity_names,
         };
-        let output = self.compiler.compile(&input).await?;
+        let output = compiler.compile(&input).await?;
 
         // Content hash
         let mut hasher = Sha256::new();
         hasher.update(output.body.as_bytes());
         let content_hash = hasher.finalize().to_vec();
 
-        Ok(Article::new(
+        Ok(Some(Article::new(
             output.title,
             output.body,
             content_hash,
             all_node_ids,
-        ))
+        )))
     }
 
     /// Embed an article after it has been created in PG.
@@ -229,15 +238,19 @@ impl GraphBatchConsolidator {
             // If no communities were detected (e.g., empty graph),
             // compile a single article from all sources.
             if !job.source_ids.is_empty() {
-                let article = self.compile_article(&job.source_ids, 0).await?;
-                ArticleRepo::create(&*self.repo, &article).await?;
-                self.embed_article(&article).await?;
+                if let Some(article) = self.compile_article(&job.source_ids, 0).await? {
+                    ArticleRepo::create(&*self.repo, &article).await?;
+                    self.embed_article(&article).await?;
+                }
             }
         } else {
             for (&community_id, source_ids) in &clusters {
-                let article = self.compile_article(source_ids, community_id).await?;
-                ArticleRepo::create(&*self.repo, &article).await?;
-                self.embed_article(&article).await?;
+                if let Some(article) =
+                    self.compile_article(source_ids, community_id).await?
+                {
+                    ArticleRepo::create(&*self.repo, &article).await?;
+                    self.embed_article(&article).await?;
+                }
             }
         }
 
@@ -289,6 +302,7 @@ impl BatchConsolidator for GraphBatchConsolidator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consolidation::compiler::ConcatCompiler;
 
     #[tokio::test]
     async fn concat_compiler_produces_article_body() {

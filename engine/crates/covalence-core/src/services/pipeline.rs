@@ -86,6 +86,15 @@ impl SourceService {
         mime: &str,
         uri: Option<&str>,
     ) -> Result<PreparedContent> {
+        // Content-sniff: override MIME if raw content is clearly HTML
+        // but was declared as something else (e.g., text/plain).
+        let mime = if !mime.contains("html") && sniff_html(content) {
+            tracing::debug!(declared_mime = mime, "content-sniffed as HTML, overriding MIME");
+            "text/html"
+        } else {
+            mime
+        };
+
         let code_lang = code_chunker::detect_code_language(mime, uri);
         let is_code = code_lang.is_some();
 
@@ -877,5 +886,54 @@ impl SourceService {
             NodeAliasRepo::create(&*self.repo, &alias).await?;
         }
         Ok(())
+    }
+}
+
+/// Check if raw content looks like HTML by inspecting leading bytes.
+///
+/// Skips whitespace/BOM then checks for `<!DOCTYPE` or `<html`.
+fn sniff_html(content: &[u8]) -> bool {
+    // Skip BOM + whitespace.
+    let trimmed = content
+        .iter()
+        .position(|&b| !b.is_ascii_whitespace() && b != 0xEF && b != 0xBB && b != 0xBF)
+        .map(|pos| &content[pos..])
+        .unwrap_or(content);
+
+    let prefix: Vec<u8> = trimmed.iter().take(15).map(|b| b.to_ascii_lowercase()).collect();
+    prefix.starts_with(b"<!doctype") || prefix.starts_with(b"<html")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sniff_html_detects_doctype() {
+        assert!(sniff_html(b"<!DOCTYPE html>\n<html>"));
+        assert!(sniff_html(b"<!doctype html>"));
+    }
+
+    #[test]
+    fn sniff_html_detects_html_tag() {
+        assert!(sniff_html(b"<html lang=\"en\">"));
+        assert!(sniff_html(b"  <html>"));
+    }
+
+    #[test]
+    fn sniff_html_rejects_markdown() {
+        assert!(!sniff_html(b"# Heading\n\nSome text"));
+        assert!(!sniff_html(b"Hello world"));
+    }
+
+    #[test]
+    fn sniff_html_skips_bom() {
+        assert!(sniff_html(b"\xEF\xBB\xBF<!DOCTYPE html>"));
+    }
+
+    #[test]
+    fn sniff_html_empty_content() {
+        assert!(!sniff_html(b""));
+        assert!(!sniff_html(b"   "));
     }
 }
