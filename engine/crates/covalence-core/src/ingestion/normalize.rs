@@ -58,6 +58,26 @@ const ARTIFACT_INLINE_PATTERNS: &[&str] = &[
     "report issue for preceding element",
 ];
 
+/// MathJax accessibility text markers produced when stripping HTML from
+/// arXiv papers. These are verbose expansions of mathematical notation
+/// (e.g., `italic_e start_POSTSUBSCRIPT italic_i end_POSTSUBSCRIPT`).
+const MATHJAX_MARKERS: &[&str] = &[
+    "start_POSTSUBSCRIPT",
+    "end_POSTSUBSCRIPT",
+    "start_POSTSUPERSCRIPT",
+    "end_POSTSUPERSCRIPT",
+    "start_POSTSUBSCRIPT",
+    "italic_",
+    "caligraphic_",
+    "bold_italic_",
+    "roman_",
+    "bold_",
+    "start_CELL",
+    "end_CELL",
+    "start_ROW",
+    "end_ROW",
+];
+
 /// Remove known web-scraping artifact lines and inline patterns
 /// from normalized markdown. Applied after Unicode normalization.
 ///
@@ -82,6 +102,12 @@ pub fn strip_artifacts(text: &str) -> String {
     for pattern in ARTIFACT_INLINE_PATTERNS {
         result = result.replace(pattern, "");
     }
+
+    // Pass 3: Strip MathJax accessibility markers.
+    for marker in MATHJAX_MARKERS {
+        result = result.replace(marker, "");
+    }
+
     result
 }
 
@@ -171,5 +197,29 @@ mod tests {
     fn strip_inline_artifact_mid_text() {
         let input = "Some text.Report issue for preceding element\nMore content here.";
         assert_eq!(strip_artifacts(input), "Some text.\nMore content here.");
+    }
+
+    #[test]
+    fn strip_mathjax_postsubscript() {
+        let input = "e start_POSTSUBSCRIPT i end_POSTSUBSCRIPT in E";
+        assert_eq!(strip_artifacts(input), "e  i  in E");
+    }
+
+    #[test]
+    fn strip_mathjax_postsuperscript() {
+        let input = "x start_POSTSUPERSCRIPT 2 end_POSTSUPERSCRIPT";
+        assert_eq!(strip_artifacts(input), "x  2 ");
+    }
+
+    #[test]
+    fn strip_mathjax_italic_prefix() {
+        let input = "italic_e italic_i caligraphic_E";
+        assert_eq!(strip_artifacts(input), "e i E");
+    }
+
+    #[test]
+    fn strip_mathjax_mixed() {
+        let input = "The entity italic_e start_POSTSUBSCRIPT italic_i end_POSTSUBSCRIPT belongs to caligraphic_E";
+        assert_eq!(strip_artifacts(input), "The entity e  i  belongs to E");
     }
 }
