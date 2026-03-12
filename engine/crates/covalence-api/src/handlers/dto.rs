@@ -728,7 +728,9 @@ pub struct KnowledgeGapParams {
     pub min_in_degree: Option<usize>,
     /// Minimum label length to filter noise (default 4).
     pub min_label_length: Option<usize>,
-    /// Comma-separated node types to exclude.
+    /// Comma-separated node types to exclude. Defaults to
+    /// "person,organization,event,location,publication,other" to
+    /// filter bibliographic noise. Pass empty string for all types.
     pub exclude_types: Option<String>,
     /// Maximum number of gaps to return (default 20).
     pub limit: Option<usize>,

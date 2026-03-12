@@ -381,10 +381,28 @@ pub async fn knowledge_gaps(
     let min_in_degree = params.min_in_degree.unwrap_or(3);
     let min_label_length = params.min_label_length.unwrap_or(4);
     let limit = params.limit.unwrap_or(20).min(200);
-    let exclude_types: Vec<String> = params
-        .exclude_types
-        .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
-        .unwrap_or_default();
+    // Default excludes bibliographic entity types which dominate
+    // the gap metric with citation noise rather than real knowledge
+    // gaps. Pass `exclude_types=` (empty) to include them.
+    let exclude_types: Vec<String> = params.exclude_types.map_or_else(
+        || {
+            vec![
+                "person".to_string(),
+                "organization".to_string(),
+                "event".to_string(),
+                "location".to_string(),
+                "publication".to_string(),
+                "other".to_string(),
+            ]
+        },
+        |s| {
+            if s.is_empty() {
+                Vec::new()
+            } else {
+                s.split(',').map(|t| t.trim().to_string()).collect()
+            }
+        },
+    );
 
     let gaps = state
         .admin_service
