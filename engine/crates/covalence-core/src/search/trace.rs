@@ -43,6 +43,7 @@ impl QueryTrace {
     /// Create a new query trace builder.
     pub fn new(query_text: &str, strategy: &SearchStrategy) -> Self {
         let strategy_str = match strategy {
+            SearchStrategy::Auto => "auto",
             SearchStrategy::Balanced => "balanced",
             SearchStrategy::Precise => "precise",
             SearchStrategy::Exploratory => "exploratory",

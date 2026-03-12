@@ -124,12 +124,13 @@ async fn dispatch_search(
         .ok_or("missing required parameter: query")?;
 
     let strategy = match args.get("strategy").and_then(|v| v.as_str()) {
+        Some("balanced") => covalence_core::search::strategy::SearchStrategy::Balanced,
         Some("precise") => covalence_core::search::strategy::SearchStrategy::Precise,
         Some("exploratory") => covalence_core::search::strategy::SearchStrategy::Exploratory,
         Some("recent") => covalence_core::search::strategy::SearchStrategy::Recent,
         Some("graph_first") => covalence_core::search::strategy::SearchStrategy::GraphFirst,
         Some("global") => covalence_core::search::strategy::SearchStrategy::Global,
-        _ => covalence_core::search::strategy::SearchStrategy::Balanced,
+        _ => covalence_core::search::strategy::SearchStrategy::Auto,
     };
 
     let limit = args
@@ -398,7 +399,7 @@ async fn dispatch_memory_recall(
         .search_service
         .search(
             query,
-            covalence_core::search::strategy::SearchStrategy::Balanced,
+            covalence_core::search::strategy::SearchStrategy::Auto,
             limit,
             None,
         )

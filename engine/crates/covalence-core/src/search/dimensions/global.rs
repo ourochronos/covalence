@@ -12,7 +12,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{DimensionKind, SearchDimension, SearchQuery};
+use crate::config::TableDimensions;
 use crate::error::Result;
+use crate::ingestion::embedder::truncate_and_validate;
 use crate::search::SearchResult;
 
 /// Community summary search dimension.
@@ -23,12 +25,34 @@ use crate::search::SearchResult;
 /// multiple communities or topics.
 pub struct GlobalDimension {
     pool: PgPool,
+    table_dims: TableDimensions,
 }
 
 impl GlobalDimension {
-    /// Create a new global search dimension.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    /// Create a new global search dimension with per-table
+    /// embedding dimensions for query truncation.
+    pub fn new(pool: PgPool, table_dims: TableDimensions) -> Self {
+        Self { pool, table_dims }
+    }
+
+    /// Format an embedding as a pgvector literal, truncated to
+    /// the target dimension for the given table.
+    fn pgvec_for_table(&self, embedding: &[f64], table: &str) -> String {
+        let target_dim = match table {
+            "nodes" => self.table_dims.node,
+            "articles" => self.table_dims.article,
+            _ => self.table_dims.chunk,
+        };
+        let truncated = truncate_and_validate(embedding, target_dim, table)
+            .unwrap_or_else(|_| embedding[..target_dim.min(embedding.len())].to_vec());
+        format!(
+            "[{}]",
+            truncated
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
     }
 }
 
@@ -38,17 +62,11 @@ impl SearchDimension for GlobalDimension {
             return Ok(Vec::new());
         };
 
-        // Format embedding as pgvector literal: '[0.1,0.2,...]'
-        let pgvec = format!(
-            "[{}]",
-            embedding
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-
         let limit = query.limit as i64;
+
+        // Truncate query embedding per-table to match column dims.
+        let pgvec_nodes = self.pgvec_for_table(embedding, "nodes");
+        let pgvec_articles = self.pgvec_for_table(embedding, "articles");
 
         // First, try community summary nodes.
         let summary_rows = sqlx::query_as::<_, (Uuid, f64)>(
@@ -60,7 +78,7 @@ impl SearchDimension for GlobalDimension {
              ORDER BY embedding <=> $1::halfvec \
              LIMIT $2",
         )
-        .bind(&pgvec)
+        .bind(&pgvec_nodes)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -90,7 +108,7 @@ impl SearchDimension for GlobalDimension {
              ORDER BY embedding <=> $1::halfvec \
              LIMIT $2",
         )
-        .bind(&pgvec)
+        .bind(&pgvec_articles)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;

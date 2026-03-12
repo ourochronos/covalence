@@ -123,7 +123,7 @@ mod tests {
         assert!(q.embedding.is_none());
         assert!(q.time_range.is_none());
         assert!(q.seed_nodes.is_empty());
-        assert_eq!(q.strategy, SearchStrategy::Balanced);
+        assert_eq!(q.strategy, SearchStrategy::Auto);
         assert_eq!(q.limit, 10);
     }
 

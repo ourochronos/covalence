@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchStrategy {
-    /// Equal weight across all dimensions.
+    /// Auto-detect strategy via SkewRoute. This is the default
+    /// when the caller does not specify a strategy.
     #[default]
+    Auto,
+    /// Equal weight across all dimensions.
     Balanced,
     /// Favors vector and lexical similarity.
     Precise,
@@ -89,7 +92,7 @@ impl SearchStrategy {
     /// Get the dimension weights for this strategy.
     pub fn weights(&self) -> DimensionWeights {
         match self {
-            Self::Balanced => DimensionWeights {
+            Self::Auto | Self::Balanced => DimensionWeights {
                 vector: 0.28,
                 lexical: 0.22,
                 temporal: 0.13,
@@ -212,8 +215,8 @@ mod tests {
     }
 
     #[test]
-    fn default_is_balanced() {
-        assert_eq!(SearchStrategy::default(), SearchStrategy::Balanced);
+    fn default_is_auto() {
+        assert_eq!(SearchStrategy::default(), SearchStrategy::Auto);
     }
 
     #[test]

@@ -39,11 +39,13 @@ pub async fn search(
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchApiResponse>, ApiError> {
     let strategy = match req.strategy.as_deref() {
+        Some("balanced") => covalence_core::search::strategy::SearchStrategy::Balanced,
         Some("precise") => covalence_core::search::strategy::SearchStrategy::Precise,
         Some("exploratory") => covalence_core::search::strategy::SearchStrategy::Exploratory,
         Some("recent") => covalence_core::search::strategy::SearchStrategy::Recent,
         Some("graph_first") => covalence_core::search::strategy::SearchStrategy::GraphFirst,
-        _ => covalence_core::search::strategy::SearchStrategy::Balanced,
+        Some("global") => covalence_core::search::strategy::SearchStrategy::Global,
+        _ => covalence_core::search::strategy::SearchStrategy::Auto,
     };
 
     // Build optional filters from request fields.

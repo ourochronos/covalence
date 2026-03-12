@@ -407,11 +407,13 @@ pub async fn replay_trace(
             })?;
 
     let strategy = match trace.strategy.as_str() {
+        "balanced" => covalence_core::search::strategy::SearchStrategy::Balanced,
         "precise" => covalence_core::search::strategy::SearchStrategy::Precise,
         "exploratory" => covalence_core::search::strategy::SearchStrategy::Exploratory,
         "recent" => covalence_core::search::strategy::SearchStrategy::Recent,
         "graph_first" => covalence_core::search::strategy::SearchStrategy::GraphFirst,
-        _ => covalence_core::search::strategy::SearchStrategy::Balanced,
+        "global" => covalence_core::search::strategy::SearchStrategy::Global,
+        _ => covalence_core::search::strategy::SearchStrategy::Auto,
     };
 
     let results = state

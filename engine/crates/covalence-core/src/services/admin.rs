@@ -291,10 +291,25 @@ impl AdminService {
             created_at: chrono::Utc::now(),
             completed_at: None,
         };
+        // Wire up LLM compiler if chat API keys are configured.
+        let compiler: Option<Arc<dyn crate::consolidation::compiler::ArticleCompiler>> =
+            self.config.as_ref().and_then(|cfg| {
+                cfg.chat_api_key.as_ref().map(|key| {
+                    let base = cfg
+                        .chat_base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+                    Arc::new(crate::consolidation::compiler::LlmCompiler::new(
+                        base,
+                        key.clone(),
+                        cfg.chat_model.clone(),
+                    )) as Arc<dyn crate::consolidation::compiler::ArticleCompiler>
+                })
+            });
         let mut consolidator = GraphBatchConsolidator::new(
             Arc::clone(&self.repo),
             Arc::clone(&self.graph),
-            None,
+            compiler,
             self.embedder.clone(),
         );
         if let Some(ref cfg) = self.config {

@@ -65,7 +65,7 @@ pub async fn recall_memory(
 
     let results = state
         .search_service
-        .search(&req.query, SearchStrategy::Balanced, limit, None)
+        .search(&req.query, SearchStrategy::Auto, limit, None)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "memory recall failed");

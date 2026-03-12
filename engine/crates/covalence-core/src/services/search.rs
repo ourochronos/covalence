@@ -106,12 +106,12 @@ impl SearchService {
         Self {
             repo,
             embedder,
-            vector: VectorDimension::new(pool.clone(), table_dims),
+            vector: VectorDimension::new(pool.clone(), table_dims.clone()),
             lexical: LexicalDimension::new(pool.clone()),
             temporal: TemporalDimension::new(pool.clone()),
             graph_dim: GraphDimension::new(Arc::clone(&graph)),
             structural: StructuralDimension::new(Arc::clone(&graph)),
-            global: GlobalDimension::new(pool.clone()),
+            global: GlobalDimension::new(pool.clone(), table_dims),
             graph: graph_clone,
             reranker: Arc::new(NoopReranker),
             cache: None,
@@ -219,7 +219,7 @@ impl SearchService {
         }
 
         // --- Step 3: Adaptive strategy selection ---
-        let effective_strategy = if strategy == SearchStrategy::Balanced {
+        let effective_strategy = if strategy == SearchStrategy::Auto {
             // Run a quick vector-only probe for SkewRoute
             // if we have an embedding.
             if let Some(ref emb) = query_embedding {
@@ -721,7 +721,7 @@ impl SearchService {
         };
 
         // Adaptive strategy.
-        let effective_strategy = if strategy == SearchStrategy::Balanced {
+        let effective_strategy = if strategy == SearchStrategy::Auto {
             if let Some(ref emb) = query_embedding {
                 let probe_query = SearchQuery {
                     text: query.to_string(),
@@ -882,6 +882,7 @@ impl SearchService {
 /// trace recording.
 fn strategy_name(strategy: &SearchStrategy) -> &'static str {
     match strategy {
+        SearchStrategy::Auto => "auto",
         SearchStrategy::Balanced => "balanced",
         SearchStrategy::Precise => "precise",
         SearchStrategy::Exploratory => "exploratory",
