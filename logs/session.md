@@ -866,6 +866,16 @@ Three classes of bugs found by background scanner agents:
 
 **Files modified:** `covalence-api/handlers/memory.rs`, `covalence-api/handlers/mcp.rs`, `covalence-api/handlers/search.rs`
 
+### Improvement 50: CLI UTF-8 safe truncation + Go helper tests
+
+**Bug:** Three display truncation sites in the Go CLI used byte-slicing (`content[:500]`, `content[:60]`) instead of rune-slicing. Multi-byte UTF-8 characters (emoji, CJK, accented) would get split mid-rune, producing garbled output.
+
+**Fix:** Added `truncateRunes()` helper that converts to `[]rune` before slicing. Replaced all 3 byte-slicing sites in `search.go`, `source.go`, and `memory.go`.
+
+**Tests:** Added `helpers_test.go` with 13 tests covering `truncateRunes` (ASCII, no-truncation, exact length, empty, emoji, CJK), `shortID`, `getString`, and `getFloat`.
+
+**Files modified:** `cli/cmd/source.go`, `cli/cmd/search.go`, `cli/cmd/memory.go`, `cli/cmd/helpers_test.go` (new)
+
 ---
 
 **Codebase review complete:** All modules now reviewed:
@@ -881,7 +891,7 @@ Three classes of bugs found by background scanner agents:
 
 - **Tests:** 930 (870 core + 13 API + 47 eval), up from 795. +135 net new tests (143 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 26 total (12 from session 5a + 14 from session 5b/5c), all pushed
+- **Commits:** 27 total (12 from session 5a + 15 from session 5b/5c), all pushed
 - **Files modified:** ~63 files across 4 crates + CLI
 
 ### Open Areas

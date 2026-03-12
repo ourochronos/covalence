@@ -155,10 +155,7 @@ var sourceChunksCmd = &cobra.Command{
 		headers := []string{"ID", "Level", "Ordinal", "Tokens", "Content Preview"}
 		rows := make([][]string, 0, len(result))
 		for _, c := range result {
-			content := getString(c, "content")
-			if len(content) > 60 {
-				content = content[:60] + "..."
-			}
+			content := truncateRunes(getString(c, "content"), 60)
 			rows = append(rows, []string{
 				shortID(getString(c, "id")),
 				getString(c, "level"),
@@ -216,4 +213,14 @@ func getString(m map[string]interface{}, key string) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return ""
+}
+
+// truncateRunes truncates a string to maxRunes runes, appending
+// "..." if truncation occurred. Safe for multi-byte UTF-8.
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }

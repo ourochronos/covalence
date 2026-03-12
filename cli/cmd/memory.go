@@ -71,10 +71,7 @@ var memoryRecallCmd = &cobra.Command{
 		headers := []string{"ID", "Relevance", "Content", "Topic"}
 		rows := make([][]string, 0, len(result))
 		for _, m := range result {
-			content := getString(m, "content")
-			if len(content) > 60 {
-				content = content[:60] + "..."
-			}
+			content := truncateRunes(getString(m, "content"), 60)
 			rows = append(rows, []string{
 				shortID(getString(m, "id")),
 				fmt.Sprintf("%.4f", getFloat(m, "relevance")),

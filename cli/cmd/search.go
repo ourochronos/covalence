@@ -90,11 +90,7 @@ func handleResultsMode(client *internal.Client, body map[string]interface{}) err
 				header += fmt.Sprintf(" (%s)", source)
 			}
 			fmt.Printf("\n--- %s ---\n", header)
-			if len(content) > 500 {
-				fmt.Printf("%s...\n", content[:500])
-			} else {
-				fmt.Println(content)
-			}
+			fmt.Println(truncateRunes(content, 500))
 		}
 	}
 	return nil
