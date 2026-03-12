@@ -50,3 +50,4 @@ lcov.info
 *.profdata
 tarpaulin-report.html
 .claude/worktrees/
+.firecrawl/
