@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use super::{DimensionKind, SearchDimension, SearchQuery};
+use super::{DimensionKind, SearchDimension, SearchQuery, extract_query_terms};
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::graph::sidecar::GraphSidecar;
@@ -42,39 +42,18 @@ impl GraphDimension {
     }
 }
 
-/// Minimum term length for seed matching. Short terms like "in",
-/// "of", "to" match too many node names and pollute the seed set.
-const MIN_SEED_TERM_LEN: usize = 3;
-
-/// Common stopwords filtered from seed matching.
-const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "are", "but", "not", "you", "all",
-    "can", "has", "her", "was", "one", "our", "out", "how",
-    "its", "may", "use", "who", "did", "get", "let", "say",
-    "she", "too", "via", "from", "with", "this", "that",
-    "what", "when", "will", "been", "have", "each", "make",
-    "like", "does", "into", "them", "then", "than", "more",
-    "some", "such", "also", "about", "which", "their",
-    "would", "there", "these", "other", "could", "should",
-];
-
 /// Find seed nodes by matching query text against canonical names.
 ///
-/// Splits the query into whitespace-delimited terms, filters out
-/// short terms and stopwords, then checks each node's
-/// `canonical_name` for a case-insensitive substring match. Returns
-/// up to `MAX_AUTO_SEEDS` matching node UUIDs.
+/// Uses `extract_query_terms` to split the query, filter stopwords
+/// and short terms, then checks each node's `canonical_name` for a
+/// case-insensitive substring match. Returns up to `MAX_AUTO_SEEDS`
+/// matching node UUIDs, ranked by match count.
 fn find_seed_nodes(sidecar: &GraphSidecar, query_text: &str) -> Vec<Uuid> {
     if query_text.is_empty() {
         return Vec::new();
     }
 
-    let terms: Vec<String> = query_text
-        .split_whitespace()
-        .map(|t| t.to_lowercase())
-        .filter(|t| t.len() >= MIN_SEED_TERM_LEN)
-        .filter(|t| !STOPWORDS.contains(&t.as_str()))
-        .collect();
+    let terms = extract_query_terms(query_text);
 
     if terms.is_empty() {
         return Vec::new();

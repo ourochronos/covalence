@@ -89,6 +89,35 @@ impl Default for SearchQuery {
     }
 }
 
+/// Minimum term length for query matching. Short terms like "in",
+/// "of", "to" match too many node names and pollute results.
+pub const MIN_QUERY_TERM_LEN: usize = 3;
+
+/// Common stopwords filtered from query matching across dimensions.
+pub const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "but", "not", "you", "all",
+    "can", "has", "her", "was", "one", "our", "out", "how",
+    "its", "may", "use", "who", "did", "get", "let", "say",
+    "she", "too", "via", "from", "with", "this", "that",
+    "what", "when", "will", "been", "have", "each", "make",
+    "like", "does", "into", "them", "then", "than", "more",
+    "some", "such", "also", "about", "which", "their",
+    "would", "there", "these", "other", "could", "should",
+];
+
+/// Extract filtered query terms from raw text.
+///
+/// Splits on whitespace, lowercases, removes terms shorter than
+/// `MIN_QUERY_TERM_LEN`, and removes stopwords. Used by graph
+/// and structural dimensions for node name matching.
+pub fn extract_query_terms(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|t| t.to_lowercase())
+        .filter(|t| t.len() >= MIN_QUERY_TERM_LEN)
+        .filter(|t| !STOPWORDS.contains(&t.as_str()))
+        .collect()
+}
+
 /// Trait for individual search dimension implementations.
 ///
 /// Each dimension independently retrieves and ranks candidates,
@@ -137,6 +166,31 @@ mod tests {
         assert_eq!(q.text, "knowledge graph");
         assert_eq!(q.limit, 20);
         assert!(q.embedding.is_none());
+    }
+
+    #[test]
+    fn extract_query_terms_filters_stopwords_and_short() {
+        let terms = extract_query_terms("the Rust for async runtime");
+        // "the" (stopword), "for" (stopword) filtered;
+        // "rust", "async", "runtime" survive.
+        assert_eq!(terms, vec!["rust", "async", "runtime"]);
+    }
+
+    #[test]
+    fn extract_query_terms_empty() {
+        assert!(extract_query_terms("").is_empty());
+        assert!(extract_query_terms("  ").is_empty());
+    }
+
+    #[test]
+    fn extract_query_terms_all_stopwords() {
+        assert!(extract_query_terms("the and for").is_empty());
+    }
+
+    #[test]
+    fn extract_query_terms_short_terms() {
+        // "in" and "of" are < MIN_QUERY_TERM_LEN.
+        assert!(extract_query_terms("in of").is_empty());
     }
 
     #[test]

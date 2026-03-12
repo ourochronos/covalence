@@ -7,26 +7,11 @@
 
 use uuid::Uuid;
 
-use super::{DimensionKind, SearchDimension, SearchQuery};
+use super::{DimensionKind, SearchDimension, SearchQuery, extract_query_terms};
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::graph::algorithms::pagerank;
 use crate::search::SearchResult;
-
-/// Minimum term length for query matching (same as graph dimension).
-const MIN_QUERY_TERM_LEN: usize = 3;
-
-/// Stopwords filtered from query matching (shared with graph dim).
-const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "are", "but", "not", "you", "all",
-    "can", "has", "her", "was", "one", "our", "out", "how",
-    "its", "may", "use", "who", "did", "get", "let", "say",
-    "she", "too", "via", "from", "with", "this", "that",
-    "what", "when", "will", "been", "have", "each", "make",
-    "like", "does", "into", "them", "then", "than", "more",
-    "some", "such", "also", "about", "which", "their",
-    "would", "there", "these", "other", "could", "should",
-];
 
 /// Structural importance search using PageRank with query relevance.
 ///
@@ -92,13 +77,7 @@ impl SearchDimension for StructuralDimension {
 
         // Parse query terms for relevance filtering, removing
         // stopwords and short terms to avoid spurious matches.
-        let terms: Vec<String> = query
-            .text
-            .split_whitespace()
-            .map(|t| t.to_lowercase())
-            .filter(|t| t.len() >= MIN_QUERY_TERM_LEN)
-            .filter(|t| !STOPWORDS.contains(&t.as_str()))
-            .collect();
+        let terms = extract_query_terms(&query.text);
         let has_query = !terms.is_empty();
 
         let mut scored: Vec<(Uuid, f64)> = scores
