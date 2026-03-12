@@ -224,13 +224,15 @@ pub fn trust_rank(
             if edges.is_empty() {
                 continue;
             }
-            let total_confidence: f64 = edges.iter().map(|e| graph[e.id()].confidence).sum();
+            let total_confidence: f64 =
+                edges.iter().map(|e| graph[e.id()].effective_confidence()).sum();
             if total_confidence <= 0.0 {
                 continue;
             }
             for edge in &edges {
-                let edge_share =
-                    damping * scores[&idx] * graph[edge.id()].confidence / total_confidence;
+                let edge_share = damping * scores[&idx]
+                    * graph[edge.id()].effective_confidence()
+                    / total_confidence;
                 if let Some(s) = new_scores.get_mut(&edge.target()) {
                     *s += edge_share;
                 }
@@ -282,7 +284,7 @@ pub fn spreading_activation(
             }
 
             for edge in &out_edges {
-                let spread = energy * decay * graph[edge.id()].weight;
+                let spread = energy * decay * graph[edge.id()].effective_weight();
                 if spread < threshold {
                     continue;
                 }
@@ -465,6 +467,7 @@ mod tests {
                 confidence: 0.9,
                 causal_level: None,
                 clearance_level: 0,
+                is_synthetic: false,
             },
         )
         .unwrap();

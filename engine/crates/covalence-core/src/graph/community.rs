@@ -50,14 +50,18 @@ pub fn compute_core_numbers(
         return HashMap::new();
     }
 
-    // Effective degree: sum of edge weights for all incident edges
-    // (both directions). We floor to usize for the peeling order.
+    // Effective degree: sum of effective edge weights for all incident
+    // edges (both directions). Synthetic edges are damped so they don't
+    // inflate core numbers. We floor to usize for the peeling order.
     let mut degree: HashMap<NodeIndex, f64> = HashMap::with_capacity(n);
     for idx in graph.node_indices() {
-        let out_w: f64 = graph.edges(idx).map(|e| graph[e.id()].weight).sum();
+        let out_w: f64 = graph
+            .edges(idx)
+            .map(|e| graph[e.id()].effective_weight())
+            .sum();
         let in_w: f64 = graph
             .edges_directed(idx, petgraph::Direction::Incoming)
-            .map(|e| graph[e.id()].weight)
+            .map(|e| graph[e.id()].effective_weight())
             .sum();
         degree.insert(idx, out_w + in_w);
     }
@@ -85,11 +89,11 @@ pub fn compute_core_numbers(
         // Decrease effective degree of remaining neighbors.
         let neighbors: Vec<(NodeIndex, f64)> = graph
             .edges(v)
-            .map(|e| (e.target(), graph[e.id()].weight))
+            .map(|e| (e.target(), graph[e.id()].effective_weight()))
             .chain(
                 graph
                     .edges_directed(v, petgraph::Direction::Incoming)
-                    .map(|e| (e.source(), graph[e.id()].weight)),
+                    .map(|e| (e.source(), graph[e.id()].effective_weight())),
             )
             .collect();
 
@@ -233,7 +237,7 @@ fn compute_component_coherence(
 
     for &idx in members {
         for edge in graph.edges(idx) {
-            let w = graph[edge.id()].weight;
+            let w = graph[edge.id()].effective_weight();
             total_weight += w;
             if members.contains(&edge.target()) {
                 internal_weight += w;
@@ -302,6 +306,7 @@ mod tests {
                 confidence: 0.9,
                 causal_level: None,
                 clearance_level: 0,
+                is_synthetic: false,
             },
         )
         .unwrap();

@@ -32,6 +32,15 @@ pub struct NodeMeta {
     pub clearance_level: i32,
 }
 
+/// Damping factor applied to synthetic (co-occurrence) edge weights.
+///
+/// Synthetic edges are auto-generated from shared chunk provenance and
+/// represent statistical co-occurrence rather than semantic relationships
+/// extracted by the LLM. Damping them prevents co-occurrence noise from
+/// dominating graph algorithms (PageRank, community detection, spreading
+/// activation).
+pub const SYNTHETIC_EDGE_DAMPING: f64 = 0.1;
+
 /// Metadata attached to graph edges in the petgraph sidecar.
 #[derive(Debug, Clone)]
 pub struct EdgeMeta {
@@ -47,6 +56,32 @@ pub struct EdgeMeta {
     pub causal_level: Option<CausalLevel>,
     /// Clearance level controlling federation visibility.
     pub clearance_level: i32,
+    /// Whether this edge was generated synthetically (co-occurrence).
+    pub is_synthetic: bool,
+}
+
+impl EdgeMeta {
+    /// Effective weight for graph algorithms, with synthetic damping.
+    ///
+    /// Synthetic edges contribute `weight * SYNTHETIC_EDGE_DAMPING`
+    /// so that co-occurrence noise doesn't dominate semantic signal.
+    pub fn effective_weight(&self) -> f64 {
+        if self.is_synthetic {
+            self.weight * SYNTHETIC_EDGE_DAMPING
+        } else {
+            self.weight
+        }
+    }
+
+    /// Effective confidence for trust propagation, with synthetic
+    /// damping.
+    pub fn effective_confidence(&self) -> f64 {
+        if self.is_synthetic {
+            self.confidence * SYNTHETIC_EDGE_DAMPING
+        } else {
+            self.confidence
+        }
+    }
 }
 
 /// The in-memory graph sidecar.
@@ -305,6 +340,7 @@ impl GraphSidecar {
         let causal_level = payload["causal_level"]
             .as_str()
             .and_then(CausalLevel::from_str_opt);
+        let is_synthetic = payload["is_synthetic"].as_bool().unwrap_or(false);
 
         // Remove existing edge if updating
         let _ = self.remove_edge(entity_id);
@@ -319,6 +355,7 @@ impl GraphSidecar {
                 confidence,
                 causal_level,
                 clearance_level,
+                is_synthetic,
             },
         )?;
         Ok(())
@@ -352,6 +389,7 @@ mod tests {
             confidence: 0.9,
             causal_level: None,
             clearance_level: 0,
+            is_synthetic: false,
         }
     }
 
@@ -510,5 +548,84 @@ mod tests {
         };
         g.apply_event(&event);
         assert_eq!(g.node_count(), 0);
+    }
+
+    #[test]
+    fn effective_weight_semantic_edge() {
+        let edge = EdgeMeta {
+            id: Uuid::new_v4(),
+            rel_type: "causes".into(),
+            weight: 1.0,
+            confidence: 0.9,
+            causal_level: None,
+            clearance_level: 0,
+            is_synthetic: false,
+        };
+        assert!((edge.effective_weight() - 1.0).abs() < f64::EPSILON);
+        assert!((edge.effective_confidence() - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn effective_weight_synthetic_edge() {
+        let edge = EdgeMeta {
+            id: Uuid::new_v4(),
+            rel_type: "co_occurs".into(),
+            weight: 1.0,
+            confidence: 0.9,
+            causal_level: None,
+            clearance_level: 0,
+            is_synthetic: true,
+        };
+        assert!(
+            (edge.effective_weight() - 0.1).abs() < f64::EPSILON,
+            "synthetic edge weight should be damped to 0.1"
+        );
+        assert!(
+            (edge.effective_confidence() - 0.09).abs() < f64::EPSILON,
+            "synthetic edge confidence should be damped to 0.09"
+        );
+    }
+
+    #[test]
+    fn apply_event_edge_with_is_synthetic() {
+        let mut g = GraphSidecar::new();
+        let a_id = Uuid::new_v4();
+        let b_id = Uuid::new_v4();
+        g.add_node(NodeMeta {
+            id: a_id,
+            node_type: "entity".into(),
+            canonical_name: "A".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+        g.add_node(NodeMeta {
+            id: b_id,
+            node_type: "entity".into(),
+            canonical_name: "B".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+
+        let edge_id = Uuid::new_v4();
+        let event = OutboxEvent {
+            seq_id: 1,
+            entity_type: "edge".into(),
+            entity_id: edge_id,
+            operation: "INSERT".into(),
+            payload: Some(serde_json::json!({
+                "source_node_id": a_id.to_string(),
+                "target_node_id": b_id.to_string(),
+                "rel_type": "co_occurs",
+                "weight": 1.0,
+                "confidence": 0.5,
+                "clearance_level": 0,
+                "is_synthetic": true
+            })),
+        };
+        g.apply_event(&event);
+
+        let edge = g.get_edge(edge_id).unwrap();
+        assert!(edge.is_synthetic);
+        assert!((edge.effective_weight() - 0.1).abs() < f64::EPSILON);
     }
 }

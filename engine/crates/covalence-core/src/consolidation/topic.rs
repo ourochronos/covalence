@@ -124,6 +124,7 @@ mod tests {
                 confidence: 0.9,
                 causal_level: None,
                 clearance_level: 0,
+                is_synthetic: false,
             },
         )
         .unwrap();

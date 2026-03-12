@@ -589,5 +589,6 @@ fn edge_to_meta(edge: &Edge) -> EdgeMeta {
         confidence: edge.confidence,
         causal_level: edge.causal_level,
         clearance_level: edge.clearance_level.as_i32(),
+        is_synthetic: edge.is_synthetic,
     }
 }

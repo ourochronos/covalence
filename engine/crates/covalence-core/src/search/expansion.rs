@@ -281,6 +281,7 @@ mod tests {
                     confidence: 0.9,
                     causal_level: None,
                     clearance_level: 0,
+                    is_synthetic: false,
                 },
             )
             .ok();
@@ -379,6 +380,7 @@ mod tests {
                     confidence: 0.8,
                     causal_level: None,
                     clearance_level: 0,
+                    is_synthetic: false,
                 },
             )
             .ok();
@@ -392,6 +394,7 @@ mod tests {
                     confidence: 0.6,
                     causal_level: None,
                     clearance_level: 0,
+                    is_synthetic: false,
                 },
             )
             .ok();
@@ -442,6 +445,7 @@ mod tests {
                     confidence: 0.9,
                     causal_level: None,
                     clearance_level: 0,
+                    is_synthetic: false,
                 },
             )
             .ok();
