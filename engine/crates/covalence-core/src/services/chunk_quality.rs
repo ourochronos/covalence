@@ -269,10 +269,9 @@ pub(crate) fn is_reference_section(text: &str) -> bool {
                 line.starts_with("- ") || line.starts_with("* ") || line.starts_with('[');
             // Also match continuation lines with year patterns
             // (multi-line citations where the year is on a later line).
-            let has_year = line
-                .as_bytes()
-                .windows(6)
-                .any(|w| w[0] == b'(' && w[1..5].iter().all(|b| b.is_ascii_digit()) && w[5] == b')');
+            let has_year = line.as_bytes().windows(6).any(|w| {
+                w[0] == b'(' && w[1..5].iter().all(|b| b.is_ascii_digit()) && w[5] == b')'
+            });
             // Pattern: list item with a year, or a "Retrieved" URL line,
             // or a standalone arrow/citation marker like "(1)↑"
             (is_list_item && has_year)

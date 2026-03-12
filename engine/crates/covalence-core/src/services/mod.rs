@@ -9,6 +9,7 @@ pub mod health;
 pub(crate) mod ingestion_helpers;
 pub mod memory;
 pub mod node;
+pub(crate) mod pipeline;
 pub mod search;
 pub(crate) mod search_helpers;
 pub mod source;

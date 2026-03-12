@@ -1,4 +1,9 @@
 //! Source service — ingestion orchestration and source management.
+//!
+//! The shared pipeline stages (chunk → embed → extract → resolve)
+//! live in [`super::pipeline`]. This module owns source lifecycle
+//! (create, supersede, reprocess, delete) and delegates the heavy
+//! lifting.
 
 use std::sync::Arc;
 
@@ -6,37 +11,23 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{PipelineConfig, TableDimensions};
 use crate::error::{Error, Result};
-use crate::ingestion::code_chunker;
 use crate::ingestion::converter::ConverterRegistry;
-use crate::ingestion::coreference::{CorefResolver, FastcorefClient};
-use crate::ingestion::embedder::{Embedder, truncate_and_validate};
-use crate::ingestion::extractor::{ExtractionContext, Extractor};
+use crate::ingestion::coreference::FastcorefClient;
+use crate::ingestion::embedder::Embedder;
+use crate::ingestion::extractor::Extractor;
 use crate::ingestion::fingerprint::{FingerprintConfig, PipelineFingerprint};
 use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
-use crate::models::chunk::Chunk;
-use crate::models::chunk::ChunkLevel as ModelChunkLevel;
-use crate::models::edge::Edge;
-use crate::models::extraction::{ExtractedEntityType, Extraction};
-use crate::models::node::Node;
-use crate::models::node_alias::NodeAlias;
 use crate::models::source::{Source, SourceType, UpdateClass};
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{
     ChunkRepo, EdgeRepo, ExtractionRepo, NodeAliasRepo, NodeRepo, SourceRepo,
 };
 use crate::types::clearance::ClearanceLevel;
-use crate::types::ids::{AliasId, ChunkId, NodeId, SourceId};
+use crate::types::ids::SourceId;
 
-use super::chunk_quality::{
-    has_artifact_heading, is_author_block, is_bibliography_entry, is_boilerplate_heavy,
-    is_metadata_only, is_reference_section,
-};
-use super::ingestion_helpers::{
-    SupersedesInfo, compute_parent_alignment, detect_chunk_content_types, detect_update_class,
-    entity_name_lock_key, group_extraction_batches, has_example_markers, sanitize_ltree_label,
-    should_extract,
-};
+use super::ingestion_helpers::{SupersedesInfo, detect_update_class};
+use super::pipeline::PipelineInput;
 
 /// Result of a cascading delete operation.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -70,39 +61,21 @@ pub struct ReprocessResult {
 
 /// Service for source ingestion and management.
 pub struct SourceService {
-    repo: Arc<PgRepo>,
-    embedder: Option<Arc<dyn Embedder>>,
-    extractor: Option<Arc<dyn Extractor>>,
-    resolver: Option<Arc<dyn EntityResolver>>,
-    /// Maximum number of concurrent LLM extraction calls.
-    extract_concurrency: usize,
-    /// Resolver for normalizing relationship type labels via
-    /// trigram similarity against existing edge types.
-    rel_type_resolver: Option<Arc<PgResolver>>,
-    /// Optional format converter registry for pre-processing
-    /// content before the parser stage. When set, incoming
-    /// content is run through the matching converter to produce
-    /// Markdown before parsing.
-    converter_registry: Option<ConverterRegistry>,
-    /// Optional Fastcoref client for neural coreference
-    /// resolution as a preprocessing step before extraction.
-    coref_client: Option<Arc<FastcorefClient>>,
-    /// Per-table embedding dimensions for truncation.
-    table_dims: TableDimensions,
-    /// Maximum chunk size in bytes before paragraph splitting.
-    chunk_size: usize,
-    /// Overlap characters from the end of the previous chunk.
-    chunk_overlap: usize,
-    /// Minimum token count for a chunk to be sent to the extractor.
-    min_extract_tokens: usize,
-    /// Token budget for batching adjacent small chunks into a
-    /// single extraction call.
-    extract_batch_tokens: usize,
-    /// Per-stage pipeline configuration.
-    pipeline: PipelineConfig,
-    /// Optional fingerprint config for recording pipeline state on
-    /// each ingestion run.
-    fingerprint_config: Option<FingerprintConfig>,
+    pub(crate) repo: Arc<PgRepo>,
+    pub(crate) embedder: Option<Arc<dyn Embedder>>,
+    pub(crate) extractor: Option<Arc<dyn Extractor>>,
+    pub(crate) resolver: Option<Arc<dyn EntityResolver>>,
+    pub(crate) extract_concurrency: usize,
+    pub(crate) rel_type_resolver: Option<Arc<PgResolver>>,
+    pub(crate) converter_registry: Option<ConverterRegistry>,
+    pub(crate) coref_client: Option<Arc<FastcorefClient>>,
+    pub(crate) table_dims: TableDimensions,
+    pub(crate) chunk_size: usize,
+    pub(crate) chunk_overlap: usize,
+    pub(crate) min_extract_tokens: usize,
+    pub(crate) extract_batch_tokens: usize,
+    pub(crate) pipeline: PipelineConfig,
+    pub(crate) fingerprint_config: Option<FingerprintConfig>,
 }
 
 impl SourceService {
@@ -352,7 +325,7 @@ impl SourceService {
     ) -> Result<SourceId> {
         let hash = Sha256::digest(content).to_vec();
 
-        // Dedup check — exact content hash match
+        // Dedup check — exact content hash match.
         if let Some(existing) = SourceRepo::get_by_hash(&*self.repo, &hash).await? {
             return Ok(existing.id);
         }
@@ -360,92 +333,44 @@ impl SourceService {
         let st = SourceType::from_str_opt(source_type)
             .ok_or_else(|| Error::InvalidInput(format!("unknown source type: {source_type}")))?;
 
-        // --- Source update class detection ---
-        //
-        // If a URI is provided, check whether an existing source
-        // shares that URI. If content hashes differ, determine the
-        // update class and mark the old source as superseded.
+        // Source update class detection.
         let supersedes_info = if let Some(uri_str) = uri {
             self.detect_source_update(uri_str, content).await?
         } else {
             None
         };
 
-        // Detect whether this is a code source. When a code
-        // language is detected the pipeline uses tree-sitter
-        // directly and skips NLP stages (normalization, coref)
-        // that would destroy code structure.
-        let code_lang = code_chunker::detect_code_language(mime, uri);
+        // Prepare content (convert → parse → normalize).
+        let prepared = self.prepare_content(content, mime, uri).await?;
 
-        // Stage 1.5: Convert content if a converter registry is
-        // configured and conversion is enabled. For code sources,
-        // use tree-sitter directly instead of the converter
-        // registry.
-        let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
-            if let Some(lang) = code_lang {
-                let source_text = String::from_utf8_lossy(content);
-                let md = code_chunker::code_to_markdown(&source_text, lang)?;
-                (std::borrow::Cow::Owned(md.into_bytes()), "text/markdown")
-            } else if self.pipeline.convert_enabled {
-                if let Some(ref registry) = self.converter_registry {
-                    let converted = registry.convert(content, mime).await?;
-                    (
-                        std::borrow::Cow::Owned(converted.into_bytes()),
-                        "text/markdown",
-                    )
-                } else {
-                    (std::borrow::Cow::Borrowed(content), mime)
-                }
-            } else {
-                (std::borrow::Cow::Borrowed(content), mime)
-            };
-
-        // Stage 2: Parse
-        let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
-
-        // Stage 3: Normalize (skippable via pipeline config).
-        // Skipped for code sources — normalization collapses
-        // indentation inside fenced code blocks.
-        let is_code = code_lang.is_some();
-        let normalized = if is_code {
-            parsed.body.clone()
-        } else if self.pipeline.normalize_enabled {
-            let n = crate::ingestion::normalize::normalize(&parsed.body);
-            crate::ingestion::normalize::strip_artifacts(&n)
-        } else {
-            parsed.body.clone()
-        };
-
-        // Compute normalized content hash for semantic dedup.
-        let normalized_hash = Sha256::digest(normalized.as_bytes()).to_vec();
-
-        // Semantic dedup: if normalized content matches an existing
-        // source, skip re-processing. This catches cosmetic changes
-        // (whitespace, encoding) that don't affect content.
+        // Semantic dedup on normalized content.
         if let Some(existing) =
-            SourceRepo::get_by_normalized_hash(&*self.repo, &normalized_hash).await?
+            SourceRepo::get_by_normalized_hash(&*self.repo, &prepared.normalized_hash).await?
         {
             return Ok(existing.id);
         }
 
-        // Create source record
+        // Build source record.
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
-        // Title priority: metadata.title > filename from URI (for
-        // code sources) > parsed title > last URI segment.
-        // Code sources get special treatment: the parsed title is
-        // always "Preamble" (from the generated markdown), which is
-        // not useful. Use the filename instead.
+
+        // Title priority: metadata > filename (code) > parsed > URI segment.
         let uri_filename = uri.and_then(|u| u.rsplit('/').next().map(|f| f.to_string()));
         source.title = metadata
             .get("title")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| if is_code { uri_filename.clone() } else { None })
-            .or(parsed.title)
+            .or_else(|| {
+                if prepared.is_code {
+                    uri_filename.clone()
+                } else {
+                    None
+                }
+            })
+            .or(prepared.parsed_title)
             .or(uri_filename);
-        // Author priority: metadata.authors[0] > metadata.author >
-        // parsed author.
+
+        // Author priority: metadata.authors[0] > metadata.author > parsed.
         source.author = metadata
             .get("authors")
             .and_then(|v| v.as_array())
@@ -458,30 +383,26 @@ impl SourceService {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .or_else(|| parsed.metadata.get("author").cloned());
+            .or_else(|| prepared.parsed_metadata.get("author").cloned());
+
         source.metadata = metadata;
         source.raw_content = String::from_utf8(content.to_vec()).ok();
-        source.normalized_content = Some(normalized.clone());
-        source.normalized_hash = Some(normalized_hash);
+        source.normalized_content = Some(prepared.normalized.clone());
+        source.normalized_hash = Some(prepared.normalized_hash);
 
-        // Apply supersession metadata if detected
         if let Some(ref info) = supersedes_info {
             source.supersedes_id = Some(info.old_source_id);
             source.update_class = Some(info.update_class.as_str().to_string());
             source.content_version = info.new_version;
         }
 
-        // Stamp pipeline fingerprint into source metadata.
         if let Some(fp) = self.current_fingerprint() {
             Self::stamp_fingerprint(&mut source.metadata, &fp);
         }
 
         SourceRepo::create(&*self.repo, &source).await?;
 
-        // Clean up superseded source if applicable.
-        // Delete old extractions and chunks so they don't pollute
-        // search results. Matches the cleanup order in
-        // `reprocess()`: extractions → alias chunk refs → chunks.
+        // Clean up superseded source.
         if let Some(ref info) = supersedes_info {
             self.mark_superseded(info.old_source_id, &info.update_class)
                 .await?;
@@ -491,618 +412,31 @@ impl SourceService {
                 NodeAliasRepo::clear_source_chunks(&*self.repo, info.old_source_id).await?;
             let chunks_deleted =
                 ChunkRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
-            // Null out old source embedding so it doesn't appear in
-            // vector search results.
             SourceRepo::clear_embedding(&*self.repo, info.old_source_id).await?;
             tracing::info!(
                 old_source = %info.old_source_id,
-                ext_deleted,
-                aliases_cleared,
-                chunks_deleted,
+                ext_deleted, aliases_cleared, chunks_deleted,
                 "cleaned up superseded source"
             );
         }
 
-        // Stage 4: Chunk
-        let chunk_outputs = crate::ingestion::chunker::chunk_document(
-            &normalized,
-            self.chunk_size,
-            self.chunk_overlap,
-        );
-
-        // Stage 4.5: Post-chunking quality gate.
-        //
-        // Flag sources that produce excessively fragmented output.
-        // This catches garbage HTML that slipped through conversion
-        // (e.g., nav/footer text producing hundreds of tiny chunks).
-        if chunk_outputs.len() > 10 {
-            let char_counts: Vec<usize> = chunk_outputs.iter().map(|co| co.text.len()).collect();
-            let mut sorted = char_counts.clone();
-            sorted.sort_unstable();
-            let median_chars = sorted[sorted.len() / 2];
-
-            if median_chars < 100 {
-                tracing::warn!(
-                    source_id = %source.id,
-                    chunks = chunk_outputs.len(),
-                    median_chars,
-                    "post-chunking quality gate: excessively fragmented output"
-                );
-            }
-        }
-
-        // Filter out metadata-only chunks (e.g., chunks whose content
-        // is entirely bold-label lines like "**Authors:** ..." with no
-        // substantive text). These are ingestion artifacts from content
-        // appearing before the first heading.
-        let pre_filter = chunk_outputs.len();
-        let chunk_outputs: Vec<_> = chunk_outputs
-            .into_iter()
-            .filter(|co| {
-                !is_metadata_only(&co.text)
-                    && !is_boilerplate_heavy(&co.text)
-                    && !is_author_block(&co.text)
-                    && !has_artifact_heading(&co.heading_path)
-                    && !is_bibliography_entry(&co.text)
-                    && !is_reference_section(&co.text)
-            })
-            .collect();
-        let filtered_count = pre_filter - chunk_outputs.len();
-        if filtered_count > 0 {
-            tracing::info!(
-                source_id = %source.id,
-                filtered = filtered_count,
-                "removed low-quality chunks"
-            );
-        }
-
-        // Build a map from chunker UUIDs to ChunkIds
-        let mut id_map = std::collections::HashMap::new();
-        for co in &chunk_outputs {
-            id_map.insert(co.id, ChunkId::from_uuid(co.id));
-        }
-
-        // Build all chunks for batch insertion
-        let chunks: Vec<Chunk> = chunk_outputs
-            .iter()
-            .enumerate()
-            .map(|(ordinal, co)| {
-                let chunk_id = id_map[&co.id];
-                let level = match co.level {
-                    crate::ingestion::chunker::ChunkLevel::Section => ModelChunkLevel::Section,
-                    crate::ingestion::chunker::ChunkLevel::Paragraph => ModelChunkLevel::Paragraph,
-                };
-
-                // Hash unique content only (excluding overlap prefix)
-                // so upstream paragraph changes don't cascade through
-                // every downstream chunk's hash.
-                let unique_content = &co.text[co.context_prefix_len..];
-                let content_hash = Sha256::digest(unique_content.as_bytes()).to_vec();
-                let token_count = co.text.split_whitespace().count() as i32;
-                let hierarchy = co
-                    .heading_path
-                    .iter()
-                    .map(|h| sanitize_ltree_label(h))
-                    .collect::<Vec<_>>()
-                    .join(".");
-
-                // Detect content types for chunk metadata.
-                let chunk_meta = detect_chunk_content_types(&co.text);
-
-                let mut chunk = Chunk::new(
-                    source.id,
-                    level,
-                    ordinal as i32,
-                    co.text.clone(),
-                    content_hash,
-                    token_count,
-                );
-                chunk.id = chunk_id;
-                chunk.byte_start = Some(co.byte_start as i32);
-                chunk.byte_end = Some(co.byte_end as i32);
-                chunk.content_offset = Some(co.context_prefix_len as i32);
-                if let Some(parent_uuid) = co.parent_id {
-                    if let Some(&pid) = id_map.get(&parent_uuid) {
-                        chunk = chunk.with_parent(pid);
-                    }
-                }
-                if !hierarchy.is_empty() {
-                    chunk = chunk.with_hierarchy(hierarchy);
-                }
-                chunk = chunk.with_metadata(chunk_meta);
-                chunk
-            })
-            .collect();
-
-        // Store all chunks in a single batch INSERT
-        ChunkRepo::batch_create(&*self.repo, &chunks).await?;
-
-        // Track chunks that contain example/hypothetical markers.
-        // Entities extracted from these chunks get dampened confidence.
-        let example_chunks: std::collections::HashSet<uuid::Uuid> = chunk_outputs
-            .iter()
-            .filter(|co| has_example_markers(&co.text))
-            .map(|co| co.id)
-            .collect();
-
-        // Stage 5: Embed chunks
-        //
-        // Uses contextual chunk embeddings when supported (e.g.,
-        // Voyage `voyage-context-3`). Each chunk embedding reflects
-        // the surrounding document context (late chunking).
-        //
-        // Also runs landscape analysis to determine which chunks
-        // need LLM extraction.
-        let landscape_results = if let Some(ref embedder) = self.embedder {
-            let texts: Vec<String> = chunk_outputs.iter().map(|co| co.text.clone()).collect();
-            let embeddings = embedder.embed_document_chunks(&texts).await?;
-
-            for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
-                let chunk_id = id_map[&co.id];
-                match truncate_and_validate(emb, self.table_dims.chunk, "chunks") {
-                    Ok(truncated) => {
-                        if let Err(e) =
-                            ChunkRepo::update_embedding(&*self.repo, chunk_id, &truncated).await
-                        {
-                            tracing::warn!(
-                                chunk_id = %chunk_id,
-                                error = %e,
-                                "failed to store chunk embedding"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            chunk_id = %chunk_id,
-                            error = %e,
-                            "chunk embedding dimension mismatch"
-                        );
-                    }
-                }
-            }
-
-            // Compute parent_alignment for child chunks.
-            //
-            // For each chunk with a parent_chunk_id, compute cosine
-            // similarity between the child and parent embeddings
-            // and store it in the parent_alignment column.
-            compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &*self.repo).await;
-
-            // Embed the full normalized text for source-level search.
-            // Failures are logged but don't abort ingestion — the
-            // source will still be searchable via lexical/graph dims.
-            match embedder.embed(std::slice::from_ref(&normalized)).await {
-                Ok(source_embeddings) => {
-                    if let Some(emb) = source_embeddings.first() {
-                        match truncate_and_validate(emb, self.table_dims.source, "sources") {
-                            Ok(truncated) => {
-                                if let Err(e) =
-                                    SourceRepo::update_embedding(&*self.repo, source.id, &truncated)
-                                        .await
-                                {
-                                    tracing::warn!(
-                                        source_id = %source.id,
-                                        error = %e,
-                                        "failed to store source embedding"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    source_id = %source.id,
-                                    error = %e,
-                                    "source embedding dimension mismatch"
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        source_id = %source.id,
-                        error = %e,
-                        "failed to embed source, \
-                         source will lack vector search"
-                    );
-                }
-            }
-
-            // Stage 5.5: Embedding landscape analysis (gated by
-            // pipeline.landscape_enabled).
-            //
-            // When disabled, all chunks are sent to the extractor
-            // without landscape-based gating.
-            //
-            // First-ingestion bypass: if this source has no prior
-            // extractions (no superseded source), landscape gating
-            // is bypassed to avoid incorrectly skipping extraction
-            // on multi-chunk sources where intra-document alignment
-            // is naturally high.
-            let is_first_ingestion = supersedes_info.is_none();
-            let landscape = if self.pipeline.landscape_enabled {
-                let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
-                    .iter()
-                    .map(|co| {
-                        co.parent_id.and_then(|pid| {
-                            chunk_outputs
-                                .iter()
-                                .position(|c| c.id == pid)
-                                .and_then(|idx| embeddings.get(idx))
-                        })
-                    })
-                    .collect();
-
-                crate::ingestion::landscape::analyze_landscape(
-                    &embeddings,
-                    &parent_embeddings,
-                    None,
-                    is_first_ingestion,
-                )
-            } else {
-                Vec::new()
-            };
-
-            // Store landscape results on chunks
-            for lr in &landscape {
-                if lr.chunk_index < chunk_outputs.len() {
-                    let chunk_id = id_map[&chunk_outputs[lr.chunk_index].id];
-                    let metrics_json = serde_json::to_value(&lr.metrics).ok();
-                    ChunkRepo::update_landscape(
-                        &*self.repo,
-                        chunk_id,
-                        lr.parent_alignment,
-                        lr.extraction_method.as_str(),
-                        metrics_json,
-                    )
-                    .await?;
-                }
-            }
-
-            Some(landscape)
-        } else {
-            None
-        };
-
-        // Stage 5.5: Co-reference resolution across chunks.
-        // Skipped for code sources — abbreviation detection is
-        // destructive for identifiers and variable names.
-        let mut coref_map: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        if !is_code {
-            let coref_resolver = CorefResolver::new();
-            let coref_links = coref_resolver.resolve(&chunk_outputs);
-            for link in &coref_links {
-                coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
-            }
-        }
-
-        // Stage 5.7: Neural coreference preprocessing (optional).
-        //
-        // When a FastcorefClient is configured, resolve pronouns
-        // and anaphora in each extractable chunk before passing
-        // to the entity extractor. This benefits all extractor
-        // backends (sidecar, two_pass, llm).
-        //
-        // Skipped for code sources.
-        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> = if is_code {
-            None
-        } else if self.pipeline.coref_enabled {
-            if let Some(ref coref_client) = self.coref_client {
-                let extractable_indices: Vec<usize> = chunk_outputs
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
-                    .map(|(i, _)| i)
-                    .collect();
-
-                let mut resolved = std::collections::HashMap::new();
-                for &idx in &extractable_indices {
-                    let co = &chunk_outputs[idx];
-                    match coref_client.resolve(&co.text).await {
-                        Ok(r) => {
-                            tracing::debug!(
-                                chunk_index = idx,
-                                original_len = co.text.len(),
-                                resolved_len = r.len(),
-                                "neural coref resolved"
-                            );
-                            resolved.insert(co.id, r);
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                chunk_index = idx,
-                                error = %e,
-                                "neural coref failed, using original text"
-                            );
-                        }
-                    }
-                }
-                if resolved.is_empty() {
-                    None
-                } else {
-                    Some(resolved)
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Stages 6-7: Extract entities + resolve + create
-        // nodes/edges.
-        //
-        // For code sources, use the deterministic AST extractor
-        // instead of the LLM extractor. This avoids garbage
-        // extractions from sending code through NLP prompts.
-        //
-        // Landscape gating: Only send chunks with FullExtraction
-        // or FullExtractionWithReview to the LLM. Chunks classified
-        // as EmbeddingLinkage or DeltaCheck are skipped.
-        //
-        // Token-budget batching: Adjacent small chunks are
-        // concatenated into a single extraction call to reduce
-        // API round-trips. Chunks below `min_extract_tokens` are
-        // skipped entirely.
-        let ast_ext: Option<Arc<dyn Extractor>> = if is_code {
-            Some(Arc::new(
-                crate::ingestion::ast_extractor::AstExtractor::new(),
-            ))
-        } else {
-            None
-        };
-        let active_extractor = if is_code {
-            ast_ext.as_ref()
-        } else {
-            self.extractor.as_ref()
-        };
-        let extraction_method_label = if is_code { "ast" } else { "llm" };
-        if let Some(extractor) = active_extractor {
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
-
-            // Build extraction context from source metadata.
-            let extraction_context = Arc::new(ExtractionContext {
-                source_type: Some(source_type.to_string()),
-                source_uri: uri.map(|u| u.to_string()),
-                source_title: source.title.clone(),
-            });
-
-            // Determine which chunks should go through extraction
-            // based on landscape analysis.
-            let extractable: Vec<_> = chunk_outputs
-                .iter()
-                .enumerate()
-                .filter(|(i, _co)| should_extract(*i, landscape_results.as_deref()))
-                .map(|(_i, co)| co)
-                .collect();
-
-            // Group chunks into token-budget batches. Small chunks
-            // below `min_extract_tokens` are skipped. Adjacent
-            // chunks are concatenated up to `extract_batch_tokens`.
-            let batches = group_extraction_batches(
-                &extractable,
-                self.min_extract_tokens,
-                self.extract_batch_tokens,
-                resolved_texts.as_ref(),
-            );
-
-            tracing::debug!(
-                extractable = extractable.len(),
-                batches = batches.len(),
-                min_tokens = self.min_extract_tokens,
-                batch_budget = self.extract_batch_tokens,
-                "extraction batching"
-            );
-
-            let concurrency_size = self.extract_concurrency * 2;
-            let mut extraction_results: Vec<Result<(uuid::Uuid, _)>> = Vec::new();
-
-            for batch_slice in batches.chunks(concurrency_size) {
-                let batch_futures: Vec<_> = batch_slice
-                    .iter()
-                    .map(|(primary_id, text)| {
-                        let sem = Arc::clone(&semaphore);
-                        let ext = Arc::clone(extractor);
-                        let ctx = Arc::clone(&extraction_context);
-                        let text = text.clone();
-                        let primary_id = *primary_id;
-                        async move {
-                            let _permit = sem.acquire().await.map_err(|_| {
-                                Error::Ingestion("extraction semaphore closed".to_string())
-                            })?;
-                            let result = ext.extract(&text, &ctx).await?;
-                            Ok::<_, Error>((primary_id, result))
-                        }
-                    })
-                    .collect();
-
-                let batch_results = futures::future::join_all(batch_futures).await;
-                extraction_results.extend(batch_results);
-            }
-
-            // Phase 2: Process extraction results sequentially
-            let mut name_to_node: std::collections::HashMap<String, NodeId> =
-                std::collections::HashMap::new();
-
-            for extraction_result in extraction_results {
-                let (chunk_uuid, extraction) = match extraction_result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "extraction failed for chunk, skipping"
-                        );
-                        continue;
-                    }
-                };
-                let chunk_id = id_map[&chunk_uuid];
-
-                // Dampen confidence for entities/edges from
-                // chunks that contain example/hypothetical markers.
-                let is_example_chunk = example_chunks.contains(&chunk_uuid);
-
-                for entity in &extraction.entities {
-                    let node_id = self
-                        .resolve_and_store_entity(entity, chunk_id, extraction_method_label)
-                        .await?;
-                    name_to_node.insert(entity.name.to_lowercase(), node_id);
-
-                    if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
-                        name_to_node.entry(referent.clone()).or_insert(node_id);
-                        self.ensure_alias(&entity.name, node_id, chunk_id).await?;
-                    }
-                }
-
-                for rel in &extraction.relationships {
-                    let src_key = coref_map
-                        .get(&rel.source_name.to_lowercase())
-                        .cloned()
-                        .unwrap_or_else(|| rel.source_name.to_lowercase());
-                    let tgt_key = coref_map
-                        .get(&rel.target_name.to_lowercase())
-                        .cloned()
-                        .unwrap_or_else(|| rel.target_name.to_lowercase());
-
-                    let source_id = match name_to_node.get(&src_key) {
-                        Some(&id) => id,
-                        None => continue,
-                    };
-                    let target_id = match name_to_node.get(&tgt_key) {
-                        Some(&id) => id,
-                        None => continue,
-                    };
-
-                    // Filter self-loops: extraction noise where an
-                    // entity relates to itself.
-                    if source_id == target_id {
-                        tracing::debug!(
-                            rel_type = %rel.rel_type,
-                            entity = %rel.source_name,
-                            "skipping self-loop edge"
-                        );
-                        continue;
-                    }
-
-                    let resolved_rel_type = if let Some(ref rtr) = self.rel_type_resolver {
-                        rtr.resolve_rel_type(&rel.rel_type).await?
-                    } else {
-                        rel.rel_type.clone()
-                    };
-
-                    let mut edge = Edge::new(source_id, target_id, resolved_rel_type);
-                    let conf = if is_example_chunk {
-                        // Halve confidence for edges from example chunks.
-                        (rel.confidence * 0.5).clamp(0.0, 1.0)
-                    } else {
-                        rel.confidence
-                    };
-                    edge.confidence = conf;
-                    EdgeRepo::create(&*self.repo, &edge).await?;
-
-                    let ext_record = Extraction::new(
-                        chunk_id,
-                        ExtractedEntityType::Edge,
-                        edge.id.into_uuid(),
-                        extraction_method_label.to_string(),
-                        conf,
-                    );
-                    ExtractionRepo::create(&*self.repo, &ext_record).await?;
-                }
-            }
-
-            // Stage 7.5: Embed node descriptions
-            //
-            // Only embeds nodes that don't already have an embedding,
-            // avoiding redundant API calls for resolved existing nodes.
-            // Embedding failures are logged as warnings and skipped
-            // rather than aborting the entire ingestion.
-            if let Some(ref embedder) = self.embedder {
-                let node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
-
-                if !node_ids.is_empty() {
-                    let mut texts: Vec<String> = Vec::with_capacity(node_ids.len());
-                    let mut valid_ids: Vec<NodeId> = Vec::with_capacity(node_ids.len());
-
-                    // Collect nodes that need embedding. Skip nodes
-                    // that already have one from a prior ingestion.
-                    let has_embedding_ids: Vec<uuid::Uuid> = sqlx::query_scalar::<_, uuid::Uuid>(
-                        "SELECT id FROM nodes \
-                             WHERE id = ANY($1) \
-                             AND embedding IS NOT NULL",
-                    )
-                    .bind(node_ids.iter().map(|n| n.into_uuid()).collect::<Vec<_>>())
-                    .fetch_all(self.repo.pool())
-                    .await
-                    .unwrap_or_default();
-
-                    for &nid in &node_ids {
-                        if has_embedding_ids.contains(&nid.into_uuid()) {
-                            continue;
-                        }
-                        if let Some(node) = NodeRepo::get(&*self.repo, nid).await? {
-                            let text = match &node.description {
-                                Some(desc) if !desc.is_empty() => {
-                                    format!("{}: {}", node.canonical_name, desc)
-                                }
-                                _ => node.canonical_name.clone(),
-                            };
-                            texts.push(text);
-                            valid_ids.push(nid);
-                        }
-                    }
-
-                    if !texts.is_empty() {
-                        match embedder.embed(&texts).await {
-                            Ok(embeddings) => {
-                                for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
-                                    match truncate_and_validate(emb, self.table_dims.node, "nodes")
-                                    {
-                                        Ok(truncated) => {
-                                            if let Err(e) = NodeRepo::update_embedding(
-                                                &*self.repo,
-                                                *nid,
-                                                &truncated,
-                                            )
-                                            .await
-                                            {
-                                                tracing::warn!(
-                                                    node_id = %nid,
-                                                    error = %e,
-                                                    "failed to store node embedding"
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                node_id = %nid,
-                                                error = %e,
-                                                "node embedding dimension mismatch"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    node_count = valid_ids.len(),
-                                    error = %e,
-                                    "failed to embed node descriptions, \
-                                     nodes will lack vector search"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Run shared pipeline (chunk → embed → extract → resolve).
+        self.run_pipeline(&PipelineInput {
+            source_id: source.id,
+            source_type,
+            source_uri: uri.map(|u| u.to_string()),
+            source_title: source.title.clone(),
+            normalized: &prepared.normalized,
+            is_code: prepared.is_code,
+            is_first_ingestion: supersedes_info.is_none(),
+        })
+        .await?;
 
         Ok(source.id)
     }
 
     /// Detect whether an existing source with the same URI exists
     /// and determine the update class based on content overlap.
-    ///
-    /// Returns `None` if no existing source shares the URI.
     async fn detect_source_update(
         &self,
         uri: &str,
@@ -1110,7 +444,6 @@ impl SourceService {
     ) -> Result<Option<SupersedesInfo>> {
         use sqlx::Row;
 
-        // Query for existing source with this URI
         let row = sqlx::query(
             "SELECT id, content_hash, raw_content, content_version \
              FROM sources \
@@ -1145,8 +478,7 @@ impl SourceService {
         }))
     }
 
-    /// Mark an old source as superseded by updating its
-    /// `update_class` to reflect the supersession.
+    /// Mark an old source as superseded.
     async fn mark_superseded(&self, old_id: SourceId, update_class: &UpdateClass) -> Result<()> {
         sqlx::query("UPDATE sources SET update_class = $2 WHERE id = $1")
             .bind(old_id)
@@ -1156,251 +488,10 @@ impl SourceService {
         Ok(())
     }
 
-    /// Resolve an extracted entity against the graph and store it.
+    /// Reprocess a source through the current pipeline config.
     ///
-    /// If a resolver is available, uses it to match against existing
-    /// nodes. Otherwise creates a new node. Returns the `NodeId`
-    /// (existing or new).
-    ///
-    /// On a fuzzy match, automatically creates a [`NodeAlias`] so that
-    /// future exact lookups will match without falling back to trigram
-    /// search.
-    ///
-    /// The entire read-check-write cycle runs inside a PostgreSQL
-    /// transaction that holds a transaction-scoped advisory lock
-    /// (`pg_advisory_xact_lock`) on a hash of the entity name. This
-    /// prevents two concurrent workers from both creating the same
-    /// node when they see "not found" at the same time. The lock is
-    /// automatically released when the transaction commits or rolls
-    /// back.
-    async fn resolve_and_store_entity(
-        &self,
-        entity: &crate::ingestion::extractor::ExtractedEntity,
-        chunk_id: ChunkId,
-        extraction_method: &str,
-    ) -> Result<NodeId> {
-        use crate::ingestion::resolver::MatchType;
-        use sqlx::Row;
-
-        let lock_key = entity_name_lock_key(&entity.name);
-
-        // Begin an explicit transaction so the advisory lock is
-        // scoped to it and auto-released on commit/rollback.
-        let mut tx = self.repo.pool().begin().await?;
-
-        // Acquire a transaction-scoped advisory lock. This blocks
-        // until any other transaction holding the same key commits
-        // or rolls back.
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(lock_key)
-            .execute(&mut *tx)
-            .await?;
-
-        // --- critical section: read-check-write under lock ---
-
-        let active_resolver = if self.pipeline.resolve_enabled {
-            self.resolver.as_ref()
-        } else {
-            None
-        };
-        let (node_id, match_type) = if let Some(resolver) = active_resolver {
-            let resolved = resolver.resolve(entity).await?;
-            match resolved.match_type {
-                MatchType::New => {
-                    let node = self.create_node_in_tx(&mut tx, entity).await?;
-                    (node.id, MatchType::New)
-                }
-                ref mt => {
-                    let match_type = mt.clone();
-                    if let Some(nid) = resolved.node_id {
-                        Self::bump_mention_in_tx(&mut tx, nid).await?;
-                        (nid, match_type)
-                    } else {
-                        let node = self.create_node_in_tx(&mut tx, entity).await?;
-                        (node.id, MatchType::New)
-                    }
-                }
-            }
-        } else {
-            // No resolver — check by name, create if new.
-            let existing: Option<NodeId> = sqlx::query(
-                "SELECT id FROM nodes \
-                 WHERE LOWER(canonical_name) = LOWER($1)",
-            )
-            .bind(&entity.name)
-            .fetch_optional(&mut *tx)
-            .await?
-            .map(|r| r.get("id"));
-
-            if let Some(nid) = existing {
-                Self::bump_mention_in_tx(&mut tx, nid).await?;
-                (nid, MatchType::Exact)
-            } else {
-                let node = self.create_node_in_tx(&mut tx, entity).await?;
-                (node.id, MatchType::New)
-            }
-        };
-
-        // Auto-alias on fuzzy match so subsequent exact lookups hit
-        // without requiring another fuzzy search.
-        if match_type == MatchType::Fuzzy {
-            self.ensure_alias_in_tx(&mut tx, &entity.name, node_id, chunk_id)
-                .await?;
-        }
-
-        // Create extraction provenance record inside the same tx.
-        let ext_id = uuid::Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO extractions (
-                id, chunk_id, entity_type, entity_id,
-                extraction_method, confidence, is_superseded
-            ) VALUES ($1, $2, $3, $4, $5, $6, false)",
-        )
-        .bind(ext_id)
-        .bind(chunk_id)
-        .bind("node")
-        .bind(node_id.into_uuid())
-        .bind(extraction_method)
-        .bind(entity.confidence)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-
-        Ok(node_id)
-    }
-
-    /// Insert a new node inside an existing transaction.
-    async fn create_node_in_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        entity: &crate::ingestion::extractor::ExtractedEntity,
-    ) -> Result<Node> {
-        let mut node = Node::new(entity.name.clone(), entity.entity_type.clone());
-        node.description = entity.description.clone();
-
-        let confidence_json = node.confidence_breakdown.as_ref().map(|o| o.to_json());
-
-        sqlx::query(
-            "INSERT INTO nodes (
-                id, canonical_name, node_type, description,
-                properties, confidence_breakdown,
-                clearance_level, first_seen, last_seen,
-                mention_count
-            ) VALUES (
-                $1, $2, $3, $4,
-                $5, $6,
-                $7, $8, $9,
-                $10
-            )",
-        )
-        .bind(node.id)
-        .bind(&node.canonical_name)
-        .bind(&node.node_type)
-        .bind(&node.description)
-        .bind(&node.properties)
-        .bind(&confidence_json)
-        .bind(node.clearance_level.as_i32())
-        .bind(node.first_seen)
-        .bind(node.last_seen)
-        .bind(node.mention_count)
-        .execute(&mut **tx)
-        .await?;
-
-        Ok(node)
-    }
-
-    /// Bump `mention_count` and `last_seen` for an existing node
-    /// inside a transaction.
-    async fn bump_mention_in_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        node_id: NodeId,
-    ) -> Result<()> {
-        sqlx::query(
-            "UPDATE nodes \
-             SET mention_count = mention_count + 1, \
-                 last_seen = NOW() \
-             WHERE id = $1",
-        )
-        .bind(node_id)
-        .execute(&mut **tx)
-        .await?;
-        Ok(())
-    }
-
-    /// Create an alias inside a transaction if one doesn't exist.
-    async fn ensure_alias_in_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        alias_text: &str,
-        node_id: NodeId,
-        chunk_id: ChunkId,
-    ) -> Result<()> {
-        use sqlx::Row;
-
-        let exists: bool = sqlx::query(
-            "SELECT EXISTS(
-                SELECT 1 FROM node_aliases
-                WHERE LOWER(alias) = LOWER($1)
-            ) AS exists",
-        )
-        .bind(alias_text)
-        .fetch_one(&mut **tx)
-        .await?
-        .get("exists");
-
-        if !exists {
-            let alias_id = AliasId::new();
-            sqlx::query(
-                "INSERT INTO node_aliases \
-                 (id, node_id, alias, source_chunk_id) \
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(alias_id)
-            .bind(node_id)
-            .bind(alias_text)
-            .bind(chunk_id)
-            .execute(&mut **tx)
-            .await?;
-        }
-        Ok(())
-    }
-
-    /// Create an alias for a node if one doesn't already exist.
-    async fn ensure_alias(
-        &self,
-        alias_text: &str,
-        node_id: NodeId,
-        chunk_id: ChunkId,
-    ) -> Result<()> {
-        let existing = NodeAliasRepo::find_by_alias(&*self.repo, alias_text).await?;
-        let already_exists = existing
-            .iter()
-            .any(|a| a.alias.eq_ignore_ascii_case(alias_text));
-        if !already_exists {
-            let alias = NodeAlias {
-                id: AliasId::new(),
-                node_id,
-                alias: alias_text.to_string(),
-                source_chunk_id: Some(chunk_id),
-            };
-            NodeAliasRepo::create(&*self.repo, &alias).await?;
-        }
-        Ok(())
-    }
-
-    /// Reprocess a source through the current pipeline configuration.
-    ///
-    /// Re-runs the ingestion pipeline (convert, normalize, chunk,
-    /// embed, extract) on the source's existing raw content using
-    /// the current pipeline config. Previous extractions are marked
-    /// as superseded and old chunks are replaced.
-    ///
-    /// Entity resolution ensures convergent behavior: nodes that
-    /// match existing graph entities are merged (mention count
-    /// bumped), new entities are added, and previously extracted
-    /// entities that are not re-found are left in place (absence
-    /// is not evidence of incorrectness).
+    /// Deletes old extractions and chunks, then re-runs the full
+    /// pipeline on the source's stored raw content.
     pub async fn reprocess(&self, id: SourceId) -> Result<ReprocessResult> {
         let mut source =
             SourceRepo::get(&*self.repo, id)
@@ -1424,532 +515,57 @@ impl SourceService {
             "starting source reprocessing"
         );
 
-        // Step 1: Delete old extractions (must happen before chunk
-        // deletion to satisfy the FK constraint
-        // extractions.chunk_id → chunks.id).
+        // Delete old extractions → alias refs → chunks.
         let extractions_superseded = ExtractionRepo::delete_by_source(&*self.repo, id).await?;
-        tracing::debug!(extractions_superseded, "deleted old extractions");
-
-        // Step 1b: Nullify source_chunk_id on node_aliases that
-        // reference chunks belonging to this source (FK constraint
-        // node_aliases.source_chunk_id → chunks.id).
         let aliases_cleared = NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
-        tracing::debug!(aliases_cleared, "cleared alias chunk refs");
-
-        // Step 2: Delete old chunks. New chunks will be created by
-        // the pipeline below.
         let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
-        tracing::debug!(chunks_deleted, "deleted old chunks");
+        tracing::debug!(
+            extractions_superseded,
+            aliases_cleared,
+            chunks_deleted,
+            "cleaned up old data"
+        );
 
-        // Step 3: Increment content version.
         source.content_version += 1;
 
-        // Step 4: Re-run pipeline from convert stage.
+        // Prepare content (convert → parse → normalize).
         let mime = source
             .metadata
             .get("format_origin")
             .and_then(|v| v.as_str())
             .unwrap_or("text/plain");
+        let prepared = self
+            .prepare_content(content_bytes, mime, source.uri.as_deref())
+            .await?;
 
-        let uri_ref = source.uri.as_deref();
-        let code_lang = code_chunker::detect_code_language(mime, uri_ref);
-        let is_code = code_lang.is_some();
+        source.normalized_content = Some(prepared.normalized.clone());
+        source.normalized_hash = Some(prepared.normalized_hash);
 
-        let (parse_content, parse_mime): (std::borrow::Cow<'_, [u8]>, &str) =
-            if let Some(lang) = code_lang {
-                let source_text = String::from_utf8_lossy(content_bytes);
-                let md = code_chunker::code_to_markdown(&source_text, lang)?;
-                (std::borrow::Cow::Owned(md.into_bytes()), "text/markdown")
-            } else if self.pipeline.convert_enabled {
-                if let Some(ref registry) = self.converter_registry {
-                    let converted = registry.convert(content_bytes, mime).await?;
-                    (
-                        std::borrow::Cow::Owned(converted.into_bytes()),
-                        "text/markdown",
-                    )
-                } else {
-                    (std::borrow::Cow::Borrowed(content_bytes), mime)
-                }
-            } else {
-                (std::borrow::Cow::Borrowed(content_bytes), mime)
-            };
-
-        // Parse
-        let parsed = crate::ingestion::parser::parse(&parse_content, parse_mime)?;
-
-        // Normalize — skipped for code sources.
-        let normalized = if is_code {
-            parsed.body.clone()
-        } else if self.pipeline.normalize_enabled {
-            let n = crate::ingestion::normalize::normalize(&parsed.body);
-            crate::ingestion::normalize::strip_artifacts(&n)
-        } else {
-            parsed.body.clone()
-        };
-
-        // Update normalized content and hash on the source.
-        let normalized_hash = Sha256::digest(normalized.as_bytes()).to_vec();
-        source.normalized_content = Some(normalized.clone());
-        source.normalized_hash = Some(normalized_hash);
-
-        // Stamp pipeline fingerprint into source metadata.
         if let Some(fp) = self.current_fingerprint() {
             Self::stamp_fingerprint(&mut source.metadata, &fp);
         }
 
         SourceRepo::update(&*self.repo, &source).await?;
 
-        // Stage 4: Chunk
-        let chunk_outputs = crate::ingestion::chunker::chunk_document(
-            &normalized,
-            self.chunk_size,
-            self.chunk_overlap,
-        );
-
-        // Filter metadata-only, boilerplate, and artifact-heading chunks.
-        let chunk_outputs: Vec<_> = chunk_outputs
-            .into_iter()
-            .filter(|co| {
-                !is_metadata_only(&co.text)
-                    && !is_boilerplate_heavy(&co.text)
-                    && !is_author_block(&co.text)
-                    && !has_artifact_heading(&co.heading_path)
-                    && !is_bibliography_entry(&co.text)
-                    && !is_reference_section(&co.text)
-            })
-            .collect();
-        let chunks_created = chunk_outputs.len();
-
-        // Build chunk ID map
-        let mut id_map = std::collections::HashMap::new();
-        for co in &chunk_outputs {
-            id_map.insert(co.id, ChunkId::from_uuid(co.id));
-        }
-
-        // Build chunks for batch insert
-        let chunks: Vec<Chunk> = chunk_outputs
-            .iter()
-            .enumerate()
-            .map(|(ordinal, co)| {
-                let chunk_id = id_map[&co.id];
-                let level = match co.level {
-                    crate::ingestion::chunker::ChunkLevel::Section => ModelChunkLevel::Section,
-                    crate::ingestion::chunker::ChunkLevel::Paragraph => ModelChunkLevel::Paragraph,
-                };
-
-                let unique_content = &co.text[co.context_prefix_len..];
-                let content_hash = Sha256::digest(unique_content.as_bytes()).to_vec();
-                let token_count = co.text.split_whitespace().count() as i32;
-                let hierarchy = co
-                    .heading_path
-                    .iter()
-                    .map(|h| sanitize_ltree_label(h))
-                    .collect::<Vec<_>>()
-                    .join(".");
-
-                let chunk_meta = detect_chunk_content_types(&co.text);
-
-                let mut chunk = Chunk::new(
-                    source.id,
-                    level,
-                    ordinal as i32,
-                    co.text.clone(),
-                    content_hash,
-                    token_count,
-                );
-                chunk.id = chunk_id;
-                chunk.byte_start = Some(co.byte_start as i32);
-                chunk.byte_end = Some(co.byte_end as i32);
-                chunk.content_offset = Some(co.context_prefix_len as i32);
-                if let Some(parent_uuid) = co.parent_id {
-                    if let Some(&pid) = id_map.get(&parent_uuid) {
-                        chunk = chunk.with_parent(pid);
-                    }
-                }
-                if !hierarchy.is_empty() {
-                    chunk = chunk.with_hierarchy(hierarchy);
-                }
-                chunk = chunk.with_metadata(chunk_meta);
-                chunk
-            })
-            .collect();
-
-        ChunkRepo::batch_create(&*self.repo, &chunks).await?;
-
-        let example_chunks: std::collections::HashSet<uuid::Uuid> = chunk_outputs
-            .iter()
-            .filter(|co| has_example_markers(&co.text))
-            .map(|co| co.id)
-            .collect();
-
-        // Stage 5: Embed chunks + landscape analysis
-        let landscape_results = if let Some(ref embedder) = self.embedder {
-            let texts: Vec<String> = chunk_outputs.iter().map(|co| co.text.clone()).collect();
-            let embeddings = embedder.embed_document_chunks(&texts).await?;
-
-            for (co, emb) in chunk_outputs.iter().zip(embeddings.iter()) {
-                let chunk_id = id_map[&co.id];
-                match truncate_and_validate(emb, self.table_dims.chunk, "chunks") {
-                    Ok(truncated) => {
-                        if let Err(e) =
-                            ChunkRepo::update_embedding(&*self.repo, chunk_id, &truncated).await
-                        {
-                            tracing::warn!(
-                                chunk_id = %chunk_id,
-                                error = %e,
-                                "failed to store chunk embedding"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            chunk_id = %chunk_id,
-                            error = %e,
-                            "chunk embedding dimension mismatch"
-                        );
-                    }
-                }
-            }
-
-            // Compute parent_alignment for child chunks.
-            compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &*self.repo).await;
-
-            // Re-embed source-level vector
-            match embedder.embed(std::slice::from_ref(&normalized)).await {
-                Ok(source_embeddings) => {
-                    if let Some(emb) = source_embeddings.first() {
-                        match truncate_and_validate(emb, self.table_dims.source, "sources") {
-                            Ok(truncated) => {
-                                if let Err(e) =
-                                    SourceRepo::update_embedding(&*self.repo, id, &truncated).await
-                                {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "failed to update source embedding"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "source embedding dimension mismatch"
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to embed source for reprocessing"
-                    );
-                }
-            }
-
-            // Landscape analysis.
-            //
-            // Reprocessing always has prior extractions (they were
-            // just superseded in step 1), so this is NOT a first
-            // ingestion — landscape gating applies normally.
-            if self.pipeline.landscape_enabled {
-                let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
-                    .iter()
-                    .map(|co| {
-                        co.parent_id.and_then(|pid| {
-                            let parent_idx = chunk_outputs.iter().position(|p| p.id == pid)?;
-                            Some(&embeddings[parent_idx])
-                        })
-                    })
-                    .collect();
-                let landscape = crate::ingestion::landscape::analyze_landscape(
-                    &embeddings,
-                    &parent_embeddings,
-                    None,
-                    false, // reprocess = not first ingestion
-                );
-                for lr in &landscape {
-                    if lr.chunk_index < chunk_outputs.len() {
-                        let chunk_id = id_map[&chunk_outputs[lr.chunk_index].id];
-                        let metrics_json = serde_json::to_value(&lr.metrics).ok();
-                        ChunkRepo::update_landscape(
-                            &*self.repo,
-                            chunk_id,
-                            lr.parent_alignment,
-                            lr.extraction_method.as_str(),
-                            metrics_json,
-                        )
-                        .await?;
-                    }
-                }
-                Some(landscape)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Stage 5.5: Heuristic coref — skipped for code sources.
-        let mut coref_map: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        if !is_code {
-            let coref_resolver = CorefResolver::new();
-            let coref_links = coref_resolver.resolve(&chunk_outputs);
-            for link in &coref_links {
-                coref_map.insert(link.mention.to_lowercase(), link.referent.to_lowercase());
-            }
-        }
-
-        // Stage 5.7: Neural coref — skipped for code sources.
-        let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> = if is_code {
-            None
-        } else if self.pipeline.coref_enabled {
-            if let Some(ref coref_client) = self.coref_client {
-                let extractable_indices: Vec<usize> = chunk_outputs
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
-                    .map(|(i, _)| i)
-                    .collect();
-                let mut resolved = std::collections::HashMap::new();
-                for &idx in &extractable_indices {
-                    let co = &chunk_outputs[idx];
-                    match coref_client.resolve(&co.text).await {
-                        Ok(r) => {
-                            resolved.insert(co.id, r);
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                chunk_index = idx,
-                                error = %e,
-                                "neural coref failed during reprocessing"
-                            );
-                        }
-                    }
-                }
-                if resolved.is_empty() {
-                    None
-                } else {
-                    Some(resolved)
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Stage 6-7: Extract + resolve
-        // Use AST extractor for code sources, LLM for everything
-        // else.
-        let ast_ext_rp: Option<Arc<dyn Extractor>> = if is_code {
-            Some(Arc::new(
-                crate::ingestion::ast_extractor::AstExtractor::new(),
-            ))
-        } else {
-            None
-        };
-        let active_extractor_rp = if is_code {
-            ast_ext_rp.as_ref()
-        } else {
-            self.extractor.as_ref()
-        };
-        let ext_method_rp = if is_code { "ast" } else { "llm" };
-        if let Some(extractor) = active_extractor_rp {
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
-
-            // Build extraction context from source metadata.
-            let extraction_context = Arc::new(ExtractionContext {
-                source_type: Some(source.source_type.clone()),
+        // Run shared pipeline.
+        let output = self
+            .run_pipeline(&PipelineInput {
+                source_id: id,
+                source_type: &source.source_type,
                 source_uri: source.uri.clone(),
                 source_title: source.title.clone(),
-            });
-
-            let extractable: Vec<_> = chunk_outputs
-                .iter()
-                .enumerate()
-                .filter(|(i, _co)| should_extract(*i, landscape_results.as_deref()))
-                .map(|(_i, co)| co)
-                .collect();
-
-            let batches = group_extraction_batches(
-                &extractable,
-                self.min_extract_tokens,
-                self.extract_batch_tokens,
-                resolved_texts.as_ref(),
-            );
-
-            tracing::debug!(
-                extractable = extractable.len(),
-                batches = batches.len(),
-                "reprocessing extraction batching"
-            );
-
-            let concurrency_size = self.extract_concurrency * 2;
-            let mut extraction_results: Vec<Result<(uuid::Uuid, _)>> = Vec::new();
-
-            for batch_slice in batches.chunks(concurrency_size) {
-                let batch_futures: Vec<_> = batch_slice
-                    .iter()
-                    .map(|(primary_id, text)| {
-                        let sem = Arc::clone(&semaphore);
-                        let ext = Arc::clone(extractor);
-                        let ctx = Arc::clone(&extraction_context);
-                        let text = text.clone();
-                        let primary_id = *primary_id;
-                        async move {
-                            let _permit = sem.acquire().await.map_err(|_| {
-                                Error::Ingestion("extraction semaphore closed".to_string())
-                            })?;
-                            let result = ext.extract(&text, &ctx).await?;
-                            Ok::<_, Error>((primary_id, result))
-                        }
-                    })
-                    .collect();
-                let batch_results = futures::future::join_all(batch_futures).await;
-                extraction_results.extend(batch_results);
-            }
-
-            let mut name_to_node: std::collections::HashMap<String, NodeId> =
-                std::collections::HashMap::new();
-
-            for extraction_result in extraction_results {
-                let (chunk_uuid, extraction) = match extraction_result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "extraction failed during reprocessing"
-                        );
-                        continue;
-                    }
-                };
-                let chunk_id = id_map[&chunk_uuid];
-                let is_example_chunk = example_chunks.contains(&chunk_uuid);
-
-                for entity in &extraction.entities {
-                    let node_id = self
-                        .resolve_and_store_entity(entity, chunk_id, ext_method_rp)
-                        .await?;
-                    name_to_node.insert(entity.name.to_lowercase(), node_id);
-
-                    if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
-                        name_to_node.entry(referent.clone()).or_insert(node_id);
-                        self.ensure_alias(&entity.name, node_id, chunk_id).await?;
-                    }
-                }
-
-                for rel in &extraction.relationships {
-                    let src_key = coref_map
-                        .get(&rel.source_name.to_lowercase())
-                        .cloned()
-                        .unwrap_or_else(|| rel.source_name.to_lowercase());
-                    let tgt_key = coref_map
-                        .get(&rel.target_name.to_lowercase())
-                        .cloned()
-                        .unwrap_or_else(|| rel.target_name.to_lowercase());
-
-                    let source_node = match name_to_node.get(&src_key) {
-                        Some(&nid) => nid,
-                        None => continue,
-                    };
-                    let target_node = match name_to_node.get(&tgt_key) {
-                        Some(&nid) => nid,
-                        None => continue,
-                    };
-
-                    if source_node == target_node {
-                        continue;
-                    }
-
-                    let resolved_rel_type = if let Some(ref rtr) = self.rel_type_resolver {
-                        rtr.resolve_rel_type(&rel.rel_type).await?
-                    } else {
-                        rel.rel_type.clone()
-                    };
-
-                    let mut edge = Edge::new(source_node, target_node, resolved_rel_type);
-                    let conf = if is_example_chunk {
-                        (rel.confidence * 0.5).clamp(0.0, 1.0)
-                    } else {
-                        rel.confidence
-                    };
-                    edge.confidence = conf;
-                    EdgeRepo::create(&*self.repo, &edge).await?;
-
-                    let ext_record = Extraction::new(
-                        chunk_id,
-                        ExtractedEntityType::Edge,
-                        edge.id.into_uuid(),
-                        ext_method_rp.to_string(),
-                        conf,
-                    );
-                    ExtractionRepo::create(&*self.repo, &ext_record).await?;
-                }
-            }
-
-            // Re-embed nodes that need it
-            if let Some(ref embedder) = self.embedder {
-                let node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
-                if !node_ids.is_empty() {
-                    let mut texts: Vec<String> = Vec::with_capacity(node_ids.len());
-                    let mut valid_ids: Vec<NodeId> = Vec::with_capacity(node_ids.len());
-
-                    for &nid in &node_ids {
-                        if let Some(node) = NodeRepo::get(&*self.repo, nid).await? {
-                            let text = match &node.description {
-                                Some(desc) if !desc.is_empty() => {
-                                    format!("{}: {}", node.canonical_name, desc)
-                                }
-                                _ => node.canonical_name.clone(),
-                            };
-                            texts.push(text);
-                            valid_ids.push(nid);
-                        }
-                    }
-
-                    if !texts.is_empty() {
-                        match embedder.embed(&texts).await {
-                            Ok(embeddings) => {
-                                for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
-                                    if let Ok(truncated) =
-                                        truncate_and_validate(emb, self.table_dims.node, "nodes")
-                                    {
-                                        if let Err(e) = NodeRepo::update_embedding(
-                                            &*self.repo,
-                                            *nid,
-                                            &truncated,
-                                        )
-                                        .await
-                                        {
-                                            tracing::warn!(
-                                                node_id = %nid,
-                                                error = %e,
-                                                "failed to update node embedding \
-                                                 during reprocessing"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to embed nodes during reprocessing"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
+                normalized: &prepared.normalized,
+                is_code: prepared.is_code,
+                is_first_ingestion: false,
+            })
+            .await?;
 
         tracing::info!(
             source_id = %id,
             version = source.content_version,
             extractions_superseded,
             chunks_deleted,
-            chunks_created,
+            chunks_created = output.chunks_created,
             "source reprocessing complete"
         );
 
@@ -1957,7 +573,7 @@ impl SourceService {
             source_id: id.into_uuid(),
             extractions_superseded,
             chunks_deleted,
-            chunks_created,
+            chunks_created: output.chunks_created,
             content_version: source.content_version,
         })
     }
@@ -2090,6 +706,9 @@ impl SourceService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ingestion::code_chunker;
+    use crate::models::extraction::Extraction;
+    use crate::types::ids::{ChunkId, NodeId};
 
     #[test]
     fn delete_result_serializes_all_fields() {

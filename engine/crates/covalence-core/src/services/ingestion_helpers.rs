@@ -346,7 +346,6 @@ mod tests {
     use super::*;
     use crate::models::chunk::Chunk;
 
-
     // --- Entity name lock key tests ---
 
     #[test]

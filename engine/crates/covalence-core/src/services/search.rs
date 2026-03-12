@@ -894,8 +894,7 @@ impl SearchService {
         // sections, boilerplate, and metadata-only chunks.
         {
             use super::chunk_quality::{
-                is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
-                is_reference_section,
+                is_bibliography_entry, is_boilerplate_heavy, is_metadata_only, is_reference_section,
             };
 
             let mut demoted = 0usize;
@@ -939,9 +938,7 @@ impl SearchService {
                 fused.retain(|r| {
                     // Pass through non-source/chunk results (nodes,
                     // articles) since they have no source_type.
-                    r.source_type
-                        .as_ref()
-                        .is_none_or(|st| types.contains(st))
+                    r.source_type.as_ref().is_none_or(|st| types.contains(st))
                 });
             }
         }

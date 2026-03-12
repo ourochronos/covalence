@@ -373,10 +373,9 @@ impl AdminService {
             .await?;
         let article_count: i64 = article_row.get("count");
 
-        let trace_row =
-            sqlx::query("SELECT COUNT(*) as count FROM search_traces")
-                .fetch_one(self.repo.pool())
-                .await?;
+        let trace_row = sqlx::query("SELECT COUNT(*) as count FROM search_traces")
+            .fetch_one(self.repo.pool())
+            .await?;
         let search_trace_count: i64 = trace_row.get("count");
 
         Ok(Metrics {
