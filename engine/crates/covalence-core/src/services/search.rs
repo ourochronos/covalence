@@ -1084,6 +1084,42 @@ impl SearchService {
             }
         }
 
+        // --- Step 8a2: Low-quality chunk demotion ---
+        // Chunks that are bibliography entries, boilerplate-heavy,
+        // or metadata-only get demoted so they don't pollute results.
+        // This catches chunks from sources ingested before the
+        // ingestion-time quality filters were added.
+        {
+            use super::chunk_quality::{
+                is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
+            };
+
+            let mut demoted = 0usize;
+            for result in &mut fused {
+                if result.result_type.as_deref() != Some("chunk") {
+                    continue;
+                }
+                let content = match result.content.as_deref() {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if is_bibliography_entry(content)
+                    || is_boilerplate_heavy(content)
+                    || is_metadata_only(content)
+                {
+                    result.fused_score *= 0.1;
+                    demoted += 1;
+                }
+            }
+            if demoted > 0 {
+                tracing::debug!(
+                    demoted,
+                    "demoted low-quality chunks in search results"
+                );
+                trace.chunks_quality_demoted = demoted;
+            }
+        }
+
         // --- Step 8b: Post-fusion entity demotion ---
         // Secondary demotion pass: entity nodes that appear in many
         // dimensions can accumulate high fused scores. Apply a score

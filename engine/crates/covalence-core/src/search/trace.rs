@@ -34,6 +34,10 @@ pub struct QueryTrace {
     /// Number of entity nodes demoted in content-focused strategies.
     #[serde(default)]
     pub entities_demoted: usize,
+    /// Number of low-quality chunks demoted during post-enrichment
+    /// filtering (bibliography entries, boilerplate, metadata-only).
+    #[serde(default)]
+    pub chunks_quality_demoted: usize,
     /// Per-result-type counts in the final result set.
     #[serde(default)]
     pub result_type_counts: HashMap<String, usize>,
@@ -62,6 +66,7 @@ impl QueryTrace {
             abstained: false,
             execution_ms: 0,
             entities_demoted: 0,
+            chunks_quality_demoted: 0,
             result_type_counts: HashMap::new(),
         }
     }
@@ -123,6 +128,7 @@ impl QueryTrace {
             cache_hit = self.cache_hit,
             abstained = self.abstained,
             entities_demoted = self.entities_demoted,
+            chunks_quality_demoted = self.chunks_quality_demoted,
             execution_ms = self.execution_ms,
             "search trace"
         );
