@@ -112,6 +112,11 @@ fn deduplicate(items: &mut Vec<RawContextItem>, threshold: f64) -> usize {
             let Some(ref emb_b) = items[j].embedding else {
                 continue;
             };
+            // Skip comparison if embedding dimensions differ
+            // (e.g. chunk=1024 vs node=256).
+            if emb_a.len() != emb_b.len() {
+                continue;
+            }
             if cosine_similarity(emb_a, emb_b) > threshold {
                 // Drop the lower-scoring item.
                 if items[i].score >= items[j].score {
@@ -308,6 +313,39 @@ mod tests {
         assert_eq!(result.items[0].content, "item-0");
         assert_eq!(result.items[1].content, "item-1");
         assert_eq!(result.items[2].content, "item-2");
+    }
+
+    #[test]
+    fn dedup_skips_mismatched_dimensions() {
+        // Items with different embedding dimensions should not be
+        // compared for deduplication.
+        let mut items = vec![
+            RawContextItem {
+                content: "chunk content".to_string(),
+                source_id: Some("a".to_string()),
+                source_title: Some("Source A".to_string()),
+                score: 0.9,
+                token_count: 10,
+                embedding: Some(vec![1.0; 1024]),
+                parent_context: None,
+            },
+            RawContextItem {
+                content: "node content".to_string(),
+                source_id: Some("b".to_string()),
+                source_title: Some("Source B".to_string()),
+                score: 0.8,
+                token_count: 10,
+                // Different dimension — should not be compared.
+                embedding: Some(vec![1.0; 256]),
+                parent_context: None,
+            },
+        ];
+        let removed = deduplicate(&mut items, 0.95);
+        // Despite both being all-1.0 vectors (which would have
+        // cosine similarity 1.0 if same dimension), no dedup
+        // should occur because dimensions differ.
+        assert_eq!(removed, 0);
+        assert_eq!(items.len(), 2);
     }
 
     #[test]

@@ -158,6 +158,12 @@ pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<Fused
             } else {
                 1.0 // All scores identical → treat as maximum
             };
+            // Guard against NaN/Inf scores from upstream dimensions.
+            let norm_score = if norm_score.is_finite() {
+                norm_score
+            } else {
+                0.0
+            };
             let entry = fused.entry(result.id).or_insert_with(|| FusedResult {
                 id: result.id,
                 fused_score: 0.0,
@@ -420,6 +426,26 @@ mod tests {
         // Both equal — CC treats them identically when they're
         // the top of different dimensions.
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn cc_nan_scores_treated_as_zero() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let list = vec![
+            make_result(id1, f64::NAN, 1, "vector"),
+            make_result(id2, 0.5, 2, "vector"),
+        ];
+        let results = cc_fuse(&[list], &[1.0]);
+        // NaN should not contaminate results — id2 should still
+        // have a finite score.
+        for r in &results {
+            assert!(
+                r.fused_score.is_finite(),
+                "fused score should be finite, got {}",
+                r.fused_score
+            );
+        }
     }
 
     #[test]

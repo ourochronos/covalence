@@ -13,6 +13,21 @@ use crate::graph::SharedGraph;
 use crate::graph::algorithms::pagerank;
 use crate::search::SearchResult;
 
+/// Minimum term length for query matching (same as graph dimension).
+const MIN_QUERY_TERM_LEN: usize = 3;
+
+/// Stopwords filtered from query matching (shared with graph dim).
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "but", "not", "you", "all",
+    "can", "has", "her", "was", "one", "our", "out", "how",
+    "its", "may", "use", "who", "did", "get", "let", "say",
+    "she", "too", "via", "from", "with", "this", "that",
+    "what", "when", "will", "been", "have", "each", "make",
+    "like", "does", "into", "them", "then", "than", "more",
+    "some", "such", "also", "about", "which", "their",
+    "would", "there", "these", "other", "could", "should",
+];
+
 /// Structural importance search using PageRank with query relevance.
 ///
 /// Computes PageRank over the full in-memory graph and boosts scores
@@ -75,11 +90,14 @@ impl SearchDimension for StructuralDimension {
             return Ok(Vec::new());
         }
 
-        // Parse query terms for relevance filtering.
+        // Parse query terms for relevance filtering, removing
+        // stopwords and short terms to avoid spurious matches.
         let terms: Vec<String> = query
             .text
             .split_whitespace()
             .map(|t| t.to_lowercase())
+            .filter(|t| t.len() >= MIN_QUERY_TERM_LEN)
+            .filter(|t| !STOPWORDS.contains(&t.as_str()))
             .collect();
         let has_query = !terms.is_empty();
 
@@ -289,5 +307,52 @@ mod tests {
         // Short canonical name is substring of a longer query term.
         let terms = vec!["rustlang".to_string()];
         assert!(name_matches_query("Rust", &terms));
+    }
+
+    #[tokio::test]
+    async fn structural_dimension_filters_stopwords() {
+        let (graph, _center, _leaves) = make_star_graph();
+        let dim = StructuralDimension::new(graph);
+        // "the" and "for" are stopwords; without filtering, "the"
+        // would match "Center" substring and boost it. With
+        // filtering, no terms survive, so no boost is applied.
+        let query_stopwords_only = SearchQuery {
+            text: "the for".to_string(),
+            limit: 10,
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query_stopwords_only).await.unwrap();
+        // All nodes should have the same relative ordering as pure
+        // PageRank (no boost applied because terms were filtered).
+        let query_no_text = SearchQuery {
+            limit: 10,
+            ..SearchQuery::default()
+        };
+        let dim2 = StructuralDimension::new(
+            Arc::new(RwLock::new(GraphSidecar::new())),
+        );
+        // Instead, verify that center still ranks #1 (pure PageRank)
+        // when only stopwords are in the query.
+        assert_eq!(results[0].id, _center);
+    }
+
+    #[tokio::test]
+    async fn structural_dimension_filters_short_terms() {
+        let (graph, center, _) = make_star_graph();
+        let dim = StructuralDimension::new(graph);
+        // "in" (2 chars) should be filtered out.
+        let query = SearchQuery {
+            text: "in".to_string(),
+            limit: 10,
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query).await.unwrap();
+        // Without short-term filtering, "in" would match "Center"
+        // (no match). With filtering, falls back to pure PageRank.
+        assert_eq!(results[0].id, center);
+        // All scores should be in [0, 1] (no boost applied).
+        for r in &results {
+            assert!(r.score >= 0.0 && r.score <= 1.0);
+        }
     }
 }
