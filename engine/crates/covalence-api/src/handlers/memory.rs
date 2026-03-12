@@ -21,6 +21,10 @@ pub async fn store_memory(
     State(state): State<AppState>,
     Json(req): Json<MemoryStoreRequest>,
 ) -> Result<Json<MemoryStoreResponse>, StatusCode> {
+    if req.content.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     let metadata = match (&req.topic, &req.metadata) {
         (Some(topic), Some(extra)) => {
             let mut m = extra.clone();
@@ -61,6 +65,16 @@ pub async fn recall_memory(
     State(state): State<AppState>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> Result<Json<Vec<MemoryItem>>, StatusCode> {
+    if req.query.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if let Some(mc) = req.min_confidence {
+        if !mc.is_finite() || !(0.0..=1.0).contains(&mc) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
     let limit = req.limit.unwrap_or(10).min(200);
 
     let filters = if req.min_confidence.is_some() {

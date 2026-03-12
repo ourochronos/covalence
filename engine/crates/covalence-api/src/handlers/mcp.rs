@@ -123,6 +123,10 @@ async fn dispatch_search(
         .and_then(|v| v.as_str())
         .ok_or("missing required parameter: query")?;
 
+    if query.trim().is_empty() {
+        return Err("query must not be empty".to_string());
+    }
+
     let strategy = match args.get("strategy").and_then(|v| v.as_str()) {
         Some("balanced") => covalence_core::search::strategy::SearchStrategy::Balanced,
         Some("precise") => covalence_core::search::strategy::SearchStrategy::Precise,
@@ -359,6 +363,10 @@ async fn dispatch_memory_store(
         .and_then(|v| v.as_str())
         .ok_or("missing required parameter: content")?;
 
+    if content.trim().is_empty() {
+        return Err("content must not be empty".to_string());
+    }
+
     let topic = args.get("topic").and_then(|v| v.as_str());
 
     let metadata = match topic {
@@ -389,6 +397,10 @@ async fn dispatch_memory_recall(
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or("missing required parameter: query")?;
+
+    if query.trim().is_empty() {
+        return Err("query must not be empty".to_string());
+    }
 
     let limit = args
         .get("limit")

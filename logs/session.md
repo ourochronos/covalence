@@ -853,6 +853,19 @@ Three classes of bugs found by background scanner agents:
 
 **Files modified:** `consolidation/ontology.rs`, `search/fusion.rs`, `services/search.rs`, `covalence-api/handlers/memory.rs`
 
+### Improvement 49: Input validation hardening across memory + MCP handlers
+
+**Bug:** Five entry points accepted empty strings or invalid `min_confidence` without validation:
+1. `store_memory` — empty content accepted, wasting ingestion resources
+2. `recall_memory` — empty query passed to search service; `min_confidence` not range-checked (search handler does this)
+3. MCP `dispatch_search` — empty query passed to search service
+4. MCP `dispatch_memory_store` — empty content accepted
+5. MCP `dispatch_memory_recall` — empty query passed to search service
+
+**Fix:** Added `.trim().is_empty()` checks at all entry points. Added `min_confidence` range check (finite, [0.0, 1.0]) to `recall_memory`, matching the search handler's existing validation.
+
+**Files modified:** `covalence-api/handlers/memory.rs`, `covalence-api/handlers/mcp.rs`, `covalence-api/handlers/search.rs`
+
 ---
 
 **Codebase review complete:** All modules now reviewed:
@@ -868,7 +881,7 @@ Three classes of bugs found by background scanner agents:
 
 - **Tests:** 930 (870 core + 13 API + 47 eval), up from 795. +135 net new tests (143 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 25 total (12 from session 5a + 13 from session 5b/5c), all pushed
+- **Commits:** 26 total (12 from session 5a + 14 from session 5b/5c), all pushed
 - **Files modified:** ~63 files across 4 crates + CLI
 
 ### Open Areas

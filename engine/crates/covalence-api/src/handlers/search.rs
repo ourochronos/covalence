@@ -38,6 +38,12 @@ pub async fn search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchApiResponse>, ApiError> {
+    if req.query.trim().is_empty() {
+        return Err(ApiError::from(covalence_core::error::Error::InvalidInput(
+            "query must not be empty".to_string(),
+        )));
+    }
+
     let strategy = match req.strategy.as_deref() {
         Some("balanced") => covalence_core::search::strategy::SearchStrategy::Balanced,
         Some("precise") => covalence_core::search::strategy::SearchStrategy::Precise,
