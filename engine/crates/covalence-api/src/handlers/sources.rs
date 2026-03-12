@@ -199,6 +199,9 @@ pub async fn get_source_chunks(
                 ordinal: c.ordinal,
                 content: c.content,
                 token_count: c.token_count,
+                parent_alignment: c.parent_alignment,
+                extraction_method: c.extraction_method,
+                landscape_metrics: c.landscape_metrics,
             })
             .collect(),
     ))

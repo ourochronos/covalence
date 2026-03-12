@@ -358,6 +358,39 @@ impl AdminService {
         Ok(())
     }
 
+    /// Trigger RAPTOR recursive summarization across all sources.
+    ///
+    /// Builds hierarchical summary chunks that enable multi-resolution
+    /// retrieval. Requires chat API keys to be configured.
+    pub async fn trigger_raptor(
+        &self,
+    ) -> Result<crate::consolidation::raptor::RaptorReport> {
+        let config = self.config.as_ref().ok_or_else(|| {
+            Error::Config("no configuration set on AdminService".into())
+        })?;
+        let chat_key = config.chat_api_key.as_ref().ok_or_else(|| {
+            Error::Config("RAPTOR requires CHAT_API_KEY to be set".into())
+        })?;
+        let chat_base = config
+            .chat_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let embedder = self.embedder.as_ref().ok_or_else(|| {
+            Error::Config("RAPTOR requires an embedder to be configured".into())
+        })?;
+
+        let consolidator = crate::consolidation::raptor::RaptorConsolidator::new(
+            Arc::clone(&self.repo),
+            Arc::clone(embedder),
+            chat_base,
+            chat_key.clone(),
+            config.chat_model.clone(),
+        )
+        .with_table_dims(config.embedding.table_dims.clone());
+
+        consolidator.run_all_sources().await
+    }
+
     /// Get service metrics: graph stats, entity counts, trace count.
     pub async fn metrics(&self) -> Result<Metrics> {
         let stats = self.graph_stats().await;

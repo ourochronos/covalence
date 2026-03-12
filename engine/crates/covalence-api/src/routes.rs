@@ -58,6 +58,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/publish/{source_id}", post(admin::publish_source))
         .route("/admin/consolidate", post(admin::trigger_consolidation))
         .route("/admin/gc", post(admin::garbage_collect))
+        .route("/admin/raptor", post(admin::trigger_raptor))
         .route("/admin/ontology/cluster", post(admin::cluster_ontology))
         .route("/admin/health", get(admin::health))
         .route("/admin/metrics", get(admin::metrics))

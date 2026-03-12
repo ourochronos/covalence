@@ -128,6 +128,15 @@ pub struct ChunkResponse {
     pub ordinal: i32,
     pub content: String,
     pub token_count: i32,
+    /// Cosine similarity of this chunk's embedding to its parent section.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_alignment: Option<f64>,
+    /// Extraction method selected by landscape analysis (e.g. "full", "sample", "skip").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction_method: Option<String>,
+    /// Landscape analysis metrics (density, uniqueness, entropy, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub landscape_metrics: Option<serde_json::Value>,
 }
 
 // --- Search ---
@@ -548,6 +557,23 @@ pub struct PublishResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConsolidateResponse {
     pub triggered: bool,
+}
+
+/// Response for RAPTOR recursive summarization.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RaptorResponse {
+    /// Number of sources processed.
+    pub sources_processed: usize,
+    /// Number of sources skipped.
+    pub sources_skipped: usize,
+    /// Total summary chunks created.
+    pub summaries_created: usize,
+    /// Number of LLM calls made.
+    pub llm_calls: usize,
+    /// Number of embedding calls made.
+    pub embed_calls: usize,
+    /// Errors encountered (if any).
+    pub errors: Vec<String>,
 }
 
 /// Response for garbage collection.

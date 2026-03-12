@@ -10,7 +10,7 @@ use crate::handlers::dto::{
     CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse, DomainResponse, GcResponse,
     GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
     KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem, OntologyClusterRequest,
-    OntologyClusterResponse, PaginationParams, PublishResponse, ReloadResponse,
+    OntologyClusterResponse, PaginationParams, PublishResponse, RaptorResponse, ReloadResponse,
     SearchTraceResponse, SidecarHealthResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
@@ -193,6 +193,32 @@ pub async fn trigger_consolidation(
 ) -> Result<Json<ConsolidateResponse>, ApiError> {
     state.admin_service.trigger_consolidation().await?;
     Ok(Json(ConsolidateResponse { triggered: true }))
+}
+
+/// Trigger RAPTOR recursive summarization.
+///
+/// Builds hierarchical summary chunks across all sources,
+/// enabling multi-resolution retrieval.
+#[utoipa::path(
+    post,
+    path = "/admin/raptor",
+    responses(
+        (status = 200, description = "RAPTOR summarization results", body = RaptorResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn trigger_raptor(
+    State(state): State<AppState>,
+) -> Result<Json<RaptorResponse>, ApiError> {
+    let report = state.admin_service.trigger_raptor().await?;
+    Ok(Json(RaptorResponse {
+        sources_processed: report.sources_processed,
+        sources_skipped: report.sources_skipped,
+        summaries_created: report.summaries_created,
+        llm_calls: report.llm_calls,
+        embed_calls: report.embed_calls,
+        errors: report.errors,
+    }))
 }
 
 /// Run provenance-based garbage collection.
