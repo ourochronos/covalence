@@ -86,9 +86,27 @@ impl QueryTrace {
 
     /// Log this trace via the `tracing` crate at info level.
     pub fn emit(&self) {
+        // Compact dimension breakdown: "vec=15 lex=8 gra=3"
+        let dims: String = self
+            .dimension_counts
+            .iter()
+            .map(|(k, v)| format!("{}={}", &k[..k.len().min(3)], v))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Compact result type breakdown: "chunk=5 node=3 article=2"
+        let types: String = self
+            .result_type_counts
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(" ");
+
         tracing::info!(
             query = %self.query_text,
             strategy = %self.strategy,
+            dims = %dims,
+            types = %types,
             fused_count = self.fused_count,
             final_count = self.final_count,
             cache_hit = self.cache_hit,

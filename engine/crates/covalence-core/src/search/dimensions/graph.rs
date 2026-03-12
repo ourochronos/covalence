@@ -42,12 +42,28 @@ impl GraphDimension {
     }
 }
 
+/// Minimum term length for seed matching. Short terms like "in",
+/// "of", "to" match too many node names and pollute the seed set.
+const MIN_SEED_TERM_LEN: usize = 3;
+
+/// Common stopwords filtered from seed matching.
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "but", "not", "you", "all",
+    "can", "has", "her", "was", "one", "our", "out", "how",
+    "its", "may", "use", "who", "did", "get", "let", "say",
+    "she", "too", "via", "from", "with", "this", "that",
+    "what", "when", "will", "been", "have", "each", "make",
+    "like", "does", "into", "them", "then", "than", "more",
+    "some", "such", "also", "about", "which", "their",
+    "would", "there", "these", "other", "could", "should",
+];
+
 /// Find seed nodes by matching query text against canonical names.
 ///
-/// Splits the query into whitespace-delimited terms and checks each
-/// node's `canonical_name` for a case-insensitive substring match
-/// against any term. Returns up to `MAX_AUTO_SEEDS` matching node
-/// UUIDs.
+/// Splits the query into whitespace-delimited terms, filters out
+/// short terms and stopwords, then checks each node's
+/// `canonical_name` for a case-insensitive substring match. Returns
+/// up to `MAX_AUTO_SEEDS` matching node UUIDs.
 fn find_seed_nodes(sidecar: &GraphSidecar, query_text: &str) -> Vec<Uuid> {
     if query_text.is_empty() {
         return Vec::new();
@@ -56,6 +72,8 @@ fn find_seed_nodes(sidecar: &GraphSidecar, query_text: &str) -> Vec<Uuid> {
     let terms: Vec<String> = query_text
         .split_whitespace()
         .map(|t| t.to_lowercase())
+        .filter(|t| t.len() >= MIN_SEED_TERM_LEN)
+        .filter(|t| !STOPWORDS.contains(&t.as_str()))
         .collect();
 
     if terms.is_empty() {
@@ -356,14 +374,64 @@ mod tests {
         g.add_node(NodeMeta {
             id,
             node_type: "entity".into(),
-            canonical_name: "AI".into(),
+            canonical_name: "ML".into(),
             clearance_level: 0,
         })
         .unwrap();
-        // "ai" is a substring of "artificial_intelligence"
-        // but also the canonical name itself.
-        // Test: query term contains the canonical name.
-        let seeds = find_seed_nodes(&g, "explain ai techniques");
+        // Short canonical names (< MIN_SEED_TERM_LEN) can still be
+        // matched via the reverse check (term contains name).
+        // The term "machine_learning" contains "ml"? No — we need
+        // a term that actually contains the 2-char name as a
+        // substring. Use a name >= MIN_SEED_TERM_LEN instead.
+        let id2 = Uuid::new_v4();
+        g.add_node(NodeMeta {
+            id: id2,
+            node_type: "entity".into(),
+            canonical_name: "NER".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+        // "ner" (3 chars) passes min length and matches a term
+        // that contains it.
+        let seeds = find_seed_nodes(&g, "gliner model");
+        assert_eq!(seeds, vec![id2]);
+    }
+
+    #[test]
+    fn find_seed_nodes_filters_stopwords() {
+        let mut g = GraphSidecar::new();
+        let id = Uuid::new_v4();
+        g.add_node(NodeMeta {
+            id,
+            node_type: "entity".into(),
+            canonical_name: "Information Retrieval".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+        // "from" and "the" are stopwords; only "retrieval" should match.
+        let seeds = find_seed_nodes(&g, "from the retrieval");
+        assert_eq!(seeds, vec![id]);
+        // Pure stopwords should return nothing.
+        let seeds = find_seed_nodes(&g, "from the");
+        assert!(seeds.is_empty());
+    }
+
+    #[test]
+    fn find_seed_nodes_filters_short_terms() {
+        let mut g = GraphSidecar::new();
+        let id = Uuid::new_v4();
+        g.add_node(NodeMeta {
+            id,
+            node_type: "entity".into(),
+            canonical_name: "Mining Algorithm".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+        // "in" is too short (< MIN_SEED_TERM_LEN=3), shouldn't match
+        // "Mining" via substring. "mining" (6 chars) should.
+        let seeds = find_seed_nodes(&g, "in");
+        assert!(seeds.is_empty());
+        let seeds = find_seed_nodes(&g, "mining");
         assert_eq!(seeds, vec![id]);
     }
 
