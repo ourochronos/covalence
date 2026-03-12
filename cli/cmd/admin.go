@@ -185,6 +185,35 @@ var adminAuditCmd = &cobra.Command{
 	},
 }
 
+var adminRaptorCmd = &cobra.Command{
+	Use:   "raptor",
+	Short: "Trigger RAPTOR recursive summarization",
+	Long:  "Build hierarchical summary chunks across all sources for multi-resolution retrieval.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client := newClient()
+		var result map[string]interface{}
+		if err := client.Post("/admin/raptor", nil, &result); err != nil {
+			return fmt.Errorf("API error: %w", err)
+		}
+
+		if jsonOutput {
+			return internal.PrintJSON(result)
+		}
+
+		fmt.Printf("Sources processed: %s\n", getString(result, "sources_processed"))
+		fmt.Printf("Sources skipped:   %s\n", getString(result, "sources_skipped"))
+		fmt.Printf("Summaries created: %s\n", getString(result, "summaries_created"))
+		fmt.Printf("LLM calls:         %s\n", getString(result, "llm_calls"))
+		fmt.Printf("Embed calls:       %s\n", getString(result, "embed_calls"))
+
+		if errors, ok := result["errors"].([]interface{}); ok && len(errors) > 0 {
+			fmt.Printf("Errors:            %d\n", len(errors))
+		}
+
+		return nil
+	},
+}
+
 func init() {
 	adminCmd.AddCommand(adminHealthCmd)
 	adminCmd.AddCommand(adminReloadCmd)
@@ -192,5 +221,6 @@ func init() {
 	adminCmd.AddCommand(adminMetricsCmd)
 	adminCmd.AddCommand(adminPublishCmd)
 	adminCmd.AddCommand(adminAuditCmd)
+	adminCmd.AddCommand(adminRaptorCmd)
 	rootCmd.AddCommand(adminCmd)
 }

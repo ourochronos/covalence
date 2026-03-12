@@ -288,6 +288,13 @@ impl RaptorConsolidator {
             }
 
             // Call LLM for summary.
+            tracing::debug!(
+                source_id = %source_id.into_uuid(),
+                level = level,
+                members = group.len(),
+                text_chars = combined.len(),
+                "calling LLM for RAPTOR summary"
+            );
             let summary_text = match self.llm_summarize(system_prompt, &combined).await {
                 Ok(text) => text,
                 Err(e) => {
@@ -414,7 +421,10 @@ impl RaptorConsolidator {
             temperature: 0.1,
         };
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| Error::Ingestion(format!("failed to build HTTP client: {e}")))?;
         let resp = client
             .post(format!("{}/chat/completions", self.chat_base_url))
             .bearer_auth(&self.chat_api_key)

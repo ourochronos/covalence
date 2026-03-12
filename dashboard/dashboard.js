@@ -148,6 +148,7 @@ async function fetchMetrics() {
   try {
     const data = await apiFetch("/admin/metrics");
     document.getElementById("chunk-count").textContent = fmt(data.chunk_count);
+    document.getElementById("summary-count").textContent = fmt(data.summary_chunk_count);
     document.getElementById("article-count").textContent = fmt(data.article_count);
     document.getElementById("trace-total").textContent = fmt(data.search_trace_count);
   } catch {

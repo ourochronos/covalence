@@ -60,6 +60,8 @@ pub struct Metrics {
     pub source_count: i64,
     /// Number of chunks in the database.
     pub chunk_count: i64,
+    /// Number of RAPTOR summary chunks.
+    pub summary_chunk_count: i64,
     /// Number of articles in the database.
     pub article_count: i64,
     /// Number of search traces in the database.
@@ -411,6 +413,13 @@ impl AdminService {
             .await?;
         let search_trace_count: i64 = trace_row.get("count");
 
+        let summary_row = sqlx::query(
+            "SELECT COUNT(*) as count FROM chunks WHERE level LIKE 'summary_%'",
+        )
+        .fetch_one(self.repo.pool())
+        .await?;
+        let summary_chunk_count: i64 = summary_row.get("count");
+
         Ok(Metrics {
             graph_nodes: stats.node_count,
             graph_edges: stats.edge_count,
@@ -419,6 +428,7 @@ impl AdminService {
             component_count: stats.component_count,
             source_count,
             chunk_count,
+            summary_chunk_count,
             article_count,
             search_trace_count,
         })
