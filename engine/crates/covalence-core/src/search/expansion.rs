@@ -78,14 +78,19 @@ pub async fn spreading_activation(
         };
         seeds_used += 1;
 
-        // Collect neighbors sorted by edge confidence descending.
+        // Collect neighbors sorted by effective confidence descending.
+        // Skip synthetic co-occurrence edges to focus on semantic
+        // relationships.
         let mut neighbors: Vec<(Uuid, f64)> = Vec::new();
 
         for edge in graph_read.graph().edges(idx) {
             let target_meta = &graph_read.graph()[edge.target()];
             let edge_meta = &graph_read.graph()[edge.id()];
+            if edge_meta.is_synthetic {
+                continue;
+            }
             if !seed_set.contains(&target_meta.id) {
-                neighbors.push((target_meta.id, edge_meta.confidence));
+                neighbors.push((target_meta.id, edge_meta.effective_confidence()));
             }
         }
 
@@ -95,8 +100,11 @@ pub async fn spreading_activation(
         {
             let source_meta = &graph_read.graph()[edge.source()];
             let edge_meta = &graph_read.graph()[edge.id()];
+            if edge_meta.is_synthetic {
+                continue;
+            }
             if !seed_set.contains(&source_meta.id) {
-                neighbors.push((source_meta.id, edge_meta.confidence));
+                neighbors.push((source_meta.id, edge_meta.effective_confidence()));
             }
         }
 
@@ -153,7 +161,7 @@ pub async fn expand_query(query: &str, graph: &SharedGraph) -> ExpandedQuery {
         if query_lower.contains(&name_lower) {
             matched_entities.push(meta.canonical_name.clone());
 
-            // Collect 1-hop relationships
+            // Collect 1-hop semantic relationships (skip synthetic).
             let mut rels = Vec::new();
             use petgraph::visit::EdgeRef;
 
@@ -161,6 +169,9 @@ pub async fn expand_query(query: &str, graph: &SharedGraph) -> ExpandedQuery {
             for edge in graph_read.graph().edges(idx) {
                 let target = &graph_read.graph()[edge.target()];
                 let edge_meta = &graph_read.graph()[edge.id()];
+                if edge_meta.is_synthetic {
+                    continue;
+                }
                 rels.push(format!("{} {}", edge_meta.rel_type, target.canonical_name));
             }
 
@@ -171,6 +182,9 @@ pub async fn expand_query(query: &str, graph: &SharedGraph) -> ExpandedQuery {
             {
                 let source = &graph_read.graph()[edge.source()];
                 let edge_meta = &graph_read.graph()[edge.id()];
+                if edge_meta.is_synthetic {
+                    continue;
+                }
                 rels.push(format!(
                     "{} of {}",
                     edge_meta.rel_type, source.canonical_name
