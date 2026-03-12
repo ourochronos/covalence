@@ -778,11 +778,30 @@ Found duplicate type definitions: `models/search.rs` defined `SearchStrategy`, `
 
 **Root cause:** The types were likely defined in models first, then re-implemented in the search module with enhancements (Auto variant, Custom with data, normalize(), as_slice()) — but the old versions were never cleaned up.
 
+### Improvement 43 — Fix UTF-8 panic bugs in `services/search.rs`
+
+Found 11 instances of unsafe byte-slicing (`&s[..N]`) that would panic on multi-byte characters (emoji, CJK, accented chars). These were scattered across chunk name derivation, article body snippets, source content previews, and reranker fallbacks.
+
+- Added `truncate_with_ellipsis()` helper that snaps to char boundaries before slicing
+- Replaced all 11 unsafe byte-slicing sites with calls to the helper
+- Added 8 unit tests covering ASCII, emoji (4-byte), CJK (3-byte), accented chars (2-byte), edge cases
+- 916 tests passing (856 core + 13 API + 47 eval), clippy clean
+
+**Affected call sites:**
+- `derive_chunk_name_qualified()` — 2 sites
+- `qualify_heading()` — 2 sites
+- Dimension name abbreviation — 1 site
+- Article body snippet — 1 site
+- Source raw content preview — 2 sites
+- Chunk content snippet — 1 site
+- Parent content preview — 1 site
+- Reranker content fallback — 1 site
+
 ---
 
 ### Stats
 
-- **Tests:** 908 (848 core + 13 API + 47 eval), up from 795. +113 net new tests (121 added, 8 dead removed). Clippy clean.
+- **Tests:** 916 (856 core + 13 API + 47 eval), up from 795. +121 net new tests (129 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
 - **Commits:** 20 total (12 from session 5a + 8 from session 5b/5c), all pushed
 - **Files modified:** ~50 files across 4 crates + CLI

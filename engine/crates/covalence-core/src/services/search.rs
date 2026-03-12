@@ -72,6 +72,22 @@ const GENERIC_HEADINGS: &[&str] = &[
     "motivation",
 ];
 
+/// Truncate a string to at most `max_bytes` bytes, snapping backward
+/// to a valid UTF-8 character boundary. Appends `"..."` if truncated.
+///
+/// This prevents panics from slicing multi-byte characters (emoji,
+/// CJK, accented characters) at arbitrary byte positions.
+fn truncate_with_ellipsis(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(3);
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
+}
+
 /// Derive a readable name from chunk content, optionally qualified
 /// by a source title when the heading is generic.
 ///
@@ -137,11 +153,7 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
                 return String::new();
             }
             // Truncate and return directly — skip heading logic.
-            return if cleaned.len() <= MAX_CHUNK_NAME_LEN {
-                cleaned.to_string()
-            } else {
-                format!("{}...", &cleaned[..MAX_CHUNK_NAME_LEN - 3])
-            };
+            return truncate_with_ellipsis(cleaned, MAX_CHUNK_NAME_LEN);
         }
     };
 
@@ -179,7 +191,7 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
             name.to_string()
         }
     } else {
-        format!("{}...", &clean[..MAX_CHUNK_NAME_LEN - 3])
+        truncate_with_ellipsis(clean, MAX_CHUNK_NAME_LEN)
     }
 }
 
@@ -201,21 +213,13 @@ fn qualify_heading(heading: &str, source_title: Option<&str>) -> String {
                 let max_title = MAX_CHUNK_NAME_LEN
                     .saturating_sub(heading.len())
                     .saturating_sub(2); // ": "
-                let t = if title.len() > max_title && max_title > 3 {
-                    format!("{}...", &title[..max_title - 3])
-                } else {
-                    title.to_string()
-                };
+                let t = truncate_with_ellipsis(title, max_title);
                 return format!("{}: {}", t, heading);
             }
         }
     }
 
-    if heading.len() <= MAX_CHUNK_NAME_LEN {
-        heading.to_string()
-    } else {
-        format!("{}...", &heading[..MAX_CHUNK_NAME_LEN - 3])
-    }
+    truncate_with_ellipsis(heading, MAX_CHUNK_NAME_LEN)
 }
 
 /// Strip a leading section number prefix from a heading.
@@ -691,7 +695,10 @@ impl SearchService {
             .iter()
             .zip(weights.iter())
             .filter(|(_, w)| **w > 1e-6)
-            .map(|(name, w)| format!("{}={:.3}", &name[..3], w))
+            .map(|(name, w)| {
+                let abbr = &name[..name.len().min(3)];
+                format!("{abbr}={w:.3}")
+            })
             .collect::<Vec<_>>()
             .join(" ");
         tracing::debug!(weights = %weight_summary, "effective fusion weights");
@@ -791,12 +798,8 @@ impl SearchService {
                             .confidence_breakdown
                             .map(|o| o.projected_probability());
                         if result.snippet.is_none() {
-                            let body = &article.body;
-                            result.snippet = Some(if body.len() > 300 {
-                                format!("{}...", &body[..300])
-                            } else {
-                                body.clone()
-                            });
+                            result.snippet =
+                                Some(truncate_with_ellipsis(&article.body, 300));
                         }
                     }
                 }
@@ -813,12 +816,8 @@ impl SearchService {
                         result.source_title = source.title;
                         // Use truncated raw content for snippet.
                         if let Some(ref raw) = source.raw_content {
-                            let truncated = if raw.len() > 500 {
-                                format!("{}...", &raw[..500])
-                            } else {
-                                raw.clone()
-                            };
-                            result.content = Some(truncated);
+                            result.content =
+                                Some(truncate_with_ellipsis(raw, 500));
                         }
                     }
                 }
@@ -851,12 +850,8 @@ impl SearchService {
                         // chunk content so vector-only results aren't
                         // blank in the UI.
                         if result.snippet.is_none() {
-                            let text = &chunk.content;
-                            result.snippet = Some(if text.len() > 200 {
-                                format!("{}...", &text[..200])
-                            } else {
-                                text.clone()
-                            });
+                            result.snippet =
+                                Some(truncate_with_ellipsis(&chunk.content, 200));
                         }
                         // Parent-context injection: for paragraph-level
                         // chunks, prepend truncated parent content to
@@ -866,11 +861,8 @@ impl SearchService {
                                 if let Ok(Some(parent)) =
                                     ChunkRepo::get(&*self.repo, parent_id).await
                                 {
-                                    let parent_ctx = if parent.content.len() > 200 {
-                                        format!("{}...", &parent.content[..200])
-                                    } else {
-                                        parent.content.clone()
-                                    };
+                                    let parent_ctx =
+                                        truncate_with_ellipsis(&parent.content, 200);
                                     let prefix = format!("[{}: {}]", parent.level, parent_ctx);
                                     result.snippet = Some(match result.snippet.take() {
                                         Some(s) => format!("{} {}", prefix, s),
@@ -896,12 +888,8 @@ impl SearchService {
                             result.source_uri = source.uri;
                             result.source_title = source.title;
                             if let Some(ref raw) = source.raw_content {
-                                let truncated = if raw.len() > 500 {
-                                    format!("{}...", &raw[..500])
-                                } else {
-                                    raw.clone()
-                                };
-                                result.content = Some(truncated);
+                                result.content =
+                                    Some(truncate_with_ellipsis(raw, 500));
                             }
                         }
                     }
@@ -991,13 +979,9 @@ impl SearchService {
                     .clone()
                     .or_else(|| r.name.clone())
                     .or_else(|| {
-                        r.content.as_ref().map(|c| {
-                            if c.len() > 500 {
-                                format!("{}...", &c[..500])
-                            } else {
-                                c.clone()
-                            }
-                        })
+                        r.content
+                            .as_ref()
+                            .map(|c| truncate_with_ellipsis(c, 500))
                     })
                     .unwrap_or_default()
             })
@@ -1223,6 +1207,70 @@ fn strategy_name(strategy: &SearchStrategy) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- truncate_with_ellipsis tests ---
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length_unchanged() {
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_ascii_adds_ellipsis() {
+        let result = truncate_with_ellipsis("hello world", 8);
+        assert_eq!(result, "hello...");
+        assert!(result.len() <= 8);
+    }
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate_with_ellipsis("", 10), "");
+    }
+
+    #[test]
+    fn truncate_emoji_does_not_panic() {
+        // '🔥' is 4 bytes. Cutting at byte 5 would land inside the
+        // second emoji — must snap back to the boundary.
+        let input = "🔥🔥🔥"; // 12 bytes
+        let result = truncate_with_ellipsis(input, 8);
+        // Can fit one emoji (4 bytes) + "..." (3 bytes) = 7 bytes
+        assert_eq!(result, "🔥...");
+        assert!(result.len() <= 8);
+    }
+
+    #[test]
+    fn truncate_cjk_does_not_panic() {
+        // CJK characters are 3 bytes each.
+        let input = "漢字漢字漢字"; // 18 bytes
+        let result = truncate_with_ellipsis(input, 10);
+        // max_bytes=10, subtract 3 for "..." = 7, snap back from 7
+        // to char boundary at 6 (2 CJK chars), result = "漢字..."
+        assert_eq!(result, "漢字...");
+        assert!(result.len() <= 10);
+    }
+
+    #[test]
+    fn truncate_accented_chars_does_not_panic() {
+        // 'é' as composed form is 2 bytes in UTF-8.
+        let input = "résumé here";
+        let result = truncate_with_ellipsis(input, 8);
+        // Must not panic and must be valid UTF-8.
+        assert!(result.len() <= 8);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_max_bytes_less_than_three() {
+        // Edge case: max_bytes < 3 means no room for ellipsis text.
+        let result = truncate_with_ellipsis("hello", 2);
+        // saturating_sub(3) = 0, so result is "..."
+        assert_eq!(result, "...");
+    }
 
     #[test]
     fn derive_chunk_name_heading() {
