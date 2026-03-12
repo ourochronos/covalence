@@ -673,6 +673,34 @@ impl SearchService {
             }
         }
 
+        // --- Step 10b: Source diversification ---
+        // Hierarchical chunkers produce chunks at multiple levels
+        // (source, section, paragraph) with overlapping content.
+        // Without a cap, a single source can dominate the top results
+        // with near-identical text at different granularities.
+        const MAX_CHUNKS_PER_SOURCE: usize = 2;
+        {
+            let mut source_counts: HashMap<String, usize> = HashMap::new();
+            let pre_diverse = fused.len();
+            fused.retain(|r| {
+                if let Some(ref uri) = r.source_uri {
+                    let count = source_counts.entry(uri.clone()).or_insert(0);
+                    *count += 1;
+                    *count <= MAX_CHUNKS_PER_SOURCE
+                } else {
+                    true
+                }
+            });
+            let removed = pre_diverse - fused.len();
+            if removed > 0 {
+                tracing::debug!(
+                    removed,
+                    max_per_source = MAX_CHUNKS_PER_SOURCE,
+                    "source diversification removed duplicate chunks"
+                );
+            }
+        }
+
         fused.truncate(limit);
 
         // --- Step 11: Cache population + trace ---
