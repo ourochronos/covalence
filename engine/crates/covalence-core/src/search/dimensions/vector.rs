@@ -66,7 +66,11 @@ impl VectorDimension {
 
     /// Format an embedding as a pgvector literal, truncated to
     /// the target dimension for the given table.
-    fn pgvec_for_table(&self, embedding: &[f64], table: &str) -> String {
+    ///
+    /// Returns an error if the embedding contains non-finite values
+    /// (NaN, Inf) rather than silently formatting them into an
+    /// invalid pgvector literal.
+    fn pgvec_for_table(&self, embedding: &[f64], table: &str) -> Result<String> {
         let target_dim = match table {
             "chunks" => self.table_dims.chunk,
             "nodes" => self.table_dims.node,
@@ -74,18 +78,15 @@ impl VectorDimension {
             "articles" => self.table_dims.article,
             _ => self.table_dims.chunk,
         };
-        // Use truncate_and_validate; if validation fails
-        // (should never happen), fall back to raw truncation.
-        let truncated = truncate_and_validate(embedding, target_dim, table)
-            .unwrap_or_else(|_| embedding[..target_dim.min(embedding.len())].to_vec());
-        format!(
+        let truncated = truncate_and_validate(embedding, target_dim, table)?;
+        Ok(format!(
             "[{}]",
             truncated
                 .iter()
                 .map(|v| v.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
-        )
+        ))
     }
 }
 
@@ -112,10 +113,10 @@ impl SearchDimension for VectorDimension {
         let article_limit = (limit / 8).max(2);
 
         // Format per-table pgvec literals (truncated to column dim).
-        let pgvec_chunk = self.pgvec_for_table(embedding, "chunks");
-        let pgvec_node = self.pgvec_for_table(embedding, "nodes");
-        let pgvec_source = self.pgvec_for_table(embedding, "sources");
-        let pgvec_article = self.pgvec_for_table(embedding, "articles");
+        let pgvec_chunk = self.pgvec_for_table(embedding, "chunks")?;
+        let pgvec_node = self.pgvec_for_table(embedding, "nodes")?;
+        let pgvec_source = self.pgvec_for_table(embedding, "sources")?;
+        let pgvec_article = self.pgvec_for_table(embedding, "articles")?;
 
         // Query each table independently so a dimension mismatch
         // in one table does not prevent results from others.

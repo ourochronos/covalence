@@ -37,22 +37,24 @@ impl GlobalDimension {
 
     /// Format an embedding as a pgvector literal, truncated to
     /// the target dimension for the given table.
-    fn pgvec_for_table(&self, embedding: &[f64], table: &str) -> String {
+    ///
+    /// Returns an error if the embedding contains non-finite values
+    /// rather than silently formatting an invalid pgvector literal.
+    fn pgvec_for_table(&self, embedding: &[f64], table: &str) -> Result<String> {
         let target_dim = match table {
             "nodes" => self.table_dims.node,
             "articles" => self.table_dims.article,
             _ => self.table_dims.chunk,
         };
-        let truncated = truncate_and_validate(embedding, target_dim, table)
-            .unwrap_or_else(|_| embedding[..target_dim.min(embedding.len())].to_vec());
-        format!(
+        let truncated = truncate_and_validate(embedding, target_dim, table)?;
+        Ok(format!(
             "[{}]",
             truncated
                 .iter()
                 .map(|v| v.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
-        )
+        ))
     }
 }
 
@@ -65,8 +67,8 @@ impl SearchDimension for GlobalDimension {
         let limit = query.limit as i64;
 
         // Truncate query embedding per-table to match column dims.
-        let pgvec_nodes = self.pgvec_for_table(embedding, "nodes");
-        let pgvec_articles = self.pgvec_for_table(embedding, "articles");
+        let pgvec_nodes = self.pgvec_for_table(embedding, "nodes")?;
+        let pgvec_articles = self.pgvec_for_table(embedding, "articles")?;
 
         // First, try community summary nodes.
         let summary_rows = sqlx::query_as::<_, (Uuid, f64)>(

@@ -136,7 +136,7 @@ async fn dispatch_search(
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(200) as usize)
         .unwrap_or(10);
 
     let results = state
@@ -251,7 +251,7 @@ async fn dispatch_traverse(
     let hops = args
         .get("hops")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(10) as usize)
         .unwrap_or(1);
 
     let nodes = state
@@ -323,10 +323,13 @@ async fn dispatch_get_contradictions(
     let graph = state.graph.read().await;
     let contentions = covalence_core::consolidation::contention::detect_contentions(graph.graph());
 
-    let node_filter = args
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<Uuid>().ok());
+    let node_filter = match args.get("node_id").and_then(|v| v.as_str()) {
+        Some(s) => Some(
+            s.parse::<Uuid>()
+                .map_err(|_| format!("invalid UUID for node_id: {s}"))?,
+        ),
+        None => None,
+    };
 
     let filtered: Vec<_> = match node_filter {
         Some(nid) => contentions
@@ -390,7 +393,7 @@ async fn dispatch_memory_recall(
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(200) as usize)
         .unwrap_or(10);
 
     let _topic = args.get("topic").and_then(|v| v.as_str());
