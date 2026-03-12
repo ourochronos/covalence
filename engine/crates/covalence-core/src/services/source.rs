@@ -1389,16 +1389,18 @@ impl SourceService {
             "starting source reprocessing"
         );
 
-        // Step 1: Mark old extractions as superseded.
+        // Step 1: Delete old extractions (must happen before chunk
+        // deletion to satisfy the FK constraint
+        // extractions.chunk_id → chunks.id).
         let extractions_superseded =
-            ExtractionRepo::mark_superseded_by_source(&*self.repo, id).await?;
+            ExtractionRepo::delete_by_source(&*self.repo, id).await?;
         tracing::debug!(
             extractions_superseded,
-            "marked old extractions as superseded"
+            "deleted old extractions"
         );
 
-        // Step 2: Delete old chunks (cascade). New chunks will be
-        // created by the pipeline below.
+        // Step 2: Delete old chunks. New chunks will be created by
+        // the pipeline below.
         let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
         tracing::debug!(chunks_deleted, "deleted old chunks");
 
