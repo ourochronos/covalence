@@ -15,15 +15,18 @@ pub struct PaginationParams {
     pub offset: Option<i64>,
 }
 
+/// Maximum allowed pagination limit.
+const MAX_PAGINATION_LIMIT: i64 = 1000;
+
 impl PaginationParams {
-    /// Get limit with default.
+    /// Get limit with default, capped at 1000.
     pub fn limit(&self) -> i64 {
-        self.limit.unwrap_or(20)
+        self.limit.unwrap_or(20).clamp(1, MAX_PAGINATION_LIMIT)
     }
 
-    /// Get offset with default.
+    /// Get offset with default, floored at 0.
     pub fn offset(&self) -> i64 {
-        self.offset.unwrap_or(0)
+        self.offset.unwrap_or(0).max(0)
     }
 }
 
@@ -876,6 +879,33 @@ mod tests {
         assert_eq!(json["nodes_evicted"], 3);
         assert_eq!(json["edges_removed"], 7);
         assert_eq!(json["aliases_removed"], 2);
+    }
+
+    #[test]
+    fn pagination_limit_capped_at_max() {
+        let params = PaginationParams {
+            limit: Some(999_999),
+            offset: Some(0),
+        };
+        assert_eq!(params.limit(), MAX_PAGINATION_LIMIT);
+    }
+
+    #[test]
+    fn pagination_negative_offset_clamped() {
+        let params = PaginationParams {
+            limit: None,
+            offset: Some(-5),
+        };
+        assert_eq!(params.offset(), 0);
+    }
+
+    #[test]
+    fn pagination_zero_limit_clamped_to_one() {
+        let params = PaginationParams {
+            limit: Some(0),
+            offset: None,
+        };
+        assert_eq!(params.limit(), 1);
     }
 
     #[test]

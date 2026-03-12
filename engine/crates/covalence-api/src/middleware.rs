@@ -40,16 +40,17 @@ pub async fn require_api_key(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
 
-    match auth_header {
-        Some(value) if value.starts_with("Bearer ") => {
-            let token = &value["Bearer ".len()..];
+    match auth_header.and_then(|v| v.strip_prefix("Bearer ")) {
+        Some(token) => {
             if token == expected_key {
                 next.run(request).await
             } else {
                 unauthorized_response("invalid API key")
             }
         }
-        Some(_) => unauthorized_response("invalid authorization scheme, expected Bearer"),
+        None if auth_header.is_some() => {
+            unauthorized_response("invalid authorization scheme, expected Bearer")
+        }
         None => unauthorized_response("missing Authorization header"),
     }
 }

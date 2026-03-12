@@ -81,7 +81,7 @@ pub async fn search(
             None
         };
 
-    let limit = req.limit.unwrap_or(10);
+    let limit = req.limit.unwrap_or(10).min(200);
     let mut results = state
         .search_service
         .search(&req.query, strategy, limit, filters)
