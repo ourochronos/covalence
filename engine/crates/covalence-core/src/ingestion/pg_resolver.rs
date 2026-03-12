@@ -444,7 +444,10 @@ impl EntityResolver for PgResolver {
 ///
 /// Applies lowercase, trimming, underscore/hyphen/space unification,
 /// and strips common prefixes like "is_" and "has_".
-pub fn normalize_rel_type(raw: &str) -> String {
+/// Not yet wired into the resolution pipeline — will be used when
+/// relationship type consolidation is implemented.
+#[cfg(test)]
+fn normalize_rel_type(raw: &str) -> String {
     let mut s = raw.trim().to_lowercase();
 
     // Unify separators: spaces and hyphens become underscores.

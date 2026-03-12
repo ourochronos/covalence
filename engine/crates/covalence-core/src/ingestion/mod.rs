@@ -30,7 +30,7 @@ pub mod voyage;
 pub use accept::{AcceptResult, compute_content_hash};
 pub use ast_extractor::AstExtractor;
 pub use chunker::{ChunkLevel, ChunkOutput, chunk_document};
-pub use code_chunker::{CodeLanguage, code_to_markdown, detect_code_language, mime_from_path};
+pub use code_chunker::{CodeLanguage, code_to_markdown, detect_code_language};
 pub use converter::{
     CodeConverter, ConverterRegistry, HtmlConverter, MarkdownConverter, PdfConverter,
     PlainTextConverter, ReaderLmConverter, SourceConverter, linearize_tables,
@@ -54,7 +54,7 @@ pub use llm_extractor::LlmExtractor;
 pub use normalize::normalize;
 pub use openai_embedder::OpenAiEmbedder;
 pub use parser::{ParsedDocument, parse};
-pub use pg_resolver::{PgResolver, normalize_rel_type};
+pub use pg_resolver::PgResolver;
 pub use pii::{PiiDetector, PiiMatch, RegexPiiDetector};
 pub use resolver::{EntityResolver, MatchType, MockResolver, ResolvedEntity};
 pub use sidecar_extractor::SidecarExtractor;

@@ -36,6 +36,8 @@ pub struct DeepReport {
     pub nodes_forgotten: usize,
     /// Number of trust scores recalculated.
     pub trust_scores_updated: usize,
+    /// Number of cross-domain bridge nodes discovered.
+    pub bridges_found: usize,
 }
 
 /// Trait for running deep consolidation on the knowledge graph.

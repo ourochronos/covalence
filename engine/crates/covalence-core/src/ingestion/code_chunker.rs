@@ -328,20 +328,6 @@ pub fn detect_code_language(mime: &str, uri: Option<&str>) -> Option<CodeLanguag
 /// MIME types handled by the code chunker.
 pub const CODE_MIME_TYPES: &[&str] = &["text/x-rust", "text/x-python", "text/x-script.python"];
 
-/// Detect a code MIME type from a file path or URI.
-///
-/// Returns `None` for non-code files. This is useful for callers
-/// who need to set the correct MIME type before ingestion.
-pub fn mime_from_path(path: &str) -> Option<&'static str> {
-    let path = path.split('?').next().unwrap_or(path);
-    let ext = path.rsplit('.').next()?;
-    match ext {
-        "rs" => Some("text/x-rust"),
-        "py" => Some("text/x-python"),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

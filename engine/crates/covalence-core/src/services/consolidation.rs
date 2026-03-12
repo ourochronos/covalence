@@ -92,12 +92,13 @@ impl DeepConsolidator for GraphDeepConsolidator {
         let report = bmr_report(&decisions);
 
         // Step 6: Cross-domain bridge discovery
-        let _bridges = discover_bridges(g.graph(), &communities);
+        let bridges = discover_bridges(g.graph(), &communities);
 
         Ok(DeepReport {
             communities_found: communities.len(),
             nodes_forgotten: report.prune_count,
             trust_scores_updated: trust_scores.len(),
+            bridges_found: bridges.len(),
         })
     }
 }

@@ -102,15 +102,7 @@ impl SearchDimension for VectorDimension {
         );
 
         let limit = query.limit as i64;
-
-        // Per-table limits to prevent any single table from crowding
-        // out others. Chunks get half the budget (primary content),
-        // nodes get a quarter, sources and articles share the rest.
-        // Each table gets at least 2 results so nothing is starved.
-        let chunk_limit = (limit / 2).max(2);
-        let node_limit = (limit / 4).max(2);
-        let source_limit = (limit / 8).max(2);
-        let article_limit = (limit / 8).max(2);
+        let (chunk_limit, node_limit, source_limit, article_limit) = per_table_limits(limit);
 
         // Format per-table pgvec literals (truncated to column dim).
         let pgvec_chunk = self.pgvec_for_table(embedding, "chunks")?;
@@ -162,5 +154,78 @@ impl SearchDimension for VectorDimension {
 
     fn kind(&self) -> DimensionKind {
         DimensionKind::Vector
+    }
+}
+
+/// Compute per-table limits from a total limit budget.
+///
+/// Chunks get half, nodes a quarter, sources and articles an eighth
+/// each. Every table gets at least 2 results.
+pub fn per_table_limits(total: i64) -> (i64, i64, i64, i64) {
+    let chunk = (total / 2).max(2);
+    let node = (total / 4).max(2);
+    let source = (total / 8).max(2);
+    let article = (total / 8).max(2);
+    (chunk, node, source, article)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_table_limits_default() {
+        let (chunk, node, source, article) = per_table_limits(20);
+        assert_eq!(chunk, 10);
+        assert_eq!(node, 5);
+        assert_eq!(source, 2);
+        assert_eq!(article, 2);
+    }
+
+    #[test]
+    fn per_table_limits_small_budget() {
+        // With limit=1, every table should get at least 2
+        let (chunk, node, source, article) = per_table_limits(1);
+        assert_eq!(chunk, 2);
+        assert_eq!(node, 2);
+        assert_eq!(source, 2);
+        assert_eq!(article, 2);
+    }
+
+    #[test]
+    fn per_table_limits_large_budget() {
+        let (chunk, node, source, article) = per_table_limits(100);
+        assert_eq!(chunk, 50);
+        assert_eq!(node, 25);
+        assert_eq!(source, 12);
+        assert_eq!(article, 12);
+    }
+
+    #[test]
+    fn result_merge_ordering() {
+        // Verify that combined results sort by score descending
+        let mut combined: Vec<(Uuid, f64, &str)> = vec![
+            (Uuid::nil(), 0.5, "chunk"),
+            (Uuid::nil(), 0.9, "source"),
+            (Uuid::nil(), 0.7, "node"),
+            (Uuid::nil(), 0.3, "article"),
+        ];
+        combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        assert!((combined[0].1 - 0.9).abs() < f64::EPSILON);
+        assert!((combined[1].1 - 0.7).abs() < f64::EPSILON);
+        assert!((combined[2].1 - 0.5).abs() < f64::EPSILON);
+        assert!((combined[3].1 - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn result_merge_truncation() {
+        let mut combined: Vec<(Uuid, f64, &str)> = (0..10)
+            .map(|i| (Uuid::nil(), i as f64 * 0.1, "chunk"))
+            .collect();
+        combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        combined.truncate(3);
+        assert_eq!(combined.len(), 3);
+        assert!((combined[0].1 - 0.9).abs() < f64::EPSILON);
     }
 }

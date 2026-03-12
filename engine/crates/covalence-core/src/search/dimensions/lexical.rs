@@ -216,3 +216,50 @@ fn to_results_with_snippets(rows: Vec<(Uuid, f64, String)>) -> Vec<SearchResult>
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_results_preserves_order_and_snippets() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let rows = vec![
+            (id1, 0.8, "matched <b>term</b> here".to_string()),
+            (id2, 0.5, "another <b>match</b>".to_string()),
+        ];
+        let results = to_results_with_snippets(rows);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, id1);
+        assert_eq!(results[0].rank, 1);
+        assert!((results[0].score - 0.8).abs() < f64::EPSILON);
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("matched <b>term</b> here")
+        );
+        assert_eq!(results[1].rank, 2);
+        assert_eq!(results[1].dimension, "lexical");
+        assert_eq!(results[1].result_type.as_deref(), Some("chunk"));
+    }
+
+    #[test]
+    fn to_results_empty_input() {
+        let results = to_results_with_snippets(Vec::new());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn merge_ranking_by_score_descending() {
+        // Test the merge + re-rank pattern used in search()
+        let mut combined: Vec<(Uuid, f64, &str, Option<String>)> = vec![
+            (Uuid::nil(), 0.3, "node", None),
+            (Uuid::nil(), 0.9, "chunk", Some("snippet".into())),
+            (Uuid::nil(), 0.6, "article", None),
+        ];
+        combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        assert!((combined[0].1 - 0.9).abs() < f64::EPSILON);
+        assert!((combined[1].1 - 0.6).abs() < f64::EPSILON);
+        assert!((combined[2].1 - 0.3).abs() < f64::EPSILON);
+    }
+}
