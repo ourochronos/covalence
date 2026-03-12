@@ -347,3 +347,32 @@ Deleted 31 old "Community N — Compiled Summary" articles. Re-ran consolidation
 - RAPTOR hierarchical retrieval (#74)
 - Enable CC fusion as default after more testing
 
+---
+
+### 18:10 — Content-Prefix Dedup
+
+Hierarchical chunks from the same source have identical first N characters (source-level → section-level overlap). Added content-prefix dedup as a first pass in source diversification: within the same source URI, if two results share the first 100 characters of content, only the highest-scored is kept.
+
+**Before:** Results #1 and #2 both from "05 — Ingestion Pipeline" with identical content.
+**After:** Only #1 kept, #2 deduped, space freed for a different source.
+
+---
+
+### 18:15 — Final Session 2 Update
+
+**9 improvements total:**
+
+1. Search result attribution (entity_type + source_title)
+2. Source-level diversification (max 2 per source)
+3. Source enrichment (vector-matched sources fully enriched)
+4. Dead code removal (search_with_metadata, -141 lines)
+5. Per-dimension quality gating (score-spread dampening)
+6. CC fusion (convex combination, configurable alternative to RRF)
+7. Article cleanup + LlmCompiler re-consolidation (86 articles)
+8. Temporal dimension result_type fix
+9. Content-prefix dedup (within-source hierarchy overlap)
+
+**Test count:** 737 (was 731 at start). Clippy clean. All passing.
+
+**Stats:** 264 sources, 1547 nodes, 2659 edges, 86 articles.
+
