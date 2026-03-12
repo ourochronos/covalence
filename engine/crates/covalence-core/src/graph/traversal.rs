@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use petgraph::Direction;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use uuid::Uuid;
@@ -58,26 +59,37 @@ pub fn bfs_neighborhood_filtered(
             continue;
         }
 
-        for edge in graph.graph.edges(current) {
-            let edge_meta = &graph.graph[edge.id()];
+        // Traverse both outgoing and incoming edges so that
+        // neighborhood discovery is direction-agnostic. In a
+        // knowledge graph, "A causes B" means B is a neighbor of
+        // A and A is a neighbor of B.
+        for direction in [Direction::Outgoing, Direction::Incoming] {
+            for edge in graph.graph.edges_directed(current, direction) {
+                let edge_meta = &graph.graph[edge.id()];
 
-            // Skip synthetic edges when requested.
-            if skip_synthetic && edge_meta.is_synthetic {
-                continue;
-            }
-
-            // Apply edge-type filter if provided.
-            if let Some(filter) = edge_filter {
-                if !filter.iter().any(|f| f == &edge_meta.rel_type) {
+                // Skip synthetic edges when requested.
+                if skip_synthetic && edge_meta.is_synthetic {
                     continue;
                 }
-            }
 
-            let neighbor = edge.target();
-            if visited.insert(neighbor) {
-                let next_depth = depth + 1;
-                results.push((graph.graph[neighbor].id, next_depth));
-                queue.push_back((neighbor, next_depth));
+                // Apply edge-type filter if provided.
+                if let Some(filter) = edge_filter {
+                    if !filter.iter().any(|f| f == &edge_meta.rel_type) {
+                        continue;
+                    }
+                }
+
+                // For outgoing edges the neighbor is the target;
+                // for incoming edges the neighbor is the source.
+                let neighbor = match direction {
+                    Direction::Outgoing => edge.target(),
+                    Direction::Incoming => edge.source(),
+                };
+                if visited.insert(neighbor) {
+                    let next_depth = depth + 1;
+                    results.push((graph.graph[neighbor].id, next_depth));
+                    queue.push_back((neighbor, next_depth));
+                }
             }
         }
     }
@@ -105,12 +117,18 @@ pub fn dfs_neighborhood(graph: &GraphSidecar, start: Uuid, max_hops: usize) -> V
             continue;
         }
 
-        for edge in graph.graph.edges(current) {
-            let neighbor = edge.target();
-            if visited.insert(neighbor) {
-                let next_depth = depth + 1;
-                results.push((graph.graph[neighbor].id, next_depth));
-                stack.push((neighbor, next_depth));
+        // Traverse both directions for undirected neighborhood.
+        for direction in [Direction::Outgoing, Direction::Incoming] {
+            for edge in graph.graph.edges_directed(current, direction) {
+                let neighbor = match direction {
+                    Direction::Outgoing => edge.target(),
+                    Direction::Incoming => edge.source(),
+                };
+                if visited.insert(neighbor) {
+                    let next_depth = depth + 1;
+                    results.push((graph.graph[neighbor].id, next_depth));
+                    stack.push((neighbor, next_depth));
+                }
             }
         }
     }
@@ -139,22 +157,29 @@ pub fn shortest_path(graph: &GraphSidecar, from: Uuid, to: Uuid) -> Option<Vec<U
     queue.push_back(from_idx);
 
     while let Some(current) = queue.pop_front() {
-        for edge in graph.graph.edges(current) {
-            let neighbor = edge.target();
-            if visited.insert(neighbor) {
-                parent.insert(neighbor, current);
-                if neighbor == to_idx {
-                    // Reconstruct path
-                    let mut path = vec![to];
-                    let mut cursor = to_idx;
-                    while let Some(&prev) = parent.get(&cursor) {
-                        path.push(graph.graph[prev].id);
-                        cursor = prev;
+        // Traverse both directions to find paths regardless of
+        // edge directionality.
+        for direction in [Direction::Outgoing, Direction::Incoming] {
+            for edge in graph.graph.edges_directed(current, direction) {
+                let neighbor = match direction {
+                    Direction::Outgoing => edge.target(),
+                    Direction::Incoming => edge.source(),
+                };
+                if visited.insert(neighbor) {
+                    parent.insert(neighbor, current);
+                    if neighbor == to_idx {
+                        // Reconstruct path
+                        let mut path = vec![to];
+                        let mut cursor = to_idx;
+                        while let Some(&prev) = parent.get(&cursor) {
+                            path.push(graph.graph[prev].id);
+                            cursor = prev;
+                        }
+                        path.reverse();
+                        return Some(path);
                     }
-                    path.reverse();
-                    return Some(path);
+                    queue.push_back(neighbor);
                 }
-                queue.push_back(neighbor);
             }
         }
     }
@@ -255,10 +280,23 @@ mod tests {
     }
 
     #[test]
+    fn shortest_path_reverse_direction() {
+        let (g, a, _b, _c, d) = linear_graph();
+        // D→A traverses incoming edges (reverse of A→B→C→D).
+        // Now reachable since we traverse both directions.
+        let path = shortest_path(&g, d, a).unwrap();
+        assert_eq!(path.len(), 4);
+        assert_eq!(path[0], d);
+        assert_eq!(path[3], a);
+    }
+
+    #[test]
     fn shortest_path_no_route() {
-        let (g, _a, _b, _c, d) = linear_graph();
-        // D has no outgoing edges, and we ask from D -> A (reversed)
-        let path = shortest_path(&g, d, _a);
+        // Two disconnected nodes have no path.
+        let mut g = GraphSidecar::new();
+        let x = add_node(&mut g, "X");
+        let y = add_node(&mut g, "Y");
+        let path = shortest_path(&g, x, y);
         assert!(path.is_none());
     }
 
@@ -314,5 +352,31 @@ mod tests {
         let semantic = bfs_neighborhood_filtered(&g, a, 3, None, true);
         assert_eq!(semantic.len(), 1);
         assert_eq!(semantic[0].0, b);
+    }
+
+    #[test]
+    fn bfs_traverses_incoming_edges() {
+        // Build: A -> B. Starting from B should find A via the
+        // incoming edge, not just outgoing.
+        let mut g = GraphSidecar::new();
+        let a = add_node(&mut g, "A");
+        let b = add_node(&mut g, "B");
+        add_edge(&mut g, a, b, "related");
+
+        let result = bfs_neighborhood(&g, b, 1, None);
+        let ids: Vec<Uuid> = result.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&a), "B should find A via incoming edge");
+    }
+
+    #[test]
+    fn dfs_traverses_incoming_edges() {
+        let mut g = GraphSidecar::new();
+        let a = add_node(&mut g, "A");
+        let b = add_node(&mut g, "B");
+        add_edge(&mut g, a, b, "related");
+
+        let result = dfs_neighborhood(&g, b, 1);
+        let ids: Vec<Uuid> = result.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&a), "B should find A via incoming edge");
     }
 }
