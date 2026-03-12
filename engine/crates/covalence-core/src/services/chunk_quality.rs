@@ -199,9 +199,42 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
     if lines.len() <= 4 {
         let joined = lines.join(" ");
         let lower = joined.to_lowercase();
-        if lower.contains("arxiv preprint") || lower.contains("_arxiv_") {
-            // Looks like a standalone citation entry
-            if trimmed.len() < 200 {
+        if (lower.contains("arxiv preprint") || lower.contains("_arxiv_"))
+            && trimmed.len() < 200
+        {
+            return true;
+        }
+        // Pattern: short fragment with journal/proceedings italics.
+        // Academic citations often appear as:
+        //   "Title.\n\n_Proc. VLDB Endow._ 5, 12 (2012), 2018."
+        //   "Title.\n\nMorgan & Claypool Publishers."
+        if trimmed.len() < 200 {
+            // Contains italic markup wrapping a journal or proceedings name
+            if lower.contains("_proc.") || lower.contains("_proceedings") {
+                return true;
+            }
+            // Contains doi.org URL (standalone citation reference)
+            if lower.contains("doi.org/") && lines.len() <= 3 {
+                return true;
+            }
+        }
+        // Pattern: very short fragment ending with a publisher name
+        if trimmed.len() < 150 && lines.len() <= 3 {
+            let publisher_markers = [
+                "publishers",
+                "springer",
+                "ieee",
+                "acm press",
+                "morgan & claypool",
+                "mit press",
+                "cambridge university press",
+                "oxford university press",
+                "report issue",
+            ];
+            if publisher_markers
+                .iter()
+                .any(|m| lower.contains(m))
+            {
                 return true;
             }
         }
@@ -314,6 +347,37 @@ mod tests {
         // A full references section (>300 chars) should be kept.
         let long = "- Author (2020)\n".repeat(30);
         assert!(!is_bibliography_entry(&long));
+    }
+
+    #[test]
+    fn bibliography_entry_journal_italic() {
+        assert!(is_bibliography_entry(
+            "Entity resolution: theory, practice & open challenges.\n\n\
+             _Proc. VLDB Endow._ 5, 12 (2012), 2018\u{2013}2019."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_publisher() {
+        assert!(is_bibliography_entry(
+            "_The four generations of entity resolution_.\n\n\
+             Morgan & Claypool Publishers."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_doi() {
+        assert!(is_bibliography_entry(
+            "ing, C. D.: RAPTOR: Recursive Abstractive Processing.\n\n\
+             doi.org/10.48550/arXiv.2401.18059"
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_report_issue() {
+        assert!(is_bibliography_entry(
+            "ing, C. D.: RAPTOR.\n\nReport Issue"
+        ));
     }
 
     #[test]
