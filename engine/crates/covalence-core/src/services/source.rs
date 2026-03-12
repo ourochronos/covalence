@@ -518,6 +518,7 @@ impl SourceService {
             .filter(|co| {
                 !is_metadata_only(&co.text)
                     && !is_boilerplate_heavy(&co.text)
+                    && !is_author_block(&co.text)
                     && !has_artifact_heading(&co.heading_path)
             })
             .collect();
@@ -1491,6 +1492,7 @@ impl SourceService {
             .filter(|co| {
                 !is_metadata_only(&co.text)
                     && !is_boilerplate_heavy(&co.text)
+                    && !is_author_block(&co.text)
                     && !has_artifact_heading(&co.heading_path)
             })
             .collect();
@@ -2476,6 +2478,29 @@ fn is_boilerplate_line(line: &str) -> bool {
     false
 }
 
+/// Detect author-block chunks: sequences of names, affiliations, and
+/// email addresses with no substantive content.  These appear in scraped
+/// academic papers as the header block before the abstract.
+///
+/// Heuristic: if ≥40% of non-blank lines contain an email indicator
+/// (`@` or `mailto:`) the chunk is considered an author block.
+fn is_author_block(text: &str) -> bool {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() < 2 {
+        return false;
+    }
+    let email_lines = lines
+        .iter()
+        .filter(|l| l.contains('@') || l.contains("mailto:"))
+        .count();
+    let ratio = email_lines as f64 / lines.len() as f64;
+    ratio >= 0.4
+}
+
 /// Known artifact headings from web scraping that should cause the
 /// entire chunk to be discarded.
 const ARTIFACT_HEADINGS: &[&str] = &[
@@ -2602,6 +2627,43 @@ mod tests {
     fn artifact_heading_empty_path() {
         let path: Vec<String> = vec![];
         assert!(!has_artifact_heading(&path));
+    }
+
+    #[test]
+    fn author_block_detected() {
+        // Each author line typically has name + email on same line
+        // (or email on a short adjacent line).
+        let text = "Bo Liu Beijing Institute of Technology liubo@bit.edu.cn\n\
+                    Yanjie Jiang Peking University yanjiejiang@pku.edu.cn\n\
+                    Yuxia Zhang Beijing Institute of Technology yuxiazh@bit.edu.cn\n\
+                    Nan Niu University of Cincinnati nan.niu@uc.edu\n\
+                    Guangjie Li National Innovation Institute liguangjie@126.com";
+        assert!(is_author_block(text));
+    }
+
+    #[test]
+    fn author_block_mailto_links() {
+        let text = "Alice Smith\n\
+                    [alice@example.com](mailto:alice@example.com)\n\
+                    Bob Jones\n\
+                    [bob@test.org](mailto:bob@test.org)\n\
+                    Carol White\n\
+                    [carol@uni.edu](mailto:carol@uni.edu)";
+        assert!(is_author_block(text));
+    }
+
+    #[test]
+    fn not_author_block_real_content() {
+        let text = "Knowledge graphs represent entities and relationships.\n\
+                    This enables multi-hop reasoning across documents.\n\
+                    Contact us at support@example.com for details.";
+        assert!(!is_author_block(text));
+    }
+
+    #[test]
+    fn not_author_block_single_email() {
+        let text = "Send questions to admin@example.com";
+        assert!(!is_author_block(text));
     }
 
     #[test]
