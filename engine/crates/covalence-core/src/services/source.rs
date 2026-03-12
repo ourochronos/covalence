@@ -478,13 +478,26 @@ impl SourceService {
 
         SourceRepo::create(&*self.repo, &source).await?;
 
-        // Mark old source as superseded if applicable
+        // Clean up superseded source if applicable.
+        // Delete old extractions and chunks so they don't pollute
+        // search results. Matches the cleanup order in
+        // `reprocess()`: extractions → alias chunk refs → chunks.
         if let Some(ref info) = supersedes_info {
             self.mark_superseded(info.old_source_id, &info.update_class)
                 .await?;
-            // Mark old extractions as superseded so they don't
-            // pollute search results after the new version lands.
-            ExtractionRepo::mark_superseded_by_source(&*self.repo, info.old_source_id).await?;
+            let ext_deleted =
+                ExtractionRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
+            let aliases_cleared =
+                NodeAliasRepo::clear_source_chunks(&*self.repo, info.old_source_id).await?;
+            let chunks_deleted =
+                ChunkRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
+            tracing::info!(
+                old_source = %info.old_source_id,
+                ext_deleted,
+                aliases_cleared,
+                chunks_deleted,
+                "cleaned up superseded source"
+            );
         }
 
         // Stage 4: Chunk
