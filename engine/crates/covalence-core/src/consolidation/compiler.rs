@@ -98,7 +98,30 @@ impl LlmCompiler {
 #[async_trait::async_trait]
 impl ArticleCompiler for LlmCompiler {
     async fn compile(&self, input: &CompilationInput) -> Result<CompilationOutput> {
+        /// Max characters of source material to send to the LLM.
+        /// ~50K chars ≈ 12K tokens, well within context limits while
+        /// leaving room for the output.
+        const MAX_INPUT_CHARS: usize = 50_000;
+
         let combined = input.chunks.join("\n\n---\n\n");
+        let combined = if combined.len() > MAX_INPUT_CHARS {
+            tracing::warn!(
+                community_id = input.community_id,
+                total_chars = combined.len(),
+                max_chars = MAX_INPUT_CHARS,
+                "truncating source material for article compilation"
+            );
+            // Truncate at a char boundary.
+            let end = combined
+                .char_indices()
+                .take_while(|&(i, _)| i < MAX_INPUT_CHARS)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(combined.len());
+            combined[..end].to_string()
+        } else {
+            combined
+        };
         let entity_list = if input.entity_names.is_empty() {
             String::new()
         } else {
