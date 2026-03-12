@@ -213,6 +213,15 @@ impl SearchService {
         let start = Instant::now();
         let time_range = filters.as_ref().and_then(|f| f.date_range);
 
+        // When post-fusion filters are present (especially
+        // source_layers), over-fetch so the filter has enough
+        // candidates to meet the requested limit.
+        let internal_limit = if filters.is_some() {
+            (limit * 5).max(50)
+        } else {
+            limit
+        };
+
         // --- Step 1: Embed the query ---
         let query_embedding = if let Some(ref embedder) = self.embedder {
             match embedder.embed(&[query.to_string()]).await {
@@ -238,28 +247,35 @@ impl SearchService {
         );
 
         // --- Step 2: Cache lookup ---
-        if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
-            let strategy_str = strategy_name(&strategy);
-            match cache.lookup(emb, strategy_str).await {
-                Ok(Some(cached_results)) => {
-                    tracing::debug!("cache hit for query");
-                    let mut trace = QueryTrace::new(query, &strategy);
-                    trace.cache_hit = true;
-                    trace.final_count = cached_results.len();
-                    trace.set_duration(start.elapsed());
-                    trace.emit();
-                    return Ok(cached_results);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "cache lookup failed, proceeding \
-                         without cache"
-                    );
+        // Skip cache when post-fusion filters are present — the cache
+        // keys on (embedding, strategy) only, so cached results would
+        // bypass min_confidence, node_types, source_types,
+        // source_layers, and date_range filters.
+        let has_post_filters = filters.is_some();
+        if !has_post_filters {
+            if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
+                let strategy_str = strategy_name(&strategy);
+                match cache.lookup(emb, strategy_str).await {
+                    Ok(Some(cached_results)) => {
+                        tracing::debug!("cache hit for query");
+                        let mut trace = QueryTrace::new(query, &strategy);
+                        trace.cache_hit = true;
+                        trace.final_count = cached_results.len();
+                        trace.set_duration(start.elapsed());
+                        trace.emit();
+                        return Ok(cached_results);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "cache lookup failed, proceeding \
+                             without cache"
+                        );
+                    }
                 }
             }
-        }
+        } // end skip-cache-with-filters guard
 
         // --- Step 3: Adaptive strategy selection ---
         let effective_strategy = if strategy == SearchStrategy::Auto {
@@ -324,7 +340,7 @@ impl SearchService {
         let search_query = SearchQuery {
             text: query.to_string(),
             strategy: effective_strategy.clone(),
-            limit,
+            limit: internal_limit,
             time_range,
             embedding: query_embedding.clone(),
             ..SearchQuery::default()
@@ -972,16 +988,19 @@ impl SearchService {
                 });
             }
             if let Some(ref layers) = f.source_layers {
+                let pre = fused.len();
                 fused.retain(|r| {
-                    // When filtering by layer, only keep results
-                    // that positively match. Results without a
-                    // source_uri or with an unrecognized URI are
-                    // excluded — the user wants a specific layer.
                     r.source_uri
                         .as_ref()
                         .and_then(|uri| source_layer_from_uri(uri))
                         .is_some_and(|layer| layers.iter().any(|l| l == layer))
                 });
+                tracing::info!(
+                    layers = ?layers,
+                    before = pre,
+                    after = fused.len(),
+                    "source_layer filter applied"
+                );
             }
         }
 
