@@ -24,7 +24,7 @@ var nodeListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List nodes",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		path := fmt.Sprintf("/nodes?limit=%d", nodeListLimit)
 		if nodeListType != "" {
 			path += "&type=" + url.QueryEscape(nodeListType)
@@ -59,7 +59,7 @@ var nodeGetCmd = &cobra.Command{
 	Short: "Get node details",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/nodes/"+args[0], &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -86,7 +86,7 @@ var nodeNeighborhoodCmd = &cobra.Command{
 	Short: "Show node neighborhood",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		path := fmt.Sprintf("/nodes/%s/neighborhood?hops=%d", args[0], neighborHops)
 
 		var result []map[string]interface{}
@@ -118,7 +118,7 @@ var nodeProvenanceCmd = &cobra.Command{
 	Short: "Show node provenance chain",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/nodes/"+args[0]+"/provenance", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)

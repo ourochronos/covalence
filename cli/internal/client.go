@@ -14,6 +14,7 @@ import (
 // Client wraps HTTP communication with the Covalence API.
 type Client struct {
 	BaseURL    string
+	APIKey     string
 	HTTPClient *http.Client
 }
 
@@ -29,9 +30,22 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
+// NewClientWithKey creates a new API client with authentication.
+func NewClientWithKey(baseURL, apiKey string) *Client {
+	c := NewClient(baseURL)
+	c.APIKey = apiKey
+	return c
+}
+
 // Get performs a GET request and decodes the JSON response.
 func (c *Client) Get(path string, result interface{}) error {
-	resp, err := c.HTTPClient.Get(c.BaseURL + path)
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	c.setAuth(req)
+
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -55,11 +69,14 @@ func (c *Client) Post(path string, body interface{}, result interface{}) error {
 		return fmt.Errorf("failed to encode request body: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Post(
-		c.BaseURL+path,
-		"application/json",
-		bytes.NewReader(jsonBody),
-	)
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+path, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
+
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -77,11 +94,13 @@ func (c *Client) Post(path string, body interface{}, result interface{}) error {
 }
 
 // Delete performs a DELETE request and decodes the JSON response.
+// Handles 204 No Content gracefully (no body to decode).
 func (c *Client) Delete(path string, result interface{}) error {
 	req, err := http.NewRequest(http.MethodDelete, c.BaseURL+path, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
+	c.setAuth(req)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -97,5 +116,17 @@ func (c *Client) Delete(path string, result interface{}) error {
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
+	// 204 No Content has no body to decode.
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+
 	return json.NewDecoder(resp.Body).Decode(result)
+}
+
+// setAuth adds the Authorization header if an API key is configured.
+func (c *Client) setAuth(req *http.Request) {
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 }

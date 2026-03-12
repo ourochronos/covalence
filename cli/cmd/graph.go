@@ -17,7 +17,7 @@ var graphStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show graph statistics",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/graph/stats", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -39,7 +39,7 @@ var graphCommunitiesCmd = &cobra.Command{
 	Use:   "communities",
 	Short: "List detected communities",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result []map[string]interface{}
 		if err := client.Get("/graph/communities", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -69,7 +69,7 @@ var graphTopologyCmd = &cobra.Command{
 	Use:   "topology",
 	Short: "Show domain topology map",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/graph/topology", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)

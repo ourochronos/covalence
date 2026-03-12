@@ -42,7 +42,7 @@ var sourceAddCmd = &cobra.Command{
 			},
 		}
 
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Post("/sources", body, &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -65,7 +65,7 @@ var sourceListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List sources",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result []map[string]interface{}
 		path := fmt.Sprintf("/sources?limit=%d", sourceListLimit)
 		if err := client.Get(path, &result); err != nil {
@@ -96,7 +96,7 @@ var sourceGetCmd = &cobra.Command{
 	Short: "Get source details",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/sources/"+args[0], &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -122,7 +122,7 @@ var sourceDeleteCmd = &cobra.Command{
 	Short: "Delete a source",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Delete("/sources/"+args[0], &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -142,7 +142,7 @@ var sourceChunksCmd = &cobra.Command{
 	Short: "List chunks for a source",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result []map[string]interface{}
 		if err := client.Get("/sources/"+args[0]+"/chunks", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)

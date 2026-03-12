@@ -23,7 +23,7 @@ var memoryStoreCmd = &cobra.Command{
 	Short: "Store a memory",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		body := map[string]interface{}{
 			"content": args[0],
 		}
@@ -50,7 +50,7 @@ var memoryRecallCmd = &cobra.Command{
 	Short: "Recall memories matching a query",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		body := map[string]interface{}{
 			"query": args[0],
 			"limit": memoryLimit,
@@ -89,7 +89,7 @@ var memoryForgetCmd = &cobra.Command{
 	Short: "Forget (delete) a memory",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Delete("/memory/"+args[0], &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -108,7 +108,7 @@ var memoryStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get memory subsystem status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/memory/status", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)

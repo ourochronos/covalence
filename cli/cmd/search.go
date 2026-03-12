@@ -21,7 +21,7 @@ var searchCmd = &cobra.Command{
 	Short: "Search the knowledge base",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 
 		body := map[string]interface{}{
 			"query": args[0],

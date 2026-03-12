@@ -19,7 +19,7 @@ var auditListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List audit log entries",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		path := fmt.Sprintf("/audit?limit=%d", auditLimit)
 
 		var result []map[string]interface{}

@@ -17,7 +17,7 @@ var adminHealthCmd = &cobra.Command{
 	Use:   "health",
 	Short: "Check engine health",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/admin/health", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -38,7 +38,7 @@ var adminReloadCmd = &cobra.Command{
 	Use:   "reload",
 	Short: "Force graph sidecar reload",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Post("/admin/graph/reload", nil, &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -64,7 +64,7 @@ var adminConsolidateCmd = &cobra.Command{
 			return fmt.Errorf("tier must be 'batch' or 'deep', got '%s'", tier)
 		}
 
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		path := fmt.Sprintf("/admin/consolidate?tier=%s", tier)
 		if err := client.Post(path, nil, &result); err != nil {
@@ -84,7 +84,7 @@ var adminMetricsCmd = &cobra.Command{
 	Use:   "metrics",
 	Short: "Show engine metrics",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Get("/admin/metrics", &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -106,7 +106,7 @@ var adminPublishCmd = &cobra.Command{
 	Short: "Publish a source (promote clearance level)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Post("/admin/publish/"+args[0], nil, &result); err != nil {
 			return fmt.Errorf("API error: %w", err)
@@ -125,7 +125,7 @@ var adminAuditCmd = &cobra.Command{
 	Use:   "audit",
 	Short: "Run configuration audit (sidecar health + warnings)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := internal.NewClient(apiURL)
+		client := newClient()
 		var result map[string]interface{}
 		if err := client.Post("/admin/config-audit", nil, &result); err != nil {
 			return fmt.Errorf("API error: %w", err)

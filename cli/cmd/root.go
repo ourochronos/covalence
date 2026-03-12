@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ourochronos/covalence/cli/internal"
 	"github.com/spf13/cobra"
 )
 
 var (
 	apiURL     string
+	apiKey     string
 	jsonOutput bool
 )
 
@@ -29,5 +31,15 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&apiURL, "api-url", "http://localhost:8431", "Covalence API URL")
+	rootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "API key for authentication (or set COVALENCE_API_KEY)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+}
+
+// newClient creates an API client with authentication if configured.
+func newClient() *internal.Client {
+	key := apiKey
+	if key == "" {
+		key = os.Getenv("COVALENCE_API_KEY")
+	}
+	return internal.NewClientWithKey(apiURL, key)
 }
