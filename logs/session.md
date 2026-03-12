@@ -749,12 +749,43 @@ Deep audit of 4 major modules (ingestion, epistemic, consolidation, storage/grap
     - Cap landmark limit at 200, knowledge_gaps limit at 200, neighborhood hops at 10
     - Validate min_confidence and relevance are finite and in [0.0, 1.0]
 
+39. **Model and type test coverage** (d61bbbf)
+    - node.rs: 9 tests (new/mention/merge_properties/merge_description/serde)
+    - edge.rs: 8 tests (new/causal/is_invalidated/is_valid_at temporal checks/serde)
+    - source.rs: 8 tests (SourceType/UpdateClass roundtrips, initial_trust, recompute_reliability)
+    - chunk.rs: 6 tests (ChunkLevel/ExtractionMethod roundtrips, builder chain, serde)
+    - extraction.rs: 4 tests (ExtractedEntityType roundtrip, constructor, serde)
+    - article.rs: 3 tests (new defaults, with_domain_path, serde)
+    - audit.rs: 5 tests (AuditAction roundtrip/serde, AuditLog new/with_target/serde)
+    - trace.rs: 5 tests (SearchTrace/SearchFeedback constructors and serde)
+    - error.rs: 11 tests (Display formatting for all error variants, From<serde_json::Error>)
+    - config.rs: 8 tests (TableDimensions, config defaults, bool parsing, f32 clamping, Debug redaction)
+
+40. **Search model tests** (d6c50cc)
+    - Added DimensionWeights::total() helper
+    - 8 tests: strategy weights sum to 1.0, all non-negative, strategy-specific ordering, serde
+
+41. **cargo fmt cleanup** (c695e07)
+    - Applied automated formatting across 19 files (no logic changes)
+
+### Improvement 42 — Remove dead `models/search.rs` module
+
+Found duplicate type definitions: `models/search.rs` defined `SearchStrategy`, `DimensionWeights`, `SearchResult`, and `SourceSummary` — all duplicated in the `search/` module. The models version was never imported by any other code, meaning 279 lines and 8 tests were dead code inflating the test count.
+
+- Removed `models/search.rs` entirely
+- Removed `pub mod search;` from `models/mod.rs`
+- All 908 remaining tests pass, clippy clean
+
+**Root cause:** The types were likely defined in models first, then re-implemented in the search module with enhancements (Auto variant, Custom with data, normalize(), as_slice()) — but the old versions were never cleaned up.
+
+---
+
 ### Stats
 
-- **Tests:** 835 (775 core + 13 API + 47 eval), up from 795. +40 new tests. Clippy clean.
+- **Tests:** 908 (848 core + 13 API + 47 eval), up from 795. +113 net new tests (121 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 16 total (12 from session 5a + 4 from session 5b), all pushed
-- **Files modified:** ~42 files across 4 crates + CLI
+- **Commits:** 20 total (12 from session 5a + 8 from session 5b/5c), all pushed
+- **Files modified:** ~50 files across 4 crates + CLI
 
 ### Open Areas
 
