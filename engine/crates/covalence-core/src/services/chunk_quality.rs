@@ -233,6 +233,24 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
                 return true;
             }
         }
+        // Pattern: "Title.\n\nJournal, vol(issue):pages."
+        // Short citation where a non-first line contains journal
+        // volume/issue references like "486(3-5):75–174".
+        if lines.len() >= 2 && lines.len() <= 3 && trimmed.len() < 200 {
+            let rest = lines[1..].join(" ");
+            // Check "digit(" pattern (volume/issue) in non-first lines.
+            let has_vol_issue =
+                rest.as_bytes()
+                    .windows(2)
+                    .any(|w| w[0].is_ascii_digit() && w[1] == b'(');
+            // Check "digit:digit" pattern (volume:page) in non-first lines.
+            let has_vol_page = rest.as_bytes().windows(3).any(|w| {
+                w[0].is_ascii_digit() && w[1] == b':' && w[2].is_ascii_digit()
+            });
+            if first.ends_with('.') && (has_vol_issue || has_vol_page) {
+                return true;
+            }
+        }
     }
 
     false
@@ -431,6 +449,21 @@ mod tests {
     fn bibliography_entry_standalone_citation() {
         assert!(is_bibliography_entry(
             "- OpenAI (2023)\nOpenAI.\n\nGPT-4 Technical Report."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_journal_vol_pages() {
+        // Title + journal with volume(issue):pages format
+        assert!(is_bibliography_entry(
+            "Community detection in graphs.\n\nPhysics reports, 486(3-5):75\u{2013}174."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_volume_colon() {
+        assert!(is_bibliography_entry(
+            "Some paper title.\n\nJournal of ML Research, 15:1929\u{2013}1958."
         ));
     }
 
