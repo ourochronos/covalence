@@ -123,7 +123,10 @@ fn extract_multiword_terms(text: &str) -> Vec<String> {
             continue;
         }
 
-        let first_char = clean.chars().next().unwrap();
+        // Safe: empty `clean` is handled by the `continue` above.
+        let Some(first_char) = clean.chars().next() else {
+            continue;
+        };
         let is_stop = STOP_WORDS.contains(&clean);
         if first_char.is_uppercase() && clean.len() > 1 && !is_stop {
             current_words.push(clean);
