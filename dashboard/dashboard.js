@@ -144,6 +144,17 @@ async function fetchCommunities() {
   }
 }
 
+async function fetchMetrics() {
+  try {
+    const data = await apiFetch("/admin/metrics");
+    document.getElementById("chunk-count").textContent = fmt(data.chunk_count);
+    document.getElementById("article-count").textContent = fmt(data.article_count);
+    document.getElementById("trace-total").textContent = fmt(data.search_trace_count);
+  } catch {
+    document.getElementById("chunk-count").textContent = "err";
+  }
+}
+
 async function fetchTraces() {
   try {
     const traces = await apiFetch("/admin/traces?limit=20");
@@ -184,6 +195,62 @@ async function fetchTraces() {
     container.innerHTML = html;
   } catch {
     document.getElementById("trace-count").textContent = "err";
+  }
+}
+
+async function fetchDimensionHealth() {
+  try {
+    const traces = await apiFetch("/admin/traces?limit=50");
+    if (!traces || traces.length === 0) {
+      document.getElementById("dimension-bars").innerHTML =
+        '<span class="dim">No search data</span>';
+      return;
+    }
+
+    // Aggregate dimension counts across recent traces
+    const dims = {
+      vector: 0,
+      lexical: 0,
+      temporal: 0,
+      graph: 0,
+      structural: 0,
+      global: 0,
+    };
+    let total = traces.length;
+    for (const t of traces) {
+      if (!t.dimension_counts) continue;
+      for (const [dim, count] of Object.entries(t.dimension_counts)) {
+        if (count > 0 && dims[dim] !== undefined) {
+          dims[dim]++;
+        }
+      }
+    }
+
+    // Render horizontal bars
+    const colors = {
+      vector: "#58a6ff",
+      lexical: "#3fb950",
+      temporal: "#d29922",
+      graph: "#bc8cff",
+      structural: "#f0883e",
+      global: "#f778ba",
+    };
+
+    let html = "";
+    for (const [dim, active] of Object.entries(dims)) {
+      const pct = Math.round((active / total) * 100);
+      html += `<div class="dim-row">
+        <span class="dim-label">${dim}</span>
+        <div class="dim-bar-bg">
+          <div class="dim-bar-fill" style="width:${pct}%;background:${colors[dim]}"></div>
+        </div>
+        <span class="dim-pct">${pct}%</span>
+      </div>`;
+    }
+    document.getElementById("dimension-bars").innerHTML = html;
+  } catch {
+    document.getElementById("dimension-bars").innerHTML =
+      '<span class="error-text">Failed to load</span>';
   }
 }
 
@@ -273,9 +340,11 @@ async function refreshAll() {
   await Promise.allSettled([
     fetchHealth(),
     fetchGraphStats(),
+    fetchMetrics(),
     fetchSources(),
     fetchCommunities(),
     fetchTraces(),
+    fetchDimensionHealth(),
     fetchGaps(),
     fetchMemory(),
     fetchTopology(),
