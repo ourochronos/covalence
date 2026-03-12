@@ -724,11 +724,17 @@ Deep audit of 4 major modules (ingestion, epistemic, consolidation, storage/grap
     - edge.rs, node.rs: Validate confidence is finite and in [0.0, 1.0] before storing
     - pii.rs: RegexPiiDetector::new() returns Result instead of panic via unwrap
 
+34. **Foundational type tests** (b10f3d1)
+    - clearance.rs: 8 tests (from_i32, from_i32_or_default, roundtrip, ordering, display, default)
+    - causal.rs: 3 tests (from_str_opt, invalid values, roundtrip)
+    - ids.rs: 6 tests (uniqueness, UUID roundtrip, From/Into, Display, serde, Hash/Eq)
+
 ### Stats
 
-- **Tests:** 814 (754 core + 13 API + 47 eval), up from 795. +19 new tests. Clippy clean.
-- **Commits:** 636e892, 42c5fc6, 47c9846, 08f1820, 578c95e, 51fe283, 31f8669, 1ddd302, 631155a, b1bb35e (10 commits, all pushed)
-- **Files modified:** 31 files across 4 crates
+- **Tests:** 831 (771 core + 13 API + 47 eval), up from 795. +36 new tests. Clippy clean.
+- **Zero unwrap/expect in production library code** (verified via full sweep)
+- **Commits:** 636e892, 42c5fc6, 47c9846, 08f1820, 578c95e, 51fe283, 31f8669, 1ddd302, 631155a, b1bb35e, 1eee418, b10f3d1 (12 commits, all pushed)
+- **Files modified:** 34 files across 4 crates
 
 ### Open Areas
 
