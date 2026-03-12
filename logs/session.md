@@ -1433,12 +1433,47 @@ Data-driven quality improvement: ran test queries, identified 3 low-quality resu
     - Graph grew: +90 entities (3333→3423), +760 edges (75010→75770), +613 chunks (15586→16199), +9 sources (411→420)
     - New knowledge immediately searchable: "GraphRAG vulnerability poisoning" returns GRAGPoison as top result
 
+---
+
+## Session 8h — continued
+
+### Improvements 96-99
+
+96. **Skip ConcatCompiler fallback articles**
+    - ConcatCompiler produced junk "Community N — Compiled Summary" articles by concatenating raw chunks with `---` separators — no synthesis at all
+    - Changed `GraphBatchConsolidator` to keep compiler as `Option` — when `None` (no LLM configured), article creation is skipped entirely
+    - Deleted 9 junk articles from prod (314KB of concatenated noise)
+
+97. **HTML content-sniffing in ingestion pipeline**
+    - Discovered 38 sources with raw HTML content (arXiv abstract pages ingested with wrong MIME type)
+    - Added `sniff_html()` to `pipeline.rs`: if content starts with `<!DOCTYPE` or `<html`, MIME is overridden to `text/html` regardless of declared type
+    - Reprocessed all 38 HTML-contaminated sources — HTML converter now strips tags properly
+    - 5 new tests for sniff_html (doctype, html tag, markdown rejection, BOM handling, empty content)
+
+98. **MathJax accessibility marker stripping**
+    - Found 273 chunks contaminated with MathJax markers (`start_POSTSUBSCRIPT`, `italic_`, `caligraphic_`, etc.) from arXiv paper HTML
+    - Added 13 marker patterns to `strip_artifacts()` in normalize.rs as a third pass
+    - Reprocessed 4 of the 6 most contaminated sources (2 timed out — too large for synchronous reprocess)
+    - 4 new tests for MathJax stripping
+
+99. **LlmCompiler error handling — no silent concatenation fallback**
+    - Found that LlmCompiler silently fell back to raw chunk concatenation when LLM response couldn't be parsed
+    - This produced massive junk articles (up to 912KB!) because `unwrap_or_default()` on parse failure returned `{}`, then body fell back to `combined.clone()`
+    - Now returns explicit errors on: missing content field, invalid JSON, missing body field
+    - Deleted 14 more junk articles from prod (3.5MB of concatenated noise)
+    - Consolidation with working LLM produced 75 real synthesized articles (2-9KB each)
+
+### Research Ingestion
+
+- Ingested 4 Phase 2 papers (#92): RAPTOR, Matryoshka, LightRAG, HippoRAG
+- Ran co-occurrence edge synthesis twice: +991 new edges
+- Codebase re-ingestion completed (+34 new sources)
+- Consolidation produced 75 new synthesized articles (with some failures caught by the new error handling)
+
 ### Key Metrics
 
-- **Tests:** 1035 (21 api + 967 core + 47 eval), all passing, clippy clean
-- **Sources:** 420, **Nodes:** 3,423, **Edges:** 75,770 (19,959 semantic + 55,811 synthetic)
-- **Components:** 249, **Chunks:** 16,199, **Articles:** 143 (55 new from consolidation)
-- **Search quality:** "how are graph communities detected" — top 5 now all relevant (was 2/5 relevant)
-- **Pipeline decomposition:** source.rs 58% smaller, shared pipeline eliminates duplication
-- **Issue #92 Phase 1 complete:** all 8 arXiv papers ingested into prod
-- **Consolidation:** 55 new articles synthesized from new paper communities
+- **Tests:** 1044 (21 api + 976 core + 47 eval), all passing, clippy clean
+- **Sources:** 458, **Nodes:** 3,584, **Edges:** 79,134 (22,332 semantic + 56,802 synthetic)
+- **Components:** 257, **Chunks:** 15,265, **Articles:** 209 (75 new from consolidation)
+- **Search quality:** no more junk Community articles in results, HTML sources now properly converted
+- **4 commits this continuation:** 018a0a2, 87af367, 1f5ea46 (plus earlier 7 from Session 8g)
