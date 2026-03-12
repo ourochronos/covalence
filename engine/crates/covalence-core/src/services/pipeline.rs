@@ -162,11 +162,12 @@ impl SourceService {
     /// handling their caller-specific setup (source creation,
     /// dedup, supersession, or cleanup).
     pub(crate) async fn run_pipeline(&self, input: &PipelineInput<'_>) -> Result<PipelineOutput> {
-        // --- Stage 4: Chunk ---
-        let chunk_outputs = crate::ingestion::chunker::chunk_document(
+        // --- Stage 4: Chunk (with small-section merging) ---
+        let chunk_outputs = crate::ingestion::chunker::chunk_document_with_merge(
             input.normalized,
             self.chunk_size,
             self.chunk_overlap,
+            self.min_section_size,
         );
 
         // Fragmentation warning (quality signal).

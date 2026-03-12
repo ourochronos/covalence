@@ -52,6 +52,13 @@ pub struct Config {
     /// prepend as overlap context to the next chunk.
     pub chunk_overlap: usize,
 
+    /// Minimum section body size for sibling merging.
+    ///
+    /// Sections below this threshold are merged with consecutive
+    /// siblings sharing the same parent heading. Set to 0 to
+    /// disable merging.
+    pub min_section_size: usize,
+
     /// Embedding-specific configuration.
     pub embedding: EmbeddingConfig,
 
@@ -411,6 +418,7 @@ impl Config {
             chat_base_url: optional_env("COVALENCE_CHAT_BASE_URL"),
             chunk_size: env_parse("COVALENCE_CHUNK_SIZE", 1000)?,
             chunk_overlap: env_parse("COVALENCE_CHUNK_OVERLAP", 200)?,
+            min_section_size: env_parse("COVALENCE_MIN_SECTION_SIZE", 200)?,
             embedding: {
                 // Per-table dimension config. Legacy COVALENCE_EMBED_DIM
                 // is used as fallback for chunk/article/source if the
@@ -720,6 +728,7 @@ mod tests {
                 chat_base_url: None,
                 chunk_size: 1000,
                 chunk_overlap: 200,
+                min_section_size: 200,
                 embedding: EmbeddingConfig::default(),
                 extract_concurrency: 8,
                 min_extract_tokens: 30,

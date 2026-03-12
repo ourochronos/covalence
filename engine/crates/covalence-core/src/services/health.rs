@@ -279,6 +279,7 @@ mod tests {
             chat_base_url: None,
             chunk_size: 1000,
             chunk_overlap: 200,
+            min_section_size: 200,
             embedding: EmbeddingConfig::default(),
             extract_concurrency: 8,
             min_extract_tokens: 30,

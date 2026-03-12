@@ -72,6 +72,7 @@ pub struct SourceService {
     pub(crate) table_dims: TableDimensions,
     pub(crate) chunk_size: usize,
     pub(crate) chunk_overlap: usize,
+    pub(crate) min_section_size: usize,
     pub(crate) min_extract_tokens: usize,
     pub(crate) extract_batch_tokens: usize,
     pub(crate) pipeline: PipelineConfig,
@@ -81,6 +82,13 @@ pub struct SourceService {
 impl SourceService {
     /// Default extraction concurrency when not configured.
     const DEFAULT_EXTRACT_CONCURRENCY: usize = 8;
+    /// Default minimum section size for sibling merging.
+    ///
+    /// Sections below this threshold are merged with consecutive
+    /// siblings sharing the same parent heading. Prevents tiny
+    /// H3/H4 subsections in academic papers from producing chunks
+    /// too small for meaningful retrieval.
+    const DEFAULT_MIN_SECTION_SIZE: usize = 200;
     /// Default minimum token count for extraction.
     const DEFAULT_MIN_EXTRACT_TOKENS: usize = 30;
     /// Default token budget for extraction batching.
@@ -100,6 +108,7 @@ impl SourceService {
             table_dims: TableDimensions::default(),
             chunk_size: 1000,
             chunk_overlap: 200,
+            min_section_size: Self::DEFAULT_MIN_SECTION_SIZE,
             min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
@@ -125,6 +134,7 @@ impl SourceService {
             table_dims: TableDimensions::default(),
             chunk_size: 1000,
             chunk_overlap: 200,
+            min_section_size: Self::DEFAULT_MIN_SECTION_SIZE,
             min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
@@ -152,6 +162,7 @@ impl SourceService {
             table_dims: TableDimensions::default(),
             chunk_size: 1000,
             chunk_overlap: 200,
+            min_section_size: Self::DEFAULT_MIN_SECTION_SIZE,
             min_extract_tokens: Self::DEFAULT_MIN_EXTRACT_TOKENS,
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
@@ -183,10 +194,20 @@ impl SourceService {
         self
     }
 
-    /// Set chunk size and overlap.
-    pub fn with_chunk_config(mut self, size: usize, overlap: usize) -> Self {
+    /// Set chunk size, overlap, and minimum section size.
+    pub fn with_chunk_config(
+        mut self,
+        size: usize,
+        overlap: usize,
+    ) -> Self {
         self.chunk_size = size;
         self.chunk_overlap = overlap;
+        self
+    }
+
+    /// Set minimum section size for sibling merging.
+    pub fn with_min_section_size(mut self, min_size: usize) -> Self {
+        self.min_section_size = min_size;
         self
     }
 

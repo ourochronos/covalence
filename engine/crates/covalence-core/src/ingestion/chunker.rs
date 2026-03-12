@@ -63,13 +63,38 @@ pub struct ChunkOutput {
 /// leading characters are overlap so consumers can trim them
 /// from snippets or highlighting.
 pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> Vec<ChunkOutput> {
+    chunk_document_with_merge(markdown, max_chunk_size, overlap, 0)
+}
+
+/// Like [`chunk_document`] but with small-section merging.
+///
+/// When `min_section_size > 0`, consecutive sibling sections
+/// (sharing the same parent heading path) whose body is below
+/// `min_section_size` are merged into a combined section. This
+/// prevents academic papers with many tiny H3/H4 subsections
+/// from producing chunks too small for meaningful retrieval.
+///
+/// The merged section inherits the parent heading path. Bodies
+/// are joined with `\n\n` separators. Merging stops when the
+/// combined text would exceed `max_chunk_size`.
+pub fn chunk_document_with_merge(
+    markdown: &str,
+    max_chunk_size: usize,
+    overlap: usize,
+    min_section_size: usize,
+) -> Vec<ChunkOutput> {
     let mut chunks = Vec::new();
 
     if markdown.trim().is_empty() {
         return chunks;
     }
 
-    let sections = split_sections(markdown);
+    let raw_sections = split_sections(markdown);
+    let sections = if min_section_size > 0 {
+        merge_small_siblings(raw_sections, min_section_size, max_chunk_size)
+    } else {
+        raw_sections
+    };
 
     // Track position in the source text for byte offset computation.
     let mut search_pos: usize = 0;
@@ -162,6 +187,98 @@ pub fn chunk_document(markdown: &str, max_chunk_size: usize, overlap: usize) -> 
     }
 
     chunks
+}
+
+/// Merge consecutive small sibling sections.
+///
+/// Two sections are "siblings" if they share the same parent
+/// heading path (all elements except the last). When a section's
+/// body is below `min_size`, it's merged with the next sibling
+/// as long as the combined size stays under `max_size`.
+///
+/// The merged section inherits the parent heading path (dropping
+/// the individual subsection names since the body now spans
+/// multiple subsections).
+fn merge_small_siblings<'a>(
+    sections: Vec<(Vec<&'a str>, String)>,
+    min_size: usize,
+    max_size: usize,
+) -> Vec<(Vec<&'a str>, String)> {
+    if sections.is_empty() {
+        return sections;
+    }
+
+    let mut result: Vec<(Vec<&'a str>, String)> = Vec::new();
+
+    let mut i = 0;
+    while i < sections.len() {
+        let (ref path, ref body) = sections[i];
+        let trimmed_len = body.trim().len();
+
+        // Only consider merging if this section is small.
+        if trimmed_len >= min_size || trimmed_len == 0 {
+            result.push(sections[i].clone());
+            i += 1;
+            continue;
+        }
+
+        // Parent path = all but the last heading element.
+        let parent: Vec<&str> = if path.len() > 1 {
+            path[..path.len() - 1].to_vec()
+        } else {
+            // Top-level sections (H1 only) — don't merge across
+            // H1 boundaries.
+            result.push(sections[i].clone());
+            i += 1;
+            continue;
+        };
+
+        // Accumulate consecutive small siblings.
+        let mut merged_body = body.trim().to_string();
+        let mut j = i + 1;
+
+        while j < sections.len() {
+            let (ref next_path, ref next_body) = sections[j];
+            let next_trimmed = next_body.trim();
+
+            // Must share the same parent to be a sibling.
+            let next_parent: Vec<&str> = if next_path.len() > 1 {
+                next_path[..next_path.len() - 1].to_vec()
+            } else {
+                break;
+            };
+            if next_parent != parent {
+                break;
+            }
+
+            // Only merge if the next section is also small.
+            if next_trimmed.len() >= min_size {
+                break;
+            }
+
+            // Don't exceed max_size.
+            let combined_len =
+                merged_body.len() + "\n\n".len() + next_trimmed.len();
+            if combined_len > max_size {
+                break;
+            }
+
+            merged_body.push_str("\n\n");
+            merged_body.push_str(next_trimmed);
+            j += 1;
+        }
+
+        // If we merged anything, use the parent path.
+        // Otherwise keep the original.
+        if j > i + 1 {
+            result.push((parent, merged_body));
+        } else {
+            result.push(sections[i].clone());
+        }
+        i = j;
+    }
+
+    result
 }
 
 /// Build the overlap-prefixed text for a paragraph chunk.
@@ -793,5 +910,160 @@ mod tests {
         assert!(paragraphs.len() >= 2);
         // Should not panic.
         assert!(paragraphs[1].context_prefix_len > 0);
+    }
+
+    // --- Small section merging tests ---
+
+    #[test]
+    fn merge_disabled_by_default() {
+        // chunk_document() passes min_section_size=0, so no merging.
+        let md = concat!(
+            "# Paper\n\n.\n\n",
+            "## Methods\n\n.\n\n",
+            "### Step A\n\nTiny.\n\n",
+            "### Step B\n\nAlso tiny."
+        );
+        let chunks = chunk_document(md, 500, 0);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        // All four sections remain separate.
+        assert_eq!(sections.len(), 4);
+    }
+
+    #[test]
+    fn merge_combines_small_siblings() {
+        let md = concat!(
+            "# Paper\n\nIntro text.\n\n",
+            "## Methods\n\nOverview.\n\n",
+            "### Step A\n\nSmall A.\n\n",
+            "### Step B\n\nSmall B.\n\n",
+            "## Results\n\nBig results section."
+        );
+        // min_section_size=200 means "Small A." and "Small B."
+        // (both < 200 chars) should merge. "Methods" and "Results"
+        // bodies are also small but they're at H2 level and their
+        // children are the ones being merged.
+        let chunks = chunk_document_with_merge(md, 1000, 0, 200);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+
+        // "Step A" + "Step B" should merge into one section
+        // under parent ["Paper", "Methods"].
+        // Remaining: Intro, Methods overview, merged A+B, Results.
+        let merged = sections.iter().find(|s| {
+            s.text.contains("Small A.") && s.text.contains("Small B.")
+        });
+        assert!(
+            merged.is_some(),
+            "small siblings should be merged"
+        );
+        // The merged section's heading path should be the parent.
+        let m = merged.unwrap();
+        assert_eq!(m.heading_path, vec!["Paper", "Methods"]);
+    }
+
+    #[test]
+    fn merge_respects_max_size() {
+        // Two small siblings whose combined size exceeds max.
+        let body_a = "a".repeat(80);
+        let body_b = "b".repeat(80);
+        let md = format!(
+            "# Paper\n\n.\n\n## Methods\n\n.\n\n### A\n\n{body_a}\n\n### B\n\n{body_b}"
+        );
+        // min=200, max=100 — each section is 80 chars, combined
+        // would be ~162, which exceeds max_chunk_size=100.
+        let chunks = chunk_document_with_merge(&md, 100, 0, 200);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        // Should NOT merge because combined > max_chunk_size.
+        let has_a = sections.iter().any(|s| s.text.contains(&body_a));
+        let has_b = sections.iter().any(|s| s.text.contains(&body_b));
+        assert!(has_a && has_b, "sections should remain separate");
+        // Make sure no section contains both.
+        let merged = sections
+            .iter()
+            .any(|s| s.text.contains(&body_a) && s.text.contains(&body_b));
+        assert!(!merged, "sections should not be merged past max_size");
+    }
+
+    #[test]
+    fn merge_does_not_cross_h1_boundaries() {
+        // Two small H1 sections should NOT merge.
+        let md = "# Section A\n\nSmall.\n\n# Section B\n\nAlso small.";
+        let chunks = chunk_document_with_merge(md, 1000, 0, 200);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        assert_eq!(sections.len(), 2, "H1 sections should not merge");
+    }
+
+    #[test]
+    fn merge_does_not_cross_parent_boundaries() {
+        let md = concat!(
+            "# Paper\n\n.\n\n",
+            "## Methods\n\n.\n\n",
+            "### Data\n\nSmall data.\n\n",
+            "## Results\n\n.\n\n",
+            "### Analysis\n\nSmall analysis."
+        );
+        // Data and Analysis are small but have different parents
+        // (Methods vs Results). Should not merge.
+        let chunks = chunk_document_with_merge(md, 1000, 0, 200);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        let merged = sections.iter().any(|s| {
+            s.text.contains("Small data.") && s.text.contains("Small analysis.")
+        });
+        assert!(!merged, "siblings under different parents should not merge");
+    }
+
+    #[test]
+    fn merge_skips_large_sections() {
+        let big = "x".repeat(300);
+        let md = format!(
+            "# Paper\n\n.\n\n## M\n\n.\n\n### A\n\n{big}\n\n### B\n\nSmall B."
+        );
+        // A is 300 chars (>200 min), B is small. A should not merge.
+        let chunks = chunk_document_with_merge(&md, 1000, 0, 200);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        let merged = sections.iter().any(|s| {
+            s.text.contains(&big) && s.text.contains("Small B.")
+        });
+        assert!(!merged, "large section should not merge with small");
+    }
+
+    #[test]
+    fn merge_three_consecutive_siblings() {
+        let md = concat!(
+            "# Paper\n\nIntro.\n\n",
+            "## Methods\n\nOverview.\n\n",
+            "### Step 1\n\nOne.\n\n",
+            "### Step 2\n\nTwo.\n\n",
+            "### Step 3\n\nThree."
+        );
+        let chunks = chunk_document_with_merge(md, 1000, 0, 200);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        let merged = sections.iter().find(|s| {
+            s.text.contains("One.") && s.text.contains("Two.") && s.text.contains("Three.")
+        });
+        assert!(
+            merged.is_some(),
+            "three small siblings should merge into one"
+        );
     }
 }

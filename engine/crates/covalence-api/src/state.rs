@@ -251,6 +251,7 @@ impl AppState {
         .with_converter_registry(converter_registry)
         .with_table_dims(config.embedding.table_dims.clone())
         .with_chunk_config(config.chunk_size, config.chunk_overlap)
+        .with_min_section_size(config.min_section_size)
         .with_extract_concurrency(config.extract_concurrency)
         .with_extract_batch_config(config.min_extract_tokens, config.extract_batch_tokens)
         .with_pipeline_config(config.pipeline.clone())
