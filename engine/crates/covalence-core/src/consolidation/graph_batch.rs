@@ -204,32 +204,9 @@ impl GraphBatchConsolidator {
         Ok(())
     }
 
-    /// Log any detected contentions.
-    fn log_contentions(&self, contentions: &[Contention]) {
-        for c in contentions {
-            tracing::warn!(
-                node_a = %c.node_a,
-                node_b = %c.node_b,
-                edge_id = %c.edge_id,
-                rel_type = %c.rel_type,
-                confidence = c.confidence,
-                "contention detected during batch consolidation"
-            );
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl BatchConsolidator for GraphBatchConsolidator {
-    /// Execute a batch consolidation job.
-    ///
-    /// 1. Groups the batch's sources by community.
-    /// 2. Compiles an article for each community cluster.
-    /// 3. Detects and logs contentions.
-    /// 4. Updates the batch job status to `Complete`.
-    async fn run_batch(&self, job: &mut BatchJob) -> Result<()> {
-        job.status = BatchStatus::Running;
-
+    /// Inner implementation for `run_batch` that returns errors
+    /// without updating job status (the caller handles that).
+    async fn run_batch_inner(&self, job: &BatchJob) -> Result<()> {
         let source_nodes = self.build_source_nodes(&job.source_ids).await?;
 
         // Cluster sources by community
@@ -264,10 +241,48 @@ impl BatchConsolidator for GraphBatchConsolidator {
             }
         }
 
-        job.status = BatchStatus::Complete;
-        job.completed_at = Some(Utc::now());
-
         Ok(())
+    }
+
+    /// Log any detected contentions.
+    fn log_contentions(&self, contentions: &[Contention]) {
+        for c in contentions {
+            tracing::warn!(
+                node_a = %c.node_a,
+                node_b = %c.node_b,
+                edge_id = %c.edge_id,
+                rel_type = %c.rel_type,
+                confidence = c.confidence,
+                "contention detected during batch consolidation"
+            );
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl BatchConsolidator for GraphBatchConsolidator {
+    /// Execute a batch consolidation job.
+    ///
+    /// 1. Groups the batch's sources by community.
+    /// 2. Compiles an article for each community cluster.
+    /// 3. Detects and logs contentions.
+    /// 4. Updates the batch job status to `Complete` (or `Failed`
+    ///    on error).
+    async fn run_batch(&self, job: &mut BatchJob) -> Result<()> {
+        job.status = BatchStatus::Running;
+
+        match self.run_batch_inner(job).await {
+            Ok(()) => {
+                job.status = BatchStatus::Complete;
+                job.completed_at = Some(Utc::now());
+                Ok(())
+            }
+            Err(e) => {
+                job.status = BatchStatus::Failed;
+                job.completed_at = Some(Utc::now());
+                Err(e)
+            }
+        }
     }
 }
 

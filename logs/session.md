@@ -837,12 +837,29 @@ Three classes of bugs found by background scanner agents:
 
 ---
 
+### Improvement 47: Batch consolidation job status on error
+
+**Bug:** `GraphBatchConsolidator::run_batch()` sets `job.status = Running` at the start, but if any step fails via `?`, the status stays `Running` forever. The caller gets the error, but the job object is left in an inconsistent state — it never transitions to `Failed`.
+
+**Fix:** Extracted the main logic into `run_batch_inner()`. The outer `run_batch()` catches the result and sets `Complete` on success or `Failed` on error, with `completed_at` timestamp in both cases.
+
+**Files modified:** `consolidation/graph_batch.rs`
+
+**Codebase review complete:** All modules now reviewed:
+- consolidation/ — batch.rs, deep.rs, topic.rs, summary.rs, contention.rs, graph_batch.rs (fixed), ontology.rs (fixed earlier), scheduler.rs, compiler.rs
+- search/ — skewroute.rs, cache.rs, expansion.rs, rerank.rs, context.rs, abstention.rs, trace.rs, fusion.rs, strategy.rs, dimensions/*
+- ingestion/ — all 19 files including converter.rs, voyage.rs, openai_embedder.rs, sidecar_extractor.rs, two_pass_extractor.rs, parser/mod.rs
+- services/ — all files including consolidation.rs, article.rs, memory.rs, health.rs
+- All graph/, models/, types/, storage/, epistemic/, API handlers, config.rs, error.rs, Go CLI
+
+---
+
 ### Stats
 
 - **Tests:** 930 (870 core + 13 API + 47 eval), up from 795. +135 net new tests (143 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 22 total (12 from session 5a + 10 from session 5b/5c), all pushed
-- **Files modified:** ~58 files across 4 crates + CLI
+- **Commits:** 23 total (12 from session 5a + 11 from session 5b/5c), all pushed
+- **Files modified:** ~59 files across 4 crates + CLI
 
 ### Open Areas
 
