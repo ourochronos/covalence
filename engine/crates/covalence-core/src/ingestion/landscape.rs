@@ -177,8 +177,10 @@ pub fn analyze_landscape(
     // extract to avoid silently skipping small documents.
     if chunk_embeddings.len() == 1 {
         tracing::debug!("single-chunk source — bypassing landscape, forcing full extraction");
-        let parent_alignment =
-            parent_embeddings[0].map(|pe| cosine_similarity(&chunk_embeddings[0], pe));
+        let parent_alignment = parent_embeddings
+            .first()
+            .and_then(|pe| pe.as_ref())
+            .map(|pe| cosine_similarity(&chunk_embeddings[0], pe));
         return vec![ChunkLandscapeResult {
             chunk_index: 0,
             parent_alignment,
@@ -195,8 +197,10 @@ pub fn analyze_landscape(
 
     for i in 0..chunk_embeddings.len() {
         // 1. Parent-child alignment
-        let parent_alignment =
-            parent_embeddings[i].map(|pe| cosine_similarity(&chunk_embeddings[i], pe));
+        let parent_alignment = parent_embeddings
+            .get(i)
+            .and_then(|pe| pe.as_ref())
+            .map(|pe| cosine_similarity(&chunk_embeddings[i], pe));
 
         // 2. Adjacent similarity
         let adjacent_similarity = if i + 1 < chunk_embeddings.len() {
@@ -717,6 +721,39 @@ mod tests {
     fn empty_input_first_ingestion() {
         let results: Vec<ChunkLandscapeResult> = analyze_landscape(&[], &[], None, true);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn single_chunk_empty_parent_embeddings() {
+        // parent_embeddings shorter than chunk_embeddings — must not panic
+        let child = vec![1.0, 0.5, 0.3];
+        let results = analyze_landscape(&[child], &[], None, false);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].parent_alignment.is_none());
+        assert_eq!(
+            results[0].extraction_method,
+            ExtractionMethod::FullExtraction
+        );
+    }
+
+    #[test]
+    fn multi_chunk_shorter_parent_embeddings() {
+        // 3 chunks but only 1 parent embedding — safe bounds check
+        let c1 = vec![1.0, 0.0, 0.0];
+        let c2 = vec![0.0, 1.0, 0.0];
+        let c3 = vec![0.0, 0.0, 1.0];
+        let parent = vec![1.0, 0.5, 0.3];
+        let results = analyze_landscape(
+            &[c1, c2, c3],
+            &[Some(&parent)],
+            None,
+            false,
+        );
+        assert_eq!(results.len(), 3);
+        // First chunk has parent alignment, rest don't
+        assert!(results[0].parent_alignment.is_some());
+        assert!(results[1].parent_alignment.is_none());
+        assert!(results[2].parent_alignment.is_none());
     }
 
     // --- First-ingestion bypass tests ---

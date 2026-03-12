@@ -57,8 +57,21 @@ impl SearchDimension for TemporalDimension {
             .into_iter()
             .enumerate()
             .map(|(i, (id, created_at))| {
-                let days_old = (now - created_at).num_seconds().max(0) as f64 / 86400.0;
-                let score = 1.0 / (1.0 + days_old);
+                let elapsed_secs = (now - created_at).num_seconds();
+                let score = if elapsed_secs < -60 {
+                    // Future timestamp (>60s ahead) — likely data
+                    // corruption or clock skew. Demote rather than
+                    // rewarding with max recency.
+                    tracing::debug!(
+                        chunk_id = %id,
+                        seconds_in_future = -elapsed_secs,
+                        "chunk has future timestamp, demoting"
+                    );
+                    0.1
+                } else {
+                    let days_old = elapsed_secs.max(0) as f64 / 86400.0;
+                    1.0 / (1.0 + days_old)
+                };
                 SearchResult {
                     id,
                     score,

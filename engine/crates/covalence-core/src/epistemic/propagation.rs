@@ -249,9 +249,15 @@ fn fuse_extractions(extraction_opinions: &[Opinion], source_trust: Option<f64>) 
 
     // Fallback: cumulative fusion
     let mut result = discounted[0];
-    for op in &discounted[1..] {
+    for (i, op) in discounted[1..].iter().enumerate() {
         if let Some(fused) = cumulative_fuse(&result, op) {
             result = fused;
+        } else {
+            tracing::debug!(
+                opinion_index = i + 1,
+                "cumulative fusion returned None, keeping \
+                 partial result"
+            );
         }
     }
     result

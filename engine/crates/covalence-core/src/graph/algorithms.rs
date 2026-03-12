@@ -179,6 +179,13 @@ pub fn trust_rank(
 
     // Normalize seed weights
     let total_seed_weight: f64 = seed_map.values().sum();
+    if total_seed_weight <= 0.0 {
+        tracing::warn!(
+            "trust_rank: seed weights sum to {total_seed_weight}, \
+             returning empty scores"
+        );
+        return HashMap::new();
+    }
     let seed_normalized: HashMap<NodeIndex, f64> = seed_map
         .iter()
         .map(|(&idx, &w)| (idx, w / total_seed_weight))
@@ -560,6 +567,24 @@ mod tests {
     fn pagerank_empty_graph() {
         let g: StableDiGraph<NodeMeta, EdgeMeta> = StableDiGraph::new();
         let scores = pagerank(&g, 0.85, 10);
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn trust_rank_zero_weight_seeds() {
+        let (g, a, _b, _c) = triangle_graph();
+        let seeds = vec![(a, 0.0)];
+        let scores = trust_rank(g.graph(), &seeds, 0.85, 10);
+        // Zero-weight seeds should return empty scores
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn trust_rank_negative_weight_seeds() {
+        let (g, a, _b, _c) = triangle_graph();
+        let seeds = vec![(a, -1.0)];
+        let scores = trust_rank(g.graph(), &seeds, 0.85, 10);
+        // Negative total weight should return empty scores
         assert!(scores.is_empty());
     }
 }
