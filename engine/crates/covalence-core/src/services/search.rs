@@ -38,14 +38,57 @@ const ENTITY_DEMOTION_FACTOR: f64 = 0.3;
 /// Maximum length for derived chunk names.
 const MAX_CHUNK_NAME_LEN: usize = 80;
 
-/// Derive a readable name from chunk content.
+/// Generic section headings that benefit from source-title
+/// qualification (e.g., "Overview" → "Paper Title: Overview").
+const GENERIC_HEADINGS: &[&str] = &[
+    "overview",
+    "introduction",
+    "abstract",
+    "summary",
+    "background",
+    "conclusion",
+    "conclusions",
+    "discussion",
+    "methods",
+    "methodology",
+    "results",
+    "implementation",
+    "architecture",
+    "design",
+    "analysis",
+    "evaluation",
+    "related work",
+    "future work",
+    "appendix",
+    "references",
+    "acknowledgments",
+    "prerequisites",
+    "setup",
+    "configuration",
+    "usage",
+    "examples",
+    "getting started",
+    "installation",
+    "motivation",
+];
+
+/// Derive a readable name from chunk content, optionally qualified
+/// by a source title when the heading is generic.
 ///
 /// Strategy:
 /// 1. Skip leading lines that are metadata (bold labels, links, refs).
-/// 2. If a Markdown heading (`# ...`) is found, use it.
+/// 2. If a Markdown heading (`# ...`) is found, use it (qualify with
+///    source title if the heading is generic like "Overview").
 /// 3. Otherwise, take the first meaningful sentence, truncated to
 ///    [`MAX_CHUNK_NAME_LEN`].
+#[cfg(test)]
 fn derive_chunk_name(content: &str) -> String {
+    derive_chunk_name_qualified(content, None)
+}
+
+/// Derive a chunk name, qualifying generic headings with the
+/// source title when available.
+fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> String {
     let trimmed = content.trim();
 
     // Try to find the first meaningful line: skip bold labels
@@ -85,13 +128,12 @@ fn derive_chunk_name(content: &str) -> String {
     // Check for Markdown heading.
     if let Some(heading) = meaningful.strip_prefix('#') {
         let heading = heading.trim_start_matches('#').trim();
-        if let Some(end) = heading.find('\n') {
-            return heading[..end].trim().to_string();
-        }
-        if heading.len() <= MAX_CHUNK_NAME_LEN {
-            return heading.to_string();
-        }
-        return format!("{}...", &heading[..MAX_CHUNK_NAME_LEN - 3]);
+        let heading = if let Some(end) = heading.find('\n') {
+            heading[..end].trim()
+        } else {
+            heading
+        };
+        return qualify_heading(heading, source_title);
     }
 
     // Strip inline markdown formatting: **bold**, *italic*, `code`.
@@ -114,6 +156,38 @@ fn derive_chunk_name(content: &str) -> String {
         }
     } else {
         format!("{}...", &clean[..MAX_CHUNK_NAME_LEN - 3])
+    }
+}
+
+/// Qualify a heading with the source title when the heading is
+/// generic (e.g., "Overview" → "Paper Title: Overview").
+fn qualify_heading(heading: &str, source_title: Option<&str>) -> String {
+    let is_generic = GENERIC_HEADINGS
+        .iter()
+        .any(|g| heading.eq_ignore_ascii_case(g));
+
+    if is_generic {
+        if let Some(title) = source_title {
+            let title = title.trim();
+            if !title.is_empty() {
+                // Truncate source title to leave room for heading.
+                let max_title = MAX_CHUNK_NAME_LEN
+                    .saturating_sub(heading.len())
+                    .saturating_sub(2); // ": "
+                let t = if title.len() > max_title && max_title > 3 {
+                    format!("{}...", &title[..max_title - 3])
+                } else {
+                    title.to_string()
+                };
+                return format!("{}: {}", t, heading);
+            }
+        }
+    }
+
+    if heading.len() <= MAX_CHUNK_NAME_LEN {
+        heading.to_string()
+    } else {
+        format!("{}...", &heading[..MAX_CHUNK_NAME_LEN - 3])
     }
 }
 
@@ -681,14 +755,21 @@ impl SearchService {
                     {
                         result.content = Some(chunk.content.clone());
                         result.entity_type = Some("chunk".to_string());
-                        // Derive a readable name from chunk content.
-                        result.name = Some(derive_chunk_name(&chunk.content));
-                        if let Ok(Some(source)) =
+                        // Look up source first so we can qualify
+                        // generic chunk headings with the source title.
+                        let src_title = if let Ok(Some(source)) =
                             SourceRepo::get(&*self.repo, chunk.source_id).await
                         {
                             result.source_uri = source.uri;
-                            result.source_title = source.title;
-                        }
+                            result.source_title = source.title.clone();
+                            source.title
+                        } else {
+                            None
+                        };
+                        result.name = Some(derive_chunk_name_qualified(
+                            &chunk.content,
+                            src_title.as_deref(),
+                        ));
                         // Parent-context injection: for paragraph-level
                         // chunks, prepend truncated parent content to
                         // the snippet (avoids a second chunk fetch).
@@ -1153,6 +1234,72 @@ mod tests {
         assert_eq!(
             strip_inline_markdown("**bold** and *italic* and `code`"),
             "bold and italic and code"
+        );
+    }
+
+    // --- qualify_heading tests ---
+
+    #[test]
+    fn qualify_generic_heading_with_source() {
+        assert_eq!(
+            qualify_heading("Overview", Some("Epistemic Model Spec")),
+            "Epistemic Model Spec: Overview"
+        );
+    }
+
+    #[test]
+    fn qualify_generic_heading_case_insensitive() {
+        assert_eq!(
+            qualify_heading("INTRODUCTION", Some("Paper Title")),
+            "Paper Title: INTRODUCTION"
+        );
+    }
+
+    #[test]
+    fn qualify_non_generic_heading_unchanged() {
+        assert_eq!(
+            qualify_heading("Reciprocal Rank Fusion", Some("Paper Title")),
+            "Reciprocal Rank Fusion"
+        );
+    }
+
+    #[test]
+    fn qualify_generic_heading_no_source() {
+        assert_eq!(qualify_heading("Overview", None), "Overview");
+    }
+
+    #[test]
+    fn qualify_generic_heading_empty_source() {
+        assert_eq!(
+            qualify_heading("Overview", Some("")),
+            "Overview"
+        );
+    }
+
+    #[test]
+    fn qualified_name_via_derive() {
+        let content = "## Overview\nThe system is designed for...";
+        assert_eq!(
+            derive_chunk_name_qualified(content, Some("Search Engine")),
+            "Search Engine: Overview"
+        );
+    }
+
+    #[test]
+    fn qualified_name_specific_heading_not_qualified() {
+        let content = "## Reciprocal Rank Fusion\nRRF merges ranked lists.";
+        assert_eq!(
+            derive_chunk_name_qualified(content, Some("Search Engine")),
+            "Reciprocal Rank Fusion"
+        );
+    }
+
+    #[test]
+    fn qualified_name_no_source_falls_back() {
+        let content = "## Overview\nThe system is designed for...";
+        assert_eq!(
+            derive_chunk_name_qualified(content, None),
+            "Overview"
         );
     }
 }
