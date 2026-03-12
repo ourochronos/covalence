@@ -290,6 +290,25 @@ pub async fn list_traces(
     ))
 }
 
+/// Clear the semantic query cache.
+#[utoipa::path(
+    post,
+    path = "/admin/cache/clear",
+    responses(
+        (status = 200, description = "Cache cleared", body = serde_json::Value),
+    ),
+    tag = "admin"
+)]
+pub async fn clear_cache(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let cleared = state.search_service.clear_cache().await?;
+    tracing::info!(entries_cleared = cleared, "query cache cleared");
+    Ok(Json(serde_json::json!({
+        "entries_cleared": cleared,
+    })))
+}
+
 /// Run ontology clustering.
 #[utoipa::path(
     post,

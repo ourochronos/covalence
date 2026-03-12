@@ -63,6 +63,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/metrics", get(admin::metrics))
         .route("/admin/traces", get(admin::list_traces))
         .route("/admin/traces/{id}/replay", post(admin::replay_trace))
+        .route("/admin/cache/clear", post(admin::clear_cache))
         .route("/admin/knowledge-gaps", get(admin::knowledge_gaps))
         .route("/admin/config-audit", post(admin::config_audit))
         .route(

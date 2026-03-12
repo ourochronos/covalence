@@ -153,6 +153,15 @@ impl SearchService {
         self
     }
 
+    /// Clear the semantic query cache. Returns the number of entries
+    /// removed, or 0 if the cache is not enabled.
+    pub async fn clear_cache(&self) -> Result<u64> {
+        match &self.cache {
+            Some(cache) => cache.clear().await,
+            None => Ok(0),
+        }
+    }
+
     /// Execute a fused search across all dimensions.
     ///
     /// Pipeline:
@@ -768,50 +777,6 @@ impl SearchService {
             }
         }
 
-        // --- Step 8a2: Low-quality chunk demotion ---
-        // Chunks that are bibliography entries, boilerplate-heavy,
-        // or metadata-only get demoted so they don't pollute results.
-        // This catches chunks from sources ingested before the
-        // ingestion-time quality filters were added.
-        {
-            use super::chunk_quality::{
-                is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
-                is_reference_section,
-            };
-
-            let mut demoted = 0usize;
-            for result in &mut fused {
-                // Check entity_type (set during enrichment) rather
-                // than result_type (set by dimension, may be missing).
-                if result.entity_type.as_deref() != Some("chunk") {
-                    continue;
-                }
-                let content = match result.content.as_deref() {
-                    Some(c) => c,
-                    None => continue,
-                };
-                if is_bibliography_entry(content)
-                    || is_reference_section(content)
-                    || is_boilerplate_heavy(content)
-                    || is_metadata_only(content)
-                {
-                    result.fused_score *= 0.1;
-                    demoted += 1;
-                }
-            }
-            if demoted > 0 {
-                tracing::debug!(demoted, "demoted low-quality chunks in search results");
-                trace.chunks_quality_demoted = demoted;
-                // Re-sort so demoted chunks sink before entity
-                // demotion and reranking.
-                fused.sort_by(|a, b| {
-                    b.fused_score
-                        .partial_cmp(&a.fused_score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-        }
-
         // --- Step 8b: Post-fusion entity demotion ---
         // Secondary demotion pass: entity nodes that appear in many
         // dimensions can accumulate high fused scores. Apply a score
@@ -920,6 +885,45 @@ impl SearchService {
                          keeping fusion order"
                     );
                 }
+            }
+        }
+
+        // --- Step 9b: Low-quality chunk demotion ---
+        // Runs AFTER reranking so the reranker can't blend demoted
+        // scores back up. Catches bibliography entries, reference
+        // sections, boilerplate, and metadata-only chunks.
+        {
+            use super::chunk_quality::{
+                is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
+                is_reference_section,
+            };
+
+            let mut demoted = 0usize;
+            for result in &mut fused {
+                if result.entity_type.as_deref() != Some("chunk") {
+                    continue;
+                }
+                let content = match result.content.as_deref() {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if is_bibliography_entry(content)
+                    || is_reference_section(content)
+                    || is_boilerplate_heavy(content)
+                    || is_metadata_only(content)
+                {
+                    result.fused_score *= 0.1;
+                    demoted += 1;
+                }
+            }
+            if demoted > 0 {
+                tracing::debug!(demoted, "demoted low-quality chunks after reranking");
+                trace.chunks_quality_demoted = demoted;
+                fused.sort_by(|a, b| {
+                    b.fused_score
+                        .partial_cmp(&a.fused_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
         }
 

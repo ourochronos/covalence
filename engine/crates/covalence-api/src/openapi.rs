@@ -58,6 +58,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::metrics,
         admin::list_traces,
         admin::replay_trace,
+        admin::clear_cache,
         admin::knowledge_gaps,
         admin::config_audit,
         admin::synthesize_cooccurrence,

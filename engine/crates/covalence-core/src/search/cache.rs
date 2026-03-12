@@ -128,6 +128,14 @@ impl QueryCache {
         Ok(Some(results))
     }
 
+    /// Clear all cached entries.
+    pub async fn clear(&self) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM query_cache")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Store search results in the cache.
     ///
     /// Inserts the query text, embedding, strategy, and serialized
