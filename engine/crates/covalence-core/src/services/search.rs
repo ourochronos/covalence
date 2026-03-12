@@ -912,6 +912,11 @@ impl SearchService {
         // multiplier that scales with dimension evidence: nodes found
         // by 3+ dimensions get lighter demotion (they're clearly
         // relevant), while single-dimension nodes get full demotion.
+        //
+        // Exception: entities whose name appears in the query text
+        // are exempt from demotion — the user is likely asking about
+        // that entity specifically.
+        let query_lower = query.to_lowercase();
         if demote_entities {
             let mut demoted_count = 0usize;
             for result in &mut fused {
@@ -921,6 +926,16 @@ impl SearchService {
                         .as_deref()
                         .is_none_or(|t| t != "community_summary" && t != "article");
                 if is_bare_entity {
+                    // Skip demotion if the entity name appears in
+                    // the query (case-insensitive).
+                    let name_in_query = result.name.as_ref().is_some_and(|name| {
+                        let name_lower = name.to_lowercase();
+                        name_lower.len() >= 3 && query_lower.contains(&name_lower)
+                    });
+                    if name_in_query {
+                        continue;
+                    }
+
                     let num_dims = result.dimension_scores.len();
                     // Scale demotion: 1 dim → 0.3, 2 → 0.5, 3+ → 0.7
                     let factor = match num_dims {
