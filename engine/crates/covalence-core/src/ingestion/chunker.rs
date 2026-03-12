@@ -47,10 +47,14 @@ pub struct ChunkOutput {
 
 /// Split a Markdown document into hierarchical chunks.
 ///
-/// Sections are split on `# ` headings. Sections exceeding
-/// `max_chunk_size` bytes are further split into paragraphs
-/// by `\n\n`. No document-level chunk is created; the
-/// document embedding lives on the source record.
+/// Sections are split on `#`–`####` headings (H1–H4).
+/// The heading hierarchy is tracked in
+/// [`ChunkOutput::heading_path`], e.g., `["Title", "Methods",
+/// "Data Collection"]`.
+///
+/// Sections exceeding `max_chunk_size` bytes are further split
+/// into paragraphs by `\n\n`. No document-level chunk is
+/// created; the document embedding lives on the source record.
 ///
 /// When `overlap` is non-zero, each paragraph chunk after the
 /// first within a section is prefixed with the last `overlap`
@@ -197,21 +201,55 @@ fn build_overlap_text(prev: Option<&str>, current: &str, overlap: usize) -> (Str
     (text, prefix_len)
 }
 
-/// Split markdown into sections by `# ` headings.
-/// Returns `(heading_path, body)` pairs.
+/// Detect a Markdown heading (H1–H4) and return its level and
+/// title text. Returns `None` for non-heading lines or H5+.
+fn detect_heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim();
+    // Check longest prefix first to avoid `# ` matching `## `.
+    // All prefixes are ASCII so byte/char boundaries align.
+    if let Some(rest) = trimmed.strip_prefix("#### ") {
+        Some((4, rest.trim()))
+    } else if let Some(rest) = trimmed.strip_prefix("### ") {
+        Some((3, rest.trim()))
+    } else if let Some(rest) = trimmed.strip_prefix("## ") {
+        Some((2, rest.trim()))
+    } else if let Some(rest) = trimmed.strip_prefix("# ") {
+        Some((1, rest.trim()))
+    } else {
+        None
+    }
+}
+
+/// Split markdown into sections by `#`–`####` headings (H1–H4).
+///
+/// Returns `(heading_path, body)` pairs where `heading_path`
+/// tracks the heading hierarchy. For example, an H2 "Methods"
+/// under H1 "Paper Title" yields `["Paper Title", "Methods"]`.
 fn split_sections(markdown: &str) -> Vec<(Vec<&str>, String)> {
     let mut sections: Vec<(Vec<&str>, String)> = Vec::new();
-    let mut current_heading: Vec<&str> = Vec::new();
+    // Stack of (level, title) pairs tracking the heading hierarchy.
+    let mut heading_stack: Vec<(usize, &str)> = Vec::new();
     let mut current_body = String::new();
 
     for line in markdown.lines() {
-        let trimmed = line.trim();
-        if let Some(title) = trimmed.strip_prefix("# ") {
-            if !current_body.is_empty() || !current_heading.is_empty() {
-                sections.push((current_heading.clone(), current_body.clone()));
+        if let Some((level, title)) = detect_heading(line) {
+            // Flush the current section.
+            let path: Vec<&str> =
+                heading_stack.iter().map(|(_, t)| *t).collect();
+            if !current_body.is_empty() || !path.is_empty() {
+                sections.push((path, current_body.clone()));
             }
-            current_heading = vec![title.trim()];
             current_body = String::new();
+
+            // Pop the stack back to the parent of this heading level.
+            // E.g., if we see H2, pop everything at level >= 2.
+            while heading_stack
+                .last()
+                .is_some_and(|(l, _)| *l >= level)
+            {
+                heading_stack.pop();
+            }
+            heading_stack.push((level, title));
         } else {
             if !current_body.is_empty() {
                 current_body.push('\n');
@@ -220,8 +258,10 @@ fn split_sections(markdown: &str) -> Vec<(Vec<&str>, String)> {
         }
     }
 
-    if !current_body.is_empty() || !current_heading.is_empty() {
-        sections.push((current_heading, current_body));
+    // Flush the final section.
+    let path: Vec<&str> = heading_stack.iter().map(|(_, t)| *t).collect();
+    if !current_body.is_empty() || !path.is_empty() {
+        sections.push((path, current_body));
     }
 
     sections
@@ -546,5 +586,154 @@ mod tests {
             &md[chunks[0].byte_start..chunks[0].byte_end],
             chunks[0].text
         );
+    }
+
+    // --- H2+ heading hierarchy tests ---
+
+    #[test]
+    fn h2_creates_separate_section() {
+        let md = "# Title\n\nIntro.\n\n## Methods\n\nMethod content.";
+        let chunks = chunk_document(md, 500, 0);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        assert_eq!(sections.len(), 2);
+    }
+
+    #[test]
+    fn h2_heading_path_includes_parent() {
+        let md = "# Paper\n\nIntro.\n\n## Methods\n\nContent.";
+        let chunks = chunk_document(md, 500, 0);
+        let methods = chunks
+            .iter()
+            .find(|c| c.heading_path.last() == Some(&"Methods".to_string()))
+            .unwrap();
+        assert_eq!(methods.heading_path, vec!["Paper", "Methods"]);
+    }
+
+    #[test]
+    fn h3_heading_path_includes_ancestors() {
+        let md = concat!(
+            "# Paper\n\nIntro.\n\n",
+            "## Methods\n\nOverview.\n\n",
+            "### Data Collection\n\nDetails."
+        );
+        let chunks = chunk_document(md, 500, 0);
+        let data = chunks
+            .iter()
+            .find(|c| {
+                c.heading_path.last()
+                    == Some(&"Data Collection".to_string())
+            })
+            .unwrap();
+        assert_eq!(
+            data.heading_path,
+            vec!["Paper", "Methods", "Data Collection"]
+        );
+    }
+
+    #[test]
+    fn h4_heading_path_depth() {
+        let md = concat!(
+            "# A\n\nA body.\n\n",
+            "## B\n\nB body.\n\n",
+            "### C\n\nC body.\n\n",
+            "#### D\n\nD body."
+        );
+        let chunks = chunk_document(md, 500, 0);
+        let d = chunks
+            .iter()
+            .find(|c| c.heading_path.last() == Some(&"D".to_string()))
+            .unwrap();
+        assert_eq!(d.heading_path, vec!["A", "B", "C", "D"]);
+    }
+
+    #[test]
+    fn h2_sibling_resets_path() {
+        let md = concat!(
+            "# Paper\n\nIntro.\n\n",
+            "## Abstract\n\nAbstract text.\n\n",
+            "## Methods\n\nMethods text."
+        );
+        let chunks = chunk_document(md, 500, 0);
+        let methods = chunks
+            .iter()
+            .find(|c| c.heading_path.last() == Some(&"Methods".to_string()))
+            .unwrap();
+        // Methods should be ["Paper", "Methods"], not
+        // ["Paper", "Abstract", "Methods"].
+        assert_eq!(methods.heading_path, vec!["Paper", "Methods"]);
+    }
+
+    #[test]
+    fn h3_under_different_h2s() {
+        let md = concat!(
+            "# Paper\n\n.\n\n",
+            "## Methods\n\n.\n\n",
+            "### Data\n\n.\n\n",
+            "## Results\n\n.\n\n",
+            "### Analysis\n\n."
+        );
+        let chunks = chunk_document(md, 500, 0);
+        let data = chunks
+            .iter()
+            .find(|c| c.heading_path.last() == Some(&"Data".to_string()))
+            .unwrap();
+        let analysis = chunks
+            .iter()
+            .find(|c| {
+                c.heading_path.last() == Some(&"Analysis".to_string())
+            })
+            .unwrap();
+        assert_eq!(data.heading_path, vec!["Paper", "Methods", "Data"]);
+        assert_eq!(
+            analysis.heading_path,
+            vec!["Paper", "Results", "Analysis"]
+        );
+    }
+
+    #[test]
+    fn academic_paper_structure() {
+        // Typical academic paper layout.
+        let md = concat!(
+            "# My Paper Title\n\n",
+            "## Abstract\n\nThis paper...\n\n",
+            "## 1 Introduction\n\nKnowledge graphs...\n\n",
+            "## 2 Methods\n\nWe propose...\n\n",
+            "### 2.1 Data\n\nWe collected...\n\n",
+            "### 2.2 Model\n\nOur model...\n\n",
+            "## 3 Results\n\nResults show...\n\n",
+            "## 4 Conclusion\n\nWe conclude..."
+        );
+        let chunks = chunk_document(md, 500, 0);
+        let sections: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::Section)
+            .collect();
+        // 7 sections: abstract, intro, methods,
+        // data, model, results, conclusion
+        // (title heading has no body text so no section emitted)
+        assert_eq!(sections.len(), 7);
+    }
+
+    #[test]
+    fn detect_heading_h5_ignored() {
+        assert!(detect_heading("##### H5 heading").is_none());
+    }
+
+    #[test]
+    fn detect_heading_levels() {
+        assert_eq!(detect_heading("# Title"), Some((1, "Title")));
+        assert_eq!(detect_heading("## Sub"), Some((2, "Sub")));
+        assert_eq!(detect_heading("### Deep"), Some((3, "Deep")));
+        assert_eq!(detect_heading("#### Deeper"), Some((4, "Deeper")));
+    }
+
+    #[test]
+    fn detect_heading_not_heading() {
+        assert!(detect_heading("Not a heading").is_none());
+        assert!(detect_heading("#NoSpace").is_none());
+        assert!(detect_heading("").is_none());
     }
 }
