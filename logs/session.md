@@ -823,12 +823,26 @@ Three classes of bugs found and fixed:
 
 ---
 
+### Improvement 46 — Opinion validation, config float safety, CLI error handling
+
+Three classes of bugs found by background scanner agents:
+
+1. **Opinion type invariant violations** (`types/opinion.rs`): `Opinion::new()` accepted negative values and values > 1.0 for belief, disbelief, uncertainty, and base_rate — only checked the sum constraint. `vacuous()` and `certain()` accepted unbounded floats. Now `new()` rejects out-of-range components, `vacuous()` clamps base_rate to [0,1], `certain()` clamps belief to [0,1]. Added 6 tests.
+
+2. **Config NaN/Infinity acceptance** (`config.rs`): `env_parse_f64()` accepted `inf`, `-inf`, `nan` as valid config values for `rrf_k`, `delta_threshold`, `abstention_threshold`. Added `.is_finite()` validation.
+
+3. **Go CLI silent error swallowing** (`cli/internal/client.go`): All 3 HTTP methods (Get/Post/Delete) discarded `io.ReadAll` errors when reading error response bodies, losing diagnostic info. Fixed to report read failures.
+
+**Files changed:** 3 files, 6 new tests.
+
+---
+
 ### Stats
 
-- **Tests:** 924 (864 core + 13 API + 47 eval), up from 795. +129 net new tests (137 added, 8 dead removed). Clippy clean.
+- **Tests:** 930 (870 core + 13 API + 47 eval), up from 795. +135 net new tests (143 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 21 total (12 from session 5a + 9 from session 5b/5c), all pushed
-- **Files modified:** ~55 files across 4 crates + CLI
+- **Commits:** 22 total (12 from session 5a + 10 from session 5b/5c), all pushed
+- **Files modified:** ~58 files across 4 crates + CLI
 
 ### Open Areas
 

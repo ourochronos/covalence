@@ -38,7 +38,10 @@ func (c *Client) Get(path string, result interface{}) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("API error %d (failed to read body: %v)", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -63,7 +66,10 @@ func (c *Client) Post(path string, body interface{}, result interface{}) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("API error %d (failed to read body: %v)", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -84,7 +90,10 @@ func (c *Client) Delete(path string, result interface{}) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("API error %d (failed to read body: %v)", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 

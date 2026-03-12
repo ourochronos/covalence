@@ -532,9 +532,17 @@ fn env_parse_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> Result<
 
 fn env_parse_f64(key: &str, default: f64) -> Result<f64> {
     match std::env::var(key).ok().filter(|v| !v.is_empty()) {
-        Some(v) => v
-            .parse::<f64>()
-            .map_err(|_| Error::Config(format!("invalid float value for {key}: {v}"))),
+        Some(v) => {
+            let value = v
+                .parse::<f64>()
+                .map_err(|_| Error::Config(format!("invalid float value for {key}: {v}")))?;
+            if !value.is_finite() {
+                return Err(Error::Config(format!(
+                    "non-finite float value for {key}: {v}"
+                )));
+            }
+            Ok(value)
+        }
         None => Ok(default),
     }
 }

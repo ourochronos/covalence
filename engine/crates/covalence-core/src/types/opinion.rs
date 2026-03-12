@@ -29,8 +29,21 @@ pub struct Opinion {
 }
 
 impl Opinion {
-    /// Create a new opinion. Returns None if `b + d + u != 1` (within tolerance).
+    /// Create a new opinion. Returns None if `b + d + u != 1`
+    /// (within tolerance) or if any component is outside `[0, 1]`.
     pub fn new(belief: f64, disbelief: f64, uncertainty: f64, base_rate: f64) -> Option<Self> {
+        // All components must be in [0, 1] per Subjective Logic.
+        if belief < -EPSILON
+            || disbelief < -EPSILON
+            || uncertainty < -EPSILON
+            || base_rate < -EPSILON
+            || belief > 1.0 + EPSILON
+            || disbelief > 1.0 + EPSILON
+            || uncertainty > 1.0 + EPSILON
+            || base_rate > 1.0 + EPSILON
+        {
+            return None;
+        }
         let sum = belief + disbelief + uncertainty;
         if (sum - 1.0).abs() > EPSILON {
             return None;
@@ -44,20 +57,27 @@ impl Opinion {
     }
 
     /// Create a vacuous opinion (complete ignorance).
+    ///
+    /// Clamps `base_rate` to `[0, 1]` to maintain Subjective Logic
+    /// invariants.
     pub fn vacuous(base_rate: f64) -> Self {
         Self {
             belief: 0.0,
             disbelief: 0.0,
             uncertainty: 1.0,
-            base_rate,
+            base_rate: base_rate.clamp(0.0, 1.0),
         }
     }
 
     /// Create a dogmatic opinion (complete certainty).
+    ///
+    /// Clamps `belief` to `[0, 1]` to maintain Subjective Logic
+    /// invariants; `disbelief = 1 - belief`, `uncertainty = 0`.
     pub fn certain(belief: f64) -> Self {
+        let b = belief.clamp(0.0, 1.0);
         Self {
-            belief,
-            disbelief: 1.0 - belief,
+            belief: b,
+            disbelief: 1.0 - b,
             uncertainty: 0.0,
             base_rate: 0.5,
         }
@@ -280,6 +300,44 @@ mod tests {
     #[test]
     fn test_invalid_opinion() {
         assert!(Opinion::new(0.5, 0.5, 0.5, 0.5).is_none());
+    }
+
+    #[test]
+    fn test_new_rejects_negative_belief() {
+        assert!(Opinion::new(-0.5, 0.5, 1.0, 0.5).is_none());
+    }
+
+    #[test]
+    fn test_new_rejects_negative_disbelief() {
+        assert!(Opinion::new(0.5, -0.5, 1.0, 0.5).is_none());
+    }
+
+    #[test]
+    fn test_new_rejects_negative_base_rate() {
+        assert!(Opinion::new(0.5, 0.3, 0.2, -0.1).is_none());
+    }
+
+    #[test]
+    fn test_new_rejects_belief_over_one() {
+        assert!(Opinion::new(1.5, -0.3, -0.2, 0.5).is_none());
+    }
+
+    #[test]
+    fn test_vacuous_clamps_base_rate() {
+        let o = Opinion::vacuous(1.5);
+        assert!((o.base_rate - 1.0).abs() < EPSILON);
+        let o = Opinion::vacuous(-0.5);
+        assert!(o.base_rate.abs() < EPSILON);
+    }
+
+    #[test]
+    fn test_certain_clamps_belief() {
+        let o = Opinion::certain(2.0);
+        assert!((o.belief - 1.0).abs() < EPSILON);
+        assert!(o.disbelief.abs() < EPSILON);
+        let o = Opinion::certain(-1.0);
+        assert!(o.belief.abs() < EPSILON);
+        assert!((o.disbelief - 1.0).abs() < EPSILON);
     }
 
     #[test]
