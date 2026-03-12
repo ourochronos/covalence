@@ -21,7 +21,7 @@ use crate::search::dimensions::{
 use crate::search::expansion::spreading_activation;
 use crate::search::fusion::{self, FusedResult};
 use crate::search::rerank::{NoopReranker, Reranker};
-use crate::search::skewroute::select_strategy;
+use crate::search::skewroute::{detect_intent, select_strategy};
 use crate::search::strategy::SearchStrategy;
 use crate::search::trace::QueryTrace;
 use crate::storage::postgres::PgRepo;
@@ -455,9 +455,17 @@ impl SearchService {
 
         // --- Step 3: Adaptive strategy selection ---
         let effective_strategy = if strategy == SearchStrategy::Auto {
-            // Run a quick vector-only probe for SkewRoute
-            // if we have an embedding.
-            if let Some(ref emb) = query_embedding {
+            // First, check for keyword-based intent signals.
+            // These are strong indicators that override
+            // score-based selection (e.g., "latest" → Recent).
+            if let Some(intent_strategy) = detect_intent(query) {
+                tracing::debug!(
+                    ?intent_strategy,
+                    "intent detection selected strategy"
+                );
+                intent_strategy
+            } else if let Some(ref emb) = query_embedding {
+            // Fall back to SkewRoute score-based selection.
                 let probe_query = SearchQuery {
                     text: query.to_string(),
                     strategy: SearchStrategy::Balanced,

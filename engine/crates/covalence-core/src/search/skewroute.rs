@@ -97,6 +97,46 @@ pub fn select_strategy(vector_scores: &[f64]) -> SearchStrategy {
     }
 }
 
+/// Keywords that signal a recency-focused query.
+const RECENCY_KEYWORDS: &[&str] = &[
+    "latest", "recent", "newest", "new", "last",
+    "today", "yesterday", "updated", "fresh",
+];
+
+/// Keywords that signal an entity/exploratory query.
+const ENTITY_KEYWORDS: &[&str] = &[
+    "what is", "who is", "define", "explain",
+    "tell me about", "describe", "overview of",
+];
+
+/// Detect query intent from keywords to supplement score-based
+/// SkewRoute.
+///
+/// Returns `Some(strategy)` if keywords clearly indicate intent,
+/// or `None` to defer to the score-based selector.
+///
+/// This is a lightweight heuristic — it only fires for clear
+/// signals. Ambiguous queries fall through to SkewRoute.
+pub fn detect_intent(query: &str) -> Option<SearchStrategy> {
+    let q = query.to_lowercase();
+
+    // Check for recency signals first (strongest signal).
+    let has_recency = RECENCY_KEYWORDS.iter().any(|kw| q.contains(kw));
+    if has_recency {
+        return Some(SearchStrategy::Recent);
+    }
+
+    // Check for entity/definition queries → Exploratory is
+    // better than Balanced because these benefit from graph
+    // context (the entity's relationships).
+    let has_entity = ENTITY_KEYWORDS.iter().any(|kw| q.contains(kw));
+    if has_entity {
+        return Some(SearchStrategy::Exploratory);
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +220,50 @@ mod tests {
         let normalized = normalize_scores(&scores);
         // All identical → all zero
         assert!(normalized.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn detect_intent_recency() {
+        assert_eq!(
+            detect_intent("latest research on GraphRAG"),
+            Some(SearchStrategy::Recent)
+        );
+        assert_eq!(
+            detect_intent("what are the most recent papers"),
+            Some(SearchStrategy::Recent)
+        );
+    }
+
+    #[test]
+    fn detect_intent_entity() {
+        assert_eq!(
+            detect_intent("what is subjective logic"),
+            Some(SearchStrategy::Exploratory)
+        );
+        assert_eq!(
+            detect_intent("explain entity resolution"),
+            Some(SearchStrategy::Exploratory)
+        );
+        assert_eq!(
+            detect_intent("tell me about GraphRAG"),
+            Some(SearchStrategy::Exploratory)
+        );
+    }
+
+    #[test]
+    fn detect_intent_none_for_ambiguous() {
+        assert_eq!(detect_intent("search result quality"), None);
+        assert_eq!(detect_intent("how to improve chunking"), None);
+        assert_eq!(detect_intent("entity resolution algorithms"), None);
+    }
+
+    #[test]
+    fn detect_intent_recency_over_entity() {
+        // Recency takes priority when both signals present.
+        assert_eq!(
+            detect_intent("what is the latest research"),
+            Some(SearchStrategy::Recent)
+        );
     }
 
     #[test]
