@@ -711,10 +711,11 @@ impl SearchService {
         }
 
         // --- Step 8b: Post-fusion entity demotion ---
-        // Secondary demotion pass: even after per-dimension rank
-        // demotion (Step 5), entity nodes that appear in many
-        // dimensions can still accumulate high fused scores. Apply
-        // a score multiplier to push them below content results.
+        // Secondary demotion pass: entity nodes that appear in many
+        // dimensions can accumulate high fused scores. Apply a score
+        // multiplier that scales with dimension evidence: nodes found
+        // by 3+ dimensions get lighter demotion (they're clearly
+        // relevant), while single-dimension nodes get full demotion.
         if demote_entities {
             let mut demoted_count = 0usize;
             for result in &mut fused {
@@ -724,7 +725,14 @@ impl SearchService {
                         .as_deref()
                         .is_none_or(|t| t != "community_summary" && t != "article");
                 if is_bare_entity {
-                    result.fused_score *= ENTITY_DEMOTION_FACTOR;
+                    let num_dims = result.dimension_scores.len();
+                    // Scale demotion: 1 dim → 0.3, 2 → 0.5, 3+ → 0.7
+                    let factor = match num_dims {
+                        0 | 1 => ENTITY_DEMOTION_FACTOR,
+                        2 => 0.5,
+                        _ => 0.7,
+                    };
+                    result.fused_score *= factor;
                     demoted_count += 1;
                 }
             }
