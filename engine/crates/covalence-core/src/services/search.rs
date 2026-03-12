@@ -772,13 +772,43 @@ impl SearchService {
             }
         }
 
-        // --- Step 10b: Source diversification ---
+        // --- Step 10b: Source diversification + content dedup ---
         // Hierarchical chunkers produce chunks at multiple levels
         // (source, section, paragraph) with overlapping content.
-        // Without a cap, a single source can dominate the top results
-        // with near-identical text at different granularities.
+        // Without dedup, the same text appears multiple times.
+        //
+        // Two-pass approach:
+        // 1. Content dedup: within the same source, if two results
+        //    share the first 100 chars of content, keep the higher-
+        //    scored one (catches hierarchical overlap).
+        // 2. Source cap: max 2 chunks per source URI.
         const MAX_CHUNKS_PER_SOURCE: usize = 2;
+        const CONTENT_PREFIX_LEN: usize = 100;
         {
+            // Pass 1: content prefix dedup within same source.
+            let mut seen_prefixes: HashMap<(String, String), usize> = HashMap::new();
+            let pre_dedup = fused.len();
+            fused.retain(|r| {
+                if let (Some(uri), Some(content)) =
+                    (&r.source_uri, &r.content)
+                {
+                    let prefix_end = content
+                        .char_indices()
+                        .nth(CONTENT_PREFIX_LEN)
+                        .map(|(i, _)| i)
+                        .unwrap_or(content.len());
+                    let prefix = content[..prefix_end].to_string();
+                    let key = (uri.clone(), prefix);
+                    let count = seen_prefixes.entry(key).or_insert(0);
+                    *count += 1;
+                    *count <= 1 // Keep only first occurrence
+                } else {
+                    true
+                }
+            });
+            let deduped = pre_dedup - fused.len();
+
+            // Pass 2: per-source count cap.
             let mut source_counts: HashMap<String, usize> = HashMap::new();
             let pre_diverse = fused.len();
             fused.retain(|r| {
@@ -790,12 +820,14 @@ impl SearchService {
                     true
                 }
             });
-            let removed = pre_diverse - fused.len();
-            if removed > 0 {
+            let capped = pre_diverse - fused.len();
+
+            if deduped + capped > 0 {
                 tracing::debug!(
-                    removed,
+                    content_deduped = deduped,
+                    source_capped = capped,
                     max_per_source = MAX_CHUNKS_PER_SOURCE,
-                    "source diversification removed duplicate chunks"
+                    "source diversification"
                 );
             }
         }
