@@ -360,6 +360,10 @@ pub(crate) fn split_text_windows(text: &str, max_chars: usize, overlap_chars: us
             end - start
         };
         start += advance;
+        // Ensure start is at a valid UTF-8 boundary.
+        while start < text.len() && !text.is_char_boundary(start) {
+            start += 1;
+        }
     }
 
     windows
@@ -552,6 +556,18 @@ mod tests {
             })
             .sum();
         assert!(total_new >= 5000);
+    }
+
+    #[test]
+    fn split_multibyte_utf8_does_not_panic() {
+        // Text with 3-byte UTF-8 characters (→) that could cause
+        // boundary issues when overlap subtraction lands mid-char.
+        let text = "O(d) where d=D→s for a fixed k. ".repeat(100);
+        let windows = split_text_windows(&text, 200, 50);
+        assert!(!windows.is_empty());
+        for w in &windows {
+            assert!(w.len() <= 250, "window too large: {}", w.len());
+        }
     }
 
     // --- FastcorefClient tests ---
