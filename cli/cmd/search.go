@@ -83,7 +83,13 @@ func handleResultsMode(client *internal.Client, body map[string]interface{}) err
 	for i, r := range result {
 		content := getString(r, "content")
 		if content != "" {
-			fmt.Printf("\n--- [%d] %s ---\n", i+1, getString(r, "name"))
+			name := getString(r, "name")
+			source := getString(r, "source_title")
+			header := fmt.Sprintf("[%d] %s", i+1, name)
+			if source != "" {
+				header += fmt.Sprintf(" (%s)", source)
+			}
+			fmt.Printf("\n--- %s ---\n", header)
 			if len(content) > 500 {
 				fmt.Printf("%s...\n", content[:500])
 			} else {
