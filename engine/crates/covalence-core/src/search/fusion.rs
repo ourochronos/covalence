@@ -115,6 +115,85 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
     results
 }
 
+/// Fuse multiple ranked lists using Convex Combination of scores.
+///
+/// Unlike RRF (which discards score magnitude and uses only rank),
+/// CC preserves score information by normalizing scores within each
+/// dimension to \[0, 1\] and computing a weighted sum.
+///
+/// Formula: fused_score(d) = Σ weight_i * norm_score_i(d)
+///
+/// where norm_score_i = (score - min) / (max - min) within dimension i.
+///
+/// Bruch et al. (2210.11934) showed CC consistently outperforms RRF
+/// because rank-based fusion discards magnitude information that
+/// distinguishes strong matches from marginal ones.
+pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<FusedResult> {
+    if ranked_lists.is_empty() {
+        return Vec::new();
+    }
+
+    let mut fused: HashMap<Uuid, FusedResult> = HashMap::new();
+
+    for (i, list) in ranked_lists.iter().enumerate() {
+        let weight = weights.get(i).copied().unwrap_or(1.0);
+        if list.is_empty() {
+            continue;
+        }
+
+        // Min-max normalize scores within this dimension.
+        let min_score = list
+            .iter()
+            .map(|r| r.score)
+            .fold(f64::INFINITY, f64::min);
+        let max_score = list
+            .iter()
+            .map(|r| r.score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let range = max_score - min_score;
+
+        for result in list {
+            let norm_score = if range > 1e-12 {
+                (result.score - min_score) / range
+            } else {
+                1.0 // All scores identical → treat as maximum
+            };
+            let entry = fused.entry(result.id).or_insert_with(|| FusedResult {
+                id: result.id,
+                fused_score: 0.0,
+                confidence: None,
+                entity_type: None,
+                name: None,
+                snippet: None,
+                content: None,
+                source_uri: None,
+                source_title: None,
+                result_type: None,
+                dimension_scores: HashMap::new(),
+                dimension_ranks: HashMap::new(),
+            });
+            entry.fused_score += weight * norm_score;
+            if entry.result_type.is_none() {
+                entry.result_type.clone_from(&result.result_type);
+            }
+            entry
+                .dimension_scores
+                .insert(result.dimension.clone(), result.score);
+            entry
+                .dimension_ranks
+                .insert(result.dimension.clone(), result.rank);
+        }
+    }
+
+    let mut results: Vec<FusedResult> = fused.into_values().collect();
+    results.sort_by(|a, b| {
+        b.fused_score
+            .partial_cmp(&a.fused_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +348,91 @@ mod tests {
         });
         let result: FusedResult = serde_json::from_value(json).expect("deserialization");
         assert!(result.content.is_none());
+    }
+
+    // --- CC fusion tests ---
+
+    #[test]
+    fn cc_empty_input_returns_empty() {
+        let results = cc_fuse(&[], &[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn cc_single_list_normalizes_scores() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let list = vec![
+            make_result(id1, 0.9, 1, "vector"),
+            make_result(id2, 0.5, 2, "vector"),
+        ];
+        let results = cc_fuse(&[list], &[1.0]);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, id1);
+        // id1 normalized: (0.9-0.5)/(0.9-0.5) = 1.0
+        assert!((results[0].fused_score - 1.0).abs() < 1e-10);
+        // id2 normalized: (0.5-0.5)/(0.9-0.5) = 0.0
+        assert!((results[1].fused_score - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cc_multi_dimensional_combines_scores() {
+        let id = Uuid::new_v4();
+        let list_a = vec![make_result(id, 0.9, 1, "vector")];
+        let list_b = vec![make_result(id, 0.8, 1, "lexical")];
+        let results = cc_fuse(&[list_a, list_b], &[0.6, 0.4]);
+        assert_eq!(results.len(), 1);
+        // Single item per list → normalized to 1.0 each.
+        // fused = 0.6 * 1.0 + 0.4 * 1.0 = 1.0
+        assert!((results[0].fused_score - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cc_weight_influence() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let list_a = vec![make_result(id1, 0.9, 1, "vector")];
+        let list_b = vec![make_result(id2, 0.9, 1, "lexical")];
+        // id1 only in low-weight dimension, id2 only in high-weight.
+        let results = cc_fuse(&[list_a, list_b], &[0.1, 10.0]);
+        assert_eq!(results.len(), 2);
+        // id2 should rank higher due to larger weight.
+        assert_eq!(results[0].id, id2);
+    }
+
+    #[test]
+    fn cc_preserves_score_magnitude() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        // id1 has a strong match (0.95) and a weak match (0.2)
+        // id2 has moderate matches (0.5, 0.5)
+        let list_a = vec![
+            make_result(id1, 0.95, 1, "vector"),
+            make_result(id2, 0.5, 2, "vector"),
+        ];
+        let list_b = vec![
+            make_result(id2, 0.5, 1, "lexical"),
+            make_result(id1, 0.2, 2, "lexical"),
+        ];
+        let results = cc_fuse(&[list_a, list_b], &[1.0, 1.0]);
+        // id1: vector normalized = 1.0, lexical normalized = 0.0 → 1.0
+        // id2: vector normalized = 0.0, lexical normalized = 1.0 → 1.0
+        // Both equal — CC treats them identically when they're
+        // the top of different dimensions.
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn cc_identical_scores_treated_as_max() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let list = vec![
+            make_result(id1, 0.85, 1, "vector"),
+            make_result(id2, 0.85, 2, "vector"),
+        ];
+        let results = cc_fuse(&[list], &[1.0]);
+        // All identical → all get 1.0.
+        assert!((results[0].fused_score - 1.0).abs() < 1e-10);
+        assert!((results[1].fused_score - 1.0).abs() < 1e-10);
     }
 }

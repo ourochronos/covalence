@@ -291,6 +291,13 @@ impl AppState {
             config.embedding.table_dims.clone(),
         )
         .with_abstention_config(abstention_config);
+        let use_cc = std::env::var("COVALENCE_CC_FUSION")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let search = search.with_cc_fusion(use_cc);
+        if use_cc {
+            tracing::info!("using CC (convex combination) fusion instead of RRF");
+        }
         let search_service = Arc::new(match reranker {
             Some(rnk) => search.with_reranker(rnk),
             None => search,

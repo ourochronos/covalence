@@ -64,6 +64,9 @@ pub struct SearchService {
     reranker: Arc<dyn Reranker>,
     cache: Option<QueryCache>,
     abstention_config: AbstentionConfig,
+    /// Use Convex Combination fusion instead of RRF.
+    /// CC preserves score magnitude; RRF uses only rank.
+    use_cc_fusion: bool,
 }
 
 impl SearchService {
@@ -105,7 +108,19 @@ impl SearchService {
             reranker: Arc::new(NoopReranker),
             cache: None,
             abstention_config: AbstentionConfig::default(),
+            use_cc_fusion: false,
         }
+    }
+
+    /// Use Convex Combination fusion instead of RRF.
+    ///
+    /// CC preserves score magnitude information that RRF discards
+    /// by normalizing scores within each dimension to \[0, 1\] and
+    /// computing a weighted sum. Bruch et al. (2210.11934) showed
+    /// CC consistently outperforms RRF in hybrid retrieval.
+    pub fn with_cc_fusion(mut self, enabled: bool) -> Self {
+        self.use_cc_fusion = enabled;
+        self
     }
 
     /// Enable the semantic query cache with the given config.
@@ -428,7 +443,11 @@ impl SearchService {
             }
         }
 
-        let mut fused = fusion::rrf_fuse(&ranked_lists, &weights, fusion::DEFAULT_K);
+        let mut fused = if self.use_cc_fusion {
+            fusion::cc_fuse(&ranked_lists, &weights)
+        } else {
+            fusion::rrf_fuse(&ranked_lists, &weights, fusion::DEFAULT_K)
+        };
         trace.fused_count = fused.len();
 
         // --- Step 6: Abstention detection ---
