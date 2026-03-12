@@ -931,44 +931,40 @@ impl SearchService {
             }
         }
 
-        // --- Step 9b: Low-quality chunk demotion ---
-        // Runs AFTER reranking so the reranker can't blend demoted
-        // scores back up. Catches bibliography entries, reference
-        // sections, boilerplate, and metadata-only chunks.
+        // --- Step 9b: Low-quality chunk removal ---
+        // Runs AFTER reranking so the reranker can't blend scores
+        // back up. Removes bibliography entries, reference sections,
+        // boilerplate, metadata-only, title-only, and author block
+        // chunks. These are ingestion artifacts with no informational
+        // value — demotion (score *= 0.1) is insufficient because
+        // bibliography text often scores well on search dimensions
+        // (it contains domain terminology) and stays competitive.
         {
             use super::chunk_quality::{
                 is_author_block, is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
                 is_reference_section, is_title_only,
             };
 
-            let mut demoted = 0usize;
-            for result in &mut fused {
+            let pre = fused.len();
+            fused.retain(|result| {
                 if result.entity_type.as_deref() != Some("chunk") {
-                    continue;
+                    return true;
                 }
                 let content = match result.content.as_deref() {
                     Some(c) => c,
-                    None => continue,
+                    None => return true,
                 };
-                if is_bibliography_entry(content)
+                !(is_bibliography_entry(content)
                     || is_reference_section(content)
                     || is_boilerplate_heavy(content)
                     || is_metadata_only(content)
                     || is_title_only(content)
-                    || is_author_block(content)
-                {
-                    result.fused_score *= 0.1;
-                    demoted += 1;
-                }
-            }
-            if demoted > 0 {
-                tracing::debug!(demoted, "demoted low-quality chunks after reranking");
-                trace.chunks_quality_demoted = demoted;
-                fused.sort_by(|a, b| {
-                    b.fused_score
-                        .partial_cmp(&a.fused_score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                    || is_author_block(content))
+            });
+            let removed = pre - fused.len();
+            if removed > 0 {
+                tracing::debug!(removed, "removed low-quality chunks after reranking");
+                trace.chunks_quality_demoted = removed;
             }
         }
 

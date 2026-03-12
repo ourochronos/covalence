@@ -6,7 +6,7 @@
 //! entering the knowledge graph.
 
 /// Known boilerplate lines from arxiv and academic paper pages.
-pub(crate) const BOILERPLATE_LINES: &[&str] = &[
+pub const BOILERPLATE_LINES: &[&str] = &[
     "view pdf",
     "view a pdf",
     "html (experimental)",
@@ -31,7 +31,7 @@ pub(crate) const BOILERPLATE_LINES: &[&str] = &[
 
 /// Known artifact headings from web scraping that should cause the
 /// entire chunk to be discarded.
-pub(crate) const ARTIFACT_HEADINGS: &[&str] = &["report issue for preceding element"];
+pub const ARTIFACT_HEADINGS: &[&str] = &["report issue for preceding element"];
 
 /// Check if a chunk's content is purely metadata with no substantive
 /// text. Returns `true` for chunks whose lines are all bold labels
@@ -39,7 +39,7 @@ pub(crate) const ARTIFACT_HEADINGS: &[&str] = &["report issue for preceding elem
 ///
 /// These chunks are ingestion artifacts from metadata appearing before
 /// the first heading in a source document.
-pub(crate) fn is_metadata_only(text: &str) -> bool {
+pub fn is_metadata_only(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return true;
@@ -73,7 +73,7 @@ pub(crate) fn is_metadata_only(text: &str) -> bool {
 ///
 /// Returns `true` when ≥60% of non-blank lines match known
 /// boilerplate patterns.
-pub(crate) fn is_boilerplate_heavy(text: &str) -> bool {
+pub fn is_boilerplate_heavy(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return false; // handled by is_metadata_only
@@ -92,7 +92,7 @@ pub(crate) fn is_boilerplate_heavy(text: &str) -> bool {
 }
 
 /// Check whether a single line matches boilerplate patterns.
-pub(crate) fn is_boilerplate_line(line: &str) -> bool {
+pub fn is_boilerplate_line(line: &str) -> bool {
     let lower = line.to_lowercase();
     // Known boilerplate strings.
     if BOILERPLATE_LINES.iter().any(|bp| lower.contains(bp)) {
@@ -125,7 +125,7 @@ pub(crate) fn is_boilerplate_line(line: &str) -> bool {
 /// - Prefix: if any of the first 6 non-blank lines contain an email
 ///   address and a heading marker (######) appears later. This catches
 ///   chunks where the author block is merged with the abstract.
-pub(crate) fn is_author_block(text: &str) -> bool {
+pub fn is_author_block(text: &str) -> bool {
     let lines: Vec<&str> = text
         .lines()
         .map(|l| l.trim())
@@ -179,7 +179,7 @@ pub(crate) fn is_author_block(text: &str) -> bool {
 ///
 /// These are per-citation fragments from academic papers that add
 /// noise without substantive content.
-pub(crate) fn is_bibliography_entry(text: &str) -> bool {
+pub fn is_bibliography_entry(text: &str) -> bool {
     let trimmed = text.trim();
     // Only applies to short fragments — a full references section
     // would be longer and should be kept.
@@ -196,6 +196,16 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
     }
 
     let first = lines[0];
+
+    // Pattern: "- \[N\]↑" — ArXiv HTML citation entry with escaped
+    // bracket and arrow marker. These are unambiguously bibliography.
+    if first.starts_with("- \\[") && first.contains('\u{2191}') {
+        return true;
+    }
+    // Also catch without dash prefix: "\[N\]↑"
+    if first.starts_with("\\[") && first.contains('\u{2191}') {
+        return true;
+    }
 
     // Pattern: "- Author (Year)" or "- Author et al. (Year)"
     if first.starts_with("- ") && first.len() < 80 {
@@ -285,7 +295,14 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
 /// - Contains "arXiv preprint" or "arXiv:" (preprint reference)
 /// - Is a standalone year line like `2023.` or `(2024)`
 /// - Contains a DOI URL
-pub(crate) fn is_reference_section(text: &str) -> bool {
+/// - Ends with a bare year (`YYYY.`) — author lines in multi-line
+///   citations
+/// - Starts with italic markup (`_`) — journal/conference names
+/// - Starts with `In _` — conference proceedings
+/// - Contains "et al." — author list continuation
+/// - Escaped bracket list item (`\[N\]`) — markdown-escaped
+///   citation numbers
+pub fn is_reference_section(text: &str) -> bool {
     let trimmed = text.trim();
     // Only applies to substantial chunks (the small ones are handled
     // by `is_bibliography_entry`).
@@ -310,6 +327,15 @@ pub(crate) fn is_reference_section(text: &str) -> bool {
             let has_year = line.as_bytes().windows(6).any(|w| {
                 w[0] == b'(' && w[1..5].iter().all(|b| b.is_ascii_digit()) && w[5] == b')'
             });
+            // Bare year at end of line: "...Name. 2004." or "2023."
+            let ends_with_bare_year = {
+                let bytes = line.as_bytes();
+                bytes.len() >= 5
+                    && bytes[bytes.len() - 1] == b'.'
+                    && bytes[bytes.len() - 5..bytes.len() - 1]
+                        .iter()
+                        .all(|b| b.is_ascii_digit())
+            };
             let lower = line.to_lowercase();
 
             // Primary: list item with year, or "Retrieved" line,
@@ -320,6 +346,7 @@ pub(crate) fn is_reference_section(text: &str) -> bool {
                 // arXiv preprint reference lines
                 || lower.contains("arxiv preprint arxiv:")
                 || lower.contains("arxiv preprint,")
+                || lower.contains("_arxiv preprint")
                 // DOI reference lines
                 || lower.contains("doi.org/")
                 // Standalone year lines like "2023." or "(2024)."
@@ -328,6 +355,18 @@ pub(crate) fn is_reference_section(text: &str) -> bool {
                 || (line.contains('\u{2191}') && has_year)
                 // List item that is a citation header (has ↑ marker)
                 || (is_list_item && line.contains('\u{2191}'))
+                // Bare year at end of line — author lines in
+                // multi-line citations end with "Name. YYYY."
+                || ends_with_bare_year
+                // Italic journal/conference names: "_Journal_, vol..."
+                || line.starts_with('_')
+                // Conference proceedings: "In _Proceedings of..._"
+                || line.starts_with("In _")
+                // "et al." is extremely citation-specific
+                || lower.contains("et al.")
+                // Escaped bracket list items: "- \[1\]↑" or "\[1\]↑"
+                || line.starts_with("\\[")
+                || line.starts_with("- \\[")
         })
         .count();
 
@@ -344,7 +383,7 @@ pub(crate) fn is_reference_section(text: &str) -> bool {
 ///
 /// A chunk is title-only when it has ≤2 meaningful lines (non-blank,
 /// non-HTML-comment, non-whitespace-only) after cleanup.
-pub(crate) fn is_title_only(text: &str) -> bool {
+pub fn is_title_only(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return false; // handled by is_metadata_only
@@ -380,7 +419,7 @@ pub(crate) fn is_title_only(text: &str) -> bool {
 
 /// Returns `true` if any heading in the chunk's path matches a known
 /// web-scraping artifact heading.
-pub(crate) fn has_artifact_heading(heading_path: &[String]) -> bool {
+pub fn has_artifact_heading(heading_path: &[String]) -> bool {
     heading_path.iter().any(|h| {
         let lower = h.to_lowercase();
         ARTIFACT_HEADINGS.iter().any(|a| lower.contains(a))
@@ -451,6 +490,19 @@ mod tests {
     fn bibliography_entry_with_year() {
         assert!(is_bibliography_entry(
             "- Aggarwal et al. (2001)\nCharu C Aggarwal, Alexander Hinneburg."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_escaped_bracket_arrow() {
+        // ArXiv HTML citation entry with escaped brackets and ↑ marker.
+        assert!(is_bibliography_entry(
+            "- \\[9\\]\u{2191}\nLu Dai, Yijie Xu, Jinhui Ye, Hao Liu, and Hui Xiong.\n\n\
+             Seper: Measure retrieval utility through the lens of semantic perplexity reduction."
+        ));
+        // Without dash prefix
+        assert!(is_bibliography_entry(
+            "\\[42\\]\u{2191}\nSome Author et al.\n\nSome paper title."
         ));
     }
 
@@ -759,6 +811,55 @@ mod tests {
     }
 
     #[test]
+    fn reference_section_escaped_brackets_arxiv_html() {
+        // ArXiv HTML bibliography format: escaped brackets, bare years,
+        // italic journal names. Each citation spans ~7 non-blank lines
+        // but only the header has ↑ — the continuation lines (author,
+        // year, title, journal) must also be detected.
+        let text = "- \\[1\\]\u{2191}\n\
+            Nasreen Abdul-Jaleel, James Allan, W Bruce Croft, Fernando Diaz, Leah Larkey,\n\
+            Xiaoyan Li, Mark D Smucker, and Courtney Wade. 2004.\n\
+            \n\
+            Umass at trec 2004: Novelty and hard.\n\
+            \n\
+            _Computer Science Department Faculty Publication Series_, page\n\
+            189.\n\
+            \n\
+            - \\[2\\]\u{2191}\n\
+            Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya,\n\
+            Florencia Leoni Aleman, Diogo Almeida, et al. 2023.\n\
+            \n\
+            Gpt-4 technical report.\n\
+            \n\
+            _arXiv preprint arXiv:2303.08774_.\n\
+            \n\
+            - \\[3\\]\u{2191}\n\
+            Payal Bajaj, Daniel Campos, Nick Craswell, Li Deng, et al. 2016.\n\
+            \n\
+            Ms marco: A human generated machine reading comprehension dataset.\n\
+            \n\
+            _arXiv preprint arXiv:1611.09268_.\n\
+            \n\
+            - \\[4\\]\u{2191}\n\
+            Nicholas J. Belkin, Paul Kantor, Edward A. Fox, and Joseph A Shaw. 1995.\n\
+            \n\
+            Combining the evidence of multiple query representations for\n\
+            information retrieval.\n\
+            \n\
+            _Information Processing & Management_, 31(3):431\u{2013}448.\n\
+            \n\
+            - \\[5\\]\u{2191}\n\
+            Tao Chen, Mingyang Zhang, Jing Lu, Michael Bendersky, and Marc Najork. 2022.\n\
+            \n\
+            Out-of-domain semantics to the rescue! zero-shot hybrid retrieval\n\
+            models.\n\
+            \n\
+            In _European Conference on Information Retrieval_, pages\n\
+            95\u{2013}110. Springer.";
+        assert!(is_reference_section(text));
+    }
+
+    #[test]
     fn not_reference_section_short() {
         let text = "- Author (2024). A paper.";
         assert!(!is_reference_section(text));
@@ -776,6 +877,22 @@ mod tests {
             Confidence scores quantify epistemic uncertainty.\n\
             Provenance chains link assertions to their source material.\n\
             Fusion algorithms combine evidence from multiple dimensions.";
+        assert!(!is_reference_section(text));
+    }
+
+    #[test]
+    fn not_reference_section_italic_content() {
+        // Legitimate content with italic terms should not false-positive.
+        let text = "The _Subjective Logic_ framework represents epistemic states\n\
+            as opinion tuples. Each opinion has four components:\n\
+            _belief_, _disbelief_, _uncertainty_, and _base rate_.\n\
+            These components satisfy the constraint b + d + u = 1.\n\
+            The _projected probability_ is computed as P = b + a * u.\n\
+            This allows reasoning under genuine uncertainty.\n\
+            Fusion operators combine opinions from multiple sources.\n\
+            The _cumulative fusion_ operator is commutative.\n\
+            _Averaging fusion_ handles dependent evidence.\n\
+            Trust propagation uses _discount_ and _consensus_ operators.";
         assert!(!is_reference_section(text));
     }
 

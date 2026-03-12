@@ -135,6 +135,29 @@ pub async fn search(
     // --- Granularity adjustment ---
     apply_granularity(&state, &req.granularity, &mut results).await;
 
+    // --- Post-granularity quality filter ---
+    // Granularity promotion can replace paragraph content with its
+    // parent section content (e.g., a bibliography section). Re-check
+    // quality after promotion to catch these.
+    {
+        use covalence_core::services::chunk_quality::{
+            is_author_block, is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
+            is_reference_section, is_title_only,
+        };
+        results.retain(|r| {
+            let content = match r.content.as_deref() {
+                Some(c) => c,
+                None => return true,
+            };
+            !(is_bibliography_entry(content)
+                || is_reference_section(content)
+                || is_boilerplate_heavy(content)
+                || is_metadata_only(content)
+                || is_title_only(content)
+                || is_author_block(content))
+        });
+    }
+
     // --- Delivery mode ---
     match req.mode {
         SearchMode::Context => {

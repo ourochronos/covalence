@@ -2,7 +2,7 @@
 
 pub mod admin;
 pub mod article;
-pub(crate) mod chunk_quality;
+pub mod chunk_quality;
 pub mod consolidation;
 pub mod edge;
 pub mod health;
