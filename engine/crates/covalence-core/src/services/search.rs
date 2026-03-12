@@ -94,37 +94,35 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
     // Try to find the first meaningful line: skip bold labels
     // (`**Key:** ...`), link-only lines (`[ref](url)`), and very
     // short lines (< 10 chars) that are usually metadata.
-    let meaningful = trimmed
-        .lines()
-        .find(|line| {
-            let l = line.trim();
-            if l.is_empty() {
-                return false;
-            }
-            // Skip bold-label lines: **Label:** value
-            if l.starts_with("**") && l.contains(":**") {
-                return false;
-            }
-            // Skip bare markdown links: [text](url)
-            if l.starts_with('[') && l.contains("](") && l.len() < 100 {
-                return false;
-            }
-            // Skip arxiv-style references: [2506.12345]
-            if l.starts_with('[')
-                && l.len() < 20
-                && l.chars().skip(1).take(4).all(|c| c.is_ascii_digit())
-            {
-                return false;
-            }
-            // Skip bare numbered list items: "3.", "4.", "1)"
-            if l.len() < 5
-                && l.chars()
-                    .all(|c| c.is_ascii_digit() || c == '.' || c == ')')
-            {
-                return false;
-            }
-            true
-        });
+    let meaningful = trimmed.lines().find(|line| {
+        let l = line.trim();
+        if l.is_empty() {
+            return false;
+        }
+        // Skip bold-label lines: **Label:** value
+        if l.starts_with("**") && l.contains(":**") {
+            return false;
+        }
+        // Skip bare markdown links: [text](url)
+        if l.starts_with('[') && l.contains("](") && l.len() < 100 {
+            return false;
+        }
+        // Skip arxiv-style references: [2506.12345]
+        if l.starts_with('[')
+            && l.len() < 20
+            && l.chars().skip(1).take(4).all(|c| c.is_ascii_digit())
+        {
+            return false;
+        }
+        // Skip bare numbered list items: "3.", "4.", "1)"
+        if l.len() < 5
+            && l.chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == ')')
+        {
+            return false;
+        }
+        true
+    });
 
     // If no meaningful line was found (all lines were metadata),
     // use the first line as a last resort, stripping bold markers.
@@ -459,13 +457,10 @@ impl SearchService {
             // These are strong indicators that override
             // score-based selection (e.g., "latest" → Recent).
             if let Some(intent_strategy) = detect_intent(query) {
-                tracing::debug!(
-                    ?intent_strategy,
-                    "intent detection selected strategy"
-                );
+                tracing::debug!(?intent_strategy, "intent detection selected strategy");
                 intent_strategy
             } else if let Some(ref emb) = query_embedding {
-            // Fall back to SkewRoute score-based selection.
+                // Fall back to SkewRoute score-based selection.
                 let probe_query = SearchQuery {
                     text: query.to_string(),
                     strategy: SearchStrategy::Balanced,
@@ -484,8 +479,11 @@ impl SearchService {
                         // which is the right choice for broad
                         // queries (graph-heavy traversal).
                         if selected == SearchStrategy::Global {
-                            let has_articles =
-                                self.global.search(&probe_query).await.is_ok_and(|r| !r.is_empty());
+                            let has_articles = self
+                                .global
+                                .search(&probe_query)
+                                .await
+                                .is_ok_and(|r| !r.is_empty());
                             if !has_articles {
                                 selected = SearchStrategy::Exploratory;
                                 tracing::debug!(
@@ -626,10 +624,7 @@ impl SearchService {
                 .iter()
                 .map(|r| r.score)
                 .fold(f64::NEG_INFINITY, f64::max);
-            let min_score = list
-                .iter()
-                .map(|r| r.score)
-                .fold(f64::INFINITY, f64::min);
+            let min_score = list.iter().map(|r| r.score).fold(f64::INFINITY, f64::min);
             let spread = if max_score > 0.0 {
                 (max_score - min_score) / max_score
             } else {
@@ -684,7 +679,14 @@ impl SearchService {
 
         // Log effective weights and top-1 item per dimension for
         // diagnosing score anomalies.
-        let dim_names = ["vector", "lexical", "temporal", "graph", "structural", "global"];
+        let dim_names = [
+            "vector",
+            "lexical",
+            "temporal",
+            "graph",
+            "structural",
+            "global",
+        ];
         let weight_summary: String = dim_names
             .iter()
             .zip(weights.iter())
@@ -799,12 +801,11 @@ impl SearchService {
                     }
                 }
                 Some("source") => {
-                    if let Ok(Some(source)) =
-                        SourceRepo::get(
-                            &*self.repo,
-                            crate::types::ids::SourceId::from_uuid(result.id),
-                        )
-                        .await
+                    if let Ok(Some(source)) = SourceRepo::get(
+                        &*self.repo,
+                        crate::types::ids::SourceId::from_uuid(result.id),
+                    )
+                    .await
                     {
                         result.name = source.title.clone();
                         result.entity_type = Some("source".to_string());
@@ -870,8 +871,7 @@ impl SearchService {
                                     } else {
                                         parent.content.clone()
                                     };
-                                    let prefix =
-                                        format!("[{}: {}]", parent.level, parent_ctx);
+                                    let prefix = format!("[{}: {}]", parent.level, parent_ctx);
                                     result.snippet = Some(match result.snippet.take() {
                                         Some(s) => format!("{} {}", prefix, s),
                                         None => prefix,
@@ -885,18 +885,14 @@ impl SearchService {
                     // but result_type may not propagate through
                     // fusion).
                     if result.entity_type.is_none() {
-                        if let Ok(Some(source)) =
-                            SourceRepo::get(
-                                &*self.repo,
-                                crate::types::ids::SourceId::from_uuid(
-                                    result.id,
-                                ),
-                            )
-                            .await
+                        if let Ok(Some(source)) = SourceRepo::get(
+                            &*self.repo,
+                            crate::types::ids::SourceId::from_uuid(result.id),
+                        )
+                        .await
                         {
                             result.name = source.title.clone();
-                            result.entity_type =
-                                Some("source".to_string());
+                            result.entity_type = Some("source".to_string());
                             result.source_uri = source.uri;
                             result.source_title = source.title;
                             if let Some(ref raw) = source.raw_content {
@@ -1025,8 +1021,7 @@ impl SearchService {
                                 let norm_score = rr.relevance_score / max_rerank;
                                 // Blend: 60% fusion score + 40% reranker
                                 fused[rr.index].fused_score =
-                                    fused[rr.index].fused_score * 0.6
-                                        + norm_score * 0.4;
+                                    fused[rr.index].fused_score * 0.6 + norm_score * 0.4;
                             }
                         }
                         fused.sort_by(|a, b| {
@@ -1073,9 +1068,7 @@ impl SearchService {
             let mut seen_prefixes: HashMap<(String, String), usize> = HashMap::new();
             let pre_dedup = fused.len();
             fused.retain(|r| {
-                if let (Some(uri), Some(content)) =
-                    (&r.source_uri, &r.content)
-                {
+                if let (Some(uri), Some(content)) = (&r.source_uri, &r.content) {
                     let prefix_end = content
                         .char_indices()
                         .nth(CONTENT_PREFIX_LEN)
@@ -1293,10 +1286,7 @@ mod tests {
     #[test]
     fn derive_chunk_name_skips_arxiv_ref() {
         let content = "[2506.12345]\nAbstract of the paper.";
-        assert_eq!(
-            derive_chunk_name(content),
-            "Abstract of the paper."
-        );
+        assert_eq!(derive_chunk_name(content), "Abstract of the paper.");
     }
 
     #[test]
@@ -1331,10 +1321,7 @@ mod tests {
         // When all lines are metadata, fall back to the first line
         // with bold markers stripped.
         let content = "**Authors:** (2506.00049)\n**arxiv:** 2506.00049";
-        assert_eq!(
-            derive_chunk_name(content),
-            "Authors: (2506.00049)"
-        );
+        assert_eq!(derive_chunk_name(content), "Authors: (2506.00049)");
     }
 
     #[test]
@@ -1392,10 +1379,7 @@ mod tests {
 
     #[test]
     fn qualify_generic_heading_empty_source() {
-        assert_eq!(
-            qualify_heading("Overview", Some("")),
-            "Overview"
-        );
+        assert_eq!(qualify_heading("Overview", Some("")), "Overview");
     }
 
     // --- strip_section_number tests ---
@@ -1479,9 +1463,6 @@ mod tests {
     #[test]
     fn qualified_name_no_source_falls_back() {
         let content = "## Overview\nThe system is designed for...";
-        assert_eq!(
-            derive_chunk_name_qualified(content, None),
-            "Overview"
-        );
+        assert_eq!(derive_chunk_name_qualified(content, None), "Overview");
     }
 }

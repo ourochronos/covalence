@@ -2383,7 +2383,8 @@ fn is_metadata_only(text: &str) -> bool {
         let l = line.trim();
         l.is_empty()
             || (l.starts_with("**") && l.contains(":**"))
-            || (l.starts_with('[') && l.len() < 20
+            || (l.starts_with('[')
+                && l.len() < 20
                 && l.chars().skip(1).take(4).all(|c| c.is_ascii_digit()))
     })
 }
@@ -2423,10 +2424,7 @@ fn is_boilerplate_heavy(text: &str) -> bool {
     if lines.is_empty() {
         return false;
     }
-    let boilerplate_count = lines
-        .iter()
-        .filter(|l| is_boilerplate_line(l))
-        .count();
+    let boilerplate_count = lines.iter().filter(|l| is_boilerplate_line(l)).count();
     let ratio = boilerplate_count as f64 / lines.len() as f64;
     ratio >= 0.6
 }
@@ -2435,10 +2433,7 @@ fn is_boilerplate_heavy(text: &str) -> bool {
 fn is_boilerplate_line(line: &str) -> bool {
     let lower = line.to_lowercase();
     // Known boilerplate strings.
-    if BOILERPLATE_LINES
-        .iter()
-        .any(|bp| lower.contains(bp))
-    {
+    if BOILERPLATE_LINES.iter().any(|bp| lower.contains(bp)) {
         return true;
     }
     // Bold label lines: **Key:** value
@@ -2446,9 +2441,7 @@ fn is_boilerplate_line(line: &str) -> bool {
         return true;
     }
     // Very short lines (< 15 chars) that are just labels.
-    if line.len() < 15
-        && (lower.ends_with(':') || lower.ends_with("..."))
-    {
+    if line.len() < 15 && (lower.ends_with(':') || lower.ends_with("...")) {
         return true;
     }
     false

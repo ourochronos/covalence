@@ -71,9 +71,7 @@ fn find_seed_nodes(sidecar: &GraphSidecar, query_text: &str) -> Vec<Uuid> {
 
         let match_count = terms
             .iter()
-            .filter(|term| {
-                name_lower.contains(term.as_str()) || term.contains(name_lower.as_str())
-            })
+            .filter(|term| name_lower.contains(term.as_str()) || term.contains(name_lower.as_str()))
             .count();
 
         if match_count > 0 {

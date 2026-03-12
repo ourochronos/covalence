@@ -158,10 +158,7 @@ pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<Fused
         }
 
         // Min-max normalize scores within this dimension.
-        let min_score = list
-            .iter()
-            .map(|r| r.score)
-            .fold(f64::INFINITY, f64::min);
+        let min_score = list.iter().map(|r| r.score).fold(f64::INFINITY, f64::min);
         let max_score = list
             .iter()
             .map(|r| r.score)

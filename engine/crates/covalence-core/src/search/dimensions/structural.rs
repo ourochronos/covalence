@@ -307,9 +307,7 @@ mod tests {
             limit: 10,
             ..SearchQuery::default()
         };
-        let dim2 = StructuralDimension::new(
-            Arc::new(RwLock::new(GraphSidecar::new())),
-        );
+        let dim2 = StructuralDimension::new(Arc::new(RwLock::new(GraphSidecar::new())));
         // Instead, verify that center still ranks #1 (pure PageRank)
         // when only stopwords are in the query.
         assert_eq!(results[0].id, _center);

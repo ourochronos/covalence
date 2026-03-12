@@ -168,7 +168,12 @@ impl GraphBatchConsolidator {
         hasher.update(output.body.as_bytes());
         let content_hash = hasher.finalize().to_vec();
 
-        Ok(Article::new(output.title, output.body, content_hash, all_node_ids))
+        Ok(Article::new(
+            output.title,
+            output.body,
+            content_hash,
+            all_node_ids,
+        ))
     }
 
     /// Embed an article after it has been created in PG.
@@ -192,8 +197,7 @@ impl GraphBatchConsolidator {
             };
             let embeddings = embedder.embed(&[summary]).await?;
             if let Some(emb) = embeddings.first() {
-                let truncated =
-                    truncate_and_validate(emb, self.table_dims.article, "articles")?;
+                let truncated = truncate_and_validate(emb, self.table_dims.article, "articles")?;
                 ArticleRepo::update_embedding(&*self.repo, article.id, &truncated).await?;
             }
         }

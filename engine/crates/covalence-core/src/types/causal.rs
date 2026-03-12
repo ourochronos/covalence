@@ -45,8 +45,14 @@ mod tests {
 
     #[test]
     fn from_str_opt_valid() {
-        assert_eq!(CausalLevel::from_str_opt("association"), Some(CausalLevel::Association));
-        assert_eq!(CausalLevel::from_str_opt("intervention"), Some(CausalLevel::Intervention));
+        assert_eq!(
+            CausalLevel::from_str_opt("association"),
+            Some(CausalLevel::Association)
+        );
+        assert_eq!(
+            CausalLevel::from_str_opt("intervention"),
+            Some(CausalLevel::Intervention)
+        );
         assert_eq!(
             CausalLevel::from_str_opt("counterfactual"),
             Some(CausalLevel::Counterfactual)

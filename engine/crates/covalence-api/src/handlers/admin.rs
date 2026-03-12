@@ -6,13 +6,12 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, CooccurrenceRequest, CooccurrenceResponse, CommunityParams,
-    CommunityResponse, ConfigAuditResponse, ConsolidateResponse, DomainLinkResponse,
-    DomainResponse, GcResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem,
-    KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem,
-    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
-    ReloadResponse, SearchTraceResponse, SidecarHealthResponse, TopologyResponse,
-    TraceReplayResponse,
+    AuditLogResponse, CommunityParams, CommunityResponse, ConfigAuditResponse, ConsolidateResponse,
+    CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse, DomainResponse, GcResponse,
+    GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
+    KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem, OntologyClusterRequest,
+    OntologyClusterResponse, PaginationParams, PublishResponse, ReloadResponse,
+    SearchTraceResponse, SidecarHealthResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 

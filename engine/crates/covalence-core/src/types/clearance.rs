@@ -56,9 +56,18 @@ mod tests {
 
     #[test]
     fn from_i32_valid_values() {
-        assert_eq!(ClearanceLevel::from_i32(0), Some(ClearanceLevel::LocalStrict));
-        assert_eq!(ClearanceLevel::from_i32(1), Some(ClearanceLevel::FederatedTrusted));
-        assert_eq!(ClearanceLevel::from_i32(2), Some(ClearanceLevel::FederatedPublic));
+        assert_eq!(
+            ClearanceLevel::from_i32(0),
+            Some(ClearanceLevel::LocalStrict)
+        );
+        assert_eq!(
+            ClearanceLevel::from_i32(1),
+            Some(ClearanceLevel::FederatedTrusted)
+        );
+        assert_eq!(
+            ClearanceLevel::from_i32(2),
+            Some(ClearanceLevel::FederatedPublic)
+        );
     }
 
     #[test]
@@ -102,7 +111,10 @@ mod tests {
     #[test]
     fn display() {
         assert_eq!(ClearanceLevel::LocalStrict.to_string(), "local_strict");
-        assert_eq!(ClearanceLevel::FederatedPublic.to_string(), "federated_public");
+        assert_eq!(
+            ClearanceLevel::FederatedPublic.to_string(),
+            "federated_public"
+        );
     }
 
     #[test]

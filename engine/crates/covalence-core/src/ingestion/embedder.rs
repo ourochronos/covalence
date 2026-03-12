@@ -208,7 +208,10 @@ mod tests {
         let result = truncate_and_validate(&v, 3, "chunks");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("non-finite"), "expected non-finite error: {err}");
+        assert!(
+            err.contains("non-finite"),
+            "expected non-finite error: {err}"
+        );
     }
 
     #[test]

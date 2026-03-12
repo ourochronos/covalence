@@ -98,14 +98,26 @@ pub fn select_strategy(vector_scores: &[f64]) -> SearchStrategy {
 
 /// Keywords that signal a recency-focused query.
 const RECENCY_KEYWORDS: &[&str] = &[
-    "latest", "recent", "newest", "new", "last",
-    "today", "yesterday", "updated", "fresh",
+    "latest",
+    "recent",
+    "newest",
+    "new",
+    "last",
+    "today",
+    "yesterday",
+    "updated",
+    "fresh",
 ];
 
 /// Keywords that signal an entity/exploratory query.
 const ENTITY_KEYWORDS: &[&str] = &[
-    "what is", "who is", "define", "explain",
-    "tell me about", "describe", "overview of",
+    "what is",
+    "who is",
+    "define",
+    "explain",
+    "tell me about",
+    "describe",
+    "overview of",
 ];
 
 /// Detect query intent from keywords to supplement score-based
@@ -210,7 +222,10 @@ mod tests {
         assert!((normalized[4] - 1.0).abs() < 1e-10);
         // This should give moderate Gini on the normalized scores
         let g = gini_coefficient(&normalized);
-        assert!(g > 0.1, "normalized narrow range should not be near-zero Gini, got {g}");
+        assert!(
+            g > 0.1,
+            "normalized narrow range should not be near-zero Gini, got {g}"
+        );
     }
 
     #[test]
@@ -271,7 +286,10 @@ mod tests {
         // result.
         let scores = vec![1.0, 2.0, f64::NAN, 3.0, f64::INFINITY];
         let g = gini_coefficient(&scores);
-        assert!(g.is_finite(), "gini with NaN/Inf input should be finite, got {g}");
+        assert!(
+            g.is_finite(),
+            "gini with NaN/Inf input should be finite, got {g}"
+        );
         // Should equal gini of [1.0, 2.0, 3.0]
         let clean = vec![1.0, 2.0, 3.0];
         let g_clean = gini_coefficient(&clean);
@@ -291,9 +309,7 @@ mod tests {
     #[test]
     fn narrow_range_not_always_global() {
         // Voyage-like: narrow range with moderate spread
-        let scores: Vec<f64> = (0..20)
-            .map(|i| 0.78 + (i as f64) * 0.01)
-            .collect();
+        let scores: Vec<f64> = (0..20).map(|i| 0.78 + (i as f64) * 0.01).collect();
         // With raw Gini this would be near-zero (Global).
         // With normalization, the linear spread should give Balanced.
         let strategy = select_strategy(&scores);

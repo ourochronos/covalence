@@ -140,7 +140,8 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
 
     if node_errors > 0 || edge_errors > 0 {
         tracing::warn!(
-            node_errors, edge_errors,
+            node_errors,
+            edge_errors,
             "full reload completed with errors"
         );
     }

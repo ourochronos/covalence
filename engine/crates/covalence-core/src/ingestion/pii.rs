@@ -46,10 +46,8 @@ impl RegexPiiDetector {
         Ok(Self {
             email_re: Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
                 .map_err(|e| crate::error::Error::Config(format!("email regex: {e}")))?,
-            phone_re: Regex::new(
-                r"(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
-            )
-            .map_err(|e| crate::error::Error::Config(format!("phone regex: {e}")))?,
+            phone_re: Regex::new(r"(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}")
+                .map_err(|e| crate::error::Error::Config(format!("phone regex: {e}")))?,
             ssn_re: Regex::new(r"\b\d{3}[-]\d{2}[-]\d{4}\b")
                 .map_err(|e| crate::error::Error::Config(format!("ssn regex: {e}")))?,
             credit_card_re: Regex::new(r"\b(?:\d{4}[-\s]?){3}\d{4}\b")

@@ -743,12 +743,7 @@ mod tests {
         let c2 = vec![0.0, 1.0, 0.0];
         let c3 = vec![0.0, 0.0, 1.0];
         let parent = vec![1.0, 0.5, 0.3];
-        let results = analyze_landscape(
-            &[c1, c2, c3],
-            &[Some(&parent)],
-            None,
-            false,
-        );
+        let results = analyze_landscape(&[c1, c2, c3], &[Some(&parent)], None, false);
         assert_eq!(results.len(), 3);
         // First chunk has parent alignment, rest don't
         assert!(results[0].parent_alignment.is_some());

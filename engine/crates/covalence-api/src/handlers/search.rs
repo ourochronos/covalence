@@ -72,11 +72,9 @@ pub async fn search(
 
     if let Some(mc) = req.min_confidence {
         if !mc.is_finite() || !(0.0..=1.0).contains(&mc) {
-            return Err(ApiError::from(
-                covalence_core::error::Error::InvalidInput(format!(
-                    "min_confidence must be finite and in [0.0, 1.0], got {mc}"
-                )),
-            ));
+            return Err(ApiError::from(covalence_core::error::Error::InvalidInput(
+                format!("min_confidence must be finite and in [0.0, 1.0], got {mc}"),
+            )));
         }
     }
 
@@ -221,12 +219,12 @@ pub async fn search_feedback(
     Json(req): Json<SearchFeedbackRequest>,
 ) -> Result<Json<FeedbackResponse>, ApiError> {
     if !req.relevance.is_finite() || !(0.0..=1.0).contains(&req.relevance) {
-        return Err(ApiError::from(
-            covalence_core::error::Error::InvalidInput(format!(
+        return Err(ApiError::from(covalence_core::error::Error::InvalidInput(
+            format!(
                 "relevance must be finite and in [0.0, 1.0], got {}",
                 req.relevance
-            )),
-        ));
+            ),
+        )));
     }
 
     let feedback = covalence_core::models::trace::SearchFeedback::new(

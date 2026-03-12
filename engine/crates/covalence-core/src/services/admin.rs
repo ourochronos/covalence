@@ -312,7 +312,8 @@ impl AdminService {
                         base,
                         key.clone(),
                         cfg.chat_model.clone(),
-                    )) as Arc<dyn crate::consolidation::compiler::ArticleCompiler>
+                    ))
+                        as Arc<dyn crate::consolidation::compiler::ArticleCompiler>
                 })
             });
         let mut consolidator = GraphBatchConsolidator::new(

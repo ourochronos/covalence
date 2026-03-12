@@ -95,14 +95,11 @@ pub const MIN_QUERY_TERM_LEN: usize = 3;
 
 /// Common stopwords filtered from query matching across dimensions.
 pub const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "are", "but", "not", "you", "all",
-    "can", "has", "her", "was", "one", "our", "out", "how",
-    "its", "may", "use", "who", "did", "get", "let", "say",
-    "she", "too", "via", "from", "with", "this", "that",
-    "what", "when", "will", "been", "have", "each", "make",
-    "like", "does", "into", "them", "then", "than", "more",
-    "some", "such", "also", "about", "which", "their",
-    "would", "there", "these", "other", "could", "should",
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "has", "her", "was", "one",
+    "our", "out", "how", "its", "may", "use", "who", "did", "get", "let", "say", "she", "too",
+    "via", "from", "with", "this", "that", "what", "when", "will", "been", "have", "each", "make",
+    "like", "does", "into", "them", "then", "than", "more", "some", "such", "also", "about",
+    "which", "their", "would", "there", "these", "other", "could", "should",
 ];
 
 /// Extract filtered query terms from raw text.

@@ -42,8 +42,7 @@ pub fn detect_contentions(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> Vec<Cont
         let meta = edge_ref.weight();
         let rel_lower = meta.rel_type.to_lowercase();
 
-        if CONTENTION_REL_TYPES.iter().any(|&rt| rt == rel_lower)
-        {
+        if CONTENTION_REL_TYPES.iter().any(|&rt| rt == rel_lower) {
             let source_node = &graph[edge_ref.source()];
             let target_node = &graph[edge_ref.target()];
 
