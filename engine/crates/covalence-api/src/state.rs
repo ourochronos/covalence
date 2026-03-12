@@ -291,12 +291,14 @@ impl AppState {
             config.embedding.table_dims.clone(),
         )
         .with_abstention_config(abstention_config);
+        // CC fusion is the default (outperforms RRF in A/B testing).
+        // Set COVALENCE_CC_FUSION=false to revert to RRF.
         let use_cc = std::env::var("COVALENCE_CC_FUSION")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
         let search = search.with_cc_fusion(use_cc);
-        if use_cc {
-            tracing::info!("using CC (convex combination) fusion instead of RRF");
+        if !use_cc {
+            tracing::info!("using RRF fusion instead of CC (COVALENCE_CC_FUSION=false)");
         }
         let search_service = Arc::new(match reranker {
             Some(rnk) => search.with_reranker(rnk),

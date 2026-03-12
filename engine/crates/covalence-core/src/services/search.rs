@@ -151,7 +151,7 @@ impl SearchService {
             reranker: Arc::new(NoopReranker),
             cache: None,
             abstention_config: AbstentionConfig::default(),
-            use_cc_fusion: false,
+            use_cc_fusion: true,
         }
     }
 
@@ -867,10 +867,31 @@ impl SearchService {
             });
             let capped = pre_diverse - fused.len();
 
-            if deduped + capped > 0 {
+            // Pass 3: article title dedup — different communities
+            // can produce articles with the same title. Keep the
+            // highest-scored instance.
+            let mut seen_titles: HashMap<String, usize> = HashMap::new();
+            let pre_title = fused.len();
+            fused.retain(|r| {
+                if r.entity_type.as_deref() == Some("article") {
+                    if let Some(name) = &r.name {
+                        let count = seen_titles.entry(name.clone()).or_insert(0);
+                        *count += 1;
+                        *count <= 1
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            });
+            let title_deduped = pre_title - fused.len();
+
+            if deduped + capped + title_deduped > 0 {
                 tracing::debug!(
                     content_deduped = deduped,
                     source_capped = capped,
+                    article_title_deduped = title_deduped,
                     max_per_source = MAX_CHUNKS_PER_SOURCE,
                     "source diversification"
                 );
