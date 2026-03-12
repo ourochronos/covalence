@@ -12,6 +12,9 @@ import (
 )
 
 var sourceListLimit int
+var sourceAddTitle string
+var sourceAddAuthor string
+var sourceAddURI string
 var sourceAddURLTitle string
 var sourceAddURLAuthor string
 
@@ -42,6 +45,15 @@ var sourceAddCmd = &cobra.Command{
 			"metadata": map[string]string{
 				"filename": filepath.Base(filePath),
 			},
+		}
+		if sourceAddTitle != "" {
+			body["title"] = sourceAddTitle
+		}
+		if sourceAddAuthor != "" {
+			body["author"] = sourceAddAuthor
+		}
+		if sourceAddURI != "" {
+			body["uri"] = sourceAddURI
 		}
 
 		client := newClient()
@@ -171,6 +183,35 @@ var sourceChunksCmd = &cobra.Command{
 	},
 }
 
+var sourceReprocessCmd = &cobra.Command{
+	Use:   "reprocess [id]",
+	Short: "Reprocess a source (re-chunk, re-embed, re-extract)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client := newClient()
+		var result map[string]interface{}
+		if err := client.Post("/sources/"+args[0]+"/reprocess", nil, &result); err != nil {
+			return fmt.Errorf("API error: %w", err)
+		}
+
+		if jsonOutput {
+			return internal.PrintJSON(result)
+		}
+
+		fmt.Printf("Source %s reprocessed\n", shortID(args[0]))
+		if v, ok := result["chunks_deleted"]; ok {
+			fmt.Printf("  Chunks deleted:  %v\n", v)
+		}
+		if v, ok := result["chunks_created"]; ok {
+			fmt.Printf("  Chunks created:  %v\n", v)
+		}
+		if v, ok := result["content_version"]; ok {
+			fmt.Printf("  Version:         %v\n", v)
+		}
+		return nil
+	},
+}
+
 var sourceAddURLCmd = &cobra.Command{
 	Use:   "add-url [url]",
 	Short: "Ingest a source from a URL",
@@ -209,6 +250,12 @@ var sourceAddURLCmd = &cobra.Command{
 }
 
 func init() {
+	sourceAddCmd.Flags().StringVar(&sourceAddTitle, "title", "",
+		"Source title")
+	sourceAddCmd.Flags().StringVar(&sourceAddAuthor, "author", "",
+		"Source author")
+	sourceAddCmd.Flags().StringVar(&sourceAddURI, "uri", "",
+		"Source URI")
 	sourceListCmd.Flags().IntVar(&sourceListLimit, "limit", 20,
 		"Maximum sources to return")
 	sourceAddURLCmd.Flags().StringVar(&sourceAddURLTitle, "title", "",
@@ -217,6 +264,7 @@ func init() {
 		"Override auto-detected author")
 	sourceCmd.AddCommand(sourceAddCmd)
 	sourceCmd.AddCommand(sourceAddURLCmd)
+	sourceCmd.AddCommand(sourceReprocessCmd)
 	sourceCmd.AddCommand(sourceListCmd)
 	sourceCmd.AddCommand(sourceGetCmd)
 	sourceCmd.AddCommand(sourceDeleteCmd)
