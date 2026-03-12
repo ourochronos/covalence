@@ -51,10 +51,23 @@ const ARTIFACT_LINE_PREFIXES: &[&str] = &[
     "authors: achieve the best html results",
 ];
 
-/// Remove known web-scraping artifact lines from normalized
-/// markdown. Applied after Unicode normalization.
+/// Inline artifact substrings that should be removed even when
+/// concatenated with real content (not on their own line).
+const ARTIFACT_INLINE_PATTERNS: &[&str] = &[
+    "Report issue for preceding element",
+    "report issue for preceding element",
+];
+
+/// Remove known web-scraping artifact lines and inline patterns
+/// from normalized markdown. Applied after Unicode normalization.
+///
+/// Two-pass approach:
+/// 1. Remove whole lines that start with known artifact prefixes
+/// 2. Strip inline artifact substrings concatenated with real text
 pub fn strip_artifacts(text: &str) -> String {
-    text.lines()
+    // Pass 1: Remove whole artifact lines.
+    let line_filtered: String = text
+        .lines()
         .filter(|line| {
             let lower = line.trim().to_lowercase();
             !ARTIFACT_LINE_PREFIXES
@@ -62,7 +75,14 @@ pub fn strip_artifacts(text: &str) -> String {
                 .any(|prefix| lower.starts_with(prefix))
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+
+    // Pass 2: Strip inline artifact substrings.
+    let mut result = line_filtered;
+    for pattern in ARTIFACT_INLINE_PATTERNS {
+        result = result.replace(pattern, "");
+    }
+    result
 }
 
 #[cfg(test)]
@@ -136,5 +156,23 @@ mod tests {
     fn strip_case_insensitive() {
         let input = "REPORT ISSUE FOR PRECEDING ELEMENT\nContent";
         assert_eq!(strip_artifacts(input), "Content");
+    }
+
+    #[test]
+    fn strip_inline_artifact_concatenated() {
+        let input = "higher capability in identifying refactorings.Report issue for preceding element";
+        assert_eq!(
+            strip_artifacts(input),
+            "higher capability in identifying refactorings."
+        );
+    }
+
+    #[test]
+    fn strip_inline_artifact_mid_text() {
+        let input = "Some text.Report issue for preceding element\nMore content here.";
+        assert_eq!(
+            strip_artifacts(input),
+            "Some text.\nMore content here."
+        );
     }
 }
