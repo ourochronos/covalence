@@ -162,9 +162,12 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
 /// Qualify a heading with the source title when the heading is
 /// generic (e.g., "Overview" → "Paper Title: Overview").
 fn qualify_heading(heading: &str, source_title: Option<&str>) -> String {
+    // Strip leading section numbers like "2 ", "1.2 ", "3.1.4. "
+    // so "2 Background" matches the generic heading "background".
+    let bare = strip_section_number(heading);
     let is_generic = GENERIC_HEADINGS
         .iter()
-        .any(|g| heading.eq_ignore_ascii_case(g));
+        .any(|g| bare.eq_ignore_ascii_case(g));
 
     if is_generic {
         if let Some(title) = source_title {
@@ -189,6 +192,32 @@ fn qualify_heading(heading: &str, source_title: Option<&str>) -> String {
     } else {
         format!("{}...", &heading[..MAX_CHUNK_NAME_LEN - 3])
     }
+}
+
+/// Strip a leading section number prefix from a heading.
+///
+/// Handles patterns like "2 Background", "1.2 Methods",
+/// "3.1.4. Results", and "A.1 Appendix". Returns the heading
+/// text after the number prefix, or the original string if no
+/// prefix is found.
+fn strip_section_number(heading: &str) -> &str {
+    let s = heading.trim();
+    // Find where the numeric prefix ends. Allow digits, dots,
+    // and a single trailing dot (e.g., "2.", "3.1.4.").
+    let prefix_end = s
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(0);
+    if prefix_end == 0 {
+        return s;
+    }
+    // The character after the prefix must be whitespace.
+    let rest = &s[prefix_end..];
+    let trimmed = rest.trim_start();
+    if trimmed.is_empty() || rest.len() == trimmed.len() {
+        // No space after prefix — not a section number.
+        return s;
+    }
+    trimmed
 }
 
 /// Strip basic inline markdown: `**bold**`, `*italic*`, `` `code` ``.
@@ -1285,6 +1314,66 @@ mod tests {
         assert_eq!(
             qualify_heading("Overview", Some("")),
             "Overview"
+        );
+    }
+
+    // --- strip_section_number tests ---
+
+    #[test]
+    fn strip_simple_section_number() {
+        assert_eq!(strip_section_number("2 Background"), "Background");
+    }
+
+    #[test]
+    fn strip_dotted_section_number() {
+        assert_eq!(strip_section_number("1.2 Methods"), "Methods");
+    }
+
+    #[test]
+    fn strip_deep_section_number() {
+        assert_eq!(strip_section_number("3.1.4. Results"), "Results");
+    }
+
+    #[test]
+    fn strip_no_section_number() {
+        assert_eq!(strip_section_number("Background"), "Background");
+    }
+
+    #[test]
+    fn strip_number_no_space() {
+        // "2Background" is not a section number.
+        assert_eq!(strip_section_number("2Background"), "2Background");
+    }
+
+    #[test]
+    fn strip_just_number() {
+        // Bare "2" has no text after it.
+        assert_eq!(strip_section_number("2"), "2");
+    }
+
+    // --- numbered heading qualification ---
+
+    #[test]
+    fn qualify_numbered_generic_heading() {
+        assert_eq!(
+            qualify_heading("2 Background", Some("My Paper")),
+            "My Paper: 2 Background"
+        );
+    }
+
+    #[test]
+    fn qualify_dotted_numbered_heading() {
+        assert_eq!(
+            qualify_heading("1.2 Introduction", Some("Survey")),
+            "Survey: 1.2 Introduction"
+        );
+    }
+
+    #[test]
+    fn numbered_non_generic_not_qualified() {
+        assert_eq!(
+            qualify_heading("3 Reciprocal Rank Fusion", Some("Paper")),
+            "3 Reciprocal Rank Fusion"
         );
     }
 
