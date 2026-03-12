@@ -75,6 +75,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::SearchGranularity,
         dto::SearchRequest,
         dto::SearchResultResponse,
+        dto::RelatedEntityResponse,
         dto::ContextItemResponse,
         dto::ContextResponse,
         dto::SearchApiResponse,

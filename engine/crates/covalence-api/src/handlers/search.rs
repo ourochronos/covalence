@@ -6,8 +6,9 @@ use chrono::DateTime;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    ContextItemResponse, ContextResponse, FeedbackResponse, SearchApiResponse,
-    SearchFeedbackRequest, SearchGranularity, SearchMode, SearchRequest, SearchResultResponse,
+    ContextItemResponse, ContextResponse, FeedbackResponse, RelatedEntityResponse,
+    SearchApiResponse, SearchFeedbackRequest, SearchGranularity, SearchMode, SearchRequest,
+    SearchResultResponse,
 };
 use crate::state::AppState;
 
@@ -136,18 +137,30 @@ pub async fn search(
         SearchMode::Results => Ok(Json(SearchApiResponse::Results(
             results
                 .into_iter()
-                .map(|r| SearchResultResponse {
-                    id: r.id,
-                    fused_score: r.fused_score,
-                    confidence: r.confidence,
-                    entity_type: r.entity_type,
-                    name: r.name,
-                    snippet: r.snippet,
-                    content: r.content,
-                    source_uri: r.source_uri,
-                    source_title: r.source_title,
-                    dimension_scores: r.dimension_scores,
-                    dimension_ranks: r.dimension_ranks,
+                .map(|r| {
+                    let graph_context = r.graph_context.map(|gc| {
+                        gc.into_iter()
+                            .map(|re| RelatedEntityResponse {
+                                name: re.name,
+                                rel_type: re.rel_type,
+                                direction: re.direction,
+                            })
+                            .collect()
+                    });
+                    SearchResultResponse {
+                        id: r.id,
+                        fused_score: r.fused_score,
+                        confidence: r.confidence,
+                        entity_type: r.entity_type,
+                        name: r.name,
+                        snippet: r.snippet,
+                        content: r.content,
+                        source_uri: r.source_uri,
+                        source_title: r.source_title,
+                        dimension_scores: r.dimension_scores,
+                        dimension_ranks: r.dimension_ranks,
+                        graph_context,
+                    }
                 })
                 .collect(),
         ))),

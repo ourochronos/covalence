@@ -7,6 +7,8 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use petgraph::visit::EdgeRef;
+
 use crate::config::TableDimensions;
 use crate::error::Result;
 use crate::graph::SharedGraph;
@@ -19,7 +21,7 @@ use crate::search::dimensions::{
     StructuralDimension, TemporalDimension, VectorDimension,
 };
 use crate::search::expansion::spreading_activation;
-use crate::search::fusion::{self, FusedResult};
+use crate::search::fusion::{self, FusedResult, RelatedEntity};
 use crate::search::rerank::{NoopReranker, Reranker};
 use crate::search::skewroute::{detect_intent, select_strategy};
 use crate::search::strategy::SearchStrategy;
@@ -758,6 +760,7 @@ impl SearchService {
                             created_at: None,
                             dimension_scores: HashMap::new(),
                             dimension_ranks: HashMap::new(),
+                            graph_context: None,
                         });
                     }
                 }
@@ -905,6 +908,66 @@ impl SearchService {
                         result.confidence =
                             node.confidence_breakdown.map(|o| o.projected_probability());
                     }
+                }
+            }
+        }
+
+        // --- Step 8a: Graph context enrichment ---
+        // For node-type results, attach 1-hop graph neighbors to
+        // provide relationship context. Uses the in-memory sidecar
+        // (no DB queries) so this is fast.
+        {
+            const MAX_NEIGHBORS: usize = 10;
+            let graph = self.graph.read().await;
+            for result in &mut fused {
+                if result.entity_type.as_deref().is_none_or(|t| {
+                    t == "chunk" || t == "article" || t == "source"
+                }) {
+                    continue;
+                }
+                let Some(idx) = graph.node_index(result.id) else {
+                    continue;
+                };
+                let mut related = Vec::new();
+                // Outgoing edges
+                for edge in graph.graph().edges(idx) {
+                    let target = &graph.graph()[edge.target()];
+                    let meta = edge.weight();
+                    if meta.is_synthetic {
+                        continue;
+                    }
+                    related.push(RelatedEntity {
+                        name: target.canonical_name.clone(),
+                        rel_type: meta.rel_type.clone(),
+                        direction: "outgoing".to_string(),
+                    });
+                    if related.len() >= MAX_NEIGHBORS {
+                        break;
+                    }
+                }
+                // Incoming edges (if room)
+                if related.len() < MAX_NEIGHBORS {
+                    for edge in graph
+                        .graph()
+                        .edges_directed(idx, petgraph::Direction::Incoming)
+                    {
+                        let source = &graph.graph()[edge.source()];
+                        let meta = edge.weight();
+                        if meta.is_synthetic {
+                            continue;
+                        }
+                        related.push(RelatedEntity {
+                            name: source.canonical_name.clone(),
+                            rel_type: meta.rel_type.clone(),
+                            direction: "incoming".to_string(),
+                        });
+                        if related.len() >= MAX_NEIGHBORS {
+                            break;
+                        }
+                    }
+                }
+                if !related.is_empty() {
+                    result.graph_context = Some(related);
                 }
             }
         }

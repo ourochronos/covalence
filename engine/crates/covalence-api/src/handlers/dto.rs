@@ -215,6 +215,21 @@ pub struct SearchResultResponse {
     pub dimension_scores: std::collections::HashMap<String, f64>,
     /// Per-dimension ranks.
     pub dimension_ranks: std::collections::HashMap<String, usize>,
+    /// Related entities from the knowledge graph (1-hop neighbors).
+    /// Present only for node-type results that have graph connections.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_context: Option<Vec<RelatedEntityResponse>>,
+}
+
+/// A related entity from the knowledge graph.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RelatedEntityResponse {
+    /// Name of the related entity.
+    pub name: String,
+    /// Relationship type (e.g. "causes", "related_to").
+    pub rel_type: String,
+    /// Direction: "outgoing" or "incoming".
+    pub direction: String,
 }
 
 /// A single item in an assembled context window.
@@ -846,11 +861,14 @@ mod tests {
             source_title: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
+            graph_context: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         // content should be omitted when None due to
         // skip_serializing_if.
         assert!(json.get("content").is_none());
+        // graph_context should also be omitted when None.
+        assert!(json.get("graph_context").is_none());
     }
 
     #[test]
@@ -867,9 +885,45 @@ mod tests {
             source_title: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
+            graph_context: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["content"], "full content here");
+    }
+
+    #[test]
+    fn search_result_response_includes_graph_context() {
+        let resp = SearchResultResponse {
+            id: uuid::Uuid::new_v4(),
+            fused_score: 0.5,
+            confidence: None,
+            entity_type: Some("concept".to_string()),
+            name: Some("GraphRAG".to_string()),
+            snippet: None,
+            content: None,
+            source_uri: None,
+            source_title: None,
+            dimension_scores: std::collections::HashMap::new(),
+            dimension_ranks: std::collections::HashMap::new(),
+            graph_context: Some(vec![
+                RelatedEntityResponse {
+                    name: "Knowledge Graph".to_string(),
+                    rel_type: "related_to".to_string(),
+                    direction: "outgoing".to_string(),
+                },
+                RelatedEntityResponse {
+                    name: "RAG".to_string(),
+                    rel_type: "extends".to_string(),
+                    direction: "outgoing".to_string(),
+                },
+            ]),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let gc = json.get("graph_context").unwrap().as_array().unwrap();
+        assert_eq!(gc.len(), 2);
+        assert_eq!(gc[0]["name"], "Knowledge Graph");
+        assert_eq!(gc[0]["rel_type"], "related_to");
+        assert_eq!(gc[0]["direction"], "outgoing");
     }
 
     #[test]

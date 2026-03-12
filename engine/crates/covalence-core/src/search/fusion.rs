@@ -29,6 +29,18 @@ pub struct SearchResult {
     pub result_type: Option<String>,
 }
 
+/// A related entity from the knowledge graph, attached to search
+/// results to provide relationship context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelatedEntity {
+    /// Name of the related entity.
+    pub name: String,
+    /// Relationship type (e.g. "causes", "related_to").
+    pub rel_type: String,
+    /// Direction: "outgoing" or "incoming".
+    pub direction: String,
+}
+
 /// A fused result combining evidence from multiple dimensions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusedResult {
@@ -60,6 +72,10 @@ pub struct FusedResult {
     pub dimension_scores: HashMap<String, f64>,
     /// Per-dimension ranks.
     pub dimension_ranks: HashMap<String, usize>,
+    /// Related entities from the knowledge graph (1-hop neighbors).
+    /// Populated during enrichment for node-type results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_context: Option<Vec<RelatedEntity>>,
 }
 
 /// Fuse multiple ranked lists using Reciprocal Rank Fusion.
@@ -104,6 +120,7 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
                 created_at: None,
                 dimension_scores: HashMap::new(),
                 dimension_ranks: HashMap::new(),
+                graph_context: None,
             });
             entry.fused_score += weight / (k + result.rank as f64);
             if entry.result_type.is_none() {
@@ -195,6 +212,7 @@ pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<Fused
                 created_at: None,
                 dimension_scores: HashMap::new(),
                 dimension_ranks: HashMap::new(),
+                graph_context: None,
             });
             entry.fused_score += weight * norm_score;
             if entry.result_type.is_none() {
@@ -343,6 +361,7 @@ mod tests {
             created_at: None,
             dimension_scores: HashMap::new(),
             dimension_ranks: HashMap::new(),
+            graph_context: None,
         };
         let json = serde_json::to_value(&result).expect("serialization");
         assert_eq!(json["content"], "full chunk content");
