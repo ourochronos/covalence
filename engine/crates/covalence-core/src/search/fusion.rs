@@ -227,6 +227,22 @@ pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<Fused
         }
     }
 
+    // Count how many dimensions contributed results.
+    let active_dims = ranked_lists.iter().filter(|l| !l.is_empty()).count();
+
+    // Apply dimension coverage multiplier: results corroborated by
+    // more dimensions are rewarded; single-dimension results are
+    // penalized.  Formula: score *= 0.5 + 0.5 * (dims_present / active_dims).
+    // This gives a range of [0.5 + 0.5/N .. 1.0] — single-dimension
+    // results are not eliminated, just appropriately discounted.
+    if active_dims > 1 {
+        for result in fused.values_mut() {
+            let dims_present = result.dimension_scores.len() as f64;
+            let coverage = dims_present / active_dims as f64;
+            result.fused_score *= 0.5 + 0.5 * coverage;
+        }
+    }
+
     let mut results: Vec<FusedResult> = fused.into_values().collect();
     results.sort_by(|a, b| {
         b.fused_score
@@ -464,6 +480,38 @@ mod tests {
         // Both equal — CC treats them identically when they're
         // the top of different dimensions.
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn cc_coverage_multiplier_penalizes_single_dim() {
+        let id_multi = Uuid::new_v4();
+        let id_single = Uuid::new_v4();
+        // id_multi appears in both dimensions; id_single only in lexical.
+        let list_a = vec![make_result(id_multi, 0.9, 1, "vector")];
+        let list_b = vec![
+            make_result(id_single, 0.95, 1, "lexical"),
+            make_result(id_multi, 0.7, 2, "lexical"),
+        ];
+        let results = cc_fuse(&[list_a, list_b], &[1.0, 1.0]);
+
+        // id_multi: vector norm=1.0, lexical norm=0.0 → base 1.0
+        //   coverage 2/2=1.0 → multiplier 1.0 → score 1.0
+        // id_single: lexical norm=1.0 → base 1.0
+        //   coverage 1/2=0.5 → multiplier 0.75 → score 0.75
+        let multi = results.iter().find(|r| r.id == id_multi).unwrap();
+        let single = results.iter().find(|r| r.id == id_single).unwrap();
+        assert!(
+            multi.fused_score > single.fused_score,
+            "multi-dim result ({}) should outrank single-dim ({})",
+            multi.fused_score,
+            single.fused_score,
+        );
+        // Verify the single-dim penalty is approximately 0.75.
+        assert!(
+            (single.fused_score - 0.75).abs() < 1e-10,
+            "single-dim score should be ~0.75, got {}",
+            single.fused_score,
+        );
     }
 
     #[test]
