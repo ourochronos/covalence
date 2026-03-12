@@ -648,6 +648,62 @@ Prod engine running on :8431 with 266 sources, 1554 nodes, 11,094 edges, 88 arti
 - **Tests:** 795 (742 core + 10 API + 43 eval), up from 762. Clippy clean.
 - **Commits:** 72a3f3c, 44159f5, af97968, 35b9afe, bc3e29f, 8332380, 140b18d, 00737f9, f2667f9, 82e3dac, 4e92f4e, 7e6cc8b, a6ff8fb, f1ca150, ca7c292
 
+### Session 5 Continued — Code Quality Sweep
+
+Deep audit of 4 major modules (ingestion, epistemic, consolidation, storage/graph). Found and fixed 18 issues across 14 files.
+
+18. **UTF-8 string slicing panic fix** (636e892)
+    - 3 sites in compiler.rs and graph_batch.rs used `&body[..200]` / `&body[..500]` which panics on multi-byte content (emoji, CJK, accents)
+    - Fixed to use `char_indices()` to find safe UTF-8 truncation points
+
+19. **Error swallowing fixes** (636e892)
+    - `ontology.rs`: serde_json serialization error silently became empty array → now propagated
+    - `graph_batch.rs`: chunk fetch failure silently became empty list (2 sites) → now propagated via `?`
+    - `compiler.rs`: LLM API error body read failure lost diagnostics → now shows meaningful message
+
+20. **f64→f32 precision loss in vector threshold** (636e892)
+    - pg_resolver.rs compared `sim as f32 >= threshold` — f64→f32 cast could drop precision below threshold
+    - Fixed to `sim >= threshold as f64` (compare in f64 space)
+
+21. **Cosine similarity near-zero epsilon** (636e892)
+    - landscape.rs used `norm == 0.0` exact comparison — near-zero norms (1e-15) passed through, producing inf/NaN
+    - Fixed to `norm < 1e-12` epsilon check, consistent with truncate_embedding()
+
+22. **Embedding NaN/Inf validation** (42c5fc6)
+    - `truncate_and_validate()` (the single gatekeeper for all embedding storage) now rejects NaN, Inf, -Inf
+    - Prevents non-finite values from producing broken pgvector strings
+
+23. **Trace dimension abbreviation ambiguity** (42c5fc6)
+    - Naive 3-char truncation made "structural" and "string" both "str", "temporal" and "template" both "tem"
+    - Fixed to use explicit abbreviation map: vec/lex/tmp/gph/stc/glb
+
+24. **Graph sync silent error swallowing** (47c9846)
+    - `apply_event()` silently discarded all errors from node/edge upsert and removal (via `let _ =`)
+    - Now logs at warn level with seq_id and entity_id for debugging
+    - `full_reload()` now logs per-entity errors with aggregate counts instead of silently dropping
+
+25. **Unwrap in coreference lib code** (08f1820)
+    - `.chars().next().unwrap()` in term extraction — replaced with `let Some(...) else { continue }`
+    - Technically safe (empty check above), but violated "no unwrap in library code" rule
+
+26. **Contention matching simplification** (08f1820)
+    - Stored rel types in both cases ("contradicts", "CONTRADICTS") and lowercased both sides on every comparison
+    - Simplified to lowercase-only constants with direct comparison
+
+27. **API pagination DoS prevention** (578c95e)
+    - Pagination limit capped at 1000, offset clamped to non-negative
+    - Search result limit capped at 200
+    - Previously unbounded — attacker could request limit=9223372036854775807
+
+28. **Auth middleware cleanup** (578c95e)
+    - Replaced byte-offset string slicing with `strip_prefix("Bearer ")` for safety
+
+### Stats
+
+- **Tests:** 809 (749 core + 13 API + 47 eval), up from 795. +14 new tests. Clippy clean.
+- **Commits:** 636e892, 42c5fc6, 47c9846, 08f1820, 578c95e (5 commits, all pushed)
+- **Files modified:** 14 files across 4 crates
+
 ### Open Areas
 
 - Reprocess contaminated sources to apply new chunk filters (~234 arxiv boilerplate chunks still in DB)
@@ -656,3 +712,6 @@ Prod engine running on :8431 with 266 sources, 1554 nodes, 11,094 edges, 88 arti
 - RAPTOR hierarchical retrieval (#74)
 - Ingest spec reference papers (#92)
 - Pipeline stage queues (#64)
+- ClearanceLevel silent fallback (6 PG deserialization sites use unwrap_or_default on invalid i32 → should log warning)
+- Community coherence single-node returns 1.0 (misleading — should return 0.0 or have separate handling)
+- N+1 query pattern in ontology apply_clusters (one UPDATE per member label per cluster)
