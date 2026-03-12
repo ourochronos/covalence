@@ -46,6 +46,15 @@ pub fn truncate_and_validate(
     target_dim: usize,
     table: &str,
 ) -> crate::error::Result<Vec<f64>> {
+    // Check for NaN/Inf values that would produce invalid pgvector
+    // strings and silently corrupt stored embeddings.
+    if let Some(pos) = embedding.iter().position(|v| !v.is_finite()) {
+        return Err(crate::error::Error::Embedding(format!(
+            "non-finite value at index {pos} for {table}: {}",
+            embedding[pos],
+        )));
+    }
+
     let result = truncate_embedding(embedding, target_dim);
     if result.len() != target_dim && !embedding.is_empty() && embedding.len() > target_dim {
         return Err(crate::error::Error::Embedding(format!(
@@ -191,5 +200,28 @@ mod tests {
         let result = truncate_and_validate(&v, 5, "nodes");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), v);
+    }
+
+    #[test]
+    fn truncate_and_validate_rejects_nan() {
+        let v = vec![0.5, f64::NAN, 0.3];
+        let result = truncate_and_validate(&v, 3, "chunks");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("non-finite"), "expected non-finite error: {err}");
+    }
+
+    #[test]
+    fn truncate_and_validate_rejects_inf() {
+        let v = vec![0.5, f64::INFINITY, 0.3];
+        let result = truncate_and_validate(&v, 3, "nodes");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn truncate_and_validate_rejects_neg_inf() {
+        let v = vec![f64::NEG_INFINITY, 0.5];
+        let result = truncate_and_validate(&v, 2, "sources");
+        assert!(result.is_err());
     }
 }

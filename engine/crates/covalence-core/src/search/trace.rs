@@ -86,11 +86,22 @@ impl QueryTrace {
 
     /// Log this trace via the `tracing` crate at info level.
     pub fn emit(&self) {
-        // Compact dimension breakdown: "vec=15 lex=8 gra=3"
+        // Compact dimension breakdown: "vec=15 lex=8 gph=3"
         let dims: String = self
             .dimension_counts
             .iter()
-            .map(|(k, v)| format!("{}={}", &k[..k.len().min(3)], v))
+            .map(|(k, v)| {
+                let abbr = match k.as_str() {
+                    "vector" => "vec",
+                    "lexical" => "lex",
+                    "temporal" => "tmp",
+                    "graph" => "gph",
+                    "structural" => "stc",
+                    "global" => "glb",
+                    other => other,
+                };
+                format!("{abbr}={v}")
+            })
             .collect::<Vec<_>>()
             .join(" ");
 
