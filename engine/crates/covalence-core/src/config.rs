@@ -434,7 +434,12 @@ impl Config {
             extract_batch_tokens: env_parse("COVALENCE_EXTRACT_BATCH_TOKENS", 2000)?,
             entity_extractor: env_or("COVALENCE_ENTITY_EXTRACTOR", "llm"),
             extract_url: optional_env("COVALENCE_EXTRACT_URL"),
-            gliner_threshold: env_parse("COVALENCE_GLINER_THRESHOLD", 0.5_f32)?,
+            gliner_threshold: env_parse_f32_clamped(
+                "COVALENCE_GLINER_THRESHOLD",
+                0.5_f32,
+                0.0,
+                1.0,
+            )?,
             consolidation: ConsolidationConfig {
                 batch_interval_secs: env_parse("COVALENCE_BATCH_INTERVAL", 300)?,
                 deep_interval_secs: env_parse("COVALENCE_DEEP_INTERVAL", 86_400)?,
@@ -464,8 +469,18 @@ impl Config {
             coref_url: optional_env("COVALENCE_COREF_URL"),
             pdf_url: optional_env("COVALENCE_PDF_URL"),
             readerlm_url: optional_env("COVALENCE_READERLM_URL"),
-            resolve_trigram_threshold: env_parse("COVALENCE_RESOLVE_TRIGRAM_THRESHOLD", 0.4)?,
-            resolve_vector_threshold: env_parse("COVALENCE_RESOLVE_VECTOR_THRESHOLD", 0.85_f32)?,
+            resolve_trigram_threshold: env_parse_f32_clamped(
+                "COVALENCE_RESOLVE_TRIGRAM_THRESHOLD",
+                0.4,
+                0.0,
+                1.0,
+            )?,
+            resolve_vector_threshold: env_parse_f32_clamped(
+                "COVALENCE_RESOLVE_VECTOR_THRESHOLD",
+                0.85_f32,
+                0.0,
+                1.0,
+            )?,
         })
     }
 }
@@ -500,6 +515,19 @@ fn env_parse_bool(key: &str, default: bool) -> bool {
         Some(v) => matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"),
         None => default,
     }
+}
+
+/// Parse an f32 environment variable with bounds validation.
+///
+/// Returns an error if the parsed value falls outside `[min, max]`.
+fn env_parse_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> Result<f32> {
+    let value = env_parse(key, default)?;
+    if value < min || value > max {
+        return Err(Error::Config(format!(
+            "{key} must be in [{min}, {max}], got {value}"
+        )));
+    }
+    Ok(value)
 }
 
 fn env_parse_f64(key: &str, default: f64) -> Result<f64> {

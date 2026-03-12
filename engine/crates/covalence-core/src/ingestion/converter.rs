@@ -714,11 +714,8 @@ fn is_separator_row(line: &str) -> bool {
 fn parse_table_row(line: &str) -> Vec<String> {
     let trimmed = line.trim();
     // Strip leading and trailing pipes.
-    let inner = trimmed
-        .strip_prefix('|')
-        .unwrap_or(trimmed)
-        .strip_suffix('|')
-        .unwrap_or(trimmed);
+    let without_prefix = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner = without_prefix.strip_suffix('|').unwrap_or(without_prefix);
     inner
         .split('|')
         .map(|cell| cell.trim().to_string())

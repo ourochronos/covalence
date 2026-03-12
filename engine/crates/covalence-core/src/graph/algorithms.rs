@@ -41,7 +41,9 @@ pub fn pagerank(
             .sum();
 
         for idx in graph.node_indices() {
-            *new_scores.get_mut(&idx).unwrap() += damping * dangling_sum / n_f64;
+            if let Some(s) = new_scores.get_mut(&idx) {
+                *s += damping * dangling_sum / n_f64;
+            }
         }
 
         // Distribute rank through edges
@@ -50,7 +52,9 @@ pub fn pagerank(
             if out_degree > 0 {
                 let share = damping * scores[&idx] / out_degree as f64;
                 for edge in graph.edges(idx) {
-                    *new_scores.get_mut(&edge.target()).unwrap() += share;
+                    if let Some(s) = new_scores.get_mut(&edge.target()) {
+                        *s += share;
+                    }
                 }
             }
         }
@@ -118,7 +122,9 @@ pub fn personalized_pagerank(
             .sum();
 
         for &sidx in &seed_indices {
-            *new_scores.get_mut(&sidx).unwrap() += damping * dangling_sum * seed_weight;
+            if let Some(s) = new_scores.get_mut(&sidx) {
+                *s += damping * dangling_sum * seed_weight;
+            }
         }
 
         // Edge distribution
@@ -127,7 +133,9 @@ pub fn personalized_pagerank(
             if out_degree > 0 {
                 let share = damping * scores[&idx] / out_degree as f64;
                 for edge in graph.edges(idx) {
-                    *new_scores.get_mut(&edge.target()).unwrap() += share;
+                    if let Some(s) = new_scores.get_mut(&edge.target()) {
+                        *s += share;
+                    }
                 }
             }
         }
@@ -198,7 +206,9 @@ pub fn trust_rank(
             .sum();
 
         for (&sidx, &sw) in &seed_normalized {
-            *new_scores.get_mut(&sidx).unwrap() += damping * dangling_sum * sw;
+            if let Some(s) = new_scores.get_mut(&sidx) {
+                *s += damping * dangling_sum * sw;
+            }
         }
 
         // Trust flows through edges weighted by confidence
@@ -214,7 +224,9 @@ pub fn trust_rank(
             for edge in &edges {
                 let edge_share =
                     damping * scores[&idx] * graph[edge.id()].confidence / total_confidence;
-                *new_scores.get_mut(&edge.target()).unwrap() += edge_share;
+                if let Some(s) = new_scores.get_mut(&edge.target()) {
+                    *s += edge_share;
+                }
             }
         }
 
@@ -308,9 +320,13 @@ pub fn structural_importance(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> HashM
         let mut predecessors: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
         let mut sigma: HashMap<NodeIndex, f64> =
             graph.node_indices().map(|idx| (idx, 0.0)).collect();
-        *sigma.get_mut(&s).unwrap() = 1.0;
+        if let Some(s_sigma) = sigma.get_mut(&s) {
+            *s_sigma = 1.0;
+        }
         let mut dist: HashMap<NodeIndex, i64> = graph.node_indices().map(|idx| (idx, -1)).collect();
-        *dist.get_mut(&s).unwrap() = 0;
+        if let Some(s_dist) = dist.get_mut(&s) {
+            *s_dist = 0;
+        }
 
         let mut queue = std::collections::VecDeque::new();
         queue.push_back(s);
@@ -319,12 +335,18 @@ pub fn structural_importance(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> HashM
             stack.push(v);
             for edge in graph.edges(v) {
                 let w = edge.target();
+                let dist_v = dist[&v];
+                let sigma_v = sigma[&v];
                 if dist[&w] < 0 {
                     queue.push_back(w);
-                    *dist.get_mut(&w).unwrap() = dist[&v] + 1;
+                    if let Some(d) = dist.get_mut(&w) {
+                        *d = dist_v + 1;
+                    }
                 }
-                if dist[&w] == dist[&v] + 1 {
-                    *sigma.get_mut(&w).unwrap() += sigma[&v];
+                if dist[&w] == dist_v + 1 {
+                    if let Some(s) = sigma.get_mut(&w) {
+                        *s += sigma_v;
+                    }
                     predecessors.entry(w).or_default().push(v);
                 }
             }
@@ -333,14 +355,20 @@ pub fn structural_importance(graph: &StableDiGraph<NodeMeta, EdgeMeta>) -> HashM
         let mut delta: HashMap<NodeIndex, f64> =
             graph.node_indices().map(|idx| (idx, 0.0)).collect();
         while let Some(w) = stack.pop() {
+            let sigma_w = sigma[&w];
+            let delta_w = delta[&w];
             if let Some(preds) = predecessors.get(&w) {
                 for &v in preds {
-                    let d = (sigma[&v] / sigma[&w]) * (1.0 + delta[&w]);
-                    *delta.get_mut(&v).unwrap() += d;
+                    let d = (sigma[&v] / sigma_w) * (1.0 + delta_w);
+                    if let Some(dv) = delta.get_mut(&v) {
+                        *dv += d;
+                    }
                 }
             }
             if w != s {
-                *centrality.get_mut(&w).unwrap() += delta[&w];
+                if let Some(c) = centrality.get_mut(&w) {
+                    *c += delta_w;
+                }
             }
         }
     }
