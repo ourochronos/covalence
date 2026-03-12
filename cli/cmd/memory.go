@@ -118,9 +118,10 @@ var memoryStatusCmd = &cobra.Command{
 			return internal.PrintJSON(result)
 		}
 
-		fmt.Printf("Total Memories: %s\n", getString(result, "total_memories"))
-		fmt.Printf("Topics:         %s\n", getString(result, "topic_count"))
-		fmt.Printf("Storage Used:   %s\n", getString(result, "storage_bytes"))
+		fmt.Printf("Total Memories:      %s\n", getString(result, "total_memories"))
+		fmt.Printf("Total Entities:      %s\n", getString(result, "total_entities"))
+		fmt.Printf("Total Relationships: %s\n", getString(result, "total_relationships"))
+		fmt.Printf("Communities:         %s\n", getString(result, "communities"))
 		return nil
 	},
 }
