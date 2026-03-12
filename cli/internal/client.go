@@ -25,7 +25,7 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/") + "/api/v1",
 		HTTPClient: &http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout: 15 * time.Minute,
 		},
 	}
 }
