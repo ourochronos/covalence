@@ -13,7 +13,7 @@ use super::{DimensionKind, SearchDimension, SearchQuery, extract_query_terms};
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::graph::sidecar::GraphSidecar;
-use crate::graph::traversal::{bfs_neighborhood, hop_decay_score};
+use crate::graph::traversal::{bfs_neighborhood_filtered, hop_decay_score};
 use crate::search::SearchResult;
 
 /// Graph-based search using BFS traversal from seed nodes.
@@ -104,7 +104,8 @@ impl SearchDimension for GraphDimension {
         let mut best: HashMap<Uuid, f64> = HashMap::new();
 
         for &seed in &seeds {
-            let neighbors = bfs_neighborhood(&sidecar, seed, MAX_HOPS, None);
+            let neighbors =
+                bfs_neighborhood_filtered(&sidecar, seed, MAX_HOPS, None, true);
             for (node_id, hops) in neighbors {
                 let score = hop_decay_score(1.0, hops);
                 let entry = best.entry(node_id).or_insert(0.0);

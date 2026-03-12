@@ -18,11 +18,28 @@ const HOP_DECAY: f64 = 0.7;
 ///
 /// Returns a list of `(node_uuid, hop_distance)` pairs for all nodes
 /// reachable from `start` within `max_hops`. The start node is not included.
+///
+/// When `skip_synthetic` is true, synthetic (co-occurrence) edges are
+/// excluded from traversal, restricting BFS to semantic relationships.
 pub fn bfs_neighborhood(
     graph: &GraphSidecar,
     start: Uuid,
     max_hops: usize,
     edge_filter: Option<&[String]>,
+) -> Vec<(Uuid, usize)> {
+    bfs_neighborhood_filtered(graph, start, max_hops, edge_filter, false)
+}
+
+/// BFS neighborhood traversal that can skip synthetic edges.
+///
+/// Same as [`bfs_neighborhood`] but with an explicit `skip_synthetic`
+/// flag. When true, edges marked `is_synthetic` are not traversed.
+pub fn bfs_neighborhood_filtered(
+    graph: &GraphSidecar,
+    start: Uuid,
+    max_hops: usize,
+    edge_filter: Option<&[String]>,
+    skip_synthetic: bool,
 ) -> Vec<(Uuid, usize)> {
     let Some(start_idx) = graph.node_index(start) else {
         return Vec::new();
@@ -42,9 +59,16 @@ pub fn bfs_neighborhood(
         }
 
         for edge in graph.graph.edges(current) {
-            // Apply edge-type filter if provided
+            let edge_meta = &graph.graph[edge.id()];
+
+            // Skip synthetic edges when requested.
+            if skip_synthetic && edge_meta.is_synthetic {
+                continue;
+            }
+
+            // Apply edge-type filter if provided.
             if let Some(filter) = edge_filter {
-                if !filter.iter().any(|f| f == &graph.graph[edge.id()].rel_type) {
+                if !filter.iter().any(|f| f == &edge_meta.rel_type) {
                     continue;
                 }
             }
@@ -255,5 +279,40 @@ mod tests {
 
         let score = hop_decay_score(1.0, 2);
         assert!((score - 0.49).abs() < 1e-10);
+    }
+
+    #[test]
+    fn bfs_filtered_skips_synthetic() {
+        let mut g = GraphSidecar::new();
+        let a = add_node(&mut g, "A");
+        let b = add_node(&mut g, "B");
+        let c = add_node(&mut g, "C");
+
+        // A -> B is semantic (should be traversed)
+        add_edge(&mut g, a, b, "related");
+        // B -> C is synthetic (should be skipped)
+        g.add_edge(
+            b,
+            c,
+            EdgeMeta {
+                id: Uuid::new_v4(),
+                rel_type: "co_occurs".into(),
+                weight: 1.0,
+                confidence: 0.5,
+                causal_level: None,
+                clearance_level: 0,
+                is_synthetic: true,
+            },
+        )
+        .unwrap();
+
+        // Without skip_synthetic: finds B and C
+        let all = bfs_neighborhood(&g, a, 3, None);
+        assert_eq!(all.len(), 2);
+
+        // With skip_synthetic: finds only B
+        let semantic = bfs_neighborhood_filtered(&g, a, 3, None, true);
+        assert_eq!(semantic.len(), 1);
+        assert_eq!(semantic[0].0, b);
     }
 }
