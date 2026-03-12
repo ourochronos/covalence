@@ -2490,15 +2490,31 @@ fn is_author_block(text: &str) -> bool {
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .collect();
-    if lines.len() < 2 {
+    if lines.is_empty() {
         return false;
     }
-    let email_lines = lines
-        .iter()
-        .filter(|l| l.contains('@') || l.contains("mailto:"))
-        .count();
-    let ratio = email_lines as f64 / lines.len() as f64;
-    ratio >= 0.4
+
+    // Pattern 1: starts with "Authors:" prefix — common in arxiv
+    // scraped content. The first line names the authors and the
+    // rest is affiliations/institutions.
+    let first = lines[0];
+    if first.starts_with("Authors:") || first.starts_with("**Authors:**") {
+        return true;
+    }
+
+    // Pattern 2: high ratio of email/mailto lines (≥ 40%).
+    if lines.len() >= 2 {
+        let email_lines = lines
+            .iter()
+            .filter(|l| l.contains('@') || l.contains("mailto:"))
+            .count();
+        let ratio = email_lines as f64 / lines.len() as f64;
+        if ratio >= 0.4 {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Known artifact headings from web scraping that should cause the
@@ -2664,6 +2680,24 @@ mod tests {
     fn not_author_block_single_email() {
         let text = "Send questions to admin@example.com";
         assert!(!is_author_block(text));
+    }
+
+    #[test]
+    fn author_block_prefix_detected() {
+        let text = "Authors:Hairong Zhang, Jiaheng Si, Guohang Yan, Boyuan Qi";
+        assert!(is_author_block(text));
+    }
+
+    #[test]
+    fn author_block_bold_prefix_detected() {
+        let text = "**Authors:** Alice Smith, Bob Jones, Carol White\n\
+                    University of Example, Department of CS";
+        assert!(is_author_block(text));
+    }
+
+    #[test]
+    fn not_author_block_empty() {
+        assert!(!is_author_block(""));
     }
 
     #[test]

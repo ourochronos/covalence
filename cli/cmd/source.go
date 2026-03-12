@@ -256,7 +256,7 @@ func init() {
 		"Source author")
 	sourceAddCmd.Flags().StringVar(&sourceAddURI, "uri", "",
 		"Source URI")
-	sourceListCmd.Flags().IntVar(&sourceListLimit, "limit", 20,
+	sourceListCmd.Flags().IntVar(&sourceListLimit, "limit", 100,
 		"Maximum sources to return")
 	sourceAddURLCmd.Flags().StringVar(&sourceAddURLTitle, "title", "",
 		"Override auto-detected title")

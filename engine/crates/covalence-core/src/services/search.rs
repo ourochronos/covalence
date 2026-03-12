@@ -249,11 +249,31 @@ fn derive_chunk_name_qualified(content: &str, source_title: Option<&str>) -> Str
     let clean = strip_inline_markdown(meaningful);
     let clean = clean.trim();
 
-    // First sentence: up to the first sentence-ending punctuation or
-    // newline, whichever comes first.
+    // First sentence: up to the first sentence-ending punctuation
+    // or newline. Periods must be followed by a space (or EOF) to
+    // count — bare periods in numbers like "2504.09823" are not
+    // sentence boundaries.
     let sentence_end = clean
-        .find(['.', '!', '?', '\n'])
-        .map(|i| i + 1) // include the punctuation
+        .char_indices()
+        .find_map(|(i, c)| {
+            if c == '\n' || c == '!' || c == '?' {
+                return Some(i + 1);
+            }
+            if c == '.' {
+                let after = clean.as_bytes().get(i + 1).copied();
+                // Period counts as sentence-end only when followed
+                // by whitespace, closing paren/bracket, or EOF.
+                if after.is_none()
+                    || after == Some(b' ')
+                    || after == Some(b'\n')
+                    || after == Some(b')')
+                    || after == Some(b']')
+                {
+                    return Some(i + 1);
+                }
+            }
+            None
+        })
         .unwrap_or(clean.len());
 
     if sentence_end <= MAX_CHUNK_NAME_LEN {
@@ -1451,6 +1471,17 @@ mod tests {
         assert_eq!(
             derive_chunk_name(content),
             "Some short text without punctuation"
+        );
+    }
+
+    #[test]
+    fn derive_chunk_name_decimal_not_sentence_end() {
+        // Periods in version numbers (2504.09823) should not be
+        // treated as sentence boundaries.
+        let content = "Version 2504.09823 introduces new features.";
+        assert_eq!(
+            derive_chunk_name(content),
+            "Version 2504.09823 introduces new features."
         );
     }
 
