@@ -57,7 +57,7 @@ pub async fn require_api_key(
 
 /// Returns `true` for paths that do not require authentication.
 fn is_public_path(path: &str) -> bool {
-    matches!(path, "/health" | "/docs" | "/docs/" | "/openapi.json")
+    matches!(path, "/health" | "/openapi.json") || path.starts_with("/docs")
 }
 
 /// Build a 401 Unauthorized JSON response.
@@ -70,4 +70,42 @@ fn unauthorized_response(message: &str) -> Response {
     });
 
     (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_is_public() {
+        assert!(is_public_path("/health"));
+    }
+
+    #[test]
+    fn openapi_json_is_public() {
+        assert!(is_public_path("/openapi.json"));
+    }
+
+    #[test]
+    fn docs_root_is_public() {
+        assert!(is_public_path("/docs"));
+    }
+
+    #[test]
+    fn docs_trailing_slash_is_public() {
+        assert!(is_public_path("/docs/"));
+    }
+
+    #[test]
+    fn docs_assets_are_public() {
+        assert!(is_public_path("/docs/swagger-ui.css"));
+        assert!(is_public_path("/docs/swagger-ui-bundle.js"));
+    }
+
+    #[test]
+    fn api_routes_are_not_public() {
+        assert!(!is_public_path("/api/v1/search"));
+        assert!(!is_public_path("/api/v1/sources"));
+        assert!(!is_public_path("/api/v1/admin/health"));
+    }
 }
