@@ -80,28 +80,32 @@ fn find_seed_nodes(sidecar: &GraphSidecar, query_text: &str) -> Vec<Uuid> {
         return Vec::new();
     }
 
-    let mut seeds = Vec::new();
+    // Score each node by how many query terms match. Nodes matching
+    // more terms are better seeds (e.g., "Search Service" matching
+    // both "search" and "service" ranks above nodes matching only
+    // "search").
+    let mut scored: Vec<(Uuid, usize)> = Vec::new();
 
     for node_idx in sidecar.graph.node_indices() {
         let meta = &sidecar.graph[node_idx];
         let name_lower = meta.canonical_name.to_lowercase();
 
-        // Check if any query term matches as a substring of the
-        // canonical name, or the canonical name matches as a
-        // substring of any query term.
-        let matches = terms
+        let match_count = terms
             .iter()
-            .any(|term| name_lower.contains(term.as_str()) || term.contains(name_lower.as_str()));
+            .filter(|term| {
+                name_lower.contains(term.as_str()) || term.contains(name_lower.as_str())
+            })
+            .count();
 
-        if matches {
-            seeds.push(meta.id);
-            if seeds.len() >= MAX_AUTO_SEEDS {
-                break;
-            }
+        if match_count > 0 {
+            scored.push((meta.id, match_count));
         }
     }
 
-    seeds
+    // Sort by match count descending (best matches first).
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.truncate(MAX_AUTO_SEEDS);
+    scored.into_iter().map(|(id, _)| id).collect()
 }
 
 impl SearchDimension for GraphDimension {
