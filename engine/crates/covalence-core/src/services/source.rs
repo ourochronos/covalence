@@ -1399,6 +1399,13 @@ impl SourceService {
             "deleted old extractions"
         );
 
+        // Step 1b: Nullify source_chunk_id on node_aliases that
+        // reference chunks belonging to this source (FK constraint
+        // node_aliases.source_chunk_id → chunks.id).
+        let aliases_cleared =
+            NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
+        tracing::debug!(aliases_cleared, "cleared alias chunk refs");
+
         // Step 2: Delete old chunks. New chunks will be created by
         // the pipeline below.
         let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
