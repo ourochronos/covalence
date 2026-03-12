@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/ourochronos/covalence/cli/internal"
 	"github.com/spf13/cobra"
@@ -26,7 +27,7 @@ var nodeListCmd = &cobra.Command{
 		client := internal.NewClient(apiURL)
 		path := fmt.Sprintf("/nodes?limit=%d", nodeListLimit)
 		if nodeListType != "" {
-			path += "&type=" + nodeListType
+			path += "&type=" + url.QueryEscape(nodeListType)
 		}
 
 		var result []map[string]interface{}

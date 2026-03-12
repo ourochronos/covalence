@@ -139,7 +139,10 @@ var adminAuditCmd = &cobra.Command{
 		fmt.Println("=== Sidecar Health ===")
 		if sidecars, ok := result["sidecars"].([]interface{}); ok {
 			for _, s := range sidecars {
-				sc, _ := s.(map[string]interface{})
+				sc, ok := s.(map[string]interface{})
+				if !ok {
+					continue
+				}
 				name := getString(sc, "name")
 				configured := false
 				if v, ok := sc["configured"].(bool); ok {
