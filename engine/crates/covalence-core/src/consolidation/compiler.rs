@@ -157,9 +157,17 @@ impl ArticleCompiler for LlmCompiler {
         // Extract the content from the chat completion response
         let content = resp_json["choices"][0]["message"]["content"]
             .as_str()
-            .unwrap_or("{}");
+            .ok_or_else(|| {
+                crate::error::Error::Consolidation(
+                    "LLM response missing choices[0].message.content".to_string(),
+                )
+            })?;
 
-        let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+        let parsed: serde_json::Value = serde_json::from_str(content).map_err(|e| {
+            crate::error::Error::Consolidation(format!(
+                "LLM returned invalid JSON: {e}"
+            ))
+        })?;
 
         let title = parsed["title"]
             .as_str()
@@ -169,10 +177,16 @@ impl ArticleCompiler for LlmCompiler {
             ))
             .to_string();
 
+        // Body is required — don't silently fall back to raw
+        // concatenation, which produces junk articles.
         let body = parsed["body"]
             .as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| combined.clone());
+            .ok_or_else(|| {
+                crate::error::Error::Consolidation(
+                    "LLM response JSON missing 'body' field".to_string(),
+                )
+            })?;
 
         let summary = parsed["summary"]
             .as_str()
