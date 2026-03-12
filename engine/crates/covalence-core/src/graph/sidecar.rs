@@ -41,6 +41,24 @@ pub struct NodeMeta {
 /// activation).
 pub const SYNTHETIC_EDGE_DAMPING: f64 = 0.1;
 
+/// Damping factor applied to bibliographic edge weights.
+///
+/// Bibliographic edges (authored, published_in, works_at, etc.) represent
+/// publication metadata rather than knowledge relationships. They create
+/// dense clusters around prolific authors and venues that dilute semantic
+/// signal in graph algorithms. Damped to 20% of nominal weight.
+pub const BIBLIOGRAPHIC_EDGE_DAMPING: f64 = 0.2;
+
+/// Bibliographic relationship types that get damped in graph algorithms.
+const BIBLIOGRAPHIC_REL_TYPES: &[&str] = &[
+    "authored",
+    "published_in",
+    "works_at",
+    "has_preprint_id",
+    "edited_by",
+    "affiliated_with",
+];
+
 /// Metadata attached to graph edges in the petgraph sidecar.
 #[derive(Debug, Clone)]
 pub struct EdgeMeta {
@@ -61,25 +79,36 @@ pub struct EdgeMeta {
 }
 
 impl EdgeMeta {
-    /// Effective weight for graph algorithms, with synthetic damping.
+    /// Effective weight for graph algorithms, with synthetic and
+    /// bibliographic damping.
     ///
-    /// Synthetic edges contribute `weight * SYNTHETIC_EDGE_DAMPING`
-    /// so that co-occurrence noise doesn't dominate semantic signal.
+    /// - Synthetic edges: `weight * 0.1` (co-occurrence noise)
+    /// - Bibliographic edges: `weight * 0.2` (publication metadata)
+    /// - All others: full weight
     pub fn effective_weight(&self) -> f64 {
-        if self.is_synthetic {
-            self.weight * SYNTHETIC_EDGE_DAMPING
-        } else {
-            self.weight
-        }
+        self.weight * self.damping_factor()
     }
 
-    /// Effective confidence for trust propagation, with synthetic
-    /// damping.
+    /// Effective confidence for trust propagation, with damping.
     pub fn effective_confidence(&self) -> f64 {
+        self.confidence * self.damping_factor()
+    }
+
+    /// Compute the damping factor for this edge.
+    ///
+    /// Synthetic edges get the harshest damping (0.1), bibliographic
+    /// edges get moderate damping (0.2), and all others pass through
+    /// at full weight (1.0).
+    fn damping_factor(&self) -> f64 {
         if self.is_synthetic {
-            self.confidence * SYNTHETIC_EDGE_DAMPING
+            SYNTHETIC_EDGE_DAMPING
+        } else if BIBLIOGRAPHIC_REL_TYPES
+            .iter()
+            .any(|&t| t == self.rel_type)
+        {
+            BIBLIOGRAPHIC_EDGE_DAMPING
         } else {
-            self.confidence
+            1.0
         }
     }
 }
@@ -584,6 +613,25 @@ mod tests {
             (edge.effective_confidence() - 0.09).abs() < f64::EPSILON,
             "synthetic edge confidence should be damped to 0.09"
         );
+    }
+
+    #[test]
+    fn effective_weight_bibliographic_edge() {
+        for rel in &["authored", "published_in", "works_at", "has_preprint_id", "edited_by"] {
+            let edge = EdgeMeta {
+                id: Uuid::new_v4(),
+                rel_type: (*rel).into(),
+                weight: 1.0,
+                confidence: 1.0,
+                causal_level: None,
+                clearance_level: 0,
+                is_synthetic: false,
+            };
+            assert!(
+                (edge.effective_weight() - 0.2).abs() < f64::EPSILON,
+                "{rel} edge should be damped to 0.2"
+            );
+        }
     }
 
     #[test]
