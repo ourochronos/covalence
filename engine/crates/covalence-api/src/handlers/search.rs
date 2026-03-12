@@ -73,6 +73,13 @@ pub async fn search(
                 })?;
             Some((s, e))
         }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(ApiError::from(covalence_core::error::Error::InvalidInput(
+                "both date_range_start and date_range_end must be \
+                     provided for date filtering"
+                    .to_string(),
+            )));
+        }
         _ => None,
     };
 
