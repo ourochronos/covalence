@@ -722,6 +722,21 @@ impl SearchService {
             }
         }
 
+        // --- Step 5b2: Clear results from zero-weight dimensions ---
+        // Dimensions dampened to zero weight would contribute nothing
+        // to fusion scores, but their results would still enter the
+        // fused result set (with score 0.0) and inflate the reranker's
+        // result pool.  Clear them so only meaningful results survive.
+        for (list, weight) in ranked_lists.iter_mut().zip(weights.iter()) {
+            if *weight < 1e-12 && !list.is_empty() {
+                tracing::debug!(
+                    cleared = list.len(),
+                    "cleared results from zero-weight dimension"
+                );
+                list.clear();
+            }
+        }
+
         // --- Step 5c: Redistribute weight from empty dimensions ---
         // If a dimension returned 0 results (e.g., global with no
         // community summaries), its weight is wasted in RRF.
