@@ -65,7 +65,7 @@ impl SearchDimension for TemporalDimension {
                     rank: i + 1,
                     dimension: "temporal".to_string(),
                     snippet: None,
-                    result_type: None,
+                    result_type: Some("chunk".to_string()),
                 }
             })
             .collect();
