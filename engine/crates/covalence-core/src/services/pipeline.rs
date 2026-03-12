@@ -544,6 +544,13 @@ impl SourceService {
                 let is_example_chunk = example_chunks.contains(&chunk_uuid);
 
                 for entity in &extraction.entities {
+                    if is_noise_entity(&entity.name, &entity.entity_type) {
+                        tracing::debug!(
+                            name = entity.name.as_str(),
+                            "filtered noise entity during extraction"
+                        );
+                        continue;
+                    }
                     let node_id = self
                         .resolve_and_store_entity(entity, chunk_id, extraction_method)
                         .await?;
@@ -925,6 +932,79 @@ fn sniff_html(content: &[u8]) -> bool {
     prefix.starts_with(b"<!doctype") || prefix.starts_with(b"<html")
 }
 
+/// Reject extracted entities that are clearly noise.
+///
+/// Catches paper titles, generic single words, code syntax, and math
+/// symbols that the LLM extractor sometimes produces despite prompt
+/// instructions.
+fn is_noise_entity(name: &str, entity_type: &str) -> bool {
+    let trimmed = name.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Very short names (1-2 chars) are noise unless they're acronyms.
+    if trimmed.len() <= 2 && !trimmed.chars().all(|c| c.is_ascii_uppercase()) {
+        return true;
+    }
+
+    // Paper titles: concept entities with >55 chars are almost always
+    // paper titles (real concepts are shorter).
+    if entity_type == "concept" && trimmed.len() > 55 {
+        return true;
+    }
+
+    // Code syntax: angle brackets, double colons, parens, dots with
+    // uppercase (Go/Rust method calls).
+    if trimmed.contains('<') && trimmed.contains('>') {
+        return true;
+    }
+    if trimmed.contains("::") {
+        return true;
+    }
+    if entity_type == "concept"
+        && trimmed.contains('.')
+        && trimmed
+            .split('.')
+            .any(|p| p.starts_with(|c: char| c.is_uppercase()))
+    {
+        return true;
+    }
+
+    // Math/LaTeX: braces, subscripts, Greek letters.
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return true;
+    }
+    if trimmed.contains('_') && trimmed.contains('^') {
+        return true;
+    }
+    // Unicode math symbols (excluding common ASCII).
+    if trimmed
+        .chars()
+        .any(|c| ('\u{0370}'..='\u{03FF}').contains(&c) || ('\u{2200}'..='\u{22FF}').contains(&c))
+        && trimmed.len() < 15
+    {
+        return true;
+    }
+
+    // Generic English words that shouldn't be entities.
+    const GENERIC_WORDS: &[&str] = &[
+        "alias", "brand", "charge", "checklist", "children", "clicking",
+        "collaboration", "compounds", "consequences", "covariates", "debate",
+        "drugs", "hobbies", "infrastructure", "likes", "ownership",
+        "popularity", "predicate", "regret", "spiciness", "timeliness",
+        "warnings", "auditable", "minima", "misaligned", "monotonicity",
+        "numeric", "purity", "reversible", "reward", "prepay",
+        "reactants", "court", "diversify", "possession", "association",
+    ];
+    if entity_type == "concept"
+        && !lower.contains(' ')
+        && GENERIC_WORDS.contains(&lower.as_str())
+    {
+        return true;
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,5 +1036,46 @@ mod tests {
     fn sniff_html_empty_content() {
         assert!(!sniff_html(b""));
         assert!(!sniff_html(b"   "));
+    }
+
+    #[test]
+    fn noise_entity_paper_title() {
+        assert!(is_noise_entity(
+            "Retrieval-augmented generation for knowledge-intensive NLP tasks",
+            "concept"
+        ));
+    }
+
+    #[test]
+    fn noise_entity_generic_word() {
+        assert!(is_noise_entity("children", "concept"));
+        assert!(is_noise_entity("clicking", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_code_syntax() {
+        assert!(is_noise_entity("DateTime<Utc>", "concept"));
+        assert!(is_noise_entity("os.ReadFile", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_math_symbol() {
+        assert!(is_noise_entity("{eij,dij}", "concept"));
+        assert!(is_noise_entity("ω_◇^(i)", "concept"));
+    }
+
+    #[test]
+    fn not_noise_real_entity() {
+        assert!(!is_noise_entity("PageRank", "concept"));
+        assert!(!is_noise_entity("Subjective Logic", "concept"));
+        assert!(!is_noise_entity("FAISS", "technology"));
+        assert!(!is_noise_entity("John Smith", "person"));
+        assert!(!is_noise_entity("Google", "organization"));
+    }
+
+    #[test]
+    fn not_noise_short_acronym() {
+        assert!(!is_noise_entity("RRF", "concept"));
+        assert!(!is_noise_entity("NLP", "concept"));
     }
 }
