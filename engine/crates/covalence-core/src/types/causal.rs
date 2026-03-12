@@ -38,3 +38,36 @@ impl CausalLevel {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_str_opt_valid() {
+        assert_eq!(CausalLevel::from_str_opt("association"), Some(CausalLevel::Association));
+        assert_eq!(CausalLevel::from_str_opt("intervention"), Some(CausalLevel::Intervention));
+        assert_eq!(
+            CausalLevel::from_str_opt("counterfactual"),
+            Some(CausalLevel::Counterfactual)
+        );
+    }
+
+    #[test]
+    fn from_str_opt_invalid() {
+        assert_eq!(CausalLevel::from_str_opt("unknown"), None);
+        assert_eq!(CausalLevel::from_str_opt(""), None);
+        assert_eq!(CausalLevel::from_str_opt("Association"), None); // case-sensitive
+    }
+
+    #[test]
+    fn roundtrip() {
+        for level in [
+            CausalLevel::Association,
+            CausalLevel::Intervention,
+            CausalLevel::Counterfactual,
+        ] {
+            assert_eq!(CausalLevel::from_str_opt(level.as_str()), Some(level));
+        }
+    }
+}

@@ -125,3 +125,57 @@ define_id!(
     /// Unique identifier for an audit log entry.
     AuditLogId
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_generates_unique_ids() {
+        let a = NodeId::new();
+        let b = NodeId::new();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn from_uuid_roundtrip() {
+        let uuid = Uuid::new_v4();
+        let id = SourceId::from_uuid(uuid);
+        assert_eq!(id.into_uuid(), uuid);
+    }
+
+    #[test]
+    fn from_into_uuid() {
+        let uuid = Uuid::new_v4();
+        let id: EdgeId = uuid.into();
+        let back: Uuid = id.into();
+        assert_eq!(uuid, back);
+    }
+
+    #[test]
+    fn display_matches_inner_uuid() {
+        let uuid = Uuid::new_v4();
+        let id = ChunkId::from_uuid(uuid);
+        assert_eq!(id.to_string(), uuid.to_string());
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let id = ArticleId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: ArticleId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn hash_eq_consistency() {
+        use std::collections::HashSet;
+        let uuid = Uuid::new_v4();
+        let a = NodeId::from_uuid(uuid);
+        let b = NodeId::from_uuid(uuid);
+        assert_eq!(a, b);
+        let mut set = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b));
+    }
+}
