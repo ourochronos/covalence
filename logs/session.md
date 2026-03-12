@@ -286,7 +286,7 @@ Also fixed `assemble_context` to use the actual `source_title` field instead of 
 
 1. **Search result attribution** — `entity_type` and `source_title` populated for all result types
 2. **Source diversification** — max 2 chunks per source prevents hierarchy overlap crowding
-3. **Source enrichment** — vector-matched sources now fully enriched with title and content
+3. **Source enrichment** — vector-matched sources fully enriched with title and content
 4. **Dead code removal** — eliminated duplicated, incomplete `search_with_metadata`
 5. **Quality gating** — per-dimension score-spread dampening for non-discriminating dimensions
 
@@ -490,3 +490,138 @@ Graph, structural, and temporal dimensions are all active:
 - Pipeline stage queues (#64)
 - Late chunking (#72), coarse-to-fine retrieval (#69)
 
+---
+
+## Session 4 — 2026-03-12
+
+### Summary
+
+Continued autonomous meta-loop. Fixed 7 bugs, added 4 improvements, ingested 4 research papers.
+
+### Bug Fixes
+
+1. **Semantic query cache 3-bug fix** (#76)
+   - SQL referenced `embedding` column instead of `query_embedding`
+   - Cache store used `effective_strategy` ("balanced") but lookup used `strategy` ("auto") — never matched
+   - Cache was not wired into SearchService in state.rs
+   - After fix: 8.2x speedup on cache hit (745ms → 91ms)
+
+2. **Reranker blending math error** (#80)
+   - Formula was `score * (0.6 + 0.4 * norm_score)` — reranker multiplied by existing score, nearly ineffective
+   - Fixed to `score * 0.6 + norm_score * 0.4` for independent blending
+
+3. **Vector score clamping** (#80)
+   - `1.0 - cosine_distance` can produce negative scores for near-opposite vectors
+   - Added `GREATEST(0.0, ...)` to clamp similarity to [0, 1]
+
+4. **Spreading activation NaN filter** (#80)
+   - Didn't filter NaN/infinite edge confidences before sorting
+   - Added `retain(|(_, conf)| conf.is_finite() && *conf >= 0.0)`
+
+5. **DATABASE_URL pointed at empty dev DB** — data was on `covalence_prod` at port 5437
+   - Fixed .env to point to correct database
+
+### Improvements
+
+6. **Chunk name derivation v2** (#77) — Skip bold-label lines (`**Key:** value`), link lines, arxiv refs before extracting chunk name. Strip inline markdown formatting. 8 new tests.
+
+7. **Graph seed stopword filter** (#78) — Filter stopwords and short terms (< 3 chars) from graph seed detection. Prevents common words like "in" matching nodes like "Mining". 3 new tests.
+
+8. **Search trace dimension logging** (#78) — Added dimension counts and result type breakdown to trace emit(): `dims=vec=3 lex=3 gra=3 types=chunk=2 article=1`
+
+9. **Enrichment dedup optimization** (#79) — Merged parent-context injection into main enrichment loop, eliminating redundant ChunkRepo::get per paragraph-level chunk.
+
+### Research Ingestion
+
+Ingested 4 papers via API (base64 content):
+- **2507.03226** — Practical GraphRAG: dependency-parsing KG construction, 94% of LLM quality
+- **2503.23013** — DAT: Dynamic Alpha Tuning for per-query fusion weights
+- **2508.01405** — Balancing the Blend: weakest-link phenomenon in hybrid search
+- **2506.00049** — Small embeddings + LLM reranking beats bigger models
+
+Cleaned up 1 URL-ingested arxiv source that had HTML boilerplate in chunks (27 junk chunks removed).
+
+### Stats
+
+- **Tests:** 753 (700 core + 10 API + 43 eval), up from 744. Clippy clean.
+- **Data:** 266 sources, 8931 chunks, 1554 nodes, 11,094 edges, 88 articles
+- **Commits:** 9fdf5cf (#76), cbdfbb9 (#77), 7d58086 (#78), 2a5efa8 (#79), bbba01f (#80)
+
+### Search Quality Assessment
+
+Cache working: 8.2x speedup on identical queries, semantic similarity matching works across query variants.
+
+All 6 dimensions contributing to results:
+- Vector: semantic similarity via Voyage embeddings
+- Lexical: BM25-like text matching
+- Graph: BFS from auto-detected seed nodes (now with stopword filtering)
+- Structural: node/edge type matching
+- Global: community-level article matching
+- Temporal: time-based relevance
+
+Quality gating active: non-discriminating dimensions dampened proportionally to score spread.
+
+---
+
+## Session 5 — 2026-03-12
+
+Continuing the autonomous meta-loop.
+
+### Starting State
+
+Prod engine running on :8431 with 266 sources, 1554 nodes, 11,094 edges, 88 articles, 8904 chunks. 762 tests passing. CC fusion default. Voyage reranker (rerank-2.5) active.
+
+---
+
+### Improvements
+
+1. **CLI: default search strategy to auto** (72a3f3c)
+   - CLI was defaulting to "balanced" while the API defaults to "auto". Aligned them.
+
+2. **Generic heading qualification with source title** (44159f5, #83)
+   - Chunk names like "Overview", "Abstract", etc. now qualified with source title
+   - E.g., "Abstract" → "Neural Networks for Entity Matching: A Survey: Abstract"
+   - ~30 generic headings recognized
+
+3. **NoopReranker fix + is_noop() trait method** (af97968)
+   - NoopReranker returned descending scores that inflated the top result by up to 0.4 points via the 60/40 blending formula
+   - Fixed to return uniform 1.0 scores
+   - Added `is_noop()` to Reranker trait; skip blending entirely when true
+   - Latent bug — production uses HttpReranker, but would affect deployments without VOYAGE_API_KEY
+
+4. **Numbered heading section number stripping** (35b9afe)
+   - Headings like "2 Background" and "1.2 Introduction" now match GENERIC_HEADINGS after stripping the leading section number
+
+5. **Chunk name all-metadata fallback** (bc3e29f)
+   - When all lines are metadata (bold labels), strip bold markers and use first line
+   - Previously returned raw markdown like "**Authors:** (2506.00049)"
+   - Also skip bare numbered list items ("3.", "4.") as chunk names
+
+6. **Metadata-only chunk filter** (bc3e29f)
+   - Discard chunks < 80 chars where every line is a bold label or blank
+   - ~115 existing junk chunks affected on future reprocessing
+
+7. **Boilerplate-heavy chunk filter** (8332380)
+   - Detect chunks where ≥60% of lines are web UI boilerplate (arxiv "View PDF", "Cite as:", etc.)
+   - ~234 existing contaminated chunks affected on future reprocessing
+
+8. **Query-aware entity demotion** (140b18d)
+   - Skip demotion for entities whose canonical name appears in the query text
+   - "Who is Tim Cook" → Tim Cook entity node NOT demoted
+   - Min 3 chars to avoid false matches on short names
+
+9. **Effective fusion weight logging** (af97968)
+   - Debug-level log of effective weights after redistribution and quality gating
+
+### Stats
+
+- **Tests:** 783 (730 core + 10 API + 43 eval), up from 762. Clippy clean.
+- **Commits:** 72a3f3c, 44159f5, af97968, 35b9afe, bc3e29f, 8332380, 140b18d
+
+### Open Areas
+
+- Reprocess contaminated sources to apply new chunk filters (~234 arxiv boilerplate chunks still in DB)
+- Graph quality: separating system design from bibliographic noise (#78)
+- RAPTOR hierarchical retrieval (#74)
+- Ingest spec reference papers (#92)
+- Pipeline stage queues (#64)
