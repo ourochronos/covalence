@@ -880,7 +880,21 @@ Three classes of bugs found by background scanner agents:
 
 **Files modified:** `cli/cmd/source.go`, `cli/cmd/search.go`, `cli/cmd/memory.go`, `cli/cmd/helpers_test.go` (new)
 
-### Improvement 52: Reject partial date range + fix Swagger UI auth + middleware tests
+### Improvement 53: CLI API key auth + 204 No Content fix
+
+**Bug 1 (no auth):** CLI had no way to authenticate when `COVALENCE_API_KEY` is set on the server. All requests returned 401 Unauthorized. Added `--api-key` flag and `COVALENCE_API_KEY` env var with Bearer token auth.
+
+**Bug 2 (204 decode error):** `Delete()` always tried to JSON-decode the response body, but `forget_memory` returns 204 No Content. Caused EOF errors on successful deletion.
+
+**Files modified:** `cli/cmd/root.go`, `cli/internal/client.go`, all 7 cmd files (24 call sites)
+
+### Improvement 54: OpenAPI spec completeness
+
+**Bug:** `synthesize_cooccurrence` and `cluster_ontology` endpoints were registered as routes but missing from the OpenAPI spec. Swagger UI didn't show them.
+
+**Fix:** Added both paths and their 5 associated request/response schemas.
+
+### Improvement 55: Reject partial date range + fix Swagger UI auth + middleware tests
 
 **Bug 1 (partial date range):** Providing only `date_range_start` or `date_range_end` in a search request was silently ignored. Now returns a clear error explaining both are required.
 
@@ -905,7 +919,7 @@ Three classes of bugs found by background scanner agents:
 
 - **Tests:** 936 (870 core + 19 API + 47 eval) + 13 Go, up from 795. +141 net new tests (149 added, 8 dead removed). Clippy clean.
 - **Zero unwrap/expect in production library code** (verified via full sweep)
-- **Commits:** 30 total (12 from session 5a + 18 from session 5b/5c/5d), all pushed
+- **Commits:** 33 total (12 from session 5a + 21 from session 5b/5c/5d), all pushed
 - **Files modified:** ~63 files across 4 crates + CLI
 
 ### Open Areas
