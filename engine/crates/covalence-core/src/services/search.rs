@@ -500,6 +500,29 @@ impl SearchService {
                         }
                     }
                 }
+                Some("source") => {
+                    if let Ok(Some(source)) =
+                        SourceRepo::get(
+                            &*self.repo,
+                            crate::types::ids::SourceId::from_uuid(result.id),
+                        )
+                        .await
+                    {
+                        result.name = source.title.clone();
+                        result.entity_type = Some("source".to_string());
+                        result.source_uri = source.uri;
+                        result.source_title = source.title;
+                        // Use truncated raw content for snippet.
+                        if let Some(ref raw) = source.raw_content {
+                            let truncated = if raw.len() > 500 {
+                                format!("{}...", &raw[..500])
+                            } else {
+                                raw.clone()
+                            };
+                            result.content = Some(truncated);
+                        }
+                    }
+                }
                 _ => {
                     // Chunk or unknown — try chunk lookup for
                     // source_uri and content, then node lookup
@@ -514,6 +537,35 @@ impl SearchService {
                         {
                             result.source_uri = source.uri;
                             result.source_title = source.title;
+                        }
+                    }
+                    // If still no entity_type, try source lookup
+                    // (vector dimension produces source results
+                    // but result_type may not propagate through
+                    // fusion).
+                    if result.entity_type.is_none() {
+                        if let Ok(Some(source)) =
+                            SourceRepo::get(
+                                &*self.repo,
+                                crate::types::ids::SourceId::from_uuid(
+                                    result.id,
+                                ),
+                            )
+                            .await
+                        {
+                            result.name = source.title.clone();
+                            result.entity_type =
+                                Some("source".to_string());
+                            result.source_uri = source.uri;
+                            result.source_title = source.title;
+                            if let Some(ref raw) = source.raw_content {
+                                let truncated = if raw.len() > 500 {
+                                    format!("{}...", &raw[..500])
+                                } else {
+                                    raw.clone()
+                                };
+                                result.content = Some(truncated);
+                            }
                         }
                     }
                     if let Ok(Some(node)) =
