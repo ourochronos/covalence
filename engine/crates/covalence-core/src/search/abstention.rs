@@ -18,10 +18,16 @@ pub struct AbstentionConfig {
 impl Default for AbstentionConfig {
     fn default() -> Self {
         Self {
-            // RRF with k=60 produces scores in the 0.001-0.01 range.
-            // A threshold of 0.001 means "at least one dimension
-            // ranked this result in top 60."
-            min_relevance_score: 0.001,
+            // CC fusion produces scores in the 0.0-1.0 range (sum
+            // of normalized dimension weights). A threshold of 0.05
+            // means the top result scored below 5% of the maximum
+            // possible fused score, indicating very poor retrieval.
+            //
+            // For reference, even marginal matches typically score
+            // 0.1+ with CC fusion (single dimension, moderate
+            // similarity). Previously calibrated for RRF (0.001)
+            // which was effectively disabled under CC fusion.
+            min_relevance_score: 0.05,
             min_results: 1,
         }
     }
@@ -116,20 +122,21 @@ mod tests {
     #[test]
     fn abstention_low_score() {
         let config = AbstentionConfig::default();
-        let check = check_abstention(&[0.0005, 0.0002], &config);
+        // CC fusion scores below 0.05 indicate very poor retrieval.
+        let check = check_abstention(&[0.03, 0.01], &config);
         assert!(check.should_abstain);
-        assert_eq!(check.top_score, Some(0.0005));
+        assert_eq!(check.top_score, Some(0.03));
         assert!(check.reason.as_deref().unwrap().contains("below threshold"));
     }
 
     #[test]
     fn abstention_sufficient() {
         let config = AbstentionConfig::default();
-        // RRF scores in the 0.002-0.005 range are typical good results.
-        let check = check_abstention(&[0.005, 0.003], &config);
+        // CC fusion scores in the 0.1-0.5 range are typical results.
+        let check = check_abstention(&[0.35, 0.22], &config);
         assert!(!check.should_abstain);
         assert!(check.reason.is_none());
-        assert_eq!(check.top_score, Some(0.005));
+        assert_eq!(check.top_score, Some(0.35));
         assert_eq!(check.result_count, 2);
     }
 
