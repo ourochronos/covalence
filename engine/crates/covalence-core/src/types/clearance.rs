@@ -50,6 +50,16 @@ impl ClearanceLevel {
     }
 }
 
+impl std::fmt::Display for ClearanceLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LocalStrict => write!(f, "local_strict"),
+            Self::FederatedTrusted => write!(f, "federated_trusted"),
+            Self::FederatedPublic => write!(f, "federated_public"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,15 +130,5 @@ mod tests {
     #[test]
     fn default_is_local_strict() {
         assert_eq!(ClearanceLevel::default(), ClearanceLevel::LocalStrict);
-    }
-}
-
-impl std::fmt::Display for ClearanceLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LocalStrict => write!(f, "local_strict"),
-            Self::FederatedTrusted => write!(f, "federated_trusted"),
-            Self::FederatedPublic => write!(f, "federated_public"),
-        }
     }
 }

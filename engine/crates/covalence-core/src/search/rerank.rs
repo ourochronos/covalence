@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn empty_doc_filter_preserves_indices() {
         // Simulate the filtering logic used in HttpReranker::rerank.
-        let documents = vec![
+        let documents = [
             "first".to_string(),
             "".to_string(),
             "third".to_string(),
