@@ -52,6 +52,23 @@ pub async fn search(
         Some("recent") => covalence_core::search::strategy::SearchStrategy::Recent,
         Some("graph_first") => covalence_core::search::strategy::SearchStrategy::GraphFirst,
         Some("global") => covalence_core::search::strategy::SearchStrategy::Global,
+        Some("custom") => {
+            let w = req.weights.as_ref().ok_or_else(|| {
+                ApiError::from(covalence_core::error::Error::InvalidInput(
+                    "strategy 'custom' requires a 'weights' object".to_string(),
+                ))
+            })?;
+            covalence_core::search::strategy::SearchStrategy::Custom(
+                covalence_core::search::strategy::DimensionWeights {
+                    vector: w.vector,
+                    lexical: w.lexical,
+                    temporal: w.temporal,
+                    graph: w.graph,
+                    structural: w.structural,
+                    global: w.global,
+                },
+            )
+        }
         _ => covalence_core::search::strategy::SearchStrategy::Auto,
     };
 

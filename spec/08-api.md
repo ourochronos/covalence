@@ -58,11 +58,12 @@ DELETE /api/v1/sources/{id}
 POST /api/v1/search
   Body: {
     query: String,
-    strategy: "balanced" | "precise" | "exploratory" | "recent" | "graph_first" | "custom",
-    weights: { vector, lexical, temporal, graph, structural }?,
+    strategy: "auto" | "balanced" | "precise" | "exploratory" | "recent" | "graph_first" | "global" | "custom",
+    weights: { vector, lexical, temporal, graph, structural, global }?,
     limit: Int?,
-    mode: "results" | "context",        // results (default) or assembled context
-    granularity: "chunk" | "section",   // chunk-level or section-level results
+    mode: "results" | "context",                  // results (default) or assembled context
+    granularity: "section" | "paragraph" | "source",  // section (default), paragraph, or full source
+    source_layers: ["spec" | "design" | "code" | "research"]?,  // filter by source URI prefix layer
     filters: {
       source_types: [String]?,
       date_range: { start, end }?,
@@ -71,6 +72,13 @@ POST /api/v1/search
     }?
   }
   → Returns: [SearchResult] or ContextResponse depending on mode
+  → strategy "auto" (default) uses SkewRoute for adaptive strategy selection based on
+    score distribution analysis (min-max normalized Gini coefficient)
+  → granularity controls content resolution:
+      "section"   — walk up to the parent section chunk (default)
+      "paragraph" — use the matched chunk content as-is
+      "source"    — use the full source normalized_content
+  → source_layers filters results by URI prefix layer (e.g. spec/, docs/adr/, *.rs, research papers)
 
 POST /api/v1/search/feedback
   Body: { trace_id, result_id, relevant: bool, comment? }
@@ -222,6 +230,18 @@ GET /api/v1/admin/traces
 POST /api/v1/admin/traces/{id}/replay
   → Replay a traced query with different parameters for A/B comparison
 
+POST /api/v1/admin/cache/clear
+  → Clear the semantic query cache
+  → Returns: { entries_cleared }
+
+POST /api/v1/admin/edges/synthesize
+  Body: { min_cooccurrences?: Int, max_degree?: Int }
+  → Run co-occurrence edge synthesis: creates synthetic edges between nodes that
+    frequently appear in the same chunks
+  → min_cooccurrences: minimum co-occurrence count to create an edge (default 1)
+  → max_degree: only create edges for nodes with degree ≤ this value (default 2)
+  → Returns: { edges_created, candidates_evaluated }
+
 GET /api/v1/admin/knowledge-gaps
   Query: { min_mentions?, max_extractions? }
   → Identify knowledge gaps: entities with high mention count but low extraction coverage
@@ -313,7 +333,17 @@ memory_forget(memory_id, reason?)
 
 ## Authentication / Authorization
 
-TBD — initial implementation is single-user, no auth. Multi-user/tenant support is a future concern.
+Optional API key authentication via the `COVALENCE_API_KEY` environment variable.
+
+- **When `COVALENCE_API_KEY` is not set:** All requests pass through without authentication (development mode).
+- **When `COVALENCE_API_KEY` is set:** All requests to non-public paths must include an `Authorization: Bearer <key>` header with a matching key.
+  - Returns `401 Unauthorized` with `{"error": {"code": "auth_error", "message": "..."}}` if:
+    - The header is missing entirely
+    - The authorization scheme is not `Bearer`
+    - The token does not match the configured key
+- **Public paths (exempt from auth):** `/health`, `/openapi.json`, `/docs/*`, `/dashboard/*`
+
+Multi-user/tenant support is a future concern.
 
 ## Error Responses
 

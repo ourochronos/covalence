@@ -159,14 +159,37 @@ pub enum SearchGranularity {
     Source,
 }
 
+/// Custom per-dimension weight overrides for the `custom` search
+/// strategy.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DimensionWeightsDto {
+    /// Semantic vector similarity weight.
+    pub vector: f64,
+    /// Full-text lexical search weight.
+    pub lexical: f64,
+    /// Temporal recency/range weight.
+    pub temporal: f64,
+    /// Graph traversal weight.
+    pub graph: f64,
+    /// Structural centrality weight.
+    pub structural: f64,
+    /// Community summary search weight.
+    pub global: f64,
+}
+
 /// Request body for search.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SearchRequest {
     /// The search query text.
     pub query: String,
-    /// Search strategy (balanced, precise, exploratory, recent,
-    /// graph_first).
+    /// Search strategy (auto, balanced, precise, exploratory, recent,
+    /// graph_first, global, custom). When `custom` is used, provide
+    /// the `weights` object. Default: `auto` (SkewRoute selection).
     pub strategy: Option<String>,
+    /// Custom dimension weights (used when `strategy` is `custom`).
+    /// All six weights are required; they need not sum to 1.0
+    /// (normalization is applied internally).
+    pub weights: Option<DimensionWeightsDto>,
     /// Maximum number of results.
     pub limit: Option<usize>,
     /// Minimum epistemic confidence threshold (0.0–1.0).
