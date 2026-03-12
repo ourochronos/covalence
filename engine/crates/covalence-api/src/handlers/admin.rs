@@ -352,7 +352,7 @@ pub async fn knowledge_gaps(
 ) -> Result<Json<KnowledgeGapsResponse>, ApiError> {
     let min_in_degree = params.min_in_degree.unwrap_or(3);
     let min_label_length = params.min_label_length.unwrap_or(4);
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(20).min(200);
     let exclude_types: Vec<String> = params
         .exclude_types
         .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())

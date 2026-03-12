@@ -83,7 +83,7 @@ pub async fn get_neighborhood(
     Path(id): Path<Uuid>,
     Query(params): Query<NeighborhoodParams>,
 ) -> Result<Json<Vec<NodeResponse>>, ApiError> {
-    let hops = params.hops.unwrap_or(1);
+    let hops = params.hops.unwrap_or(1).min(10);
     let nodes = state.node_service.neighborhood(id.into(), hops).await?;
     Ok(Json(nodes.into_iter().map(node_to_response).collect()))
 }
@@ -266,7 +266,7 @@ pub async fn list_landmarks(
     State(state): State<AppState>,
     Query(params): Query<LandmarkParams>,
 ) -> Result<Json<Vec<NodeResponse>>, ApiError> {
-    let limit = params.limit.unwrap_or(10);
+    let limit = params.limit.unwrap_or(10).min(200);
     let nodes = state.node_service.list_landmarks(limit).await?;
     Ok(Json(nodes.into_iter().map(node_to_response).collect()))
 }

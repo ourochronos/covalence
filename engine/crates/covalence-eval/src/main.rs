@@ -148,7 +148,11 @@ fn run_search_eval(cli: &Cli, fixture: &covalence_eval::fixtures::EvalFixture) -
             .enumerate()
             .map(|(i, id)| RankedResult {
                 id: id.clone(),
-                score: 1.0 - (i as f64 / query_fixture.expected_ids.len() as f64),
+                score: if query_fixture.expected_ids.len() > 1 {
+                    1.0 - (i as f64 / (query_fixture.expected_ids.len() - 1) as f64)
+                } else {
+                    1.0
+                },
             })
             .collect();
 
