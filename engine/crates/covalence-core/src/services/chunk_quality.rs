@@ -199,9 +199,7 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
     if lines.len() <= 4 {
         let joined = lines.join(" ");
         let lower = joined.to_lowercase();
-        if (lower.contains("arxiv preprint") || lower.contains("_arxiv_"))
-            && trimmed.len() < 200
-        {
+        if (lower.contains("arxiv preprint") || lower.contains("_arxiv_")) && trimmed.len() < 200 {
             return true;
         }
         // Pattern: short fragment with journal/proceedings italics.
@@ -231,10 +229,7 @@ pub(crate) fn is_bibliography_entry(text: &str) -> bool {
                 "oxford university press",
                 "report issue",
             ];
-            if publisher_markers
-                .iter()
-                .any(|m| lower.contains(m))
-            {
+            if publisher_markers.iter().any(|m| lower.contains(m)) {
                 return true;
             }
         }
@@ -375,9 +370,7 @@ mod tests {
 
     #[test]
     fn bibliography_entry_report_issue() {
-        assert!(is_bibliography_entry(
-            "ing, C. D.: RAPTOR.\n\nReport Issue"
-        ));
+        assert!(is_bibliography_entry("ing, C. D.: RAPTOR.\n\nReport Issue"));
     }
 
     #[test]
