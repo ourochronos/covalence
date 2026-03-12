@@ -140,13 +140,14 @@ Covalence builds Covalence. The system is its own knowledge substrate — we dev
 
 Each autonomous session follows this loop. The loop itself is a target of improvement — if a step is weak, fix the step.
 
-1. **Query** — Before working on anything non-trivial, search Covalence for relevant knowledge. Use `cove search "query"` against prod (port 8441). If search doesn't return useful results, that's signal about search quality, not about the knowledge being absent.
-2. **Identify gaps** — What questions can't be answered from the graph? What research is missing? What does the system not know about itself?
-3. **Ingest** — Find and ingest research to fill gaps. Papers, documentation, RFCs, algorithm references. This is investment, not overhead. The graph should understand the theory behind everything it does.
-4. **Learn** — Use the ingested knowledge to inform implementation decisions. Don't just ingest and move on — read the results, let them shape the work.
-5. **Build** — Implement improvements to Covalence, including improvements to the loop itself. Fix the weakest link first.
-6. **Evaluate** — Did the change actually improve things? Query again. Compare results. Run the eval harness if relevant.
-7. **Reflect** — What about the loop itself could be better? Update these directives if you discover a better process.
+1. **Query** — Before working on anything non-trivial, search Covalence for relevant knowledge. Use `cove search "query"` against prod (port 8441). If search doesn't return useful results, that's signal about search quality, not about the knowledge being absent. Also use the graph's self-diagnostic tools: `/admin/knowledge-gaps` (high-in-degree, low-out-degree entities), `/admin/metrics`, graph stats. Let the graph tell you where it's weak — don't just search for topics you already know about.
+2. **Identify gaps** — What questions can't be answered from the graph? What research is missing? What does the system not know about itself? Be systematic: check which architectural concepts have zero external research backing. Check for low-confidence entities, isolated nodes, concepts referenced but never explained. Ad hoc "I searched 3 things and noticed a gap" is not sufficient.
+3. **Ingest** — Find and ingest research to fill gaps. Papers, documentation, RFCs, algorithm references. This is investment, not overhead. The graph should understand the theory behind everything it does. **Prefer depth over breadth** — one paper read thoroughly and applied thoughtfully beats five papers skimmed. Verify a paper is relevant (read the abstract, check the methodology) before committing to ingestion.
+4. **Learn** — This is the most important step and the one most likely to be shortcut. Read the ingested material deeply enough to extract non-obvious insights. Don't just grab the headline concept — understand the methodology, the tradeoffs, what they tried that didn't work, and what adjacent ideas they reference. If you can't articulate what you learned beyond a one-sentence summary, you haven't learned enough to build well.
+5. **Build** — Implement improvements to Covalence, including improvements to the loop itself. Fix the weakest link first. Measure before building: query prod data to quantify the problem (e.g., "32% of sections are under 100 chars") so you know what success looks like.
+6. **Evaluate** — Did the change actually improve things? This must be measurable, not vibes. Before/after comparisons on concrete metrics: chunk size distributions, retrieval scores on a fixed query set, eval harness results. "I can search for the papers now" is not evidence that quality improved. If you can't measure the improvement, you don't know if it happened.
+7. **Reflect** — What about the loop itself could be better? Which step was weakest this cycle? What was wasted effort? Be specific and honest.
+8. **Update directives** — If the Reflect step revealed a process improvement, a new anti-pattern, a stale directive, or a lesson that future sessions need, update CLAUDE.md and/or memory right now. Don't defer this — the insight is freshest immediately after the work. Also close or update any GitHub issues touched during the cycle.
 
 ### CLI-First Interaction
 
@@ -176,10 +177,11 @@ If the CLI is missing a feature you need (e.g., URL-based ingestion, bulk operat
 ### Fetching Content for Ingestion
 
 When ingesting web content:
-- **ArXiv and CloudFlare-fronted sites** support the `Accept: text/markdown` header, which returns clean markdown directly. Always use this when fetching from these sources — it bypasses the entire HTML conversion pipeline and eliminates boilerplate noise.
-- **For other sites**, fetch HTML and save locally, then ingest via `cove source add`. The converter pipeline handles HTML→Markdown.
+- **Use `firecrawl scrape <url> --only-main-content -o .firecrawl/<name>.md`** as the default for all web content. It handles JavaScript rendering, returns clean markdown, and works reliably across sites including ArXiv.
+- **ArXiv `Accept: text/markdown` header no longer works reliably** — always use firecrawl instead.
 - **For PDFs**, download the file and ingest directly — the PDF sidecar handles conversion.
 - **Prefer markdown over HTML over PDF** when multiple formats are available. Markdown flows through the pipeline with the least loss.
+- **Verify before ingesting** — check that fetched content is actual article text (not an error page or login wall) with a quick `head -10` before sending to `cove source add`.
 
 ### What to Ingest
 
@@ -224,10 +226,12 @@ Use `make ingest-codebase` for bulk re-ingestion, or `cove source add` for indiv
 Autonomous sessions should proactively maintain engineering quality:
 - **Refactor when you see the need.** If code is duplicated, poorly structured, or violating patterns documented here, fix it. Don't ask — just do it and explain in the commit.
 - **Use issues.** Every non-trivial piece of work gets an issue. Reference it in commits. Close it when done. This is how Chris tracks what happened between sessions.
+- **Close the loop on issues.** At the end of every session, review which issues were touched. Update them with progress notes, close completed ones, add blockers to deferred ones. An open issue with no recent activity is invisible work.
 - **Respect conventions.** Run `cargo fmt`, `cargo clippy`, and tests before committing. Follow the naming conventions in this file and in `our-infra`.
 - **Test in dev first.** Use `make run-dev` for development. Don't touch prod data without explicit approval. Use `make promote` to move verified changes to prod.
 - **Keep CI green locally.** Run `make check` before pushing. We don't rely on GitHub Actions for gating — the project isn't released yet — but the local checks are non-negotiable.
 - **Modular design.** Prefer small, focused modules. If a file is growing past ~500 lines, consider splitting. If a function does three things, make it three functions.
+- **Don't ignore failures.** If a consolidation run fails, a test is flaky, or an ingestion produces warnings — investigate immediately or create an issue. Moving past failures silently compounds debt.
 
 ### Track What You Find
 
@@ -247,6 +251,13 @@ The meta loop is subject to its own optimization. Explicitly look for:
 - **Missing feedback signals** — are we actually measuring whether ingested research improves outcomes? If not, build that measurement.
 - **Knowledge decay** — is old research still accurate? Do opinions need updating? Is consolidation surfacing the right articles?
 - **Process patterns** — what worked well in this session? What was wasted effort? Update these directives accordingly.
+
+**Known failure modes** (learned from experience):
+- **Shallow learning** — skimming 5 papers instead of deeply reading 1. The Learn step gets shortcut because Build feels more productive. It isn't — shallow learning produces shallow improvements.
+- **Vibes-based evaluation** — "the search returns results now" is not measurement. Use the eval harness, compare chunk distributions, run before/after queries on a fixed set.
+- **Ad hoc gap identification** — searching for topics you already know about only finds gaps you already suspect. Use the graph's diagnostic tools (`/admin/knowledge-gaps`, node degree analysis) to find gaps you don't expect.
+- **Orphaned issues** — starting work related to an issue but not updating or closing it. The cycle should end with issue hygiene.
+- **Ignoring failures** — consolidation errors, ingestion warnings, clippy hints. If something failed during the loop, investigate it or track it. Don't move on.
 
 The goal is not just to build Covalence but to make each session measurably more effective than the last. The loop is the product as much as the code is.
 
