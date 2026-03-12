@@ -125,7 +125,8 @@ impl ArticleCompiler for LlmCompiler {
                 {"role": "user", "content": user_prompt}
             ],
             "response_format": {"type": "json_object"},
-            "temperature": 0.3
+            "temperature": 0.3,
+            "max_tokens": 16384
         });
 
         let resp = self
@@ -163,11 +164,30 @@ impl ArticleCompiler for LlmCompiler {
                 )
             })?;
 
-        let parsed: serde_json::Value = serde_json::from_str(content).map_err(|e| {
-            crate::error::Error::Consolidation(format!(
-                "LLM returned invalid JSON: {e}"
-            ))
-        })?;
+        // Strip markdown code fences if the model wrapped the JSON.
+        let content = content
+            .trim()
+            .strip_prefix("```json")
+            .or_else(|| content.trim().strip_prefix("```"))
+            .and_then(|s| s.strip_suffix("```"))
+            .unwrap_or(content)
+            .trim();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(content).or_else(|e| {
+                // Attempt repair: if the JSON is truncated, try closing
+                // open strings/braces. This handles the common case where
+                // the model hits max_tokens mid-body.
+                tracing::warn!(
+                    community_id = input.community_id,
+                    "LLM returned invalid JSON ({e}), attempting repair"
+                );
+                repair_truncated_json(content).ok_or_else(|| {
+                    crate::error::Error::Consolidation(format!(
+                        "LLM returned invalid JSON: {e}"
+                    ))
+                })
+            })?;
 
         let title = parsed["title"]
             .as_str()
@@ -211,6 +231,57 @@ impl ArticleCompiler for LlmCompiler {
             summary,
         })
     }
+}
+
+/// Attempt to repair truncated JSON from an LLM response.
+///
+/// When the model hits `max_tokens`, the JSON is often cut mid-string.
+/// This function tries to close open strings and braces to make it
+/// parseable. Returns `None` if repair fails.
+fn repair_truncated_json(raw: &str) -> Option<serde_json::Value> {
+    let mut s = raw.to_string();
+
+    // If we're inside an open string, close it.
+    let quote_count = s.chars().filter(|&c| c == '"').count()
+        - s.chars()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .filter(|w| w[0] == '\\' && w[1] == '"')
+            .count();
+    if quote_count % 2 != 0 {
+        s.push('"');
+    }
+
+    // Count open braces/brackets and close them.
+    let mut brace_depth: i32 = 0;
+    let mut bracket_depth: i32 = 0;
+    let mut in_string = false;
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && in_string {
+            i += 2; // skip escaped char
+            continue;
+        }
+        match chars[i] {
+            '"' => in_string = !in_string,
+            '{' if !in_string => brace_depth += 1,
+            '}' if !in_string => brace_depth -= 1,
+            '[' if !in_string => bracket_depth += 1,
+            ']' if !in_string => bracket_depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    for _ in 0..bracket_depth {
+        s.push(']');
+    }
+    for _ in 0..brace_depth {
+        s.push('}');
+    }
+
+    serde_json::from_str(&s).ok()
 }
 
 #[cfg(test)]
@@ -272,5 +343,71 @@ mod tests {
         };
         let output = compiler.compile(&input).await.unwrap();
         assert!(output.body.is_empty());
+    }
+
+    #[test]
+    fn repair_valid_json_unchanged() {
+        let json = r#"{"title": "Test", "body": "Hello", "summary": "Hi"}"#;
+        let parsed = repair_truncated_json(json).unwrap();
+        assert_eq!(parsed["title"], "Test");
+    }
+
+    #[test]
+    fn repair_truncated_string() {
+        // Truncated mid-string in body field
+        let json = r#"{"title": "Test", "body": "Hello wor"#;
+        let parsed = repair_truncated_json(json).unwrap();
+        assert_eq!(parsed["title"], "Test");
+        assert!(parsed["body"].as_str().unwrap().starts_with("Hello wor"));
+    }
+
+    #[test]
+    fn repair_truncated_missing_closing_brace() {
+        let json = r#"{"title": "Test", "body": "Hello""#;
+        let parsed = repair_truncated_json(json).unwrap();
+        assert_eq!(parsed["title"], "Test");
+        assert_eq!(parsed["body"], "Hello");
+    }
+
+    #[test]
+    fn repair_with_markdown_fences() {
+        // Some models wrap JSON in ```json ... ```
+        let json = "```json\n{\"title\": \"Test\"}\n```";
+        // This is handled by the caller (strip_prefix), not repair.
+        // But repair should handle valid JSON fine.
+        let parsed = repair_truncated_json(
+            &json
+                .trim()
+                .strip_prefix("```json")
+                .unwrap()
+                .strip_suffix("```")
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(parsed["title"], "Test");
+    }
+
+    #[test]
+    fn repair_with_escaped_quotes() {
+        let json = r#"{"title": "A \"quoted\" title", "body": "text"}"#;
+        let parsed = repair_truncated_json(json).unwrap();
+        assert_eq!(parsed["title"], "A \"quoted\" title");
+    }
+
+    #[test]
+    fn repair_deeply_truncated_returns_none() {
+        // So truncated that closing strings/braces still can't
+        // produce valid JSON (no key-value pair).
+        let json = r#"{"ti"#;
+        let result = repair_truncated_json(json);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn repair_nested_brackets() {
+        let json = r#"{"title": "Test", "items": ["a", "b"#;
+        let parsed = repair_truncated_json(json).unwrap();
+        assert_eq!(parsed["title"], "Test");
     }
 }

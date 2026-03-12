@@ -244,14 +244,34 @@ impl GraphBatchConsolidator {
                 }
             }
         } else {
+            let mut compiled = 0usize;
+            let mut failed = 0usize;
             for (&community_id, source_ids) in &clusters {
-                if let Some(article) =
-                    self.compile_article(source_ids, community_id).await?
-                {
-                    ArticleRepo::create(&*self.repo, &article).await?;
-                    self.embed_article(&article).await?;
+                match self.compile_article(source_ids, community_id).await {
+                    Ok(Some(article)) => {
+                        ArticleRepo::create(&*self.repo, &article).await?;
+                        self.embed_article(&article).await?;
+                        compiled += 1;
+                    }
+                    Ok(None) => {} // No compiler configured
+                    Err(e) => {
+                        // Log and continue — don't let one bad community
+                        // kill the entire batch.
+                        tracing::warn!(
+                            community_id,
+                            error = %e,
+                            "article compilation failed for community, skipping"
+                        );
+                        failed += 1;
+                    }
                 }
             }
+            tracing::info!(
+                compiled,
+                failed,
+                total = clusters.len(),
+                "batch consolidation complete"
+            );
         }
 
         Ok(())
