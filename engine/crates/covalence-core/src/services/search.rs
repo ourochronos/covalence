@@ -837,6 +837,18 @@ impl SearchService {
                             &chunk.content,
                             src_title.as_deref(),
                         ));
+                        // Content-based snippet fallback: if no lexical
+                        // snippet exists, use the first 200 chars of
+                        // chunk content so vector-only results aren't
+                        // blank in the UI.
+                        if result.snippet.is_none() {
+                            let text = &chunk.content;
+                            result.snippet = Some(if text.len() > 200 {
+                                format!("{}...", &text[..200])
+                            } else {
+                                text.clone()
+                            });
+                        }
                         // Parent-context injection: for paragraph-level
                         // chunks, prepend truncated parent content to
                         // the snippet (avoids a second chunk fetch).
