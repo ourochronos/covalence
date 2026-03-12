@@ -90,6 +90,60 @@ fn truncate_with_ellipsis(s: &str, max_bytes: usize) -> String {
     format!("{}...", &s[..end])
 }
 
+/// Extract a keyword-in-context (KWIC) snippet from content.
+///
+/// Finds the best window of text surrounding query terms. Falls back
+/// to `truncate_with_ellipsis` if no query terms appear in the content.
+fn kwic_snippet(content: &str, query: &str, window_bytes: usize) -> String {
+    let content_lower = content.to_lowercase();
+    let terms: Vec<&str> = query
+        .split_whitespace()
+        .filter(|t| t.len() >= 3)
+        .collect();
+
+    if terms.is_empty() {
+        return truncate_with_ellipsis(content, window_bytes);
+    }
+
+    // Find the position of the best term match (longest term first
+    // for more specific hits).
+    let mut best_pos = None;
+    let mut best_len = 0;
+    for term in &terms {
+        let term_lower = term.to_lowercase();
+        if let Some(pos) = content_lower.find(&term_lower) {
+            if term_lower.len() > best_len {
+                best_pos = Some(pos);
+                best_len = term_lower.len();
+            }
+        }
+    }
+
+    let Some(match_pos) = best_pos else {
+        return truncate_with_ellipsis(content, window_bytes);
+    };
+
+    // Center the window around the match.
+    let half = window_bytes / 2;
+    let start = match_pos.saturating_sub(half);
+    // Walk to a char boundary.
+    let mut start = start;
+    while start > 0 && !content.is_char_boundary(start) {
+        start -= 1;
+    }
+
+    let end = (start + window_bytes).min(content.len());
+    let mut end = end;
+    while end < content.len() && !content.is_char_boundary(end) {
+        end += 1;
+    }
+
+    let slice = &content[start..end];
+    let prefix = if start > 0 { "..." } else { "" };
+    let suffix = if end < content.len() { "..." } else { "" };
+    format!("{prefix}{slice}{suffix}")
+}
+
 /// Derive a readable name from chunk content, optionally qualified
 /// by a source title when the heading is generic.
 ///
@@ -802,7 +856,7 @@ impl SearchService {
                             .confidence_breakdown
                             .map(|o| o.projected_probability());
                         if result.snippet.is_none() {
-                            result.snippet = Some(truncate_with_ellipsis(&article.body, 300));
+                            result.snippet = Some(kwic_snippet(&article.body, query, 300));
                         }
                     }
                 }
@@ -850,11 +904,11 @@ impl SearchService {
                             src_title.as_deref(),
                         ));
                         // Content-based snippet fallback: if no lexical
-                        // snippet exists, use the first 200 chars of
-                        // chunk content so vector-only results aren't
-                        // blank in the UI.
+                        // snippet exists, extract a keyword-in-context
+                        // window around query terms. Falls back to the
+                        // first 200 chars if no terms match.
                         if result.snippet.is_none() {
-                            result.snippet = Some(truncate_with_ellipsis(&chunk.content, 200));
+                            result.snippet = Some(kwic_snippet(&chunk.content, query, 200));
                         }
                         // Parent-context injection: for paragraph-level
                         // chunks, prepend truncated parent content to
@@ -1570,5 +1624,47 @@ mod tests {
     fn qualified_name_no_source_falls_back() {
         let content = "## Overview\nThe system is designed for...";
         assert_eq!(derive_chunk_name_qualified(content, None), "Overview");
+    }
+
+    // --- KWIC snippet tests ---
+
+    #[test]
+    fn kwic_finds_query_term() {
+        let content = "The preamble discusses many topics. \
+            GraphRAG is a powerful paradigm for knowledge retrieval. \
+            It combines graph structure with RAG approaches.";
+        let snippet = kwic_snippet(content, "GraphRAG knowledge", 80);
+        assert!(snippet.contains("GraphRAG"));
+    }
+
+    #[test]
+    fn kwic_falls_back_to_truncate() {
+        let content = "Some content that has no matching terms at all.";
+        let snippet = kwic_snippet(content, "xyzzy foobar", 20);
+        // Should fall back to first 20 bytes.
+        assert!(snippet.len() <= 23); // 20 + "..."
+    }
+
+    #[test]
+    fn kwic_short_terms_ignored() {
+        // Terms < 3 chars should be skipped.
+        let content = "A is B or C and D.";
+        let snippet = kwic_snippet(content, "A B C", 10);
+        // All terms are < 3 chars, falls back to truncate.
+        assert_eq!(snippet, kwic_snippet(content, "", 10));
+    }
+
+    #[test]
+    fn kwic_centers_window() {
+        let content = "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm";
+        let snippet = kwic_snippet(content, "ggg", 20);
+        assert!(snippet.contains("ggg"));
+        // Should have ... prefix since ggg is in the middle.
+        assert!(snippet.starts_with("..."));
+    }
+
+    #[test]
+    fn kwic_empty_content() {
+        assert_eq!(kwic_snippet("", "test", 100), "");
     }
 }
