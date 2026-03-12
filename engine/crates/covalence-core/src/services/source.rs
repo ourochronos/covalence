@@ -505,7 +505,7 @@ impl SourceService {
         let pre_filter = chunk_outputs.len();
         let chunk_outputs: Vec<_> = chunk_outputs
             .into_iter()
-            .filter(|co| !is_metadata_only(&co.text))
+            .filter(|co| !is_metadata_only(&co.text) && !is_boilerplate_heavy(&co.text))
             .collect();
         let filtered_count = pre_filter - chunk_outputs.len();
         if filtered_count > 0 {
@@ -1466,7 +1466,7 @@ impl SourceService {
         // Filter metadata-only chunks.
         let chunk_outputs: Vec<_> = chunk_outputs
             .into_iter()
-            .filter(|co| !is_metadata_only(&co.text))
+            .filter(|co| !is_metadata_only(&co.text) && !is_boilerplate_heavy(&co.text))
             .collect();
         let chunks_created = chunk_outputs.len();
 
@@ -2385,6 +2385,72 @@ fn is_metadata_only(text: &str) -> bool {
     })
 }
 
+/// Known boilerplate lines from arxiv and academic paper pages.
+const BOILERPLATE_LINES: &[&str] = &[
+    "view pdf",
+    "view a pdf",
+    "html (experimental)",
+    "cite as:",
+    "subjects:",
+    "comments:",
+    "download pdf",
+    "download:",
+    "bibtex",
+    "submission history",
+    "< prev",
+    "next >",
+];
+
+/// Check whether a chunk is dominated by web UI boilerplate
+/// (navigation elements, arxiv metadata, etc.) rather than
+/// substantive content.
+///
+/// Returns `true` when ≥60% of non-blank lines match known
+/// boilerplate patterns.
+fn is_boilerplate_heavy(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false; // handled by is_metadata_only
+    }
+    let lines: Vec<&str> = trimmed
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return false;
+    }
+    let boilerplate_count = lines
+        .iter()
+        .filter(|l| is_boilerplate_line(l))
+        .count();
+    let ratio = boilerplate_count as f64 / lines.len() as f64;
+    ratio >= 0.6
+}
+
+/// Check whether a single line matches boilerplate patterns.
+fn is_boilerplate_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    // Known boilerplate strings.
+    if BOILERPLATE_LINES
+        .iter()
+        .any(|bp| lower.contains(bp))
+    {
+        return true;
+    }
+    // Bold label lines: **Key:** value
+    if line.starts_with("**") && line.contains(":**") {
+        return true;
+    }
+    // Very short lines (< 15 chars) that are just labels.
+    if line.len() < 15
+        && (lower.ends_with(':') || lower.ends_with("..."))
+    {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2416,6 +2482,51 @@ mod tests {
     fn not_metadata_long_text() {
         let long = "**Authors:** A very long author list that exceeds eighty characters in total length and counts as real content";
         assert!(!is_metadata_only(long));
+    }
+
+    #[test]
+    fn boilerplate_heavy_arxiv_page() {
+        let text = "Authors:John Doe, Jane Smith\n\
+                    View a PDF of the paper\n\
+                    View PDF\n\
+                    HTML (experimental)\n\
+                    Subjects:\n\
+                    Cite as:";
+        assert!(is_boilerplate_heavy(text));
+    }
+
+    #[test]
+    fn boilerplate_heavy_nav_elements() {
+        let text = "< prev\nnext >\nView PDF\nDownload PDF";
+        assert!(is_boilerplate_heavy(text));
+    }
+
+    #[test]
+    fn not_boilerplate_real_content() {
+        let text = "Knowledge graphs represent entities and relationships.\n\
+                    This enables multi-hop reasoning across documents.\n\
+                    The system uses RRF for fusion.";
+        assert!(!is_boilerplate_heavy(text));
+    }
+
+    #[test]
+    fn not_boilerplate_mixed_content() {
+        // Some boilerplate but majority is real content.
+        let text = "**Authors:** John Doe\n\
+                    Knowledge graphs are important.\n\
+                    They enable structured retrieval.\n\
+                    RRF fuses multiple signal dimensions.\n\
+                    The system uses pgvector for embeddings.";
+        assert!(!is_boilerplate_heavy(text));
+    }
+
+    #[test]
+    fn boilerplate_line_detection() {
+        assert!(is_boilerplate_line("View PDF"));
+        assert!(is_boilerplate_line("< prev"));
+        assert!(is_boilerplate_line("**Authors:** John"));
+        assert!(is_boilerplate_line("Subjects:"));
+        assert!(!is_boilerplate_line("Knowledge graphs enable reasoning."));
     }
 
     #[test]
