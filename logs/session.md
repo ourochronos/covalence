@@ -698,11 +698,37 @@ Deep audit of 4 major modules (ingestion, epistemic, consolidation, storage/grap
 28. **Auth middleware cleanup** (578c95e)
     - Replaced byte-offset string slicing with `strip_prefix("Bearer ")` for safety
 
+29. **Production unwrap + silent graph errors + fusion weights + Gini NaN + f32/f64** (51fe283)
+    - source.rs: Replace unwrap() with if-let in batch token flushing
+    - node.rs: Surface 9 silent `let _ =` graph sidecar errors as tracing::warn
+    - fusion.rs: Log warning on weight/list length mismatch, add 2 tests
+    - skewroute.rs: Filter NaN/Inf before Gini coefficient computation, add 2 tests
+    - traits.rs + source.rs: SourceRepo::update_embedding &[f32]→&[f64] for consistency
+
+30. **Table parser bug + 13 algorithm unwraps + config bounds** (31f8669)
+    - converter.rs: Fix chained strip_prefix/strip_suffix logic bug (wrong variable in second unwrap_or)
+    - algorithms.rs: Replace 13 unwrap() calls in PageRank, TrustRank, Brandes centrality
+    - config.rs: Add bounds validation for float thresholds (gliner, trigram, vector)
+
+31. **Embedding validation bypass + MCP limits + UUID error reporting** (1ddd302)
+    - vector.rs, global.rs: Close truncate_and_validate bypass — propagate errors for NaN/Inf
+    - mcp.rs: Cap search limit=200, hops=10 (matching API handler bounds)
+    - mcp.rs: Report UUID parse errors in contradictions instead of silent None
+
+32. **ClearanceLevel warning logging + single-node coherence** (631155a)
+    - clearance.rs: Add from_i32_or_default() that logs tracing::warn for invalid DB values
+    - All 6 from_row functions updated (source, node, edge, chunk, article, node_landmark)
+    - community.rs: Single-node coherence returns 0.0 instead of misleading 1.0
+
+33. **Confidence bounds validation + PII regex safety** (b1bb35e)
+    - edge.rs, node.rs: Validate confidence is finite and in [0.0, 1.0] before storing
+    - pii.rs: RegexPiiDetector::new() returns Result instead of panic via unwrap
+
 ### Stats
 
-- **Tests:** 809 (749 core + 13 API + 47 eval), up from 795. +14 new tests. Clippy clean.
-- **Commits:** 636e892, 42c5fc6, 47c9846, 08f1820, 578c95e (5 commits, all pushed)
-- **Files modified:** 14 files across 4 crates
+- **Tests:** 814 (754 core + 13 API + 47 eval), up from 795. +19 new tests. Clippy clean.
+- **Commits:** 636e892, 42c5fc6, 47c9846, 08f1820, 578c95e, 51fe283, 31f8669, 1ddd302, 631155a, b1bb35e (10 commits, all pushed)
+- **Files modified:** 31 files across 4 crates
 
 ### Open Areas
 
@@ -712,6 +738,7 @@ Deep audit of 4 major modules (ingestion, epistemic, consolidation, storage/grap
 - RAPTOR hierarchical retrieval (#74)
 - Ingest spec reference papers (#92)
 - Pipeline stage queues (#64)
-- ClearanceLevel silent fallback (6 PG deserialization sites use unwrap_or_default on invalid i32 → should log warning)
-- Community coherence single-node returns 1.0 (misleading — should return 0.0 or have separate handling)
 - N+1 query pattern in ontology apply_clusters (one UPDATE per member label per cluster)
+- Convergence function doesn't distinguish timeout vs converged (epistemic/convergence.rs)
+- Memory recall: _topic parameter parsed but unused (mcp.rs:396), stored_at always empty (memory.rs:83)
+- Future timestamps get maximum recency score in temporal search dimension
