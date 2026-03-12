@@ -100,7 +100,8 @@ pub async fn spreading_activation(
             }
         }
 
-        // Sort by confidence descending and take top-N.
+        // Filter out NaN/infinite confidences, then sort descending.
+        neighbors.retain(|(_, conf)| conf.is_finite() && *conf >= 0.0);
         neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         neighbors.truncate(max_n);
 

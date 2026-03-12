@@ -840,10 +840,10 @@ impl SearchService {
                         for rr in &reranked {
                             if rr.index < fused.len() {
                                 let norm_score = rr.relevance_score / max_rerank;
-                                // Blend: 60% fusion rank + 40% reranker
+                                // Blend: 60% fusion score + 40% reranker
                                 fused[rr.index].fused_score =
                                     fused[rr.index].fused_score * 0.6
-                                        + fused[rr.index].fused_score * norm_score * 0.4;
+                                        + norm_score * 0.4;
                             }
                         }
                         fused.sort_by(|a, b| {

@@ -36,9 +36,11 @@ impl VectorDimension {
     /// an empty vec (with a warning log) on error rather than
     /// propagating the failure.
     async fn query_table(&self, table: &str, pgvec: &str, limit: i64) -> Vec<(Uuid, f64)> {
+        // Cosine distance: 0 = identical, 1 = orthogonal, 2 = opposite.
+        // Convert to similarity in [0, 1] using GREATEST to clamp.
         let sql = format!(
             "SELECT id, \
-             (1.0 - (embedding <=> $1::halfvec))::float8 AS score \
+             GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec))::float8 AS score \
              FROM {table} \
              WHERE embedding IS NOT NULL \
              ORDER BY embedding <=> $1::halfvec \
