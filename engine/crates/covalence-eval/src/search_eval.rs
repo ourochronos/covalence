@@ -104,6 +104,14 @@ pub fn compute_search_metrics(
         relevant_in_top_k as f64 / top_k.len() as f64
     };
 
+    // Recall@K: fraction of relevant documents found in top K.
+    let total_relevant = rel_map.values().filter(|&&g| g > 0).count();
+    let recall_at_k = if total_relevant == 0 {
+        0.0
+    } else {
+        relevant_in_top_k as f64 / total_relevant as f64
+    };
+
     // nDCG
     let ndcg = compute_ndcg(results, &rel_map, k);
 
@@ -112,6 +120,7 @@ pub fn compute_search_metrics(
 
     SearchMetrics {
         precision_at_k,
+        recall_at_k,
         ndcg,
         mrr,
         result_count: results.len(),
@@ -271,6 +280,44 @@ mod tests {
         let at_2 = compute_search_metrics(&results, &relevance, 2);
         assert_eq!(at_1.precision_at_k, 0.0);
         assert!((at_2.precision_at_k - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn recall_at_k_perfect() {
+        let results = vec![ranked("a", 0.9), ranked("b", 0.8)];
+        let relevance = vec![("a".to_string(), 3), ("b".to_string(), 2)];
+        let metrics = compute_search_metrics(&results, &relevance, 2);
+        assert!((metrics.recall_at_k - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn recall_at_k_partial() {
+        let results = vec![ranked("a", 0.9), ranked("x", 0.8)];
+        let relevance = vec![
+            ("a".to_string(), 3),
+            ("b".to_string(), 2),
+            ("c".to_string(), 1),
+        ];
+        let metrics = compute_search_metrics(&results, &relevance, 2);
+        // 1 out of 3 relevant found.
+        assert!((metrics.recall_at_k - 1.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn recall_at_k_zero() {
+        let results = vec![ranked("x", 0.9), ranked("y", 0.8)];
+        let relevance = vec![("a".to_string(), 3)];
+        let metrics = compute_search_metrics(&results, &relevance, 2);
+        assert_eq!(metrics.recall_at_k, 0.0);
+    }
+
+    #[test]
+    fn recall_at_k_no_relevant() {
+        let results = vec![ranked("a", 0.9)];
+        let relevance = vec![("a".to_string(), 0)];
+        let metrics = compute_search_metrics(&results, &relevance, 1);
+        // No relevant documents in ground truth → 0.0.
+        assert_eq!(metrics.recall_at_k, 0.0);
     }
 
     #[test]

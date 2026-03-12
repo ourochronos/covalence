@@ -45,12 +45,14 @@ pub struct ExtractorMetrics {
 pub struct SearchMetrics {
     /// Precision at K.
     pub precision_at_k: f64,
+    /// Recall at K: fraction of relevant documents found in top K.
+    pub recall_at_k: f64,
     /// Normalized Discounted Cumulative Gain.
     pub ndcg: f64,
     /// Mean Reciprocal Rank.
     pub mrr: f64,
     /// Number of results returned.
     pub result_count: usize,
-    /// The K value used for precision@K.
+    /// The K value used for precision@K and recall@K.
     pub k: usize,
 }
