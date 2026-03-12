@@ -13,8 +13,26 @@ use super::{DimensionKind, SearchDimension, SearchQuery, extract_query_terms};
 use crate::error::Result;
 use crate::graph::SharedGraph;
 use crate::graph::sidecar::GraphSidecar;
-use crate::graph::traversal::{bfs_neighborhood_filtered, hop_decay_score};
+use crate::graph::traversal::{bfs_neighborhood_full, hop_decay_score};
 use crate::search::SearchResult;
+
+/// Edge types to skip during graph search traversal.
+///
+/// Bibliographic relationships dominate the edge distribution
+/// (thousands of `authored`/`published_in` vs. hundreds of
+/// architectural edges). Traversing them causes BFS to expand
+/// into academic-paper neighborhoods rather than following
+/// system-design structure.
+const BIBLIOGRAPHIC_DENY: &[&str] = &[
+    "authored",
+    "published_in",
+    "works_at",
+    "evaluated_on",
+    "trained_on",
+    "uses_dataset",
+    "created_by",
+    "edited_by",
+];
 
 /// Graph-based search using BFS traversal from seed nodes.
 ///
@@ -104,8 +122,14 @@ impl SearchDimension for GraphDimension {
         let mut best: HashMap<Uuid, f64> = HashMap::new();
 
         for &seed in &seeds {
-            let neighbors =
-                bfs_neighborhood_filtered(&sidecar, seed, MAX_HOPS, None, true);
+            let neighbors = bfs_neighborhood_full(
+                &sidecar,
+                seed,
+                MAX_HOPS,
+                None,
+                true,
+                Some(BIBLIOGRAPHIC_DENY),
+            );
             for (node_id, hops) in neighbors {
                 let score = hop_decay_score(1.0, hops);
                 let entry = best.entry(node_id).or_insert(0.0);

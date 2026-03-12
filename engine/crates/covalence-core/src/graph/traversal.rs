@@ -35,12 +35,32 @@ pub fn bfs_neighborhood(
 ///
 /// Same as [`bfs_neighborhood`] but with an explicit `skip_synthetic`
 /// flag. When true, edges marked `is_synthetic` are not traversed.
+///
+/// The optional `edge_deny` parameter provides a deny-list of edge
+/// types to skip. This is useful for excluding bibliographic edges
+/// (e.g., `authored`, `published_in`) from graph search traversal.
 pub fn bfs_neighborhood_filtered(
     graph: &GraphSidecar,
     start: Uuid,
     max_hops: usize,
     edge_filter: Option<&[String]>,
     skip_synthetic: bool,
+) -> Vec<(Uuid, usize)> {
+    bfs_neighborhood_full(graph, start, max_hops, edge_filter, skip_synthetic, None)
+}
+
+/// BFS neighborhood with full filtering options.
+///
+/// Supports allow-list (`edge_filter`), deny-list (`edge_deny`),
+/// and synthetic-edge skipping. When both allow and deny lists are
+/// provided, the deny-list takes precedence.
+pub fn bfs_neighborhood_full(
+    graph: &GraphSidecar,
+    start: Uuid,
+    max_hops: usize,
+    edge_filter: Option<&[String]>,
+    skip_synthetic: bool,
+    edge_deny: Option<&[&str]>,
 ) -> Vec<(Uuid, usize)> {
     let Some(start_idx) = graph.node_index(start) else {
         return Vec::new();
@@ -72,7 +92,14 @@ pub fn bfs_neighborhood_filtered(
                     continue;
                 }
 
-                // Apply edge-type filter if provided.
+                // Apply deny-list: skip edges whose type matches.
+                if let Some(deny) = edge_deny {
+                    if deny.iter().any(|d| d.eq_ignore_ascii_case(&edge_meta.rel_type)) {
+                        continue;
+                    }
+                }
+
+                // Apply allow-list filter if provided.
                 if let Some(filter) = edge_filter {
                     if !filter.iter().any(|f| f == &edge_meta.rel_type) {
                         continue;
@@ -378,5 +405,33 @@ mod tests {
         let result = dfs_neighborhood(&g, b, 1);
         let ids: Vec<Uuid> = result.iter().map(|(id, _)| *id).collect();
         assert!(ids.contains(&a), "B should find A via incoming edge");
+    }
+
+    #[test]
+    fn bfs_full_deny_list() {
+        // A -[related]-> B -[authored]-> C
+        // With deny=["authored"], BFS from A should find B but not C.
+        let mut g = GraphSidecar::new();
+        let a = add_node(&mut g, "A");
+        let b = add_node(&mut g, "B");
+        let c = add_node(&mut g, "C");
+        add_edge(&mut g, a, b, "related");
+        add_edge(&mut g, b, c, "authored");
+
+        // Without deny: finds both B and C
+        let all = bfs_neighborhood_full(&g, a, 3, None, false, None);
+        assert_eq!(all.len(), 2);
+
+        // With deny=["authored"]: finds only B
+        let denied = bfs_neighborhood_full(
+            &g,
+            a,
+            3,
+            None,
+            false,
+            Some(&["authored"]),
+        );
+        assert_eq!(denied.len(), 1);
+        assert_eq!(denied[0].0, b);
     }
 }
