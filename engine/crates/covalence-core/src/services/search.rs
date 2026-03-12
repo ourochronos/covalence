@@ -927,11 +927,13 @@ impl SearchService {
         // (source, section, paragraph) with overlapping content.
         // Without dedup, the same text appears multiple times.
         //
-        // Two-pass approach:
-        // 1. Content dedup: within the same source, if two results
-        //    share the first 100 chars of content, keep the higher-
-        //    scored one (catches hierarchical overlap).
-        // 2. Source cap: max 2 chunks per source URI.
+        // Three-pass approach:
+        // 1. Content dedup (within source): same source, shared
+        //    first 100 chars → keep highest-scored.
+        // 2. Content dedup (cross source): different sources with
+        //    identical content prefixes → keep highest-scored.
+        //    This catches code files ingested multiple times.
+        // 3. Source cap: max 2 chunks per source URI.
         const MAX_CHUNKS_PER_SOURCE: usize = 2;
         const CONTENT_PREFIX_LEN: usize = 100;
         {
@@ -955,6 +957,33 @@ impl SearchService {
                 }
             });
             let deduped = pre_dedup - fused.len();
+
+            // Pass 1b: cross-source content dedup. Same content
+            // prefix from different sources (e.g., codebase
+            // re-ingested multiple times) → keep first (highest
+            // scored since results are sorted).
+            let mut cross_prefixes: HashMap<String, usize> = HashMap::new();
+            let pre_cross = fused.len();
+            fused.retain(|r| {
+                if r.result_type.as_deref() == Some("chunk") {
+                    if let Some(content) = &r.content {
+                        let prefix_end = content
+                            .char_indices()
+                            .nth(CONTENT_PREFIX_LEN)
+                            .map(|(i, _)| i)
+                            .unwrap_or(content.len());
+                        let prefix = content[..prefix_end].to_string();
+                        let count = cross_prefixes.entry(prefix).or_insert(0);
+                        *count += 1;
+                        *count <= 1
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            });
+            let cross_deduped = pre_cross - fused.len();
 
             // Pass 2: per-source count cap.
             let mut source_counts: HashMap<String, usize> = HashMap::new();
@@ -990,9 +1019,10 @@ impl SearchService {
             });
             let title_deduped = pre_title - fused.len();
 
-            if deduped + capped + title_deduped > 0 {
+            if deduped + cross_deduped + capped + title_deduped > 0 {
                 tracing::debug!(
                     content_deduped = deduped,
+                    cross_source_deduped = cross_deduped,
                     source_capped = capped,
                     article_title_deduped = title_deduped,
                     max_per_source = MAX_CHUNKS_PER_SOURCE,
