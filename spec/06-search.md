@@ -159,7 +159,7 @@ fn personalized_pagerank(
 - Answers multi-hop questions that vector search alone cannot
 - PPR naturally handles the simple-vs-complex query spectrum — simple queries stay near seed nodes, complex queries propagate further through the graph
 - Leverages the petgraph sidecar for fast traversal
-- Falls back to PG stored procedure (`graph_traverse`) if sidecar is unavailable
+- Traversal is exclusively executed by the petgraph sidecar.
 - EA-GraphRAG (Zhang et al., Feb 2026) showed GraphRAG underperforms vanilla RAG on simple queries by 13.4%. Our approach avoids this because PPR results are just one dimension in RRF fusion — they don't override vector results for simple queries, they enhance them for complex ones
 
 ### 5. Structural Search

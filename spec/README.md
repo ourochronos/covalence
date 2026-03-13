@@ -20,7 +20,7 @@ A hybrid knowledge base combining PostgreSQL/pgvector persistence with a Rust pe
 |-------|-----------|------|
 | Persistence | PostgreSQL 17 + pgvector | Durable storage, vector indexes (HNSW), full-text search (tsvector) |
 | Graph compute | Rust + petgraph | In-memory directed graph, algorithms (PageRank, community detection, BFS/DFS), topological confidence |
-| Embeddings | Voyage voyage-context-3 (v1), BGE-M3 (local v2) | Contextualized chunk embeddings — each chunk captures full document context. 2048d full, Matryoshka to 512d. First 200M tokens free. Outperforms OpenAI by 14%, Jina late chunking by 24%. |
+| Embeddings | Voyage voyage-3-large (v1) | 2048d full, Matryoshka to 512d. First 200M tokens free. Outperforms OpenAI text-embedding-3-large. |
 | Extraction | LLM-driven pipeline (targeted) | Entity/relationship extraction, co-reference resolution — gated by embedding landscape analysis |
 | API | Rust (Axum) HTTP + MCP | Query interface, ingestion endpoints, graph operations |
 
@@ -68,8 +68,7 @@ Key papers and techniques that influenced this design:
 |-----------|------|-----------|
 | Anthropic Contextual Retrieval | Sep 2024 | 50-100 token prefix per chunk reduces retrieval failure by 67%. Superseded by voyage-context-3 contextualized embeddings (6.76% better, no LLM cost). |
 | RAPTOR (Sarthi et al., ICLR) | Jan 2024 | Recursive embed-cluster-summarize tree. Our hierarchical chunking + multi-level vector search is a superset. |
-| Late Chunking (Günther et al., Jina) | Sep 2024 | Embed full document, then chunk token embeddings. Now available via API: Voyage context-3 (best quality), Jina v3 `late_chunking: true`. |
-| Voyage voyage-context-3 | Jul 2025 | **v1 default embedding.** Contextualized chunk embeddings via API. +14.24% vs OpenAI, +23.66% vs Jina late chunking. 2048d, Matryoshka to 512d. First 200M tokens free. |
+| Voyage voyage-3-large | Jul 2025 | **v1 default embedding.** 2048d, Matryoshka to 512d. First 200M tokens free. |
 | LightRAG (Guo et al., EMNLP) | Oct 2024 | Dual-level (entity + relationship) graph retrieval. Validates semantic graph over raw text for retrieval. |
 | HippoRAG 2 (Gutiérrez et al.) | Feb 2026 | Hippocampus-inspired retrieval with PersonalizedPageRank. Informed our PPR-based graph search dimension. |
 | EA-GraphRAG (Zhang et al., PolyU) | Feb 2026 | GraphRAG underperforms vanilla RAG on simple queries by 13.4%. Validates our RRF fusion approach over explicit routing. |

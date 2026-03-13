@@ -378,6 +378,19 @@ Comprehensive spec audit and implementation of all remaining gaps, plus per-tabl
 - [x] Voyage defaults: `voyage-3-large`, `output_dimension`, `input_type`
 - [x] 479 tests (436 core + 43 eval), clippy clean, fmt clean
 
+## Wave 8 — Gemini Flash 3.0 & Statement-First Architecture (Pending)
+
+Execute the uncompromising `design/v2-migration-plan.md`:
+
+- [ ] Schema: Create `statements`, `offset_projection_ledgers`, and `unresolved_entities` tables.
+- [ ] Integration: Build `fastcoref` sidecar client and Offset Projection mathematical engine.
+- [ ] Integration: Build Gemini Flash 3.0 HTTP client for two-pass extraction.
+- [ ] Pipeline: Diverge `SourceService::ingest()` (Code stays AST, Prose goes to Statement Pipeline).
+- [ ] Pipeline: Implement 2-pass extraction (Pass 1: Statements, Pass 2: Triples).
+- [ ] Resolution: Add HDBSCAN background worker for Tier 5 catch-all resolution.
+- [ ] Cleanup: Delete legacy chunk landscape analysis logic (`landscape.rs`).
+- [ ] Migration: Wipe local graph and execute blue/green re-ingestion of all sources.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)

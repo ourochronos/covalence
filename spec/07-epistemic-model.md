@@ -39,7 +39,7 @@ Where:
 }
 ```
 
-The `projected_probability` (`b + a * u`) provides backward compatibility with systems that expect a single confidence float.
+The `projected_probability` (`b + a * u`) provides a standard scalar probability for integrations that expect a single confidence float.
 
 ### Source Confidence
 
@@ -200,8 +200,7 @@ All epistemic updates are computed in-memory first, then flushed to PG in a sing
 Every fact in the system traces back to its origins via one of two provenance paths:
 
 ```
-Node/Edge → Extraction → Chunk → Source       (legacy chunk pipeline)
-Node/Edge → Extraction → Statement → Source   (statement pipeline)
+Node/Edge → Extraction → Statement → Source
 ```
 
 **Provenance chain queries:**

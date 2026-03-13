@@ -28,8 +28,8 @@ engine/crates/covalence-core/       Library crate — all domain logic
   src/graph/                        petgraph sidecar, algorithms, traversal, community, sync
   src/search/                       RRF fusion, strategies, 6 dimensions (vector, lexical, temporal, graph, structural, global)
   src/epistemic/                    Subjective Logic, DS fusion, DF-QuAD, decay, convergence
-  src/ingestion/                    9-stage pipeline: accept, convert, parse, normalize, chunk, embed, extract, landscape, resolve
-  src/consolidation/                Batch/deep consolidation traits + scheduler + ontology clustering
+  src/ingestion/                    Statement-first pipeline: fastcoref, offset projection, windowed Gemini Flash 3.0 extraction
+  src/consolidation/                HDBSCAN Tier 5 entity resolution, batch/deep consolidation
   src/services/                     Service layer (source, node, edge, article, admin, search)
   src/config.rs                     Environment-driven configuration
   src/error.rs                      Typed errors via thiserror
@@ -142,14 +142,14 @@ The vision (`VISION.md`) defines what success looks like. The spec describes how
 
 Each autonomous session follows this loop. The loop itself is a target of improvement — if a step is weak, fix the step.
 
-1. **Assess** — Start from the vision, not from the code. Query Covalence to understand the current state: search quality, entity precision, graph health. Use `/admin/metrics`, graph stats, knowledge-gaps. Ask: what's the biggest gap between where we are and where VISION.md says we should be?
-2. **Identify the highest-impact gap** — Not the most interesting thing, not the easiest thing — the thing that most blocks progress toward the vision. Be systematic: use source-layer queries to compare spec coverage, check quality metrics, look at what's broken. If the substrate (knowledge quality) is poor, fix that before building features on top of it.
+1. **Assess** — Start from the vision, not from the code. Read `MILESTONES.md` to see what Wave is currently active. Query Covalence to understand the current state: search quality, entity precision, graph health. Use `/admin/metrics`, graph stats, knowledge-gaps. Ask: what's the biggest gap between where we are and where VISION.md says we should be?
+2. **Execute the Plan** — If there is an active Wave in `MILESTONES.md` with unchecked boxes, your highest priority is to execute the next logical step of that plan. Do not deviate to build side-features until the active plan is complete. Build iteratively, ensuring tests pass at each step, and manually check off the boxes `[x]` in `MILESTONES.md` as you complete them.
 3. **Research** — Find and ingest material relevant to the gap. Papers, documentation, RFCs. **Prefer depth over breadth** — one paper read thoroughly beats five skimmed. Verify relevance before committing to ingestion.
 4. **Learn** — The most important step. Read deeply enough to extract non-obvious insights — methodology, tradeoffs, failures, adjacent ideas. If you can't articulate what you learned beyond a one-sentence summary, you haven't learned enough.
 5. **Build** — Implement the improvement. Measure before building so you know what success looks like. Fix the weakest link first.
 6. **Evaluate** — Measurable, not vibes. Before/after comparisons on concrete metrics. "It works now" is not evidence of improvement.
 7. **Reflect** — What about the loop itself could be better? What was wasted effort? Be specific.
-8. **Update** — Update CLAUDE.md, VISION.md, memory, and issues. The insight is freshest immediately after the work.
+8. **Update** — Update `CLAUDE.md`, `VISION.md`, issues, and append a comprehensive summary of your session's accomplishments, failures, and insights to `logs/session.md`. The insight is freshest immediately after the work.
 
 ### Vision-Driven Prioritization
 
@@ -235,10 +235,12 @@ Use `make ingest-codebase` for bulk re-ingestion, or `cove source add` for indiv
 ### Engineering Discipline
 
 Autonomous sessions should proactively maintain engineering quality:
+- **Use feature branches.** Never commit directly to `main`. Always create a new feature branch (e.g., `git checkout -b feature/issue-106`) before starting work.
 - **Refactor when you see the need.** If code is duplicated, poorly structured, or violating patterns documented here, fix it. Don't ask — just do it and explain in the commit.
 - **Use issues.** Every non-trivial piece of work gets an issue. Reference it in commits. Close it when done. This is how Chris tracks what happened between sessions.
-- **Close the loop on issues.** At the end of every session, review which issues were touched. Update them with progress notes, close completed ones, add blockers to deferred ones. An open issue with no recent activity is invisible work.
-- **Respect conventions.** Run `cargo fmt`, `cargo clippy`, and tests before committing. Follow the naming conventions in this file and in `our-infra`.
+- **Close the loop on issues.** At the end of every session, review which issues were touched. Update them with progress notes, close completed ones, add blockers to deferred ones. Append a final summary to `logs/session.md` so the next agent understands where you left off. An open issue with no recent activity is invisible work.
+- **Respect conventions.** You MUST explicitly run `cd engine && cargo fmt` and `cd engine && cargo clippy --workspace` and ensure all tests pass before making any commit.
+- **Code Review Protocol.** Before executing a `git push` or merge, you MUST run the Gemini CLI autonomously in non-interactive mode to review your diffs (e.g., `gemini 'Review the unpushed commits on my branch for architectural alignment and code quality'`). You must address any feedback or fixes requested by Gemini and re-run the review. Once Gemini has provided a green light, you may push the branch, merge it into `main`, and push `main`.
 - **Test in dev first.** Use `make run-dev` for development. Don't touch prod data without explicit approval. Use `make promote` to move verified changes to prod.
 - **Keep CI green locally.** Run `make check` before pushing. We don't rely on GitHub Actions for gating — the project isn't released yet — but the local checks are non-negotiable.
 - **Modular design.** Prefer small, focused modules. If a file is growing past ~500 lines, consider splitting. If a function does three things, make it three functions.
@@ -281,11 +283,13 @@ See `VISION.md` for the full vision. In short: Covalence solves both an academic
 ## Hard Rules
 
 1. **PG is the source of truth.** The petgraph sidecar is a derived, rebuildable cache. If it diverges, PG wins.
-2. **Every fact has provenance.** No node or edge exists without a provenance link (extraction → chunk → source).
-3. **LLM calls are isolated.** LLMs are used only for ingestion extraction, batch compilation, and optional query synthesis. Search and graph operations never require an LLM.
-4. **Uncertainty ≠ disbelief.** The system uses Subjective Logic opinion tuples (b, d, u, a). "Unknown" is not "50% likely."
-5. **Secure by default.** All data defaults to `clearance_level = 0` (local_strict). Promotion to federated requires explicit action.
-6. **No synthetic test data.** Tests use real data or clearly-marked fixtures. Never fabricate benchmarks or results.
+2. **Every fact has pristine canonical provenance.** No node or edge exists without a provenance link pointing exactly to the immutable byte offsets in the canonical source text. We do not store noisy chunks. All mutated text (e.g. from fastcoref) MUST be mathematically reverse-projected through the Offset Projection Ledger before being stored in PostgreSQL.
+3. **No attention dilution in extraction.** The pipeline relies on a strict Two-Pass LLM extraction model (Statements -> Triples). Do not attempt to merge statement generation and entity extraction into a single prompt.
+4. **LLM selection is deliberate.** Use Gemini Flash 3.0 for windowed extraction and synthesis due to its extreme throughput and context window.
+5. **No Graph Algorithms in SQL.** Graph traversal strictly goes through the in-memory petgraph sidecar. PostgreSQL Recursive CTEs are forbidden.
+6. **Uncertainty ≠ disbelief.** The system uses Subjective Logic opinion tuples (b, d, u, a). "Unknown" is not "50% likely."
+7. **Secure by default.** All data defaults to `clearance_level = 0` (local_strict). Promotion to federated requires explicit action.
+8. **No synthetic test data.** Tests use real data or clearly-marked fixtures. Never fabricate benchmarks or results.
 
 ## Code Rules
 
@@ -302,8 +306,8 @@ See `VISION.md` for the full vision. In short: Covalence solves both an academic
 - **No raw PG connections.** Always use the sqlx pool.
 - **No computed/derived state stored in PG.** Topological confidence, PageRank, communities are computed by the sidecar or at query time.
 - **No circular crate dependencies.** `covalence-api` depends on `covalence-core`, never the reverse.
-- **No graph algorithms in SQL.** Graph traversal goes through petgraph. PG has a `graph_traverse()` fallback only for when the sidecar is unavailable.
-- **No hardcoded embedding dimensions.** Per-table dimensions are configured via `COVALENCE_EMBED_DIM_SOURCE` (default 2048), `COVALENCE_EMBED_DIM_CHUNK` (default 1024), `COVALENCE_EMBED_DIM_NODE` (default 256), etc. Legacy `COVALENCE_EMBED_DIM` is supported as fallback. Embeddings are generated at max dimension and truncated + renormalized per table (matryoshka property).
+- **No graph algorithms in SQL.** Graph traversal strictly goes through the in-memory petgraph sidecar. PostgreSQL Recursive CTEs are too inefficient for scale.
+- **No hardcoded embedding dimensions.** Per-table dimensions are configured via `COVALENCE_EMBED_DIM_SOURCE` (default 2048), `COVALENCE_EMBED_DIM_CHUNK` (default 1024), `COVALENCE_EMBED_DIM_NODE` (default 256), etc. Embeddings are generated at max dimension and truncated + renormalized per table (matryoshka property).
 - **No raw embedding storage without validation.** Always use `truncate_and_validate()` (from `ingestion::embedder`) before storing embeddings. Never call `truncate_embedding()` directly at storage boundaries — `truncate_and_validate` wraps it with a dimension check that catches mismatches before they reach PostgreSQL. This is the single gatekeeper for dimension consistency.
 - **No conflation of UUID with NodeIndex.** UUIDs are PG identifiers. NodeIndex is petgraph-internal. The `index: HashMap<Uuid, NodeIndex>` map bridges them.
 

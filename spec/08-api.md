@@ -38,9 +38,9 @@ GET /api/v1/sources
 GET /api/v1/sources/{id}
   → Source metadata + ingestion status + reliability score
 
-GET /api/v1/sources/{id}/chunks
-  → Chunk tree for a source, including landscape analysis metrics
-  → Each chunk includes: parent_alignment, extraction_method, landscape_metrics
+GET /api/v1/sources/{id}/statements
+  → Statement tree for a source (or AST chunks if source_type=code)
+  → Each statement includes canonical source byte offsets
 
 POST /api/v1/sources/{id}/reprocess
   → Idempotent reprocessing: re-runs the full pipeline on existing content
@@ -48,7 +48,7 @@ POST /api/v1/sources/{id}/reprocess
   → Returns: { id, chunks_created, entities_extracted, edges_created }
 
 DELETE /api/v1/sources/{id}
-  → Cascading deletion: extractions → aliases → chunks → orphaned edges → orphaned nodes
+  → Cascading deletion: extractions → aliases → statements/chunks → orphaned edges → orphaned nodes
   → Returns: { deleted, extractions_deleted, nodes_deleted, edges_deleted }
 ```
 

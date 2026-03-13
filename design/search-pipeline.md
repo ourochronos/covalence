@@ -109,7 +109,6 @@ A system that confidently returns irrelevant results is worse than one that says
 | Bi-temporal | Snodgrass & Ahn 1986 | ✅ Ingested |
 | Information foraging | Pirolli & Card 1999 | ✅ Ingested |
 | Reranking | Voyage rerank-2.5 | ✅ Ingested (model paper) |
-| Late chunking | Günther et al. 2024 | ✅ Ingested |
 | HippoRAG | Hu et al. 2024 | ✅ Ingested |
 
 ## Next Actions

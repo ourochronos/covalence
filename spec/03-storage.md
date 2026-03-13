@@ -71,10 +71,6 @@ CREATE TABLE chunks (
     structural_hierarchy ltree NOT NULL DEFAULT '',  -- ltree: 'doc_123.chapter_2.section_2_1'
     clearance_level INT NOT NULL DEFAULT 0,
     metadata JSONB NOT NULL DEFAULT '{}',  -- heading_text, page_number, speaker, contains_table, etc.
-    -- Landscape analysis metrics (populated by Stage 6 of ingestion pipeline)
-    parent_alignment FLOAT,               -- cosine(child.embedding, parent.embedding), null for document-level
-    extraction_method TEXT,               -- 'embedding_linkage', 'delta_check', 'full_extraction', 'full_extraction_with_review'
-    landscape_metrics JSONB,              -- adjacent_similarity, sibling_outlier_score, graph_novelty, flags, valley_prominence
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -84,10 +80,6 @@ CREATE INDEX idx_chunks_level ON chunks(level);
 CREATE INDEX idx_chunks_hash ON chunks(content_hash);
 CREATE INDEX idx_chunks_clearance ON chunks(clearance_level);
 CREATE INDEX idx_chunks_hierarchy ON chunks USING GIST(structural_hierarchy);
-CREATE INDEX idx_chunks_extraction_method ON chunks(extraction_method)
-    WHERE extraction_method IS NOT NULL AND extraction_method != 'embedding_linkage';
-CREATE INDEX idx_chunks_parent_alignment ON chunks(parent_alignment)
-    WHERE parent_alignment IS NOT NULL;
 CREATE INDEX idx_chunks_embedding ON chunks
     USING hnsw (embedding halfvec_cosine_ops)
     WITH (m = 16, ef_construction = 64);
@@ -360,7 +352,7 @@ CREATE INDEX idx_audit_time ON audit_logs(created_at);
 ```sql
 CREATE TABLE extractions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    chunk_id UUID REFERENCES chunks(id),          -- Provenance: extracted from chunk (legacy pipeline)
+    chunk_id UUID REFERENCES chunks(id),          -- Provenance: extracted from chunk (for code AST chunks)
     statement_id UUID REFERENCES statements(id),  -- Provenance: extracted from statement (statement pipeline)
     entity_type TEXT NOT NULL,           -- 'node', 'edge'
     entity_id UUID NOT NULL,
@@ -425,18 +417,17 @@ CREATE INDEX idx_sections_tsv ON sections USING GIN(body_tsv);
 
 ## Vector Dimensions
 
-**Decision: Single embedding model, two output dimensions.** Use one model (Voyage voyage-context-3) across all tables, but with Matryoshka truncation for node embeddings. Chunk, article, and source embeddings use 2048 dimensions (`COVALENCE_EMBED_DIM`, default 2048). Node embeddings use 256 dimensions (`COVALENCE_NODE_EMBED_DIM`, default 256) via Matryoshka truncation to save storage on entity-level embeddings. Both are configurable via environment variables. The database column type (`halfvec(2048)`) accommodates the full dimension; shorter embeddings are stored with trailing zeros or in a truncated form depending on the pgvector version.
+**Decision: Single embedding model, two output dimensions.** Use one model (Voyage voyage-3-large) across all tables, but with Matryoshka truncation for node embeddings. Statement, article, and source embeddings use 2048 dimensions (`COVALENCE_EMBED_DIM`, default 2048). Node embeddings use 256 dimensions (`COVALENCE_NODE_EMBED_DIM`, default 256) via Matryoshka truncation to save storage on entity-level embeddings. Both are configurable via environment variables. The database column type (`halfvec(2048)`) accommodates the full dimension; shorter embeddings are stored with trailing zeros or in a truncated form depending on the pgvector version.
 
 | Model | Dimensions | Notes |
 |-------|-----------|-------|
-| Voyage voyage-context-3 | 2048 (full), 512-1024 (Matryoshka truncated) | **v1 default.** Contextualized chunk embeddings — each chunk embedding captures full document context. Outperforms OpenAI by 14.24%, Jina late chunking by 23.66%. First 200M tokens free. Drop-in API replacement. Reduces parent-child alignment problem at source. |
-| OpenAI text-embedding-3-small | 1536 | Fallback. Good quality, cheapest at scale ($0.02/M tokens). No contextualized embeddings — requires landscape analysis to compensate. |
-| BAAI/bge-base-en-v1.5 | 768 | Local inference only. Insufficient dimensionality for hierarchical comparison. |
-| Jina jina-embeddings-v3 | 1024 | Late chunking via `late_chunking: true` param. Lower quality than Voyage. ColBERT mode available. |
+| Voyage voyage-3-large | 2048 (full), 512-1024 (Matryoshka truncated) | **v1 default.** High-quality embeddings. Outperforms OpenAI. First 200M tokens free. |
+| OpenAI text-embedding-3-small | 1536 | Fallback. Good quality, cheapest at scale ($0.02/M tokens). |
+| BAAI/bge-base-en-v1.5 | 768 | Local inference only. |
 | BAAI/bge-small-en-v1.5 | 384 | Fast, good for prototyping |
 | Topology-derived (spectral/Node2Vec) | configurable | Zero API cost, graph-only (future) |
 
-**Matryoshka multi-resolution:** voyage-context-3 supports Matryoshka truncation — the first N dimensions of the embedding are a valid lower-dimensional embedding. This enables multi-resolution storage strategies:
+**Matryoshka multi-resolution:** voyage-3-large supports Matryoshka truncation — the first N dimensions of the embedding are a valid lower-dimensional embedding. This enables multi-resolution storage strategies:
 
 - **Full 2048d** — sources (primary search targets, lowest cardinality)
 - **1024d** — chunks, articles, statements, sections via `COVALENCE_EMBED_DIM_CHUNK` etc.
@@ -465,18 +456,8 @@ Per-table dimensions are configured via environment variables: `COVALENCE_EMBED_
 
 ## Stored Procedures
 
-### Graph Traversal (BFS)
-
-```sql
--- Recursive CTE for k-hop neighborhood from PG (fallback when sidecar is unavailable)
-CREATE OR REPLACE FUNCTION graph_traverse(
-    start_node UUID,
-    max_hops INT DEFAULT 2,
-    edge_types TEXT[] DEFAULT NULL,
-    min_clearance INT DEFAULT 0
-) RETURNS TABLE(node_id UUID, hop_distance INT, path UUID[])
-AS $$ ... $$ LANGUAGE sql;
-```
+### Graph Traversal 
+> **Design Note:** Graph traversals (BFS, Shortest Path, etc.) are strictly delegated to the `petgraph` Rust sidecar. PostgreSQL Recursive CTEs are inefficient for multi-hop graph queries and lock database resources. See `spec/04-graph.md` for graph computation details.
 
 ### Temporal Queries
 
@@ -509,11 +490,11 @@ CREATE TRIGGER trg_reliability_score
 
 ### Provenance Triples View
 
-For fine-grained provenance queries and epistemic model operations, a view decomposes the property graph into triples. Supports both chunk-based (legacy) and statement-based provenance:
+For fine-grained provenance queries and epistemic model operations, a view decomposes the property graph into triples. Supports both statement-based and code-chunk-based provenance:
 
 ```sql
-CREATE VIEW provenance_triples AS
--- Chunk-based provenance (legacy pipeline)
+CREATE OR REPLACE VIEW provenance_triples AS
+-- Chunk-based provenance (code pipeline)
 SELECT
     e.id AS triple_id,
     e.source_node_id AS subject,

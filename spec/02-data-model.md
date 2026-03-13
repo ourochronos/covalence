@@ -372,7 +372,7 @@ Graph RAG systems are **more vulnerable** to structured data extraction than pla
 1. **PII detection at ingestion.** Before chunking, scan source text for PII (names, emails, phone numbers, addresses, SSNs). Use Presidio or equivalent NER-based detector. PII entities are flagged with `is_pii: true` in node metadata.
 2. **PII-aware clearance.** Nodes with `is_pii: true` automatically inherit `clearance_level: 0` (local_strict) unless explicitly overridden. This prevents PII from being federated or exposed via public APIs.
 3. **Redacted search results.** When a search result references PII nodes, the API redacts entity names to `[REDACTED]` for requests below the required clearance level. The relationship structure is preserved (for graph traversal) but identifying information is hidden.
-4. **Entity-level access control.** Beyond clearance levels, support per-entity ACLs for fine-grained access control. v2 consideration — v1 uses clearance levels only.
+4. **Entity-level access control.** Beyond clearance levels, support per-entity ACLs for fine-grained access control. This is integrated directly rather than deferred.
 5. **Audit log.** Every access to a PII-flagged node is logged with requestor identity, timestamp, and access purpose. Required for compliance (GDPR, CCPA).
 
 **Note:** PII in knowledge graphs is fundamentally different from PII in documents. A document might contain "John Smith works at Acme Corp" — but a KG stores `(John_Smith) -[WORKS_AT]-> (Acme_Corp)` as a first-class fact with an embedding, making it directly queryable. This is both a feature (structured knowledge) and a risk (structured exfiltration).

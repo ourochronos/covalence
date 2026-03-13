@@ -300,7 +300,7 @@ POST /api/v1/analysis/coverage
 Response:
 {
   "orphan_code": [
-    {"function": "legacy_chunk_filter()", "file": "src/ingestion/pipeline.rs:400", "reason": "No component assignment, no spec reference"}
+    {"function": "filter_obsolete()", "file": "src/ingestion/pipeline.rs:400", "reason": "No component assignment, no spec reference"}
   ],
   "unimplemented_specs": [
     {"topic": "Federation Egress Filter", "spec": "spec/09-federation.md", "reason": "Spec topic exists but zero IMPLEMENTS_INTENT edges found"}

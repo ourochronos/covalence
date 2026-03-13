@@ -111,15 +111,13 @@ Our multi-dimensional search (SING pattern, RRF fusion) avoids this by design �
 **Date:** 2026-03-07
 **Source:** Research review (Voyage AI, Jina AI)
 
-We initially assumed late chunking (document-context-aware chunk embeddings) required local models with token-level embedding access. This was wrong.
+We initially assumed we needed contextualized chunk embeddings (like Voyage's `voyage-context-3` or Jina's late chunking) to solve the problem of chunks losing their document context. 
 
-Voyage AI's voyage-context-3 provides contextualized chunk embeddings via a standard API — send the full document + chunk boundaries, get back per-chunk embeddings that capture both chunk-level detail and document-level context. It outperforms OpenAI text-embedding-3-large by 14.24% on chunk-level retrieval and Jina's late chunking by 23.66%. First 200M tokens free.
+While contextual embeddings do improve retrieval of raw chunks, they are treating a symptom rather than the disease. The fundamental problem is that chunks are arbitrary structural slices, not semantic units.
 
-Jina's API also supports late chunking natively via `late_chunking: true`.
+**Impact on our architecture:** We moved to a statement-first extraction architecture. If we use an LLM to extract self-contained, coreference-resolved knowledge claims, those statements inherently carry their own semantic context. They don't need "late chunking" to be retrieved accurately because they are already complete thoughts. We still use high-quality embeddings (`voyage-3-large`), but the heavy lifting is done by the statement extraction, not the embedding algorithm.
 
-**Impact on our architecture:** With contextualized embeddings, parent-child alignment analysis becomes a confirmation metric rather than the primary signal. High-alignment genuinely means redundancy (the model already knows the context). Low-alignment genuinely means novelty. The landscape analysis pipeline is still valuable for cross-document novelty, sibling outlier detection, and extraction gating — but it's operating on cleaner signals.
-
-**Lesson:** Don't assume API limitations are permanent. Check the landscape before designing workarounds — the solution may already exist.
+**Lesson:** Don't build elaborate workarounds for noisy data primitives. Fix the primitive.
 
 ## Lesson 10: Contradictions Should Invalidate, Not Delete
 

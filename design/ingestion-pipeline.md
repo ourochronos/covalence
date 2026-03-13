@@ -238,7 +238,6 @@ No model inference — pure text extraction with structure preservation. 3.4s fo
 | Concept | Paper | Status in KB |
 |---------|-------|-------------|
 | GLiNER zero-shot NER | Zaratiana et al. 2023 | ✅ Ingested |
-| Late chunking | Günther et al. 2024 | ✅ Ingested |
 | Matryoshka embeddings | Kusupati et al. 2022 | ✅ Ingested |
 | Ontology engineering | Noy & McGuinness 2001 | ✅ Ingested |
 | Entity resolution | — | ❌ Need survey paper on entity resolution/deduplication |

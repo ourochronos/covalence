@@ -6,6 +6,7 @@
 # Go
 /cli/cove
 /cli/cov
+/cove
 
 # PostgreSQL
 *.sql.bak
@@ -16,6 +17,7 @@
 .env.prod
 .env.local
 .env.*.local
+.venv*
 
 # IDE
 .idea/
@@ -40,6 +42,7 @@
 *.dylib
 *.so
 *.dll
+__pycache__/
 
 # Backups
 .backups/
@@ -51,3 +54,8 @@ lcov.info
 tarpaulin-report.html
 .claude/worktrees/
 .firecrawl/
+
+# Local Dev / Testing
+logs/
+.playwright-mcp/
+.test-fixtures/

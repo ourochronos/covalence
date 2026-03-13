@@ -55,7 +55,7 @@ The single source of truth for all persistent state.
 - **Edges** — Typed, directed relationships with properties, causal metadata, and temporal bounds. Includes structural code edges (`CALLS`, `USES_TYPE`, `IMPLEMENTS`, `CONTAINS`, `DEPENDS_ON`) and cross-domain bridge edges (`IMPLEMENTS_INTENT`, `PART_OF_COMPONENT`, `THEORETICAL_BASIS`).
 - **Statements** — Atomic, self-contained knowledge claims extracted from source text. The primary retrieval unit.
 - **Sections** — Compiled summaries of semantically clustered statements within a source.
-- **Chunks** — Text segments at multiple granularities (legacy pipeline, retained for backward compatibility)
+- **Chunks** — Text segments at multiple granularities (removed in favor of statement-first extraction)
 - **Components** — Bridge nodes linking spec topics to code entities to research concepts
 - **Embeddings** — Vector representations (HNSW-indexed) for statements, sections, chunks, and nodes
 - **Sources** — Provenance records tracking origin of every node, edge, statement, and chunk
@@ -84,7 +84,7 @@ Stateless compute except for the in-memory graph sidecar.
 - Two ingestion paths, both producing statements, sections, nodes, and edges:
   - **Prose path** (default): raw source → normalize to Markdown → windowed LLM statement extraction → embed → cluster → compile sections → compile source summary → entity extraction from statements. See [05-ingestion](05-ingestion.md) and [ADR-0015](../docs/adr/0015-statement-first-extraction.md).
   - **Code path** (`source_type = "code"`): raw source → Tree-sitter AST parse → chunk by AST boundary → LLM semantic summary → embed summary → statement extraction on summaries → structural edge extraction (CALLS, USES_TYPE, etc.) → Component linking. See [12-code-ingestion](12-code-ingestion.md).
-- Legacy chunk pipeline (landscape analysis, chunk-level extraction) retained for backward compatibility
+- Statement-first extraction is the sole unified pipeline
 - Entity resolution via vector similarity + graph context
 - See [05-ingestion](05-ingestion.md)
 
@@ -177,13 +177,13 @@ Full Graph → TrustRank → BMR Pruning Candidates → Prune/Archive
 4. **The graph sidecar is eventually consistent.** Writes go to PG first; the sidecar syncs asynchronously.
 5. **Confidence is multi-layered.** Source confidence, extraction confidence, and topological confidence are computed independently and composed at query time. See [07-epistemic-model](07-epistemic-model.md).
 6. **Uncertainty is distinct from disbelief.** The system tracks epistemic uncertainty separately from negative belief — "unknown" ≠ "50% likely". See Subjective Logic in [07-epistemic-model](07-epistemic-model.md).
-7. **Statements are the primary retrieval unit.** Self-contained, coreference-resolved atomic claims. Chunks are retained for backward compatibility but statements are the default extraction and search target.
+7. **Statements are the primary retrieval unit.** Self-contained, coreference-resolved atomic claims. Statements are the sole extraction and search target.
 8. **Code and prose share a vector space.** Code entities are embedded via their semantic summaries (natural language descriptions of business logic), not raw syntax. This enables cross-domain search without explicit query routing.
 
 ## Open Questions
 
 - [x] Multiple subgraphs/tenants → Single-tenant for v1. Multi-tenant deferred.
 - [x] Sync mechanism → Outbox Pattern + LISTEN/NOTIFY wake-up + 5s polling fallback. See [04-graph](04-graph.md).
-- [x] Read-only mode → Yes, fallback PG stored procedures (graph_traverse) already specified in [03-storage](03-storage.md).
+- [x] Read-only mode → Yes, architecture supports running purely off PG for point lookups, but graph traversals strictly require the sidecar.
 - [x] Batch consolidation trigger → Both timer AND epistemic delta threshold.
 - [x] Deep consolidation process → Embedded in main engine for v1. Extract to separate process when load warrants.

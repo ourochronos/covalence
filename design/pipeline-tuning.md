@@ -106,7 +106,6 @@ Each stage has a trait, a current implementation, and candidate replacements. Ev
 |--------|----------|------|------|
 | Current (size + section + byte offsets) | Fixed token window, section-aware | Predictable, fast, now traceable | May split mid-paragraph |
 | Semantic chunking | Embed sentences, split at low-similarity boundaries | Better coherence | Slower, needs embedder |
-| Late chunking (Voyage) | Chunk after embedding full doc | Context preserved | Tied to Voyage |
 | Recursive character splitter | LangChain-style | Simple | No semantic awareness |
 
 **Key question**: How much does chunk quality affect downstream search? Need A/B comparison.

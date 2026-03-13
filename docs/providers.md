@@ -7,8 +7,7 @@ Covalence uses external providers for embeddings and (optionally) LLM-based enti
 | Capability | Provider Options | Required? | Config |
 |---|---|---|---|
 | Embeddings | OpenAI, Voyage AI, Jina, any OpenAI-compatible | **Yes** | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `COVALENCE_EMBED_MODEL` |
-| Entity extraction (LLM) | Any OpenAI-compatible chat API | No | `COVALENCE_CHAT_MODEL`, `COVALENCE_CHAT_API_KEY` |
-| Entity extraction (local) | GLiNER2 sidecar | No | `COVALENCE_ENTITY_EXTRACTOR=gliner2` |
+| Entity extraction (LLM) | Gemini Flash 3.0 | **Yes** | `COVALENCE_CHAT_MODEL`, `COVALENCE_CHAT_API_KEY` |
 | Reranking | Not yet implemented | No | — |
 | Article compilation | Not yet implemented | No | — |
 
@@ -19,7 +18,6 @@ Covalence uses external providers for embeddings and (optionally) LLM-based enti
 | Feature | OpenAI | Voyage AI | Jina | Ollama |
 |---|---|---|---|---|
 | Dimensionality control (`output_dimension` / `dimensions`) | text-embedding-3-* only | voyage-3-large, voyage-4-large | v3 only | No |
-| Late chunking (contextual) | No | voyage-context-3 (auto-activated) | jina-embeddings-v3 | No |
 | Matryoshka embeddings | text-embedding-3-* | voyage-3-large, voyage-4-large | jina-embeddings-v3 | No |
 | Batch API | Yes | Yes | Yes | No |
 | Chat/extraction | Yes (gpt-4o, etc.) | No | No | Yes (llama3, etc.) |
@@ -47,13 +45,7 @@ Covalence supports **per-table embedding dimensions** to optimize quality vs. st
 | `nodes` | 256 | Short text (name + description), used in resolution lookups |
 | `node_aliases` | 256 | Must match nodes for cosine comparisons |
 
-**Important:** Per-table dimensions must match the DB column dimensions. After changing, run migration 007 or manually `ALTER TABLE ... ALTER COLUMN embedding TYPE halfvec(N)` on each table. The legacy `COVALENCE_EMBED_DIM` env var is still supported as the fallback for chunk and article dimensions.
-
-### Late chunking (contextual embeddings)
-
-When the configured model supports it (`voyage-context-3`), Covalence automatically uses the Voyage `/contextualizedembeddings` endpoint for chunk embeddings. All chunks from a single document are sent together, and each chunk's embedding reflects the surrounding document context — preventing the "orphan chunk" problem where a chunk about "it" loses the referent.
-
-Late chunking is auto-activated: if the model name contains `context`, the ingestion pipeline calls `embed_document_chunks()` which routes to the contextual endpoint. Source-level, node-level, and query embeddings always use the standard endpoint.
+**Important:** Per-table dimensions must match the DB column dimensions. After changing, run migration 007 or manually `ALTER TABLE ... ALTER COLUMN embedding TYPE halfvec(N)` on each table.
 
 ## Per-Cloud Quickstart
 
