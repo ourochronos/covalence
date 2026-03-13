@@ -922,10 +922,7 @@ impl SearchService {
                 }
             }
             if code_demoted > 0 {
-                tracing::debug!(
-                    code_demoted,
-                    "demoted code-source chunks in search results"
-                );
+                tracing::debug!(code_demoted, "demoted code-source chunks in search results");
                 fused.sort_by(|a, b| {
                     b.fused_score
                         .partial_cmp(&a.fused_score)

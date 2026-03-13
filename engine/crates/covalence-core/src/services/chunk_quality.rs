@@ -349,10 +349,7 @@ fn is_academic_author_list(line: &str) -> bool {
     for i in 0..bytes.len().saturating_sub(1) {
         if bytes[i].is_ascii_uppercase()
             && bytes[i + 1] == b'.'
-            && (i == 0
-                || bytes[i - 1] == b' '
-                || bytes[i - 1] == b','
-                || bytes[i - 1] == b'-')
+            && (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b',' || bytes[i - 1] == b'-')
         {
             initial_count += 1;
         }
