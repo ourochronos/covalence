@@ -1417,6 +1417,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     // Generic English words that shouldn't be entities.
     const GENERIC_WORDS: &[&str] = &[
         "alias",
+        "article",
         "association",
         "auditable",
         "biology",
@@ -1467,6 +1468,10 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     // Multi-word generic phrases that shouldn't be entities.
     const GENERIC_PHRASES: &[&str] = &[
         "ai use",
+        "embedding operations",
+        "entropy term",
+        "node record",
+        "node records",
         "predictive model",
         "predictive models",
         "vector space",
@@ -1561,6 +1566,13 @@ mod tests {
     fn noise_entity_generic_phrase_extended() {
         assert!(is_noise_entity("predictive model", "concept"));
         assert!(is_noise_entity("predictive models", "concept"));
+        assert!(is_noise_entity("node record", "concept"));
+        assert!(is_noise_entity("Node Records", "concept"));
+        assert!(is_noise_entity("embedding operations", "concept"));
+        assert!(is_noise_entity("entropy term", "concept"));
+        assert!(is_noise_entity("Article", "concept"));
+        // "Article" is fine as a non-concept entity type.
+        assert!(!is_noise_entity("Article", "technology"));
     }
 
     #[test]
