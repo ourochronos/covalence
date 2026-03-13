@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::error::Result;
 use crate::ingestion::chat_backend::ChatBackend;
-use crate::ingestion::utils::sanitize_latex_in_json;
+use crate::ingestion::utils::{sanitize_latex_in_json, strip_markdown_fences};
 
 /// Input for section compilation.
 #[derive(Debug, Clone)]
@@ -230,28 +230,6 @@ impl SourceSummaryCompiler for MockSectionCompiler {
             .map(|s| s.summary.clone())
             .collect::<Vec<_>>()
             .join(" "))
-    }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────
-
-/// Strip markdown code fences (```json ... ```) from LLM output.
-fn strip_markdown_fences(s: &str) -> String {
-    let trimmed = s.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        let after_tag = if let Some(pos) = rest.find('\n') {
-            &rest[pos + 1..]
-        } else {
-            rest
-        };
-        let body = if let Some(stripped) = after_tag.strip_suffix("```") {
-            stripped
-        } else {
-            after_tag
-        };
-        body.trim().to_string()
-    } else {
-        trimmed.to_string()
     }
 }
 

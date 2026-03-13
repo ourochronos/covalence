@@ -53,6 +53,32 @@ pub fn sanitize_latex_in_json(s: &str) -> String {
     out
 }
 
+/// Strip markdown code fences (`` ```json ... ``` ``) from LLM output.
+///
+/// Handles the common case where an LLM wraps its JSON response in
+/// a fenced code block. Returns the inner content trimmed of
+/// whitespace. If no fences are present, returns the input trimmed.
+pub fn strip_markdown_fences(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        // Skip the language tag line (e.g. "json\n").
+        let after_tag = if let Some(pos) = rest.find('\n') {
+            &rest[pos + 1..]
+        } else {
+            rest
+        };
+        // Strip trailing fence.
+        let body = if let Some(stripped) = after_tag.strip_suffix("```") {
+            stripped
+        } else {
+            after_tag
+        };
+        body.trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +117,30 @@ mod tests {
     #[test]
     fn zero_vector() {
         assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 2.0]), 0.0);
+    }
+
+    #[test]
+    fn strip_fences_json() {
+        let input = "```json\n{\"statements\": []}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"statements\": []}");
+    }
+
+    #[test]
+    fn strip_fences_passthrough() {
+        let input = "{\"statements\": []}";
+        assert_eq!(strip_markdown_fences(input), "{\"statements\": []}");
+    }
+
+    #[test]
+    fn strip_fences_no_trailing() {
+        let input = "```json\n{\"data\": true}";
+        assert_eq!(strip_markdown_fences(input), "{\"data\": true}");
+    }
+
+    #[test]
+    fn strip_fences_plain_fence() {
+        let input = "```\nhello\n```";
+        assert_eq!(strip_markdown_fences(input), "hello");
     }
 
     #[test]

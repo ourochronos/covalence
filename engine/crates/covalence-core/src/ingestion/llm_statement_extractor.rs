@@ -12,7 +12,7 @@ use crate::ingestion::chat_backend::ChatBackend;
 use crate::ingestion::statement_extractor::{
     ExtractedStatement, StatementExtractionResult, StatementExtractor,
 };
-use crate::ingestion::utils::sanitize_latex_in_json;
+use crate::ingestion::utils::{sanitize_latex_in_json, strip_markdown_fences};
 
 const SYSTEM_PROMPT: &str = r#"You are a knowledge statement extractor. Given a passage of text, extract every atomic, self-contained knowledge claim as a separate statement.
 
@@ -152,43 +152,9 @@ fn default_confidence() -> f64 {
     0.9
 }
 
-/// Strip markdown code fences (```json ... ```) from LLM output.
-fn strip_markdown_fences(s: &str) -> String {
-    let trimmed = s.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        // Skip the language tag line (e.g. "json\n")
-        let after_tag = if let Some(pos) = rest.find('\n') {
-            &rest[pos + 1..]
-        } else {
-            rest
-        };
-        // Strip trailing fence
-        let body = if let Some(stripped) = after_tag.strip_suffix("```") {
-            stripped
-        } else {
-            after_tag
-        };
-        body.trim().to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strip_markdown_fences_removes_json_fence() {
-        let input = "```json\n{\"statements\": []}\n```";
-        assert_eq!(strip_markdown_fences(input), "{\"statements\": []}");
-    }
-
-    #[test]
-    fn strip_markdown_fences_passthrough_clean_json() {
-        let input = "{\"statements\": []}";
-        assert_eq!(strip_markdown_fences(input), "{\"statements\": []}");
-    }
 
     #[test]
     fn raw_statement_deserialization() {
