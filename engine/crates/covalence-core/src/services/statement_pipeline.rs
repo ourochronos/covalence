@@ -465,19 +465,29 @@ pub async fn reextract_statements(
         }
 
         // Check for semantic match via embedding cosine > 0.92.
-        let is_semantic_match = if let Some(embedder) = embedder {
-            let embs = embedder
-                .embed(std::slice::from_ref(&stmt.content))
-                .await
-                .unwrap_or_default();
-            if let Some(new_emb) = embs.first() {
-                existing.iter().filter(|s| !s.is_evicted).any(|s| {
-                    s.embedding.as_ref().is_some_and(|existing_emb| {
-                        let existing_f64: Vec<f64> =
-                            existing_emb.iter().map(|v| *v as f64).collect();
-                        cosine_similarity(new_emb, &existing_f64) > 0.92
+        // Skip when there are no existing non-evicted statements to
+        // compare against — avoids unnecessary per-statement embed
+        // API calls.
+        let has_existing = existing
+            .iter()
+            .any(|s| !s.is_evicted && s.embedding.is_some());
+        let is_semantic_match = if has_existing {
+            if let Some(embedder) = embedder {
+                let embs = embedder
+                    .embed(std::slice::from_ref(&stmt.content))
+                    .await
+                    .unwrap_or_default();
+                if let Some(new_emb) = embs.first() {
+                    existing.iter().filter(|s| !s.is_evicted).any(|s| {
+                        s.embedding.as_ref().is_some_and(|existing_emb| {
+                            let existing_f64: Vec<f64> =
+                                existing_emb.iter().map(|v| *v as f64).collect();
+                            cosine_similarity(new_emb, &existing_f64) > 0.92
+                        })
                     })
-                })
+                } else {
+                    false
+                }
             } else {
                 false
             }
