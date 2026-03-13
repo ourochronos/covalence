@@ -42,6 +42,11 @@ pub fn reverse_project(
     let mut cumulative_delta: isize = 0;
     let mut canonical_start = mutated_start as isize;
     let mut canonical_end = mutated_end as isize;
+    // Track whether boundaries were snapped to canonical coordinates
+    // directly. Snapped boundaries are already in canonical space and
+    // must NOT be shifted by cumulative_delta afterwards.
+    let mut start_snapped = false;
+    let mut end_snapped = false;
 
     for entry in ledger {
         let m_start = entry.mutated_span_start;
@@ -65,15 +70,17 @@ pub fn reverse_project(
             // overlapping mutation.
             if m_start < mutated_start {
                 // Mutation starts before our span — snap start to
-                // the canonical start of this mutation.
+                // the canonical start of this mutation (already in
+                // canonical space, no delta adjustment needed).
                 canonical_start = entry.canonical_span_start as isize;
+                start_snapped = true;
             }
             if m_end > mutated_end {
                 // Mutation ends after our span — snap end to the
-                // canonical end of this mutation.
+                // canonical end of this mutation (already in
+                // canonical space, no delta adjustment needed).
                 canonical_end = entry.canonical_span_end as isize;
-                // Since we snapped to canonical coords directly,
-                // don't apply the delta adjustment for this entry.
+                end_snapped = true;
                 break;
             }
             // Mutation fully contained within our span — accumulate.
@@ -81,9 +88,14 @@ pub fn reverse_project(
         }
     }
 
-    // Apply accumulated delta for mutations before/within our span.
-    canonical_start -= cumulative_delta;
-    canonical_end -= cumulative_delta;
+    // Apply accumulated delta only to boundaries still in mutated
+    // coordinates. Snapped boundaries are already canonical.
+    if !start_snapped {
+        canonical_start -= cumulative_delta;
+    }
+    if !end_snapped {
+        canonical_end -= cumulative_delta;
+    }
 
     // Clamp to non-negative.
     let cs = canonical_start.max(0) as usize;
@@ -205,6 +217,48 @@ mod tests {
         assert_eq!(results[0], (14, 24)); // After mutation
         assert_eq!(results[1], (34, 44)); // After mutation
         assert_eq!(results[2], (0, 3)); // Before mutation
+    }
+
+    #[test]
+    fn snapped_start_not_shifted_by_prior_delta() {
+        // Mutation 1: "he" → "Einstein" at mutated (5,13), delta=+6
+        // Mutation 2: "he" → "Albert Einstein" at mutated (20,35), canonical (14,16)
+        // Span (25,40): entry 1 entirely before (cumul delta=+6), entry 2
+        // overlaps left. Start snaps to 14 (canonical). Entry 2 delta (+13)
+        // also accumulated (it ends before span end). canonical_end = 40-19=21.
+        // Bug before fix: prior delta was applied to snapped start → (8, 21).
+        let ledger = vec![
+            make_entry((5, 7), "he", (5, 13), "Einstein"),
+            make_entry((14, 16), "he", (20, 35), "Albert Einstein"),
+        ];
+        assert_eq!(reverse_project(25, 40, &ledger), (14, 21));
+    }
+
+    #[test]
+    fn snapped_end_not_shifted_by_prior_delta() {
+        // Mutation 1: "he" → "Einstein" at mutated (5,13), delta=+6
+        // Mutation 2: "he" → "Albert Einstein" at mutated (20,35), canonical (14,16)
+        // Span (10,30): entry 1 overlaps left (mutated 5..13 covers byte 10),
+        // so start snaps to 5 (canonical). Entry 2 overlaps right (mutated 35 > 30),
+        // so end snaps to 16 (canonical). Both snapped → no delta adjustment.
+        let ledger = vec![
+            make_entry((5, 7), "he", (5, 13), "Einstein"),
+            make_entry((14, 16), "he", (20, 35), "Albert Einstein"),
+        ];
+        assert_eq!(reverse_project(10, 30, &ledger), (5, 16));
+    }
+
+    #[test]
+    fn both_snapped_ignores_prior_delta() {
+        // Mutation 1: "he" → "Einstein" at mutated (5,13), delta=+6
+        // Mutation 2: "he" → "Albert Einstein" at mutated (20,35), canonical (14,16)
+        // Span (25,30) is entirely inside mutation 2.
+        // Both boundaries should snap to mutation 2's canonical range.
+        let ledger = vec![
+            make_entry((5, 7), "he", (5, 13), "Einstein"),
+            make_entry((14, 16), "he", (20, 35), "Albert Einstein"),
+        ];
+        assert_eq!(reverse_project(25, 30, &ledger), (14, 16));
     }
 
     #[test]

@@ -1,5 +1,11 @@
 //! Unresolved entity model — entities that missed all resolution tiers
 //! and await HDBSCAN batch clustering (Tier 5).
+//!
+//! **Note:** Relationships involving deferred entities are intentionally
+//! not stored. When an entity is deferred, its relationships are skipped
+//! in the extraction pipeline. After HDBSCAN resolution creates/assigns
+//! a node, edge synthesis (`/admin/edges/synthesize`) can reconstruct
+//! co-occurrence edges from shared source provenance.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
