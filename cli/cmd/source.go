@@ -309,7 +309,7 @@ func detectMIME(path string) string {
 // Returns the repo root path or "" if not inside a git repo.
 func findRepoRoot(dir string) string {
 	for {
-		if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && info.IsDir() {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
