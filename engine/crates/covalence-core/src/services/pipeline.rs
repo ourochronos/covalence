@@ -1362,9 +1362,18 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     let trimmed = name.trim();
     let lower = trimmed.to_lowercase();
 
-    // Very short names (1-2 chars) are noise unless they're acronyms.
-    if trimmed.len() <= 2 && !trimmed.chars().all(|c| c.is_ascii_uppercase()) {
-        return true;
+    // Very short names (1-2 chars by char count) are noise unless
+    // they're well-known abbreviations. Single letters like "C", "D",
+    // "E" are mathematical variables from papers, not real entities.
+    let char_count = trimmed.chars().count();
+    if char_count <= 2 {
+        const SHORT_ALLOWLIST: &[&str] = &[
+            "AI", "DB", "GI", "IE", "IR", "IT", "KG", "ML", "NE", "NL", "NLP", "QA", "RL", "UI",
+            "UX",
+        ];
+        if !SHORT_ALLOWLIST.contains(&trimmed) {
+            return true;
+        }
     }
 
     // Paper titles: concept entities with >55 chars are almost always
@@ -1517,6 +1526,54 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     // "X insight" pattern: LLM extracts "RAPTOR insight" or "STAR-RAG insight"
     // from spec text. The real entity is X, not "X insight".
     if lower.ends_with(" insight") || lower.ends_with(" insights") {
+        return true;
+    }
+
+    // HTML/markdown artifacts: comment markers, table syntax, tildes.
+    if trimmed.starts_with("<!--")
+        || trimmed.starts_with("-->")
+        || trimmed.starts_with("~~~")
+        || trimmed.starts_with("| ")
+        || trimmed.starts_with("|:")
+        || trimmed.starts_with("|--")
+        || trimmed == "@"
+        || trimmed == "|"
+    {
+        return true;
+    }
+    // HTML entities (&#39; etc.)
+    if trimmed.starts_with("&#") && trimmed.ends_with(';') {
+        return true;
+    }
+
+    // Markdown links: [text](url)
+    if trimmed.starts_with('[') && trimmed.contains("](") {
+        return true;
+    }
+
+    // Bare prices/currency: $18, $1.80, $0.02 per million tokens
+    if trimmed.starts_with('$') && trimmed[1..].starts_with(|c: char| c.is_ascii_digit()) {
+        return true;
+    }
+
+    // Bare statistics/percentages: "94.8%", "55.7% F-1 Match".
+    if trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) && trimmed.contains('%') {
+        return true;
+    }
+
+    // Bare numbers or numeric expressions: "7 * 86400", pure digits.
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == ' ' || c == '*' || c == '.')
+    {
+        return true;
+    }
+
+    // Citation/reference fragments: "486(3-5):75–174".
+    if trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && (trimmed.contains('–') || trimmed.contains(':'))
+        && trimmed.chars().filter(|c| c.is_ascii_digit()).count() > trimmed.len() / 2
+    {
         return true;
     }
 
@@ -1723,5 +1780,72 @@ mod tests {
     fn not_noise_snake_case_tech() {
         // Technology entities can have underscores (e.g. crate names).
         assert!(!is_noise_entity("pg_trgm", "technology"));
+    }
+
+    #[test]
+    fn noise_entity_short_allowlist() {
+        // Single letters are noise (math variables).
+        assert!(is_noise_entity("C", "concept"));
+        assert!(is_noise_entity("D", "concept"));
+        assert!(is_noise_entity("E", "concept"));
+        assert!(is_noise_entity("N", "concept"));
+        // Two-letter non-standard abbreviations.
+        assert!(is_noise_entity("CA", "concept"));
+        assert!(is_noise_entity("FF", "concept"));
+        assert!(is_noise_entity("GF", "concept"));
+        // Allowlisted abbreviations pass through.
+        assert!(!is_noise_entity("AI", "concept"));
+        assert!(!is_noise_entity("ML", "concept"));
+        assert!(!is_noise_entity("KG", "concept"));
+        assert!(!is_noise_entity("QA", "concept"));
+        assert!(!is_noise_entity("DB", "concept"));
+        assert!(!is_noise_entity("IR", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_html_markdown_artifacts() {
+        assert!(is_noise_entity("<!--", "concept"));
+        assert!(is_noise_entity("-->", "concept"));
+        assert!(is_noise_entity("~~~", "concept"));
+        assert!(is_noise_entity("| --- | --- |", "concept"));
+        assert!(is_noise_entity("|---|---|", "concept"));
+        assert!(is_noise_entity("@", "concept"));
+        assert!(is_noise_entity("|", "concept"));
+        assert!(is_noise_entity("&#39;", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_markdown_links() {
+        assert!(is_noise_entity(
+            "[1 Introduction](https://arxiv.org/html/2506.02509v1#S1)",
+            "concept"
+        ));
+    }
+
+    #[test]
+    fn noise_entity_prices() {
+        assert!(is_noise_entity("$18", "concept"));
+        assert!(is_noise_entity("$1.80", "concept"));
+        assert!(is_noise_entity("$0.02 per million tokens", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_percentages() {
+        assert!(is_noise_entity("94.8%", "concept"));
+        assert!(is_noise_entity("55.7% F-1 Match", "concept"));
+        assert!(is_noise_entity("57.67% EM", "concept"));
+        assert!(is_noise_entity("20% memory overhead", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_bare_numbers() {
+        assert!(is_noise_entity("7 * 86400", "concept"));
+        assert!(is_noise_entity("42", "concept"));
+        assert!(is_noise_entity("3.14", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_citation_fragment() {
+        assert!(is_noise_entity("486(3-5):75\u{2013}174", "concept"));
     }
 }
