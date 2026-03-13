@@ -212,6 +212,31 @@ impl EdgeRepo for PgRepo {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn find_by_source_and_rel_type(
+        &self,
+        source_node_id: NodeId,
+        rel_type: &str,
+    ) -> Result<Vec<Edge>> {
+        let rows = sqlx::query(
+            "SELECT id, source_node_id, target_node_id,
+                    rel_type, causal_level, properties,
+                    weight, confidence,
+                    confidence_breakdown, clearance_level,
+                    is_synthetic, valid_from, valid_until,
+                    invalid_at, invalidated_by,
+                    recorded_at, created_at
+             FROM edges
+             WHERE source_node_id = $1
+               AND rel_type = $2",
+        )
+        .bind(source_node_id)
+        .bind(rel_type)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(edge_from_row).collect())
+    }
+
     async fn delete_by_node(&self, node_id: NodeId) -> Result<u64> {
         let result = sqlx::query(
             "DELETE FROM edges

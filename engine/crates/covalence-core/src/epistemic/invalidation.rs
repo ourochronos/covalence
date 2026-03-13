@@ -10,7 +10,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::types::ids::EdgeId;
+use crate::types::ids::{EdgeId, NodeId};
 
 /// An existing edge's temporal metadata for conflict detection.
 ///
@@ -18,7 +18,7 @@ use crate::types::ids::EdgeId;
 /// invalid_at)`.
 pub type ExistingEdgeRecord = (
     EdgeId,
-    EdgeId,
+    NodeId,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
@@ -108,7 +108,7 @@ pub enum ConflictType {
 ///   invalid_at)`
 pub fn detect_conflicts(
     new_edge_id: EdgeId,
-    new_target_node: EdgeId,
+    new_target_node: NodeId,
     _new_rel_type: &str,
     new_valid_from: Option<DateTime<Utc>>,
     existing_edges: &[ExistingEdgeRecord],
@@ -243,7 +243,7 @@ mod tests {
     fn detect_conflicts_no_conflict() {
         // Same target node → no contradiction
         let new_edge = EdgeId::new();
-        let target = EdgeId::new();
+        let target = NodeId::new();
         let existing = vec![(EdgeId::new(), target, Some(dt(2025, 1, 1)), None, None)];
 
         let result = detect_conflicts(
@@ -261,8 +261,8 @@ mod tests {
     fn detect_conflicts_contradiction() {
         // Different target, overlapping time → conflict
         let new_edge = EdgeId::new();
-        let new_target = EdgeId::new();
-        let existing_target = EdgeId::new();
+        let new_target = NodeId::new();
+        let existing_target = NodeId::new();
         let existing_edge = EdgeId::new();
 
         let existing = vec![(
@@ -289,8 +289,8 @@ mod tests {
     fn detect_conflicts_skip_invalidated() {
         // Existing edge already invalidated → no conflict
         let new_edge = EdgeId::new();
-        let new_target = EdgeId::new();
-        let existing_target = EdgeId::new();
+        let new_target = NodeId::new();
+        let existing_target = NodeId::new();
 
         let existing = vec![(
             EdgeId::new(),
