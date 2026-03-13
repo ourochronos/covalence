@@ -216,6 +216,56 @@ impl ChatBackend for CliChatBackend {
     }
 }
 
+// ── Fallback backend (CLI → HTTP) ───────────────────────────────
+
+/// Chat backend that tries the CLI first and falls back to HTTP
+/// on any error (quota exhaustion, command not found, etc.).
+///
+/// This is the recommended backend for production: it prefers
+/// the free Gemini CLI quota, but seamlessly degrades to the
+/// paid OpenRouter HTTP API when quota is exhausted.
+pub struct FallbackChatBackend {
+    /// Primary backend (typically CLI).
+    primary: Box<dyn ChatBackend>,
+    /// Fallback backend (typically HTTP).
+    fallback: Box<dyn ChatBackend>,
+}
+
+impl FallbackChatBackend {
+    /// Create a new fallback backend.
+    pub fn new(primary: Box<dyn ChatBackend>, fallback: Box<dyn ChatBackend>) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+#[async_trait::async_trait]
+impl ChatBackend for FallbackChatBackend {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        json_mode: bool,
+        temperature: f64,
+    ) -> Result<String> {
+        match self
+            .primary
+            .chat(system_prompt, user_prompt, json_mode, temperature)
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(primary_err) => {
+                tracing::warn!(
+                    error = %primary_err,
+                    "primary chat backend failed, falling back to secondary"
+                );
+                self.fallback
+                    .chat(system_prompt, user_prompt, json_mode, temperature)
+                    .await
+            }
+        }
+    }
+}
+
 // ── HTTP serialization types ────────────────────────────────────
 
 #[derive(Serialize)]
@@ -278,5 +328,72 @@ mod tests {
         let backend = CliChatBackend::gemini("gemini-2.5-flash".into());
         assert_eq!(backend.command, "gemini");
         assert_eq!(backend.model, "gemini-2.5-flash");
+    }
+
+    /// Mock backend that returns a fixed result.
+    struct MockBackend {
+        result: std::sync::Mutex<Result<String>>,
+    }
+
+    impl MockBackend {
+        fn ok(s: &str) -> Self {
+            Self {
+                result: std::sync::Mutex::new(Ok(s.to_string())),
+            }
+        }
+
+        fn err(msg: &str) -> Self {
+            Self {
+                result: std::sync::Mutex::new(Err(Error::Ingestion(msg.to_string()))),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChatBackend for MockBackend {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _json_mode: bool,
+            _temperature: f64,
+        ) -> Result<String> {
+            let mut guard = self.result.lock().unwrap();
+            // Take the result so the mock can only be called once.
+            std::mem::replace(
+                &mut *guard,
+                Err(Error::Ingestion("already consumed".into())),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_returns_primary_on_success() {
+        let fb = FallbackChatBackend::new(
+            Box::new(MockBackend::ok("primary")),
+            Box::new(MockBackend::ok("fallback")),
+        );
+        let result = fb.chat("sys", "user", false, 0.0).await.unwrap();
+        assert_eq!(result, "primary");
+    }
+
+    #[tokio::test]
+    async fn fallback_uses_secondary_on_primary_error() {
+        let fb = FallbackChatBackend::new(
+            Box::new(MockBackend::err("quota exhausted")),
+            Box::new(MockBackend::ok("fallback response")),
+        );
+        let result = fb.chat("sys", "user", false, 0.0).await.unwrap();
+        assert_eq!(result, "fallback response");
+    }
+
+    #[tokio::test]
+    async fn fallback_returns_secondary_error_when_both_fail() {
+        let fb = FallbackChatBackend::new(
+            Box::new(MockBackend::err("primary failed")),
+            Box::new(MockBackend::err("secondary failed")),
+        );
+        let err = fb.chat("sys", "user", false, 0.0).await.unwrap_err();
+        assert!(err.to_string().contains("secondary failed"));
     }
 }
