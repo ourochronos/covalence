@@ -39,12 +39,17 @@ pub fn reverse_project(
         return (mutated_start, mutated_end);
     }
 
-    let mut cumulative_delta: isize = 0;
+    // Delta from mutations entirely before the span — affects both
+    // start and end equally.
+    let mut delta_before: isize = 0;
+    // Delta from mutations fully contained within the span — affects
+    // only end (the mutation is after start but before end).
+    let mut delta_contained: isize = 0;
     let mut canonical_start = mutated_start as isize;
     let mut canonical_end = mutated_end as isize;
     // Track whether boundaries were snapped to canonical coordinates
     // directly. Snapped boundaries are already in canonical space and
-    // must NOT be shifted by cumulative_delta afterwards.
+    // must NOT be shifted by delta afterwards.
     let mut start_snapped = false;
     let mut end_snapped = false;
 
@@ -55,7 +60,7 @@ pub fn reverse_project(
 
         if m_end <= mutated_start {
             // Mutation entirely before our span — accumulate delta.
-            cumulative_delta += delta;
+            delta_before += delta;
         } else if m_start >= mutated_end {
             // Mutation entirely after our span — stop processing.
             break;
@@ -83,18 +88,20 @@ pub fn reverse_project(
                 end_snapped = true;
                 break;
             }
-            // Mutation fully contained within our span — accumulate.
-            cumulative_delta += delta;
+            // Mutation fully contained within our span — its delta
+            // only affects the end boundary (the start is before
+            // this mutation).
+            delta_contained += delta;
         }
     }
 
-    // Apply accumulated delta only to boundaries still in mutated
+    // Apply accumulated deltas only to boundaries still in mutated
     // coordinates. Snapped boundaries are already canonical.
     if !start_snapped {
-        canonical_start -= cumulative_delta;
+        canonical_start -= delta_before;
     }
     if !end_snapped {
-        canonical_end -= cumulative_delta;
+        canonical_end -= delta_before + delta_contained;
     }
 
     // Clamp to non-negative.
@@ -259,6 +266,33 @@ mod tests {
             make_entry((14, 16), "he", (20, 35), "Albert Einstein"),
         ];
         assert_eq!(reverse_project(25, 30, &ledger), (14, 16));
+    }
+
+    #[test]
+    fn contained_mutation_only_shifts_end() {
+        // Span (10, 50) contains a mutation at mutated (20, 35) that
+        // maps to canonical (20, 25). delta = +10.
+        // The mutation is AFTER the start, so start should NOT be
+        // shifted. Only end should absorb the delta.
+        // canonical_start = 10 (no delta_before, no snap)
+        // canonical_end   = 50 - 10 = 40 (delta_contained = 10)
+        let ledger = vec![make_entry((20, 25), "he", (20, 35), "Albert Einstein")];
+        assert_eq!(reverse_project(10, 50, &ledger), (10, 40));
+    }
+
+    #[test]
+    fn contained_mutation_with_prior_delta() {
+        // Mutation 1 before span: "he"→"Einstein" at mutated (2,10), +6
+        // Mutation 2 inside span: "he"→"Albert Einstein" at mutated (25,40), canonical (19,21), +13
+        // Span (15, 55):
+        //   delta_before = 6, delta_contained = 13
+        //   canonical_start = 15 - 6 = 9
+        //   canonical_end   = 55 - 6 - 13 = 36
+        let ledger = vec![
+            make_entry((2, 4), "he", (2, 10), "Einstein"),
+            make_entry((19, 21), "he", (25, 40), "Albert Einstein"),
+        ];
+        assert_eq!(reverse_project(15, 55, &ledger), (9, 36));
     }
 
     #[test]

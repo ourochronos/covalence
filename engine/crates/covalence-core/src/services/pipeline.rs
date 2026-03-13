@@ -392,13 +392,17 @@ impl SourceService {
                                 "neural coref resolved"
                             );
                             // Record mutations as ledger entries for offset projection.
+                            // Mutation offsets from the coref client are
+                            // chunk-relative. Shift by the chunk's
+                            // byte_start to make them source-absolute.
+                            let base = co.byte_start;
                             for m in &result.mutations {
                                 all_ledger_entries.push(
                                     crate::models::projection::LedgerEntry::new(
                                         input.source_id,
-                                        (m.canonical_start, m.canonical_end),
+                                        (base + m.canonical_start, base + m.canonical_end),
                                         m.canonical_token.clone(),
-                                        (m.mutated_start, m.mutated_end),
+                                        (base + m.mutated_start, base + m.mutated_end),
                                         m.mutated_token.clone(),
                                     ),
                                 );
