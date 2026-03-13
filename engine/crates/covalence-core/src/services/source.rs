@@ -459,7 +459,21 @@ impl SourceService {
 
         SourceRepo::create(&*self.repo, &source).await?;
 
-        // Clean up superseded source.
+        // Run shared pipeline (chunk → embed → extract → resolve).
+        // This runs BEFORE supersede cleanup so that if the pipeline
+        // fails, the old source's data is still intact (#113).
+        self.run_pipeline(&PipelineInput {
+            source_id: source.id,
+            source_type,
+            source_uri: uri.map(|u| u.to_string()),
+            source_title: source.title.clone(),
+            normalized: &prepared.normalized,
+            is_code: prepared.is_code,
+        })
+        .await?;
+
+        // Clean up superseded source AFTER the new pipeline succeeds.
+        // This ensures old data is preserved if the new pipeline fails (#113).
         if let Some(ref info) = supersedes_info {
             self.mark_superseded(info.old_source_id, &info.update_class)
                 .await?;
@@ -478,17 +492,6 @@ impl SourceService {
                 "cleaned up superseded source"
             );
         }
-
-        // Run shared pipeline (chunk → embed → extract → resolve).
-        self.run_pipeline(&PipelineInput {
-            source_id: source.id,
-            source_type,
-            source_uri: uri.map(|u| u.to_string()),
-            source_title: source.title.clone(),
-            normalized: &prepared.normalized,
-            is_code: prepared.is_code,
-        })
-        .await?;
 
         // Run statement pipeline (parallel, opt-in).
         // Statement failures are non-fatal: chunks and embeddings are
