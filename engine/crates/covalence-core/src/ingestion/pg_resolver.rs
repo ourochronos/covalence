@@ -29,7 +29,10 @@ use crate::storage::traits::{NodeAliasRepo, NodeRepo};
 use crate::types::ids::NodeId;
 
 /// Default minimum trigram similarity score for fuzzy matching.
-const DEFAULT_FUZZY_THRESHOLD: f32 = 0.4;
+///
+/// Raised from 0.4 → 0.55 to prevent false conflation (e.g.,
+/// "GraphRAG" matching "GraphQL" at ~0.42 similarity).
+const DEFAULT_FUZZY_THRESHOLD: f32 = 0.55;
 
 /// Default cosine similarity threshold for vector-based matching.
 const DEFAULT_VECTOR_THRESHOLD: f32 = 0.85;
@@ -167,11 +170,9 @@ impl PgResolver {
     async fn try_alias_match(&self, entity: &ExtractedEntity) -> Result<Option<ResolvedEntity>> {
         let aliases = NodeAliasRepo::find_by_alias(self.repo.as_ref(), &entity.name).await?;
 
-        // find_by_alias uses ILIKE with wildcards; filter to exact
-        // case-insensitive matches only.
-        let exact_alias = aliases
-            .into_iter()
-            .find(|a| a.alias.eq_ignore_ascii_case(&entity.name));
+        // find_by_alias uses exact case-insensitive matching; pick
+        // the first result (all will be exact matches).
+        let exact_alias = aliases.into_iter().next();
 
         if let Some(alias) = exact_alias {
             // Fetch the canonical node to return its name.

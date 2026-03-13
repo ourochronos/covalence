@@ -55,10 +55,10 @@ impl NodeAliasRepo for PgRepo {
         let rows = sqlx::query(
             "SELECT id, node_id, alias, source_chunk_id
              FROM node_aliases
-             WHERE alias ILIKE $1
+             WHERE LOWER(alias) = LOWER($1)
              ORDER BY alias ASC",
         )
-        .bind(format!("%{alias}%"))
+        .bind(alias)
         .fetch_all(&self.pool)
         .await?;
 
