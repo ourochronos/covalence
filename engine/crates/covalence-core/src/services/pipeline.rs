@@ -163,6 +163,61 @@ impl SourceService {
         })
     }
 
+    /// Check for conflicting edges and invalidate any that contradict
+    /// the new edge before it is created.
+    ///
+    /// Queries existing active edges sharing the same `(source_node,
+    /// rel_type)` and runs temporal conflict detection. Edges with
+    /// different targets and overlapping temporal ranges are
+    /// invalidated — superseded by the new edge.
+    async fn check_and_invalidate_conflicts(&self, edge: &Edge) -> Result<usize> {
+        use crate::epistemic::invalidation::{ExistingEdgeRecord, detect_conflicts};
+
+        let existing =
+            EdgeRepo::find_by_source_and_rel_type(&*self.repo, edge.source_node_id, &edge.rel_type)
+                .await?;
+
+        if existing.is_empty() {
+            return Ok(0);
+        }
+
+        let records: Vec<ExistingEdgeRecord> = existing
+            .iter()
+            .map(|e| {
+                (
+                    e.id,
+                    e.target_node_id,
+                    e.valid_from,
+                    e.valid_until,
+                    e.invalid_at,
+                )
+            })
+            .collect();
+
+        let check = detect_conflicts(
+            edge.id,
+            edge.target_node_id,
+            &edge.rel_type,
+            edge.valid_from,
+            &records,
+        );
+
+        let mut invalidated = 0;
+        for conflict in &check.conflicts {
+            tracing::info!(
+                existing_edge = %conflict.existing_edge_id,
+                new_edge = %conflict.new_edge_id,
+                conflict_type = ?conflict.conflict_type,
+                rel_type = %edge.rel_type,
+                "invalidating conflicting edge"
+            );
+            EdgeRepo::invalidate(&*self.repo, conflict.existing_edge_id, edge.id).await?;
+            invalidated += 1;
+        }
+
+        Ok(invalidated)
+    }
+
     /// Run the shared ingestion pipeline from chunking through node
     /// embedding.
     ///
@@ -615,6 +670,7 @@ impl SourceService {
                         rel.confidence
                     };
                     edge.confidence = conf;
+                    self.check_and_invalidate_conflicts(&edge).await?;
                     EdgeRepo::create(&*self.repo, &edge).await?;
 
                     let ext_record = Extraction::new(
@@ -1084,6 +1140,7 @@ impl SourceService {
 
                 let mut edge = Edge::new(source_node, target_node, resolved_rel_type);
                 edge.confidence = rel.confidence;
+                self.check_and_invalidate_conflicts(&edge).await?;
                 EdgeRepo::create(&*self.repo, &edge).await?;
 
                 let ext_record = Extraction::from_statement(

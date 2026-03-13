@@ -22,7 +22,8 @@ pub mod invalidation;
 pub mod propagation;
 
 pub use invalidation::{
-    ConflictCheck, ConflictType, EdgeConflict, InvalidationAction, InvalidationReason,
+    ConflictCheck, ConflictType, EdgeConflict, ExistingEdgeRecord, InvalidationAction,
+    InvalidationReason, detect_conflicts,
 };
 pub use propagation::{
     ClaimAttack, ClaimInput, PropagationConfig, PropagationResult, propagate_confidence,

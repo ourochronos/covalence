@@ -180,6 +180,16 @@ pub trait EdgeRepo: Send + Sync {
     /// Delete an edge by ID.
     fn delete(&self, id: EdgeId) -> impl Future<Output = Result<bool>> + Send;
 
+    /// Find active edges sharing the same source node and relationship type.
+    ///
+    /// Used by conflict detection to find candidate contradictions
+    /// before creating a new edge.
+    fn find_by_source_and_rel_type(
+        &self,
+        source_node_id: NodeId,
+        rel_type: &str,
+    ) -> impl Future<Output = Result<Vec<Edge>>> + Send;
+
     /// Delete all edges involving a node (as source or target).
     ///
     /// Returns the number of rows deleted. Used during cascading
