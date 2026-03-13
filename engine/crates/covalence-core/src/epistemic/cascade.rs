@@ -174,7 +174,10 @@ fn fuse_extraction_confidences(extractions: &[Extraction]) -> Opinion {
     let opinions: Vec<Opinion> = extractions
         .iter()
         .filter_map(|e| {
-            let b = e.confidence.clamp(0.0, 1.0);
+            // Cap at 0.99 to prevent dogmatic opinions from a
+            // single extraction — even a 1.0-confidence extraction
+            // should retain minimal uncertainty.
+            let b = e.confidence.clamp(0.0, 0.99);
             let d = (1.0 - b) * 0.3;
             let u = 1.0 - b - d;
             Opinion::new(b, d, u, 0.5)
@@ -193,8 +196,14 @@ fn fuse_extraction_confidences(extractions: &[Extraction]) -> Opinion {
     // independent sources agree on the same claim.
     let mut result = opinions[0];
     for op in &opinions[1..] {
-        if let Some(fused) = cumulative_fuse(&result, op) {
-            result = fused;
+        match cumulative_fuse(&result, op) {
+            Some(fused) => result = fused,
+            None => {
+                tracing::warn!(
+                    "cumulative_fuse produced invalid opinion \
+                     during cascade — skipping extraction"
+                );
+            }
         }
     }
     result
@@ -351,5 +360,47 @@ mod tests {
         assert!((result.disbelief - 0.21).abs() < 1e-6);
         // uncertainty = 1 - 0.3 - 0.21 = 0.49
         assert!((result.uncertainty - 0.49).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fuse_confidence_1_0_not_dogmatic() {
+        // Confidence = 1.0 is clamped to 0.99 to prevent dogmatic
+        // opinions from a single extraction.
+        let ext = Extraction::new(
+            ChunkId::new(),
+            crate::models::extraction::ExtractedEntityType::Node,
+            uuid::Uuid::new_v4(),
+            "test".into(),
+            1.0,
+        );
+
+        let result = fuse_extraction_confidences(&[ext]);
+        // Should be clamped to 0.99, not dogmatic 1.0
+        assert!((result.belief - 0.99).abs() < 1e-6);
+        // Must have non-zero uncertainty
+        assert!(result.uncertainty > 0.0);
+        let sum = result.belief + result.disbelief + result.uncertainty;
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "opinion constraint violated at confidence=1.0"
+        );
+    }
+
+    #[test]
+    fn fuse_confidence_0_0() {
+        let ext = Extraction::new(
+            ChunkId::new(),
+            crate::models::extraction::ExtractedEntityType::Node,
+            uuid::Uuid::new_v4(),
+            "test".into(),
+            0.0,
+        );
+
+        let result = fuse_extraction_confidences(&[ext]);
+        assert!((result.belief).abs() < 1e-6);
+        // disbelief = 1.0 * 0.3 = 0.3
+        assert!((result.disbelief - 0.3).abs() < 1e-6);
+        // uncertainty = 1 - 0 - 0.3 = 0.7
+        assert!((result.uncertainty - 0.7).abs() < 1e-6);
     }
 }
