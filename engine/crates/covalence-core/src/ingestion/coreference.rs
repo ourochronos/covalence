@@ -331,8 +331,10 @@ impl FastcorefClient {
                         m.canonical_end += canonical_offset;
                         // Mutated offsets: relative to the joined resolved
                         // text, accounting for overlap stripping.
-                        m.mutated_start = m.mutated_start - resolved_overlap + mutated_byte_offset;
-                        m.mutated_end = m.mutated_end - resolved_overlap + mutated_byte_offset;
+                        m.mutated_start =
+                            m.mutated_start.saturating_sub(resolved_overlap) + mutated_byte_offset;
+                        m.mutated_end =
+                            m.mutated_end.saturating_sub(resolved_overlap) + mutated_byte_offset;
                         all_mutations.push(m);
                     }
 
@@ -421,7 +423,15 @@ fn compute_resolved_overlap(overlap_size: usize, mutations: &[CorefMutation]) ->
         if m.canonical_start >= overlap_size {
             break;
         }
-        delta += m.mutated_token.len() as isize - m.canonical_token.len() as isize;
+        if m.canonical_end <= overlap_size {
+            // Mutation fully inside the overlap — count all of its delta.
+            delta += m.mutated_token.len() as isize - m.canonical_token.len() as isize;
+        }
+        // Straddling mutations (canonical_start < overlap_size but
+        // canonical_end > overlap_size) are ambiguous: the replacement
+        // spans the boundary and was already captured by the previous
+        // window. Skip their delta entirely — the non-overlap portion
+        // will be re-resolved in this window.
     }
     (overlap_size as isize + delta).max(0) as usize
 }
@@ -834,5 +844,24 @@ mod tests {
         ];
         // overlap=30: mutation 1 adds 6, mutation 2 adds 7 → 30 + 13 = 43
         assert_eq!(compute_resolved_overlap(30, &mutations), 43);
+    }
+
+    #[test]
+    fn resolved_overlap_straddling_mutation() {
+        // Mutation straddles the overlap boundary: canonical_start inside
+        // the overlap but canonical_end outside. Its delta must NOT be
+        // counted because the previous window already captured it and
+        // including it would inflate resolved_overlap, causing underflow
+        // on mutated_start subtraction.
+        let mutations = vec![CorefMutation {
+            canonical_start: 45,
+            canonical_end: 55,
+            mutated_start: 45,
+            mutated_end: 60,
+            canonical_token: "0123456789".to_string(), // 10 bytes
+            mutated_token: "0123456789abcde".to_string(), // 15 bytes
+        }];
+        // overlap=50: straddling mutation is skipped → still 50
+        assert_eq!(compute_resolved_overlap(50, &mutations), 50);
     }
 }
