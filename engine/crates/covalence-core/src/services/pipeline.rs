@@ -164,12 +164,15 @@ impl SourceService {
     }
 
     /// Check for conflicting edges and invalidate any that contradict
-    /// the new edge before it is created.
+    /// the new edge after it has been created.
     ///
     /// Queries existing active edges sharing the same `(source_node,
     /// rel_type)` and runs temporal conflict detection. Edges with
     /// different targets and overlapping temporal ranges are
     /// invalidated — superseded by the new edge.
+    ///
+    /// Must be called **after** `EdgeRepo::create()` so the new edge
+    /// exists for the `invalidated_by` foreign key.
     async fn check_and_invalidate_conflicts(&self, edge: &Edge) -> Result<usize> {
         use crate::epistemic::invalidation::{ExistingEdgeRecord, detect_conflicts};
 
@@ -181,8 +184,10 @@ impl SourceService {
             return Ok(0);
         }
 
+        // Exclude the new edge itself from the candidates.
         let records: Vec<ExistingEdgeRecord> = existing
             .iter()
+            .filter(|e| e.id != edge.id)
             .map(|e| {
                 (
                     e.id,
@@ -670,8 +675,8 @@ impl SourceService {
                         rel.confidence
                     };
                     edge.confidence = conf;
-                    self.check_and_invalidate_conflicts(&edge).await?;
                     EdgeRepo::create(&*self.repo, &edge).await?;
+                    self.check_and_invalidate_conflicts(&edge).await?;
 
                     let ext_record = Extraction::new(
                         chunk_id,
@@ -1140,8 +1145,8 @@ impl SourceService {
 
                 let mut edge = Edge::new(source_node, target_node, resolved_rel_type);
                 edge.confidence = rel.confidence;
-                self.check_and_invalidate_conflicts(&edge).await?;
                 EdgeRepo::create(&*self.repo, &edge).await?;
+                self.check_and_invalidate_conflicts(&edge).await?;
 
                 let ext_record = Extraction::from_statement(
                     stmt_id,
