@@ -65,6 +65,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::synthesize_cooccurrence,
         admin::cluster_ontology,
         admin::resolve_tier5,
+        admin::cleanup_noise_entities,
     ),
     components(schemas(
         dto::CreateSourceRequest,
@@ -129,6 +130,9 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::OntologyClusterResponse,
         dto::Tier5ResolveRequest,
         dto::Tier5ResolveResponse,
+        dto::NoiseCleanupRequest,
+        dto::NoiseCleanupResponse,
+        dto::NoiseEntityItem,
         mcp::McpTool,
         mcp::McpToolCall,
         mcp::McpToolResult,

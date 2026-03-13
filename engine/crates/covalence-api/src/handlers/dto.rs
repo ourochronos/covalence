@@ -582,6 +582,43 @@ pub struct GcResponse {
     pub aliases_removed: u64,
 }
 
+/// Request body for noise entity cleanup.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct NoiseCleanupRequest {
+    /// If true (default), only report what would be deleted.
+    pub dry_run: Option<bool>,
+}
+
+/// A noise entity identified for cleanup.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NoiseEntityItem {
+    /// Node UUID.
+    pub node_id: uuid::Uuid,
+    /// Canonical entity name.
+    pub canonical_name: String,
+    /// Entity type.
+    pub node_type: String,
+    /// Number of edges connected to this node.
+    pub edge_count: u64,
+}
+
+/// Response for noise entity cleanup.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NoiseCleanupResponse {
+    /// Number of noise nodes identified.
+    pub nodes_identified: u64,
+    /// Number of nodes actually deleted (0 in dry-run mode).
+    pub nodes_deleted: u64,
+    /// Number of edges removed (0 in dry-run mode).
+    pub edges_removed: u64,
+    /// Number of aliases removed (0 in dry-run mode).
+    pub aliases_removed: u64,
+    /// Whether this was a dry run.
+    pub dry_run: bool,
+    /// Details of identified noise entities.
+    pub entities: Vec<NoiseEntityItem>,
+}
+
 /// Request body for co-occurrence edge synthesis.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CooccurrenceRequest {

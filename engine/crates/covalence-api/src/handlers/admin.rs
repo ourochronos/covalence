@@ -9,10 +9,11 @@ use crate::handlers::dto::{
     AuditLogResponse, CommunityParams, CommunityResponse, ConfigAuditResponse, ConsolidateResponse,
     CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse, DomainResponse, GcResponse,
     GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
-    KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem, OntologyClusterRequest,
-    OntologyClusterResponse, PaginationParams, PublishResponse, RaptorResponse, ReloadResponse,
-    SearchTraceResponse, SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
-    TopologyResponse, TraceReplayResponse,
+    KnowledgeGapsResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse,
+    NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse,
+    PaginationParams, PublishResponse, RaptorResponse, ReloadResponse, SearchTraceResponse,
+    SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse,
+    TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -623,5 +624,48 @@ pub async fn resolve_tier5(
         clustered_resolved: report.clustered_resolved,
         noise_promoted: report.noise_promoted,
         skipped_no_embedding: report.skipped_no_embedding,
+    }))
+}
+
+/// Retroactively clean noise entities from the graph.
+///
+/// Scans all nodes through the noise entity filter and optionally
+/// removes matches along with their edges and aliases. Default mode
+/// is dry-run (report only).
+#[utoipa::path(
+    post,
+    path = "/admin/nodes/cleanup",
+    request_body = NoiseCleanupRequest,
+    responses(
+        (status = 200, description = "Noise cleanup results",
+         body = NoiseCleanupResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn cleanup_noise_entities(
+    State(state): State<AppState>,
+    Json(req): Json<NoiseCleanupRequest>,
+) -> Result<Json<NoiseCleanupResponse>, ApiError> {
+    let dry_run = req.dry_run.unwrap_or(true);
+    let result = state.admin_service.cleanup_noise_entities(dry_run).await?;
+
+    let entities: Vec<NoiseEntityItem> = result
+        .entities
+        .into_iter()
+        .map(|e| NoiseEntityItem {
+            node_id: e.node_id,
+            canonical_name: e.canonical_name,
+            node_type: e.node_type,
+            edge_count: e.edge_count,
+        })
+        .collect();
+
+    Ok(Json(NoiseCleanupResponse {
+        nodes_identified: result.nodes_identified,
+        nodes_deleted: result.nodes_deleted,
+        edges_removed: result.edges_removed,
+        aliases_removed: result.aliases_removed,
+        dry_run: result.dry_run,
+        entities,
     }))
 }
