@@ -205,16 +205,34 @@ ingest-adrs:
 ingest-prod: ingest-codebase ingest-specs ingest-adrs
 	@echo "=== All ingestion complete ==="
 
+REPROCESS_BATCH ?= 5
+
 reprocess-statements:
-	@echo "Reprocessing all sources through statement pipeline..."
-	@ids=$$(curl -sf $(INGEST_API)/api/v1/sources?limit=1000 | python3 -c "import sys,json; [print(s['id']) for s in json.load(sys.stdin).get('sources',[])]" 2>/dev/null); \
-	total=$$(echo "$$ids" | wc -l | tr -d ' '); \
-	i=0; \
-	for id in $$ids; do \
-		i=$$((i+1)); \
+	@echo "Finding document sources without statements..."
+	@docker exec covalence-prod-pg psql -U covalence -d covalence_prod -t -c \
+		"SELECT s.id FROM sources s WHERE s.source_type = 'document' AND s.id NOT IN (SELECT DISTINCT source_id FROM statements) ORDER BY s.ingested_at DESC" \
+		| tr -d ' ' | grep -v '^$$' > /tmp/cov-reprocess-ids.txt; \
+	total=$$(wc -l < /tmp/cov-reprocess-ids.txt | tr -d ' '); \
+	echo "Found $$total unprocessed document sources (batch size: $(REPROCESS_BATCH))"; \
+	i=0; batch=0; \
+	while IFS= read -r id; do \
+		i=$$((i+1)); batch=$$((batch+1)); \
 		echo "  [$$i/$$total] reprocessing $$id..."; \
-		curl -sf -X POST $(INGEST_API)/api/v1/sources/$$id/reprocess > /dev/null || echo "    FAILED: $$id"; \
-	done
+		curl -sf -X POST $(INGEST_API)/api/v1/sources/$$id/reprocess > /dev/null 2>&1 & \
+		if [ $$batch -ge $(REPROCESS_BATCH) ]; then \
+			wait; batch=0; \
+			echo "  --- batch complete, synthesizing edges ---"; \
+			curl -sf -X POST $(INGEST_API)/api/v1/admin/edges/synthesize \
+				-H 'Content-Type: application/json' -d '{"min_cooccurrences": 1}' > /dev/null 2>&1 || true; \
+		fi; \
+	done < /tmp/cov-reprocess-ids.txt; \
+	wait; \
+	rm -f /tmp/cov-reprocess-ids.txt
+	@echo "Final edge synthesis..."
+	@curl -sf -X POST $(INGEST_API)/api/v1/admin/edges/synthesize \
+		-H 'Content-Type: application/json' -d '{"min_cooccurrences": 1}' > /dev/null 2>&1 || true
+	@curl -sf -X POST $(INGEST_API)/api/v1/admin/graph/reload > /dev/null 2>&1 || true
+	@curl -sf -X POST $(INGEST_API)/api/v1/admin/cache/clear > /dev/null 2>&1 || true
 	@echo "=== Statement reprocessing complete ==="
 
 # === OpenAPI ===
