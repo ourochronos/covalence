@@ -313,7 +313,7 @@ impl AppState {
                         "using CLI chat backend with HTTP fallback"
                     );
                     let http = Box::new(HttpChatBackend::new(
-                        config.chat_model.clone(),
+                        chat_model.clone(),
                         key,
                         config.chat_base_url.clone(),
                     ));

@@ -45,8 +45,9 @@ pub struct Config {
     /// Separate base URL for chat/extraction (falls back to OPENAI_BASE_URL).
     pub chat_base_url: Option<String>,
 
-    /// Chat backend type: "http" (OpenAI-compatible API, default) or
-    /// "cli" (shell out to a CLI command like `gemini`).
+    /// Chat backend type: "cli" (default, shells out to a CLI command
+    /// like `gemini` with automatic HTTP fallback) or "http"
+    /// (OpenAI-compatible API only).
     pub chat_backend: String,
 
     /// CLI command for the "cli" chat backend (default: "gemini").

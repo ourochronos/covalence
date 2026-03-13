@@ -329,4 +329,71 @@ mod tests {
         assert_eq!(backend.command, "gemini");
         assert_eq!(backend.model, "gemini-2.5-flash");
     }
+
+    /// Mock backend that returns a fixed result.
+    struct MockBackend {
+        result: std::sync::Mutex<Result<String>>,
+    }
+
+    impl MockBackend {
+        fn ok(s: &str) -> Self {
+            Self {
+                result: std::sync::Mutex::new(Ok(s.to_string())),
+            }
+        }
+
+        fn err(msg: &str) -> Self {
+            Self {
+                result: std::sync::Mutex::new(Err(Error::Ingestion(msg.to_string()))),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChatBackend for MockBackend {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _json_mode: bool,
+            _temperature: f64,
+        ) -> Result<String> {
+            let mut guard = self.result.lock().unwrap();
+            // Take the result so the mock can only be called once.
+            std::mem::replace(
+                &mut *guard,
+                Err(Error::Ingestion("already consumed".into())),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_returns_primary_on_success() {
+        let fb = FallbackChatBackend::new(
+            Box::new(MockBackend::ok("primary")),
+            Box::new(MockBackend::ok("fallback")),
+        );
+        let result = fb.chat("sys", "user", false, 0.0).await.unwrap();
+        assert_eq!(result, "primary");
+    }
+
+    #[tokio::test]
+    async fn fallback_uses_secondary_on_primary_error() {
+        let fb = FallbackChatBackend::new(
+            Box::new(MockBackend::err("quota exhausted")),
+            Box::new(MockBackend::ok("fallback response")),
+        );
+        let result = fb.chat("sys", "user", false, 0.0).await.unwrap();
+        assert_eq!(result, "fallback response");
+    }
+
+    #[tokio::test]
+    async fn fallback_returns_secondary_error_when_both_fail() {
+        let fb = FallbackChatBackend::new(
+            Box::new(MockBackend::err("primary failed")),
+            Box::new(MockBackend::err("secondary failed")),
+        );
+        let err = fb.chat("sys", "user", false, 0.0).await.unwrap_err();
+        assert!(err.to_string().contains("secondary failed"));
+    }
 }
