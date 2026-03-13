@@ -231,11 +231,23 @@ impl SourceService {
     /// handling their caller-specific setup (source creation,
     /// dedup, supersession, or cleanup).
     pub(crate) async fn run_pipeline(&self, input: &PipelineInput<'_>) -> Result<PipelineOutput> {
+        // Resolve source profile for per-type chunk parameters.
+        let source_type_enum = crate::models::source::SourceType::from_str_opt(input.source_type)
+            .unwrap_or(crate::models::source::SourceType::Document);
+        let registry = crate::ingestion::source_profile::ProfileRegistry::new();
+        let profile = registry.match_profile(&source_type_enum, input.source_uri.as_deref());
+        tracing::debug!(
+            profile = profile.name,
+            chunk_size = profile.chunk_size,
+            chunk_overlap = profile.chunk_overlap,
+            "resolved source profile for chunking"
+        );
+
         // --- Stage 4: Chunk (with small-section merging) ---
         let chunk_outputs = crate::ingestion::chunker::chunk_document_with_merge(
             input.normalized,
-            self.chunk_size,
-            self.chunk_overlap,
+            profile.chunk_size,
+            profile.chunk_overlap,
             self.min_section_size,
         );
 
