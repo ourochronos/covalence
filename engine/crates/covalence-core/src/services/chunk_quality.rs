@@ -303,9 +303,63 @@ pub fn is_bibliography_entry(text: &str) -> bool {
                 return true;
             }
         }
+
+        // Pattern: academic author list followed by paper title.
+        // "Surname, I., Surname2, J., and Surname3, K.\n\nTitle."
+        // or "I. Surname, J. Surname2, and K. Surname3.\n\nTitle."
+        // These are standalone citation fragments without list markers.
+        if lines.len() >= 2 && is_academic_author_list(first) {
+            return true;
+        }
+
+        // Pattern: "Title.\n\nIn [Conference/Proceedings]..."
+        // Citation where the first line is a paper title and a
+        // subsequent line starts with "In " + capitalized venue name.
+        if lines.len() >= 2 {
+            let rest_lower = lines[1..].join(" ").to_lowercase();
+            if rest_lower.starts_with("in ")
+                && lines[1].len() > 4
+                && lines[1].as_bytes()[3].is_ascii_uppercase()
+            {
+                return true;
+            }
+        }
     }
 
     false
+}
+
+/// Check if a line looks like an academic author list.
+///
+/// Matches patterns like:
+/// - "Surname, I., Surname2, J., and Surname3, K. D."
+/// - "I. Surname, J. Surname2, and K. Surname3."
+///
+/// Heuristic: contains ≥2 single-letter-period sequences (initials)
+/// and ends with a period.
+fn is_academic_author_list(line: &str) -> bool {
+    if !line.ends_with('.') {
+        return false;
+    }
+    // Count single-letter initial patterns: "X." or "X. " where X
+    // is an uppercase letter preceded by a word boundary (, or space
+    // or start of line).
+    let bytes = line.as_bytes();
+    let mut initial_count = 0;
+    for i in 0..bytes.len().saturating_sub(1) {
+        if bytes[i].is_ascii_uppercase()
+            && bytes[i + 1] == b'.'
+            && (i == 0
+                || bytes[i - 1] == b' '
+                || bytes[i - 1] == b','
+                || bytes[i - 1] == b'-')
+        {
+            initial_count += 1;
+        }
+    }
+    // An author list typically has ≥3 initials (multiple authors
+    // each with at least one initial).
+    initial_count >= 3
 }
 
 /// Detect large reference/bibliography section chunks.
@@ -617,6 +671,45 @@ mod tests {
              doi.org/10.48550/arXiv.2401.18059\n\n\
              Report IssueReport Issue for Selection"
         ));
+    }
+
+    #[test]
+    fn bibliography_entry_academic_author_list() {
+        // "Surname, I., Surname2, J., ... and SurnameN, K."
+        assert!(is_bibliography_entry(
+            "Sarthi, P., Abdullah, S., Tuli, A., Khanna, S., Goldie, A., \
+             and Manning, C. D.\n\n\
+             RAPTOR: recursive abstractive processing for tree-organized retrieval."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_initial_dot_format() {
+        // "I. Surname, J. Surname2, ..."
+        assert!(is_bibliography_entry(
+            "P. Sarthi, S. Abdullah, A. Tuli, S. Khanna, A. Goldie, \
+             and C. D. Manning.\n\n\
+             RAPTOR: recursive abstractive processing for tree-organized retrieval."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_conference_venue() {
+        // "Title.\n\nIn The Conference Name..."
+        assert!(is_bibliography_entry(
+            "RAPTOR: recursive abstractive processing for \
+             tree-organized retrieval.\n\n\
+             In The Twelfth International Conference on Learning Representations."
+        ));
+    }
+
+    #[test]
+    fn not_bibliography_academic_text_with_initials() {
+        // Substantive academic text mentioning methods (A. B. C.)
+        // should NOT be treated as bibliography.
+        let text = "Knowledge graphs are important.\n\n\
+                    The method uses A. Surname's approach for entity resolution.";
+        assert!(!is_bibliography_entry(text));
     }
 
     #[test]
@@ -939,6 +1032,59 @@ mod tests {
             Provenance chains link assertions to their source material.\n\
             Fusion algorithms combine evidence from multiple dimensions.";
         assert!(!is_reference_section(text));
+    }
+
+    #[test]
+    fn reference_section_standalone_dash_markers() {
+        // GraphRAG paper format: standalone "- " markers followed by
+        // citation on next line. The "- " line becomes "-" after trim
+        // and doesn't match as list_item, but "et al." and "arXiv"
+        // lines still provide enough signal.
+        let text = "- \n\
+            Achiam et al., (2023)\n\
+            \n\
+            Achiam, J., Adler, S., Agarwal, S., Ahmad, L., et al. (2023).\n\
+            \n\
+            Gpt-4 technical report.\n\
+            \n\
+            arXiv preprint arXiv:2303.08774.\n\
+            \n\
+            - \n\
+            Anil et al., (2023)\n\
+            \n\
+            Anil, R., Borgeaud, S., Wu, Y., et al. (2023).\n\
+            \n\
+            Gemini: a family of highly capable multimodal models.\n\
+            \n\
+            arXiv preprint arXiv:2312.11805.\n\
+            \n\
+            - \n\
+            Baek et al., (2023)\n\
+            \n\
+            Baek, J., Aji, A. F., and Saffari, A. (2023).\n\
+            \n\
+            Knowledge-augmented language model prompting.\n\
+            \n\
+            arXiv preprint arXiv:2306.04136.\n\
+            \n\
+            - \n\
+            Ban et al., (2023)\n\
+            \n\
+            Ban, T., Chen, L., Wang, X., and Chen, H. (2023).\n\
+            \n\
+            Harnessing large language models for causal discovery.\n\
+            \n\
+            arXiv preprint arXiv:2305.01234.\n\
+            \n\
+            - \n\
+            Barlaug and Gulla, (2021)\n\
+            \n\
+            Barlaug, N. and Gulla, J. A. (2021).\n\
+            \n\
+            Neural networks for entity matching: A survey.\n\
+            \n\
+            ACM Transactions on Knowledge Discovery.";
+        assert!(is_reference_section(text));
     }
 
     #[test]
