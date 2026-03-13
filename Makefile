@@ -80,7 +80,7 @@ prod-db-stop:
 # === Migrations ===
 
 migrate:
-	cd engine && cargo run -p covalence-migrations
+	cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5435/covalence_dev cargo run -p covalence-migrations
 
 migrate-prod:
 	cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5437/covalence_prod cargo run -p covalence-migrations
@@ -127,7 +127,7 @@ promote: check
 run: run-dev
 
 run-dev:
-	cd engine && cargo run -p covalence-api
+	cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5435/covalence_dev BIND_ADDR=0.0.0.0:8431 cargo run -p covalence-api
 
 run-prod:
 	cd engine && \
