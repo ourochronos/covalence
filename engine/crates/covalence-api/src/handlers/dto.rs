@@ -128,15 +128,6 @@ pub struct ChunkResponse {
     pub ordinal: i32,
     pub content: String,
     pub token_count: i32,
-    /// Cosine similarity of this chunk's embedding to its parent section.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_alignment: Option<f64>,
-    /// Extraction method selected by landscape analysis (e.g. "full", "sample", "skip").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extraction_method: Option<String>,
-    /// Landscape analysis metrics (density, uniqueness, entropy, etc.).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub landscape_metrics: Option<serde_json::Value>,
 }
 
 // --- Search ---

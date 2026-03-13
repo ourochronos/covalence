@@ -1,7 +1,7 @@
 //! Ingestion pipeline — transforms raw sources into structured graph elements.
 //!
-//! Eight-stage pipeline: accept → parse → normalize → chunk → embed →
-//! extract → landscape → resolve.
+//! Pipeline: accept → parse → normalize → chunk/statement → embed →
+//! extract → resolve.
 
 pub mod accept;
 pub mod ast_extractor;
@@ -14,7 +14,6 @@ pub mod embedder;
 pub mod extractor;
 pub mod fingerprint;
 pub mod gliner_extractor;
-pub mod landscape;
 pub mod llm_extractor;
 pub mod llm_statement_extractor;
 pub mod normalize;
@@ -31,6 +30,7 @@ pub mod statement_extractor;
 pub mod takedown;
 pub mod two_pass_extractor;
 pub mod url_fetcher;
+pub mod utils;
 pub mod voyage;
 
 pub use accept::{AcceptResult, compute_content_hash};
@@ -52,11 +52,6 @@ pub use fingerprint::{
     FingerprintConfig, FingerprintDrift, PipelineFingerprint, fingerprint_config_from,
 };
 pub use gliner_extractor::GlinerExtractor;
-pub use landscape::{
-    ChunkEmbeddingMetrics, ChunkLandscapeResult, ExtractionMethod, LandscapeMetrics,
-    ModelCalibration, analyze_landscape, compute_chunk_landscape_metrics,
-    compute_chunk_landscape_metrics_default, cosine_similarity,
-};
 pub use llm_extractor::LlmExtractor;
 pub use llm_statement_extractor::LlmStatementExtractor;
 pub use normalize::{
@@ -82,4 +77,5 @@ pub use statement_extractor::{
 pub use takedown::TakedownResult;
 pub use two_pass_extractor::TwoPassExtractor;
 pub use url_fetcher::{FetchResult, fetch_url};
+pub use utils::cosine_similarity;
 pub use voyage::{VoyageConfig, VoyageEmbedder};

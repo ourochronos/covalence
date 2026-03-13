@@ -18,8 +18,7 @@ impl ChunkRepo for PgRepo {
                 ordinal, content, content_hash,
                 contextual_prefix, token_count,
                 structural_hierarchy,
-                clearance_level, parent_alignment,
-                extraction_method, landscape_metrics,
+                clearance_level,
                 metadata, byte_start, byte_end,
                 content_offset, created_at
             ) VALUES (
@@ -27,10 +26,9 @@ impl ChunkRepo for PgRepo {
                 $5, $6, $7,
                 $8, $9,
                 $10::ltree,
-                $11, $12,
-                $13, $14,
-                $15, $16, $17,
-                $18, $19
+                $11,
+                $12, $13, $14,
+                $15, $16
             )",
         )
         .bind(chunk.id)
@@ -44,9 +42,6 @@ impl ChunkRepo for PgRepo {
         .bind(chunk.token_count)
         .bind(&chunk.structural_hierarchy)
         .bind(chunk.clearance_level.as_i32())
-        .bind(chunk.parent_alignment)
-        .bind(&chunk.extraction_method)
-        .bind(&chunk.landscape_metrics)
         .bind(&chunk.metadata)
         .bind(chunk.byte_start)
         .bind(chunk.byte_end)
@@ -82,16 +77,6 @@ impl ChunkRepo for PgRepo {
             .map(|c| c.structural_hierarchy.as_str())
             .collect();
         let clearances: Vec<i32> = chunks.iter().map(|c| c.clearance_level.as_i32()).collect();
-        let parent_alignments: Vec<Option<f64>> =
-            chunks.iter().map(|c| c.parent_alignment).collect();
-        let extraction_methods: Vec<Option<&str>> = chunks
-            .iter()
-            .map(|c| c.extraction_method.as_deref())
-            .collect();
-        let landscape_metrics_vec: Vec<Option<&serde_json::Value>> = chunks
-            .iter()
-            .map(|c| c.landscape_metrics.as_ref())
-            .collect();
         let metadatas: Vec<&serde_json::Value> = chunks.iter().map(|c| &c.metadata).collect();
         let byte_starts: Vec<Option<i32>> = chunks.iter().map(|c| c.byte_start).collect();
         let byte_ends: Vec<Option<i32>> = chunks.iter().map(|c| c.byte_end).collect();
@@ -105,8 +90,7 @@ impl ChunkRepo for PgRepo {
                 ordinal, content, content_hash,
                 contextual_prefix, token_count,
                 structural_hierarchy,
-                clearance_level, parent_alignment,
-                extraction_method, landscape_metrics,
+                clearance_level,
                 metadata, byte_start, byte_end,
                 content_offset, created_at
             )
@@ -115,10 +99,9 @@ impl ChunkRepo for PgRepo {
                 $4::text[], $5::int4[],
                 $6::text[], $7::bytea[], $8::text[],
                 $9::int4[], $10::ltree[],
-                $11::int4[], $12::float8[],
-                $13::text[], $14::jsonb[],
-                $15::jsonb[], $16::int4[], $17::int4[],
-                $18::int4[], $19::timestamptz[]
+                $11::int4[],
+                $12::jsonb[], $13::int4[], $14::int4[],
+                $15::int4[], $16::timestamptz[]
             )",
         )
         .bind(&ids)
@@ -132,9 +115,6 @@ impl ChunkRepo for PgRepo {
         .bind(&token_counts)
         .bind(&hierarchies)
         .bind(&clearances)
-        .bind(&parent_alignments)
-        .bind(&extraction_methods)
-        .bind(&landscape_metrics_vec)
         .bind(&metadatas)
         .bind(&byte_starts)
         .bind(&byte_ends)
@@ -152,8 +132,7 @@ impl ChunkRepo for PgRepo {
                     ordinal, content, content_hash,
                     contextual_prefix, token_count,
                     structural_hierarchy::text,
-                    clearance_level, parent_alignment,
-                    extraction_method, landscape_metrics,
+                    clearance_level,
                     metadata, byte_start, byte_end,
                     content_offset, created_at
              FROM chunks WHERE id = $1",
@@ -171,8 +150,7 @@ impl ChunkRepo for PgRepo {
                     ordinal, content, content_hash,
                     contextual_prefix, token_count,
                     structural_hierarchy::text,
-                    clearance_level, parent_alignment,
-                    extraction_method, landscape_metrics,
+                    clearance_level,
                     metadata, byte_start, byte_end,
                     content_offset, created_at
              FROM chunks
@@ -192,8 +170,7 @@ impl ChunkRepo for PgRepo {
                     ordinal, content, content_hash,
                     contextual_prefix, token_count,
                     structural_hierarchy::text,
-                    clearance_level, parent_alignment,
-                    extraction_method, landscape_metrics,
+                    clearance_level,
                     metadata, byte_start, byte_end,
                     content_offset, created_at
              FROM chunks
@@ -221,63 +198,6 @@ impl ChunkRepo for PgRepo {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected())
-    }
-
-    async fn update_parent_alignment(&self, id: ChunkId, alignment: f64) -> Result<()> {
-        sqlx::query(
-            "UPDATE chunks \
-             SET parent_alignment = $2 \
-             WHERE id = $1",
-        )
-        .bind(id)
-        .bind(alignment)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn update_landscape(
-        &self,
-        id: ChunkId,
-        parent_alignment: Option<f64>,
-        extraction_method: &str,
-        landscape_metrics: Option<serde_json::Value>,
-    ) -> Result<()> {
-        sqlx::query(
-            "UPDATE chunks
-             SET parent_alignment = $2,
-                 extraction_method = $3,
-                 landscape_metrics = $4
-             WHERE id = $1",
-        )
-        .bind(id)
-        .bind(parent_alignment)
-        .bind(extraction_method)
-        .bind(&landscape_metrics)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn update_landscape_metrics(
-        &self,
-        id: ChunkId,
-        metrics: serde_json::Value,
-    ) -> Result<()> {
-        // Merge new keys into the existing JSONB object using
-        // PostgreSQL's `||` concatenation operator. If the column
-        // is NULL, COALESCE seeds it with an empty object.
-        sqlx::query(
-            "UPDATE chunks \
-             SET landscape_metrics = \
-                 COALESCE(landscape_metrics, '{}'::jsonb) || $2 \
-             WHERE id = $1",
-        )
-        .bind(id)
-        .bind(&metrics)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
     }
 
     async fn update_embedding(&self, id: ChunkId, embedding: &[f64]) -> Result<()> {
@@ -317,9 +237,6 @@ fn chunk_from_row(row: &sqlx::postgres::PgRow) -> Chunk {
         token_count: row.get("token_count"),
         structural_hierarchy: row.get("structural_hierarchy"),
         clearance_level: ClearanceLevel::from_i32_or_default(clearance_i32),
-        parent_alignment: row.get("parent_alignment"),
-        extraction_method: row.get("extraction_method"),
-        landscape_metrics: row.get("landscape_metrics"),
         metadata: row.get("metadata"),
         byte_start: row.get("byte_start"),
         byte_end: row.get("byte_end"),

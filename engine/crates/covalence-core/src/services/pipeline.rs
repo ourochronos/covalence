@@ -30,8 +30,8 @@ use super::chunk_quality::{
     is_metadata_only, is_reference_section, is_title_only,
 };
 use super::ingestion_helpers::{
-    compute_parent_alignment, detect_chunk_content_types, entity_name_lock_key,
-    group_extraction_batches, has_example_markers, sanitize_ltree_label, should_extract,
+    detect_chunk_content_types, entity_name_lock_key, group_extraction_batches,
+    has_example_markers, sanitize_ltree_label,
 };
 use super::source::SourceService;
 
@@ -64,9 +64,6 @@ pub(crate) struct PipelineInput<'a> {
     pub normalized: &'a str,
     /// Whether this is a code source (skips coref).
     pub is_code: bool,
-    /// Whether this is the first ingestion for this URI (controls
-    /// landscape gating bypass).
-    pub is_first_ingestion: bool,
 }
 
 /// Output from the shared ingestion pipeline.
@@ -283,8 +280,8 @@ impl SourceService {
             .map(|co| co.id)
             .collect();
 
-        // --- Stage 5: Embed chunks + landscape analysis ---
-        let landscape_results = if let Some(ref embedder) = self.embedder {
+        // --- Stage 5: Embed chunks ---
+        if let Some(ref embedder) = self.embedder {
             let texts: Vec<String> = chunk_outputs.iter().map(|co| co.text.clone()).collect();
             let embeddings = embedder.embed_document_chunks(&texts).await?;
 
@@ -312,9 +309,6 @@ impl SourceService {
                     }
                 }
             }
-
-            // Parent alignment.
-            compute_parent_alignment(&chunk_outputs, &embeddings, &id_map, &*self.repo).await;
 
             // Source-level embedding.
             let norm_owned = input.normalized.to_string();
@@ -355,50 +349,6 @@ impl SourceService {
                     );
                 }
             }
-
-            // Landscape analysis.
-            let landscape = if self.pipeline.landscape_enabled {
-                let parent_embeddings: Vec<Option<&Vec<f64>>> = chunk_outputs
-                    .iter()
-                    .map(|co| {
-                        co.parent_id.and_then(|pid| {
-                            chunk_outputs
-                                .iter()
-                                .position(|c| c.id == pid)
-                                .and_then(|idx| embeddings.get(idx))
-                        })
-                    })
-                    .collect();
-
-                crate::ingestion::landscape::analyze_landscape(
-                    &embeddings,
-                    &parent_embeddings,
-                    None,
-                    input.is_first_ingestion,
-                )
-            } else {
-                Vec::new()
-            };
-
-            // Store landscape results.
-            for lr in &landscape {
-                if lr.chunk_index < chunk_outputs.len() {
-                    let chunk_id = id_map[&chunk_outputs[lr.chunk_index].id];
-                    let metrics_json = serde_json::to_value(&lr.metrics).ok();
-                    ChunkRepo::update_landscape(
-                        &*self.repo,
-                        chunk_id,
-                        lr.parent_alignment,
-                        lr.extraction_method.as_str(),
-                        metrics_json,
-                    )
-                    .await?;
-                }
-            }
-
-            Some(landscape)
-        } else {
-            None
         };
 
         // --- Stage 5.5: Heuristic coreference ---
@@ -420,12 +370,7 @@ impl SourceService {
             None
         } else if self.pipeline.coref_enabled {
             if let Some(ref coref_client) = self.coref_client {
-                let extractable_indices: Vec<usize> = chunk_outputs
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| should_extract(*i, landscape_results.as_deref()))
-                    .map(|(i, _)| i)
-                    .collect();
+                let extractable_indices: Vec<usize> = (0..chunk_outputs.len()).collect();
 
                 let mut resolved = std::collections::HashMap::new();
                 for &idx in &extractable_indices {
@@ -485,12 +430,7 @@ impl SourceService {
                 source_title: input.source_title.clone(),
             });
 
-            let extractable: Vec<_> = chunk_outputs
-                .iter()
-                .enumerate()
-                .filter(|(i, _co)| should_extract(*i, landscape_results.as_deref()))
-                .map(|(_i, co)| co)
-                .collect();
+            let extractable: Vec<_> = chunk_outputs.iter().collect();
 
             let batches = group_extraction_batches(
                 &extractable,

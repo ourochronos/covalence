@@ -100,34 +100,6 @@ pub trait ChunkRepo: Send + Sync {
         id: ChunkId,
         embedding: &[f64],
     ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Update the parent_alignment score for a chunk.
-    fn update_parent_alignment(
-        &self,
-        id: ChunkId,
-        alignment: f64,
-    ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Update landscape analysis results for a chunk.
-    fn update_landscape(
-        &self,
-        id: ChunkId,
-        parent_alignment: Option<f64>,
-        extraction_method: &str,
-        landscape_metrics: Option<serde_json::Value>,
-    ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Merge additional landscape metrics into the existing
-    /// `landscape_metrics` JSONB for a chunk.
-    ///
-    /// New keys are added alongside any existing keys set by
-    /// [`update_landscape`](Self::update_landscape). Existing keys
-    /// with the same name are overwritten.
-    fn update_landscape_metrics(
-        &self,
-        id: ChunkId,
-        metrics: serde_json::Value,
-    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Node`] entities.

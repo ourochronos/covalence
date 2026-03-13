@@ -480,7 +480,6 @@ impl SourceService {
             source_title: source.title.clone(),
             normalized: &prepared.normalized,
             is_code: prepared.is_code,
-            is_first_ingestion: supersedes_info.is_none(),
         })
         .await?;
 
@@ -634,7 +633,6 @@ impl SourceService {
                 source_title: source.title.clone(),
                 normalized: &prepared.normalized,
                 is_code: prepared.is_code,
-                is_first_ingestion: false,
             })
             .await?;
 
