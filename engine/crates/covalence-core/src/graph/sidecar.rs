@@ -341,7 +341,17 @@ impl GraphSidecar {
     }
 
     /// Insert or update an edge from a JSON payload.
+    ///
+    /// If the payload contains a non-null `invalid_at` field, the edge
+    /// is removed from the sidecar rather than added — invalidated
+    /// edges should not participate in graph traversal.
     fn apply_edge_upsert(&mut self, entity_id: Uuid, payload: &serde_json::Value) -> Result<()> {
+        // If the edge has been invalidated, remove it from the sidecar.
+        if !payload["invalid_at"].is_null() {
+            let _ = self.remove_edge(entity_id);
+            return Ok(());
+        }
+
         let source_str = payload["source_node_id"]
             .as_str()
             .ok_or_else(|| Error::Graph("missing source_node_id".into()))?;
@@ -678,5 +688,110 @@ mod tests {
         let edge = g.get_edge(edge_id).unwrap();
         assert!(edge.is_synthetic);
         assert!((edge.effective_weight() - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_event_edge_invalidated_removes_from_graph() {
+        let mut g = GraphSidecar::new();
+        let a_id = Uuid::new_v4();
+        let b_id = Uuid::new_v4();
+        g.add_node(NodeMeta {
+            id: a_id,
+            node_type: "entity".into(),
+            canonical_name: "A".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+        g.add_node(NodeMeta {
+            id: b_id,
+            node_type: "entity".into(),
+            canonical_name: "B".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+
+        // Insert an edge first
+        let edge_id = Uuid::new_v4();
+        let insert_event = OutboxEvent {
+            seq_id: 1,
+            entity_type: "edge".into(),
+            entity_id: edge_id,
+            operation: "INSERT".into(),
+            payload: Some(serde_json::json!({
+                "source_node_id": a_id.to_string(),
+                "target_node_id": b_id.to_string(),
+                "rel_type": "works_at",
+                "weight": 1.0,
+                "confidence": 0.9,
+                "clearance_level": 0,
+                "is_synthetic": false
+            })),
+        };
+        g.apply_event(&insert_event);
+        assert_eq!(g.edge_count(), 1);
+        assert!(g.get_edge(edge_id).is_some());
+
+        // Now update with invalid_at set — edge should be removed
+        let invalidate_event = OutboxEvent {
+            seq_id: 2,
+            entity_type: "edge".into(),
+            entity_id: edge_id,
+            operation: "UPDATE".into(),
+            payload: Some(serde_json::json!({
+                "source_node_id": a_id.to_string(),
+                "target_node_id": b_id.to_string(),
+                "rel_type": "works_at",
+                "weight": 1.0,
+                "confidence": 0.9,
+                "clearance_level": 0,
+                "is_synthetic": false,
+                "invalid_at": "2025-06-01T00:00:00Z"
+            })),
+        };
+        g.apply_event(&invalidate_event);
+        assert_eq!(g.edge_count(), 0);
+        assert!(g.get_edge(edge_id).is_none());
+    }
+
+    #[test]
+    fn apply_event_edge_with_null_invalid_at_adds_normally() {
+        let mut g = GraphSidecar::new();
+        let a_id = Uuid::new_v4();
+        let b_id = Uuid::new_v4();
+        g.add_node(NodeMeta {
+            id: a_id,
+            node_type: "entity".into(),
+            canonical_name: "A".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+        g.add_node(NodeMeta {
+            id: b_id,
+            node_type: "entity".into(),
+            canonical_name: "B".into(),
+            clearance_level: 0,
+        })
+        .unwrap();
+
+        let edge_id = Uuid::new_v4();
+        let event = OutboxEvent {
+            seq_id: 1,
+            entity_type: "edge".into(),
+            entity_id: edge_id,
+            operation: "INSERT".into(),
+            payload: Some(serde_json::json!({
+                "source_node_id": a_id.to_string(),
+                "target_node_id": b_id.to_string(),
+                "rel_type": "related_to",
+                "weight": 1.0,
+                "confidence": 0.8,
+                "clearance_level": 0,
+                "is_synthetic": false,
+                "invalid_at": null
+            })),
+        };
+        g.apply_event(&event);
+        assert_eq!(g.edge_count(), 1);
+        assert!(g.get_edge(edge_id).is_some());
     }
 }

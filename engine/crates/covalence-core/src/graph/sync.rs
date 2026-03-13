@@ -86,13 +86,14 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
     .fetch_all(pool)
     .await?;
 
-    // Fetch all edges
+    // Fetch all non-invalidated edges
     let edge_rows = sqlx::query(
         "SELECT id, source_node_id, target_node_id, \
          COALESCE(canonical_rel_type, rel_type) AS rel_type, \
          weight, confidence, clearance_level, is_synthetic, \
          properties->>'causal_level' as causal_level \
-         FROM edges",
+         FROM edges \
+         WHERE invalid_at IS NULL",
     )
     .fetch_all(pool)
     .await?;
