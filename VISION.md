@@ -6,6 +6,12 @@ Covalence is a knowledge engine for AI agents and humans. It ingests unstructure
 information, builds a structured knowledge graph with explicit uncertainty, and
 provides multi-dimensional retrieval that's better than any single search strategy.
 
+When it ingests its own spec, code, and research foundations, it becomes a
+self-aware cognitive model of its own software — capable of tracing academic
+concepts to specific lines of code, detecting when implementation drifts from
+design intent, and identifying gaps between what the research says and what
+the system does.
+
 It solves two problems simultaneously.
 
 ## The Academic Problem
@@ -13,17 +19,22 @@ It solves two problems simultaneously.
 GraphRAG systems have well-documented limitations that are treated as independent
 problems but are actually interconnected:
 
-- **Entity extraction noise** — LLM-based extraction creates bibliographic entities,
-  generic concepts, and duplicates that pollute the graph
-- **Chunking quality** — no strategy consistently outperforms others; structural
-  boundaries, semantic boundaries, and fixed-size all have failure modes
-- **Search fusion** — combining multiple retrieval dimensions (vector, lexical, graph,
-  temporal, structural) lacks principled approaches; most systems use RRF without
-  understanding its failure modes
+- **Extraction quality** — chunk-first pipelines propagate noise (bibliography,
+  boilerplate, author blocks) through the entire system. Statement-first extraction
+  inverts this: extract knowledge from raw text as self-contained atomic claims,
+  then build hierarchy from the extracted knowledge. Noise is eliminated at source.
+- **Semantic space bridging** — code and prose exist in different vector
+  neighborhoods. Raw syntax embeddings can't find natural language queries.
+  Semantic summaries (LLM-generated business logic descriptions of code) bridge
+  this gap, placing code and prose in a shared vector space.
+- **Search fusion** — combining multiple retrieval dimensions (vector, lexical,
+  graph, temporal, structural) lacks principled approaches; most systems use RRF
+  without understanding its failure modes
 - **Epistemic blindness** — systems present all knowledge with equal confidence,
   conflating well-supported facts with single-source claims and stale information
-- **Evaluation gaps** — retrieval quality measurement for graph-augmented systems is
-  immature; standard IR metrics don't capture graph-specific value
+- **Design-execution gap** — no system connects design intent (specs, research)
+  to execution (code) in a way that makes drift, coverage gaps, and impact
+  mathematically measurable
 - **Self-referential improvement** — using a knowledge system to reason about and
   improve itself is largely unexplored
 
@@ -58,15 +69,24 @@ knowledge is explicit and trustworthy.
 2. **A human exploring the web interface discovers insights** they wouldn't have found
    by reading individual documents. The graph surfaces connections across sources.
 
-3. **The system identifies its own quality gaps** and drives improvement. Not just
-   "an engineer queries it and notices problems" but structured, repeatable
-   self-assessment.
+3. **The system traces research to execution.** A query like "does our entity
+   resolution implement the HDBSCAN fallback correctly?" traverses from paper to
+   spec topic to component to code function, comparing what the research says
+   against what the code does.
 
-4. **Search results are consistently relevant.** No bibliography chunks in the top 5.
-   No entity contamination. Results from different dimensions genuinely complement
-   each other.
+4. **The system detects its own drift.** When code evolves away from its spec, the
+   semantic distance is measurable and alertable. Architecture erosion is visible
+   before it becomes tech debt.
 
-5. **Other people want to use it.** Not because we marketed it, but because it
+5. **The system maps its own gaps.** Ingested research clusters with no corresponding
+   code or spec coverage are identified as unbridged voids — a data-driven roadmap
+   of missing capabilities.
+
+6. **Search results are consistently relevant.** No noise in the top 5. Results from
+   different dimensions genuinely complement each other. Cross-domain queries
+   (spec + code + research) return coherent answers.
+
+7. **Other people want to use it.** Not because we marketed it, but because it
    solves a real problem better than alternatives.
 
 ## How We Measure Progress
@@ -74,14 +94,22 @@ knowledge is explicit and trustworthy.
 ### Knowledge Quality (the foundation)
 - **Entity precision**: sample 100 random entities, classify as useful/noise.
   Target: >90% useful.
-- **Chunk quality**: sample 100 random chunks, classify as informative/noise.
-  Target: >95% informative.
+- **Statement quality**: sample 100 random statements, verify self-contained
+  (no unresolved pronouns, independently meaningful). Target: >95%.
 - **Search relevance**: curated query set with expected results, measure precision@5
   and nDCG. Target: precision@5 > 0.8.
 
+### Cross-Domain Integrity
+- **Coverage score**: (spec topics with IMPLEMENTS_INTENT edges) / (total spec topics).
+  Target: >0.8 for core specs.
+- **Drift score**: mean semantic distance between Components and their code entities.
+  Target: <0.3 for all active components.
+- **Whitespace coverage**: research clusters with no bridge edges / total research
+  clusters. Lower is better — means we're acting on what we study.
+
 ### System Capability
 - **Layer coverage**: for each spec concept, does corresponding code exist?
-  Measurable via source-layer cross-referencing.
+  Measurable via coverage analysis endpoint.
 - **Research integration**: how much of the ingested research has influenced
   design decisions? (Not just ingested, but acted on.)
 - **Self-improvement rate**: meaningful improvements per autonomous session.
@@ -96,19 +124,23 @@ knowledge is explicit and trustworthy.
 
 ## Priorities (in order)
 
-1. **Knowledge quality** — fix entity extraction noise, chunk quality, search
+1. **Knowledge quality** — statement extraction, entity resolution, search
    relevance. Without this, everything else is building on sand.
 
-2. **Observability** — web interface that makes quality visible. You can't
-   improve what you can't see.
+2. **Cross-domain bridging** — AST-aware code ingestion, semantic summaries,
+   Component bridge layer. This is the prerequisite for self-awareness.
 
-3. **Agent integration** — MCP tools that make Covalence genuinely useful as
+3. **Observability** — web interface that makes quality, drift, coverage, and
+   gaps visible. You can't improve what you can't see.
+
+4. **Self-improvement infrastructure** — cross-domain analysis endpoints
+   (erosion detection, coverage analysis, blast radius, whitespace roadmap,
+   dialectical critique). Agents that use Covalence to assess and improve itself.
+
+5. **Agent integration** — MCP tools that make Covalence genuinely useful as
    agent memory. Fast, relevant, well-calibrated retrieval.
 
-4. **Self-improvement infrastructure** — agents that use Covalence to assess
-   and improve itself. Convergence agent, spec evolution agent.
-
-5. **External readiness** — documentation, onboarding, reliability. Only after
+6. **External readiness** — documentation, onboarding, reliability. Only after
    the above are solid.
 
 ## Non-Goals
@@ -120,8 +152,9 @@ knowledge is explicit and trustworthy.
 - **Competing on raw vector search speed.** pgvector is good enough.
   The value is in multi-dimensional fusion and epistemic depth, not
   millisecond latency.
-- **Supporting every document format.** Focus on text-heavy formats
-  (markdown, HTML, PDF, code). Not images, audio, video.
+- **Supporting every media format.** Focus on text-heavy formats
+  (markdown, HTML, PDF) and code (Rust, Go, Python, TypeScript via
+  Tree-sitter). Not images, audio, video.
 
 ## The Flywheel
 
@@ -138,19 +171,59 @@ Research ──→ Vision (this doc)
            Code (implementation)
                │
                ▼
-        Ingest into Covalence
-               │
-               ▼
-     Agents query Covalence ──→ Identify gaps
-               │                      │
-               ▼                      ▼
+        Ingest into Covalence ──→ Code via AST + semantic summary
+               │                        │
+               │                  Component bridge
+               │                        │
+               ▼                        ▼
+     Agents query Covalence ──→ Cross-domain analysis
+               │                   │  │  │  │  │
+               │                   │  │  │  │  └─ Dialectical critique
+               │                   │  │  │  └─── Blast radius
+               │                   │  │  └────── Whitespace roadmap
+               │                   │  └───────── Erosion detection
+               │                   └──────────── Coverage analysis
+               ▼                        │
         Improve system ←──── Generate work items
 ```
 
-The vision drives the spec. The spec drives the code. The code gets ingested.
-Agents reason over the graph to find where reality diverges from vision.
-That generates work. The work improves the system. The improved system
-provides better data for the next cycle.
+The vision drives the spec. The spec drives the code. The code gets ingested
+alongside the spec and research. The Component bridge connects design intent
+to execution. Cross-domain analysis surfaces where reality diverges from
+vision — not as vague impressions, but as measurable drift scores, coverage
+gaps, and impact reports. That generates precise work items. The work improves
+the system. The improved system provides better data for the next cycle.
 
 The vision itself evolves as research reveals better approaches and as
 real usage reveals what actually matters.
+
+## The Emergent Capabilities
+
+When Covalence ingests its own spec, code, and research, five capabilities emerge
+from the graph structure:
+
+1. **Research-to-Execution Verification** — trace from an academic concept through
+   spec topics and components to the code that implements it. Compare research
+   statements against code semantic summaries to find alignment and divergence.
+
+2. **Architecture Erosion Detection** — measure semantic drift between Component
+   descriptions (from spec) and their code entities' semantic summaries. When code
+   evolves away from its spec, the cosine distance increases. Make invisible tech
+   debt mathematically visible.
+
+3. **Whitespace Roadmap** — find dense research clusters with no corresponding
+   Component or Spec Topic links. These are areas of theory we've studied but
+   haven't designed or built. Data-driven roadmap of missing capabilities.
+
+4. **Blast-Radius Simulation** — given a code entity, traverse the graph via
+   structural and semantic edges to compute the full impact of modifying it.
+   Traditional impact analysis follows imports. Graph-based blast radius follows
+   meaning.
+
+5. **Dialectical Design Partner** — given a design proposal, search the graph for
+   competing approaches, contradicting claims, and conflicting implementations.
+   Synthesize adversarial arguments using the system's own ingested knowledge.
+
+These aren't features to be built in isolation. They emerge naturally when the
+three domains (research, spec, code) are connected via the Component bridge and
+all share a vector space through semantic summaries.
