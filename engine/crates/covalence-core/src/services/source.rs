@@ -362,14 +362,7 @@ impl SourceService {
     /// Ingest new content through the full pipeline.
     ///
     /// Stages: hash, dedup/supersede, parse, normalize, chunk, embed,
-    /// landscape analysis, extract (gated by landscape), resolve,
-    /// embed nodes.
-    ///
-    /// **Embedding landscape gating**: After landscape analysis, only
-    /// chunks with `FullExtraction` or `FullExtractionWithReview`
-    /// extraction methods are sent to the LLM extractor. Chunks
-    /// classified as `EmbeddingLinkage` or `DeltaCheck` skip
-    /// expensive LLM calls.
+    /// extract, resolve, embed nodes.
     ///
     /// **Source update classes**: When a URI is provided and an
     /// existing source shares that URI, the system detects the

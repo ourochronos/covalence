@@ -12,8 +12,8 @@ pub const DEFAULT_DELTA_THRESHOLD: f64 = 0.10;
 /// Tracks per-cluster epistemic changes.
 ///
 /// The epistemic delta quantifies how much a knowledge cluster's confidence
-/// landscape has shifted, useful for alerting, prioritizing review, and
-/// triggering consolidation.
+/// has shifted, useful for alerting, prioritizing review, and triggering
+/// consolidation.
 #[derive(Debug, Clone)]
 pub struct EpistemicDelta {
     /// Per-claim absolute confidence changes.

@@ -133,43 +133,6 @@ impl Chunk {
     }
 }
 
-/// Extraction method determined by landscape analysis.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtractionMethod {
-    /// Skip extraction -- embedding linkage is sufficient.
-    EmbeddingLinkage,
-    /// Quick delta check against existing graph.
-    DeltaCheck,
-    /// Full entity/relationship extraction.
-    FullExtraction,
-    /// Full extraction with second-pass review (gleaning).
-    FullExtractionWithReview,
-}
-
-impl ExtractionMethod {
-    /// String representation for database storage.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::EmbeddingLinkage => "embedding_linkage",
-            Self::DeltaCheck => "delta_check",
-            Self::FullExtraction => "full_extraction",
-            Self::FullExtractionWithReview => "full_extraction_with_review",
-        }
-    }
-
-    /// Parse from database string.
-    pub fn from_str_opt(s: &str) -> Option<Self> {
-        match s {
-            "embedding_linkage" => Some(Self::EmbeddingLinkage),
-            "delta_check" => Some(Self::DeltaCheck),
-            "full_extraction" => Some(Self::FullExtraction),
-            "full_extraction_with_review" => Some(Self::FullExtractionWithReview),
-            _ => None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,26 +157,6 @@ mod tests {
     fn chunk_level_unknown() {
         assert!(ChunkLevel::from_str_opt("unknown").is_none());
         assert!(ChunkLevel::from_str_opt("").is_none());
-    }
-
-    #[test]
-    fn extraction_method_roundtrip() {
-        let methods = [
-            ExtractionMethod::EmbeddingLinkage,
-            ExtractionMethod::DeltaCheck,
-            ExtractionMethod::FullExtraction,
-            ExtractionMethod::FullExtractionWithReview,
-        ];
-        for method in &methods {
-            let s = method.as_str();
-            let parsed = ExtractionMethod::from_str_opt(s);
-            assert_eq!(parsed, Some(method.clone()), "roundtrip failed for {s}");
-        }
-    }
-
-    #[test]
-    fn extraction_method_unknown() {
-        assert!(ExtractionMethod::from_str_opt("unknown").is_none());
     }
 
     #[test]
