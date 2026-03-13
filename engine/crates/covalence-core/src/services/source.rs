@@ -1202,6 +1202,14 @@ mod tests {
         ) -> crate::error::Result<Vec<EdgeId>> {
             Ok(Vec::new())
         }
+
+        async fn list_active_for_entities(
+            &self,
+            _entity_type: &str,
+            _entity_ids: &[uuid::Uuid],
+        ) -> crate::error::Result<Vec<Extraction>> {
+            Ok(Vec::new())
+        }
     }
 
     /// Verify that `ExtractionRepo::mark_superseded_by_source`

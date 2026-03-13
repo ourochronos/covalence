@@ -248,6 +248,56 @@ impl EdgeRepo for PgRepo {
         .await?;
         Ok(result.rows_affected())
     }
+
+    async fn get_many(&self, ids: &[EdgeId]) -> Result<Vec<Edge>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.into_uuid()).collect();
+        let rows = sqlx::query(
+            "SELECT id, source_node_id, target_node_id,
+                    rel_type, causal_level, properties,
+                    weight, confidence,
+                    confidence_breakdown, clearance_level,
+                    is_synthetic, valid_from, valid_until,
+                    invalid_at, invalidated_by,
+                    recorded_at, created_at
+             FROM edges WHERE id = ANY($1)",
+        )
+        .bind(&uuids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(edge_from_row).collect())
+    }
+
+    async fn batch_update_opinions(
+        &self,
+        updates: &[(EdgeId, f64, Option<serde_json::Value>)],
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<uuid::Uuid> = updates.iter().map(|(id, _, _)| id.into_uuid()).collect();
+        let confidences: Vec<f64> = updates.iter().map(|(_, c, _)| *c).collect();
+        let opinions: Vec<Option<serde_json::Value>> =
+            updates.iter().map(|(_, _, o)| o.clone()).collect();
+
+        sqlx::query(
+            "UPDATE edges
+             SET confidence = v.conf,
+                 confidence_breakdown = v.opinion
+             FROM unnest($1::uuid[], $2::float8[], $3::jsonb[])
+                  AS v(id, conf, opinion)
+             WHERE edges.id = v.id",
+        )
+        .bind(&ids)
+        .bind(&confidences)
+        .bind(&opinions)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 fn edge_from_row(row: &sqlx::postgres::PgRow) -> Edge {

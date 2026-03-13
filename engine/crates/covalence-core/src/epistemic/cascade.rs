@@ -10,6 +10,8 @@
 //! 2. **Transitive propagation** — edges involving affected nodes
 //!    are checked and their endpoint opinions propagated.
 
+use std::collections::HashMap;
+
 use crate::error::Result;
 use crate::models::extraction::Extraction;
 use crate::storage::traits::{EdgeRepo, ExtractionRepo, NodeRepo};
@@ -58,26 +60,52 @@ impl CascadeResult {
 /// - Extractions remain → opinions fused from remaining extraction
 ///   confidences via cumulative fusion.
 ///
+/// Uses batch queries to avoid N+1 performance issues: one query
+/// fetches all extractions, one fetches all nodes, one writes all
+/// opinion updates.
+///
 /// Call this AFTER deleting or superseding extractions from a
 /// retracted source.
 pub async fn recalculate_node_opinions<R>(repo: &R, node_ids: &[NodeId]) -> Result<CascadeResult>
 where
     R: ExtractionRepo + NodeRepo + Sync,
 {
+    if node_ids.is_empty() {
+        return Ok(CascadeResult::default());
+    }
+
     let mut result = CascadeResult::default();
 
-    for &node_id in node_ids {
-        let remaining =
-            ExtractionRepo::list_active_for_entity(repo, "node", node_id.into_uuid()).await?;
+    // Batch-fetch all remaining active extractions for all nodes
+    // in a single query.
+    let uuids: Vec<uuid::Uuid> = node_ids.iter().map(|id| id.into_uuid()).collect();
+    let all_extractions = ExtractionRepo::list_active_for_entities(repo, "node", &uuids).await?;
 
-        let Some(mut node) = NodeRepo::get(repo, node_id).await? else {
+    // Group extractions by entity_id.
+    let mut by_entity: HashMap<uuid::Uuid, Vec<&Extraction>> = HashMap::new();
+    for ext in &all_extractions {
+        by_entity.entry(ext.entity_id).or_default().push(ext);
+    }
+
+    // Batch-fetch all node records in a single query.
+    let nodes = NodeRepo::get_many(repo, node_ids).await?;
+    let node_map: HashMap<NodeId, _> = nodes.into_iter().map(|n| (n.id, n)).collect();
+
+    // Compute new opinions per node.
+    let mut opinion_updates: Vec<(NodeId, Option<serde_json::Value>)> = Vec::new();
+
+    for &node_id in node_ids {
+        let Some(node) = node_map.get(&node_id) else {
             continue;
         };
 
-        if remaining.is_empty() {
-            // Node lost all support — mark stale via vacuous opinion.
-            node.confidence_breakdown = Some(Opinion::vacuous(0.5));
-            NodeRepo::update(repo, &node).await?;
+        let entity_extractions = by_entity.get(&node_id.into_uuid());
+        let is_empty =
+            entity_extractions.is_none() || entity_extractions.is_some_and(|v| v.is_empty());
+
+        if is_empty {
+            let vacuous = Opinion::vacuous(0.5);
+            opinion_updates.push((node_id, Some(vacuous.to_json())));
             result.nodes_vacuated += 1;
             tracing::debug!(
                 node_id = %node_id,
@@ -85,21 +113,27 @@ where
                 "node opinion set to vacuous (all support retracted)"
             );
         } else {
-            // Recalculate from remaining extraction evidence.
-            let fused = fuse_extraction_confidences(&remaining);
-            node.confidence_breakdown = Some(fused);
-            NodeRepo::update(repo, &node).await?;
+            let owned: Vec<Extraction> = entity_extractions
+                .unwrap()
+                .iter()
+                .map(|e| (*e).clone())
+                .collect();
+            let fused = fuse_extraction_confidences(&owned);
+            opinion_updates.push((node_id, Some(fused.to_json())));
             result.nodes_recalculated += 1;
             tracing::debug!(
                 node_id = %node_id,
                 name = %node.canonical_name,
-                remaining_extractions = remaining.len(),
+                remaining_extractions = owned.len(),
                 new_belief = fused.belief,
                 new_uncertainty = fused.uncertainty,
                 "node opinion recalculated from remaining support"
             );
         }
     }
+
+    // Batch-write all opinion updates in a single query.
+    NodeRepo::batch_update_opinions(repo, &opinion_updates).await?;
 
     Ok(result)
 }
@@ -109,26 +143,48 @@ where
 /// Same logic as [`recalculate_node_opinions`] but for edge entities.
 /// Also updates the scalar `confidence` field to match the new
 /// projected probability.
+///
+/// Uses batch queries to avoid N+1 performance issues.
 pub async fn recalculate_edge_opinions<R>(repo: &R, edge_ids: &[EdgeId]) -> Result<CascadeResult>
 where
     R: ExtractionRepo + EdgeRepo + Sync,
 {
+    if edge_ids.is_empty() {
+        return Ok(CascadeResult::default());
+    }
+
     let mut result = CascadeResult::default();
 
-    for &edge_id in edge_ids {
-        let remaining =
-            ExtractionRepo::list_active_for_entity(repo, "edge", edge_id.into_uuid()).await?;
+    // Batch-fetch all remaining active extractions for all edges.
+    let uuids: Vec<uuid::Uuid> = edge_ids.iter().map(|id| id.into_uuid()).collect();
+    let all_extractions = ExtractionRepo::list_active_for_entities(repo, "edge", &uuids).await?;
 
-        let Some(mut edge) = EdgeRepo::get(repo, edge_id).await? else {
+    // Group extractions by entity_id.
+    let mut by_entity: HashMap<uuid::Uuid, Vec<&Extraction>> = HashMap::new();
+    for ext in &all_extractions {
+        by_entity.entry(ext.entity_id).or_default().push(ext);
+    }
+
+    // Batch-fetch all edge records.
+    let edges = EdgeRepo::get_many(repo, edge_ids).await?;
+    let edge_map: HashMap<EdgeId, _> = edges.into_iter().map(|e| (e.id, e)).collect();
+
+    // Compute new opinions per edge.
+    let mut opinion_updates: Vec<(EdgeId, f64, Option<serde_json::Value>)> = Vec::new();
+
+    for &edge_id in edge_ids {
+        let Some(edge) = edge_map.get(&edge_id) else {
             continue;
         };
 
-        if remaining.is_empty() {
-            // Edge lost all support — mark stale.
+        let entity_extractions = by_entity.get(&edge_id.into_uuid());
+        let is_empty =
+            entity_extractions.is_none() || entity_extractions.is_some_and(|v| v.is_empty());
+
+        if is_empty {
             let vacuous = Opinion::vacuous(0.5);
-            edge.confidence = vacuous.projected_probability();
-            edge.confidence_breakdown = Some(vacuous);
-            EdgeRepo::update(repo, &edge).await?;
+            let conf = vacuous.projected_probability();
+            opinion_updates.push((edge_id, conf, Some(vacuous.to_json())));
             result.edges_vacuated += 1;
             tracing::debug!(
                 edge_id = %edge_id,
@@ -136,21 +192,27 @@ where
                 "edge opinion set to vacuous (all support retracted)"
             );
         } else {
-            // Recalculate from remaining extraction evidence.
-            let fused = fuse_extraction_confidences(&remaining);
-            edge.confidence = fused.projected_probability();
-            edge.confidence_breakdown = Some(fused);
-            EdgeRepo::update(repo, &edge).await?;
+            let owned: Vec<Extraction> = entity_extractions
+                .unwrap()
+                .iter()
+                .map(|e| (*e).clone())
+                .collect();
+            let fused = fuse_extraction_confidences(&owned);
+            let conf = fused.projected_probability();
+            opinion_updates.push((edge_id, conf, Some(fused.to_json())));
             result.edges_recalculated += 1;
             tracing::debug!(
                 edge_id = %edge_id,
                 rel_type = %edge.rel_type,
-                remaining_extractions = remaining.len(),
-                new_confidence = edge.confidence,
+                remaining_extractions = owned.len(),
+                new_confidence = conf,
                 "edge opinion recalculated from remaining support"
             );
         }
     }
+
+    // Batch-write all opinion updates in a single query.
+    EdgeRepo::batch_update_opinions(repo, &opinion_updates).await?;
 
     Ok(result)
 }

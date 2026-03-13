@@ -167,6 +167,32 @@ impl ExtractionRepo for PgRepo {
         Ok(row.get("cnt"))
     }
 
+    async fn list_active_for_entities(
+        &self,
+        entity_type: &str,
+        entity_ids: &[uuid::Uuid],
+    ) -> Result<Vec<Extraction>> {
+        if entity_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT id, chunk_id, statement_id, entity_type, entity_id,
+                    extraction_method, confidence,
+                    is_superseded, extracted_at
+             FROM extractions
+             WHERE entity_type = $1
+               AND entity_id = ANY($2)
+               AND NOT is_superseded
+             ORDER BY entity_id, extracted_at ASC",
+        )
+        .bind(entity_type)
+        .bind(entity_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(extraction_from_row).collect())
+    }
+
     async fn list_edge_ids_by_source(&self, source_id: SourceId) -> Result<Vec<EdgeId>> {
         let rows = sqlx::query(
             "SELECT DISTINCT entity_id
