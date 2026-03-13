@@ -49,9 +49,33 @@ How to measure whether the system works. Without evaluation, spec changes are op
 | Metric | What it Measures | How to Compute |
 |--------|-----------------|----------------|
 | **Chunking quality** | Are chunk boundaries meaningful? | Measure semantic similarity between adjacent chunks (lower = better boundaries) |
-| **Extraction yield** | How many entities per chunk at each extraction tier? | `avg(entities)` grouped by `ExtractionMethod` |
+| **Statement self-containment** | Are statements independently meaningful? | Sample 100 statements, verify no unresolved pronouns or dangling references. Target: >95% |
+| **Statement dedup accuracy** | Are semantic duplicates caught? | Sample statement pairs with cosine > 0.90, manually classify as true/false duplicates |
+| **Coref resolution quality** | Are pronouns correctly resolved? | Sample 50 statements with resolved referents, verify against source text |
+| **Section coherence** | Do clustered statements form coherent topics? | Measure intra-section embedding similarity vs inter-section (higher ratio = better clustering) |
+| **Extraction yield** | How many entities per statement? | `avg(entities)` grouped by extraction method |
 | **Gleaning value** | Does the second pass find real entities? | Precision of gleaning-only extractions |
 | **Landscape calibration** | Are alignment thresholds well-calibrated? | Compare percentile-based thresholds against manual annotation of extraction need |
+
+### Code Ingestion Quality
+
+| Metric | What it Measures | How to Compute |
+|--------|-----------------|----------------|
+| **AST boundary accuracy** | Are code chunks split at meaningful boundaries? | Verify chunks align with function/struct/module boundaries (should be ~100%) |
+| **Semantic summary quality** | Do summaries accurately describe code behavior? | LLM judges summary against code, or human review of 50 samples. Target: >90% accurate |
+| **Summary embedding alignment** | Do code summaries embed near related prose? | Measure cosine similarity between code summary embeddings and corresponding spec section embeddings |
+| **Structural edge precision** | Are CALLS/USES_TYPE/IMPLEMENTS edges correct? | Sample 100 edges, verify against source code. Target: >95% |
+| **Incremental update correctness** | Does ast_hash change detection work? | Modify whitespace only, verify no re-summarization; modify logic, verify re-summarization |
+
+### Cross-Domain Analysis Quality
+
+| Metric | What it Measures | How to Compute |
+|--------|-----------------|----------------|
+| **Coverage score** | Are spec topics implemented in code? | `count(spec topics with IMPLEMENTS_INTENT edges) / count(total spec topics)`. Target: >0.8 |
+| **Drift score** | Has code diverged from spec intent? | `mean(1 - cosine(component.embedding, code_entity.embedding))`. Target: <0.3 |
+| **Whitespace coverage** | How much research is unimplemented? | `count(research clusters with no bridge edges) / count(total research clusters)`. Lower is better |
+| **Blast radius accuracy** | Does impact analysis find real dependencies? | For a known change, compare predicted impact vs actual test failures |
+| **Bridge completeness** | Are all code entities assigned to components? | `count(code entities with PART_OF_COMPONENT) / count(total code entities)`. Target: >0.9 |
 
 ## Evaluation Dataset
 
@@ -63,6 +87,8 @@ Build incrementally from production usage:
 4. **Multi-hop test set** — Curate questions that require 2+ graph hops to answer. These stress-test PPR and community summaries.
 5. **Temporal test set** — Questions with explicit time references ("What was true in 2023?"). Stress-test bi-temporal edge queries.
 6. **Global test set** — Thematic questions ("What are the main topics?"). Stress-test community summary search.
+7. **Code search test set** — Natural language queries about code behavior ("How does entity resolution work?", "What calls the embedder?"). Stress-test semantic summary embedding quality and cross-domain retrieval.
+8. **Cross-domain test set** — Questions requiring traversal across research, spec, and code ("Does our entity resolution implement HDBSCAN correctly?", "What research supports the consolidation pipeline design?"). Stress-test Component bridge and IMPLEMENTS_INTENT edges.
 
 ## Regression Testing
 
@@ -89,6 +115,8 @@ The `covalence-eval` crate (`engine/crates/covalence-eval/`) implements a fixtur
 - **`ChunkerEval`** — Evaluates chunking quality against expected chunk outputs
 - **`ExtractorEval`** — Evaluates entity/relationship extraction against expected extraction results
 - **`SearchEval`** — Evaluates search result quality against expected result sets
+- **`StatementEval`** — Evaluates statement extraction quality (self-containment, coref resolution, dedup accuracy)
+- **`CrossDomainEval`** — Evaluates coverage, drift, and gap detection accuracy across the three knowledge domains
 
 All evaluators implement the `LayerEvaluator` trait, which takes typed inputs, produces outputs, and scores them against expected baselines. Test fixtures live in the `fixtures` module. Metrics types are `ChunkerMetrics`, `ExtractorMetrics`, and `SearchMetrics`.
 
@@ -113,6 +141,27 @@ Extraction prompt quality directly determines graph quality. Test prompt variant
    - Test with different LLMs (4o-mini vs Claude Haiku vs Gemini Flash) → measure extraction quality per dollar
 3. **Metric:** Entity precision/recall on a manually annotated 50-document sample
 4. **Frequency:** Re-run ablation suite when changing extraction prompts or upgrading LLM models
+
+### Statement Extraction Ablations
+
+1. **Baseline** — Current statement extraction prompt with coreference resolution
+2. **Ablations to test:**
+   - Remove coreference resolution instruction → measure self-containment rate
+   - Vary window size (3/5/7 paragraphs) → measure coverage vs overlap tradeoff
+   - Vary overlap (1/2/3 paragraphs) → measure statement dedup rate
+   - Test with/without heading path context → measure accuracy of heading-dependent content
+   - Test different LLMs (Gemini Flash vs Claude Haiku vs GPT-4o-mini) → quality per dollar
+3. **Metric:** Self-containment rate, dedup collision rate, entity extraction yield from statements
+
+### Code Summary Ablations
+
+1. **Baseline** — Current semantic summary prompt (natural language description of business logic)
+2. **Ablations to test:**
+   - Include/exclude function signature in prompt → measure embedding alignment with spec
+   - Include/exclude surrounding module context → measure summary specificity
+   - Vary summary length (1 sentence / 2-3 sentences / paragraph) → measure search recall
+   - Test summary-only vs summary+signature embedding → measure cross-domain retrieval quality
+3. **Metric:** Cosine similarity between code summary and corresponding spec section embeddings
 
 ## Decision Record
 

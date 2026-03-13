@@ -144,7 +144,8 @@ DELETE /api/v1/edges/{id}
 
 ```
 GET /api/v1/graph/stats
-  → Node count, edge count, density, component count
+  → Node count (by type, including code entity types), edge count (by type), density,
+    component count, statement count, section count
 
 GET /api/v1/graph/communities
   → Current community structure (k-core decomposition)
@@ -247,6 +248,61 @@ GET /api/v1/admin/knowledge-gaps
   → Identify knowledge gaps: entities with high mention count but low extraction coverage
 ```
 
+### Analysis (Cross-Domain)
+
+```
+POST /api/v1/analysis/verify-implementation
+  Body: { concept: String, max_depth?: Int }
+  → Traces from a research concept through spec topics and components to code entities
+  → Returns: { concept, spec_topics: [...], components: [...], code_entities: [...], gaps: [...] }
+
+POST /api/v1/analysis/erosion
+  Body: { component_id?: UUID, threshold?: Float }
+  → Measures semantic drift between Component descriptions and their code entities
+  → drift(component) = 1 - mean(cosine(component.embedding, code_node.embedding))
+  → Returns: { components: [{ id, name, drift_score, code_entities: [...] }] }
+
+POST /api/v1/analysis/whitespace
+  Body: { min_cluster_size?: Int }
+  → Finds dense research clusters with no corresponding Component or spec topic links
+  → Returns: { gaps: [{ research_cluster, concepts: [...], density, nearest_component }] }
+
+POST /api/v1/analysis/blast-radius
+  Body: { entity_id: UUID, max_hops?: Int }
+  → Traverses structural and semantic edges to compute full impact of modifying an entity
+  → Returns: { entity, direct_deps: [...], transitive_deps: [...], affected_components: [...], affected_specs: [...] }
+
+POST /api/v1/analysis/critique
+  Body: { proposal: String }
+  → Searches the graph for competing approaches, contradicting claims, and conflicting implementations
+  → Returns: { arguments_for: [...], arguments_against: [...], conflicts: [...], alternatives: [...] }
+
+POST /api/v1/analysis/coverage
+  Body: { layer?: "spec" | "code" | "research" }
+  → Measures coverage between knowledge domains
+  → Returns: { coverage_score, covered_topics: [...], uncovered_topics: [...], orphan_code: [...] }
+```
+
+### Components
+
+```
+GET /api/v1/components
+  Query: { limit?, offset? }
+  → Paginated list of Component bridge nodes
+
+GET /api/v1/components/{id}
+  → Component with linked spec topics, code entities, and research concepts
+
+POST /api/v1/components
+  Body: { name, description, source_id?, metadata? }
+  → Create a Component bridge node
+  → Returns: { id }
+
+POST /api/v1/components/{id}/link
+  Body: { entity_id: UUID, edge_type: "IMPLEMENTS_INTENT" | "PART_OF_COMPONENT" | "THEORETICAL_BASIS" }
+  → Link a code entity, spec topic, or research concept to this component
+```
+
 ### MCP (Model Context Protocol)
 
 ```
@@ -329,6 +385,24 @@ memory_recall(query, tags?, limit?)
 
 memory_forget(memory_id, reason?)
   → Soft-forget a memory
+
+verify_implementation(concept)
+  → Trace research concept through spec to code
+
+detect_erosion(component_id?, threshold?)
+  → Measure semantic drift between spec and code
+
+find_whitespace()
+  → Find research areas with no implementation
+
+blast_radius(entity_id, max_hops?)
+  → Compute impact of modifying an entity
+
+critique_proposal(proposal)
+  → Find counterarguments from the knowledge graph
+
+coverage_analysis(layer?)
+  → Measure cross-domain coverage
 ```
 
 ## Authentication / Authorization

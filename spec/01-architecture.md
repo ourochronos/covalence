@@ -51,11 +51,14 @@ Five frameworks converge on this architecture. These are not academic garnish �
 
 The single source of truth for all persistent state.
 
-- **Nodes** — Entities with properties, type, clearance level, and metadata
-- **Edges** — Typed, directed relationships with properties, causal metadata, and temporal bounds
-- **Chunks** — Text segments at multiple granularities with parent-child links and structural hierarchy
-- **Embeddings** — Vector representations (HNSW-indexed) for chunks and optionally for nodes
-- **Sources** — Provenance records tracking origin of every node, edge, and chunk
+- **Nodes** — Entities with properties, type, clearance level, and metadata. Includes code entities (`code_function`, `code_struct`, `code_trait`, `code_module`, `code_impl`) and `component` bridge nodes.
+- **Edges** — Typed, directed relationships with properties, causal metadata, and temporal bounds. Includes structural code edges (`CALLS`, `USES_TYPE`, `IMPLEMENTS`, `CONTAINS`, `DEPENDS_ON`) and cross-domain bridge edges (`IMPLEMENTS_INTENT`, `PART_OF_COMPONENT`, `THEORETICAL_BASIS`).
+- **Statements** — Atomic, self-contained knowledge claims extracted from source text. The primary retrieval unit.
+- **Sections** — Compiled summaries of semantically clustered statements within a source.
+- **Chunks** — Text segments at multiple granularities (legacy pipeline, retained for backward compatibility)
+- **Components** — Bridge nodes linking spec topics to code entities to research concepts
+- **Embeddings** — Vector representations (HNSW-indexed) for statements, sections, chunks, and nodes
+- **Sources** — Provenance records tracking origin of every node, edge, statement, and chunk
 - **Full-text indexes** — tsvector columns for lexical search
 
 See [03-storage](03-storage.md) for schema details.
@@ -68,6 +71,7 @@ Stateless compute except for the in-memory graph sidecar.
 - Mirrors the PG edge table as a `DiGraph<Uuid, EdgeMeta>`
 - Provides fast traversal, PageRank, community detection, topological confidence
 - Periodic TrustRank batch computation for global confidence calibration
+- Cross-domain analysis: erosion detection, coverage analysis, blast-radius simulation (see [04-graph](04-graph.md#cross-domain-analysis))
 - Syncs from PG on startup; incremental updates via notify/listen or polling
 - See [04-graph](04-graph.md)
 
@@ -77,9 +81,10 @@ Stateless compute except for the in-memory graph sidecar.
 - See [06-search](06-search.md)
 
 **Ingestion Pipeline**
-- Accepts raw sources → parses → normalizes to Markdown → chunks → embeds → **analyzes embedding landscape** → targeted extraction → resolves → stores
-- Embedding landscape analysis (parent-child alignment, adjacent similarity peaks/valleys) determines which chunks warrant LLM extraction
-- LLM-driven extraction with structured output (entities, relationships, co-references) applied only to chunks flagged by landscape analysis
+- Two ingestion paths, both producing statements, sections, nodes, and edges:
+  - **Prose path** (default): raw source → normalize to Markdown → windowed LLM statement extraction → embed → cluster → compile sections → compile source summary → entity extraction from statements. See [05-ingestion](05-ingestion.md) and [ADR-0015](../docs/adr/0015-statement-first-extraction.md).
+  - **Code path** (`source_type = "code"`): raw source → Tree-sitter AST parse → chunk by AST boundary → LLM semantic summary → embed summary → statement extraction on summaries → structural edge extraction (CALLS, USES_TYPE, etc.) → Component linking. See [12-code-ingestion](12-code-ingestion.md).
+- Legacy chunk pipeline (landscape analysis, chunk-level extraction) retained for backward compatibility
 - Entity resolution via vector similarity + graph context
 - See [05-ingestion](05-ingestion.md)
 
@@ -101,6 +106,8 @@ Layer-by-layer evaluation harness for the pipeline. Provides the `LayerEvaluator
 - **ChunkerEval** — Evaluates chunking quality (boundary detection, token counts)
 - **ExtractorEval** — Evaluates entity/relationship extraction (precision, recall)
 - **SearchEval** — Evaluates search result quality (relevance, ranking)
+- **StatementEval** — Evaluates statement extraction quality (self-containment, coref resolution)
+- **CrossDomainEval** — Evaluates coverage, drift, and gap detection accuracy
 
 The eval crate produces a `covalence-eval` binary for running evaluations from the command line. See [11-evaluation](11-evaluation.md) for methodology.
 
@@ -114,24 +121,36 @@ Thin routing layer. No business logic.
 
 ## Data Flow
 
-### Ingestion Path (Online Consolidation)
+### Prose Ingestion Path (Online Consolidation)
 ```
-Raw Source → Parser → Markdown Normalizer → Hierarchical Chunker → Embedder
-    → Landscape Analysis (peaks/valleys, parent-child alignment)
-    → Targeted LLM Extraction (gated by extraction priority map)
+Raw Source → Parser → Markdown Normalizer
+    → Windowed LLM Statement Extraction (coref resolution)
+    → Embed Statements → HAC Clustering → Compile Sections
+    → Compile Source Summary → Entity Extraction from Statements
     → Entity Resolver → Storage → Graph Sidecar Update
+```
+
+### Code Ingestion Path (Online Consolidation)
+```
+Source (source_type = "code") → Tree-sitter AST Parse
+    → Chunk by AST Boundary (function, struct, module)
+    → LLM Semantic Summary per Chunk → Embed Summary
+    → Statement Extraction on Summaries
+    → Structural Edge Extraction (CALLS, USES_TYPE, IMPLEMENTS, CONTAINS)
+    → Component Linking (PART_OF_COMPONENT, IMPLEMENTS_INTENT)
+    → Storage → Graph Sidecar Update
 ```
 
 ### Compilation Path (Batch Consolidation)
 ```
-Sources (by topic cluster) → LLM Compilation → Article → Embed → Store
-                                                  ↓
-                                          Contention Detection
+Statements + Sections (by topic cluster) → LLM Compilation → Article → Embed → Store
+                                                                ↓
+                                                        Contention Detection
 ```
 
 ### Query Path
 ```
-Query → Search Service → [Vector, Lexical, Temporal, Graph, Structural] → RRF Fusion → Ranked Results
+Query → Search Service → [Vector, Lexical, Temporal, Graph, Structural, Global] → CC/RRF Fusion → Ranked Results
                               ↑                    ↑
                            pgvector             petgraph
                             (PG)              (in-memory)
@@ -147,16 +166,19 @@ Ranked Results → Context Assembly → LLM Synthesis → Response
 Full Graph → TrustRank → BMR Pruning Candidates → Prune/Archive
           → Community Detection → Domain Topology Map
           → Cross-Domain Bridge Discovery → Landmark Articles
+          → Cross-Domain Analysis (erosion, coverage, whitespace)
 ```
 
 ## Boundaries and Invariants
 
 1. **PG is the source of truth.** The graph sidecar is a derived, rebuildable cache. If it diverges, PG wins.
-2. **LLM calls are isolated to ingestion extraction, batch compilation, and optional query synthesis.** The engine never requires an LLM for search or graph operations. Within ingestion, LLM extraction is further gated by embedding landscape analysis — only chunks with sufficient novelty/misalignment are sent to the LLM.
-3. **Every stored fact has a source.** No node or edge exists without a provenance link to at least one source record.
+2. **LLM calls are isolated to ingestion, compilation, and optional synthesis.** The engine never requires an LLM for search or graph operations. LLM calls occur during: statement extraction (prose), semantic summary generation (code), batch article compilation, and optional query synthesis.
+3. **Every stored fact has provenance.** No node, edge, or statement exists without a provenance link to at least one source record. Statements trace to source byte offsets; entities trace to the statements they were extracted from.
 4. **The graph sidecar is eventually consistent.** Writes go to PG first; the sidecar syncs asynchronously.
 5. **Confidence is multi-layered.** Source confidence, extraction confidence, and topological confidence are computed independently and composed at query time. See [07-epistemic-model](07-epistemic-model.md).
 6. **Uncertainty is distinct from disbelief.** The system tracks epistemic uncertainty separately from negative belief — "unknown" ≠ "50% likely". See Subjective Logic in [07-epistemic-model](07-epistemic-model.md).
+7. **Statements are the primary retrieval unit.** Self-contained, coreference-resolved atomic claims. Chunks are retained for backward compatibility but statements are the default extraction and search target.
+8. **Code and prose share a vector space.** Code entities are embedded via their semantic summaries (natural language descriptions of business logic), not raw syntax. This enables cross-domain search without explicit query routing.
 
 ## Open Questions
 

@@ -2,37 +2,46 @@
 
 **Status:** Implemented
 
-This is the primary focus area. The ingestion pipeline transforms raw unstructured sources into structured graph elements with embeddings at multiple granularities.
+The ingestion pipeline transforms raw unstructured sources into structured graph elements (statements, nodes, edges) with embeddings at multiple granularities.
 
 ## Design Goals
 
-1. **Format-agnostic** — Handle documents, web pages, conversations, code, and arbitrary text
-2. **Structure-preserving** — Capture document hierarchy (title, headings, sections, paragraphs) as metadata, not just flat text
-3. **Metadata-rich** — Source type, author, date, URI, format-specific properties are all first-class
-4. **Hierarchical chunking** — Decompose at multiple levels; preserve parent-child relationships
-5. **Semantic boundaries** — Use embedding similarity to detect topic shifts, not just structural markers
-6. **Embedding-first extraction gating** — The embedding landscape (parent-child alignment, adjacent similarity topology) determines *what* gets LLM-extracted, not the other way around. LLM extraction is expensive and should be targeted at chunks where embeddings reveal anomalies, novelty, or misalignment.
+1. **Statement-first extraction** — Extract atomic, self-contained knowledge claims from source text as the primary path. Statements are independently searchable, embeddable, and composable. Noise (bibliography, boilerplate, author blocks) is eliminated at source, not downstream.
+2. **Format-agnostic** — Handle documents, web pages, conversations, code, and arbitrary text
+3. **Structure-preserving** — Capture document hierarchy (title, headings, sections, paragraphs) as metadata, not just flat text
+4. **Metadata-rich** — Source type, author, date, URI, format-specific properties are all first-class
+5. **Coreference resolution** — All statements have pronouns resolved to explicit referents during extraction. Self-contained claims are the retrieval unit.
+6. **Two-pass extraction** — Statement extraction and entity extraction are separate passes to avoid attention dilution. Pass 1 extracts self-contained statements with coref resolution. Pass 2 extracts entities and relationships from those statements.
 7. **Entity resolution** — Deduplicate entities across sources using vector similarity + graph context
 8. **Incremental** — Re-ingesting an updated source should update, not duplicate
 9. **Idempotent** — Re-ingesting the same content (same hash) is a no-op
-10. **Markdown normalization** — All formats convert to extended Markdown as the intermediate representation before chunking
+10. **Markdown normalization** — All formats convert to extended Markdown as the intermediate representation
 
-## Pipeline Stages
+## Pipeline Architecture
+
+The ingestion pipeline has **two paths** that share the same front-end stages (Accept → Convert → Parse → Normalize) but diverge after normalization:
 
 ```
-┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│  Accept   │─→│ Convert  │─→│  Parse   │─→│ Normalize│─→│  Chunk   │─→│  Embed   │─→│ Landscape│─→│ Extract  │─→│ Resolve  │
-│  Source   │  │  to MD   │  │  + Meta  │  │  to MD   │  │  (hier.) │  │ +Context │  │ Analysis │  │(targeted)│  │ + Store  │
-└──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘
-                                                                                          │
-                                                                                ┌─────────┴─────────┐
-                                                                                │ Extraction Priority│
-                                                                                │ Map (per-chunk     │
-                                                                                │ scores + reasons)  │
-                                                                                └───────────────────┘
+                        ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+                        │  Accept   │─→│ Convert  │─→│  Parse   │─→│ Normalize│
+                        │  Source   │  │  to MD   │  │  + Meta  │  │  to MD   │
+                        └──────────┘  └──────────┘  └──────────┘  └────┬─────┘
+                                                                       │
+                                                    ┌──────────────────┼──────────────────┐
+                                                    ▼                  ▼                  ▼
+                                         ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+                                         │  STATEMENT      │  │  CODE           │  │  CHUNK (legacy) │
+                                         │  PIPELINE       │  │  PIPELINE       │  │  PIPELINE       │
+                                         │  (default)      │  │  (source_type   │  │  (backward      │
+                                         │                 │  │   = "code")     │  │   compat.)      │
+                                         └────────────────┘  └────────────────┘  └────────────────┘
 ```
 
-The key architectural change from a naive GraphRAG pipeline: **embedding landscape analysis sits between embedding and extraction**, acting as the decision layer. Embeddings are cheap and fast. LLM extraction is slow and expensive. The landscape analysis uses embedding topology to determine which chunks are worth spending LLM tokens on.
+**Statement pipeline** (default for prose): Windowed LLM statement extraction → embed → HAC clustering → compile sections → compile source summary → entity extraction from statements → entity resolution → store.
+
+**Code pipeline** (for `source_type = "code"`): Tree-sitter AST parse → chunk by AST boundary → semantic summary → embed → statement extraction → structural edge extraction → component linking → store. See [12-code-ingestion](12-code-ingestion.md).
+
+**Chunk pipeline** (legacy, retained for backward compatibility): Hierarchical chunking → embed → embedding landscape analysis → graduated LLM extraction → entity resolution → store. See [Appendix: Legacy Chunk Pipeline](#appendix-legacy-chunk-pipeline).
 
 ### Stage 1: Accept Source
 
@@ -162,6 +171,125 @@ Revenue increased 15% year-over-year...
 | Q2      | $2.3B   | 14%    |
 | Q3      | $2.5B   | 15%    |
 ```
+
+## Statement Pipeline (Primary Path)
+
+After normalization (Stage 4), the statement pipeline takes over for all prose sources. This is the default and primary extraction path (see [ADR-0015](../docs/adr/0015-statement-first-extraction.md)).
+
+The statement pipeline inverts the traditional chunk-first approach: extract knowledge from raw text first, then build hierarchy from the extracted knowledge. Noise (bibliography entries, boilerplate, author blocks) is eliminated at source — they are never extracted as statements because the LLM is prompted to skip them.
+
+### Stage 5s: Windowed Statement Extraction
+
+The normalized Markdown text is processed in overlapping windows. Each window is sent to the LLM with a prompt that instructs it to extract atomic, self-contained factual claims.
+
+**Window configuration:**
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `COVALENCE_STATEMENT_WINDOW_SIZE` | `5` | Number of paragraphs per extraction window |
+| `COVALENCE_STATEMENT_WINDOW_OVERLAP` | `2` | Overlap paragraphs between adjacent windows |
+
+**Key requirements in the extraction prompt:**
+
+1. **Self-containment** — Every statement must be independently meaningful. No pronouns, no "this approach", no "the authors."
+2. **Coreference resolution** — All anaphora resolved to explicit referents during extraction. This is the highest-value step in the pipeline. Statements with unresolved pronouns ("it models uncertainty") lose retrievability because the embedding captures "uncertainty modeling" without connecting it to the specific concept.
+3. **Noise rejection** — Bibliography entries, acknowledgments, author affiliations, page headers/footers, and boilerplate are not extracted as statements.
+4. **Heading context** — The document heading path at each window position is provided to the LLM for disambiguation.
+
+**Example:**
+- **Source text:** "Josang proposed Subjective Logic in 2001. It models uncertainty using opinion tuples."
+- **Extracted statement:** "Subjective Logic, proposed by Audun Josang in 2001, models uncertainty using opinion tuples consisting of belief, disbelief, uncertainty, and base rate."
+
+**Deduplication:** Statements are deduplicated within and across windows by content hash (exact) and embedding cosine similarity > 0.92 (semantic).
+
+**Two-pass design rationale:** The Gemini architecture conversation identified that asking an LLM to do coreference resolution, statement extraction, AND entity/relationship extraction in a single prompt causes completeness to plummet due to attention dilution. The statement pipeline enforces separation: Pass 1 (this stage) handles statement extraction with coref resolution. Pass 2 (Stage 9s) handles entity/relationship extraction from the already-clean statements.
+
+### Stage 6s: Embed Statements
+
+Each extracted statement is embedded using the configured embedding provider. Statement embeddings use `COVALENCE_EMBED_DIM_STATEMENT` (default 1024) via Matryoshka truncation.
+
+### Stage 7s: HAC Clustering
+
+Statements are clustered into sections using Hierarchical Agglomerative Clustering:
+
+- **Linkage:** Complete linkage (furthest-neighbor)
+- **Distance metric:** Cosine distance between statement embeddings
+- **Threshold:** 0.75 (configurable via `COVALENCE_CLUSTER_THRESHOLD`)
+
+Each cluster becomes a Section — a coherent topic group of related statements.
+
+### Stage 8s: Compile Sections
+
+For each cluster/section, the LLM compiles a summary:
+
+1. **Section title** — A concise topic label (3-7 words)
+2. **Section body** — A compiled summary of the clustered statements (200-800 tokens)
+3. **Section embedding** — The body is embedded for retrieval
+
+Sections are the compiled equivalent of what articles are in the batch consolidation tier — right-sized summaries optimized for retrieval.
+
+### Stage 8.5s: Compile Source Summary
+
+The LLM generates a single-paragraph summary of the entire source based on all section titles and bodies. This summary is stored on the `sources.source_summary` field and embedded on the `sources.embedding` field.
+
+### Stage 9s: Entity Extraction from Statements
+
+Entities and relationships are extracted from statements (not chunks). This is the second pass of the two-pass pipeline:
+
+- Each non-evicted statement is sent to the extraction LLM with the same prompt structure as Stage 8.3 (see [Appendix: Legacy Chunk Pipeline](#appendix-legacy-chunk-pipeline))
+- Extraction runs concurrently with a semaphore to bound parallelism
+- Noise entities are filtered via `is_noise_entity()` before storage
+- Provenance traces to the statement, not a chunk: `extraction.statement_id` is set
+
+Entity resolution then proceeds as in Stage 9 (see [Entity Resolution](#stage-9-entity-resolution--store)).
+
+### Coreference Resolution
+
+Statement extraction prompts explicitly require **full coreference resolution**. Every statement must be self-contained — no pronouns, no "this approach", no "the authors". The LLM resolves all anaphora to their explicit referents during extraction.
+
+**Current approach:** The LLM performs coref resolution as part of statement extraction. The source text is not mutated — statements store `byte_start`/`byte_end` referencing the canonical (unmodified) source text.
+
+**Future optimization — Offset Projection Ledger:** If a separate coref resolution pass (e.g., fastcoref) is added before LLM extraction to pre-resolve coreferences in the source text, the byte offsets of downstream entities would shift. An offset projection ledger would maintain a mapping between canonical and coref-resolved text:
+
+```json
+{
+  "canonical_text": "Tim Cook took the stage. He announced the product.",
+  "mutated_text": "Tim Cook took the stage. Tim Cook announced the product.",
+  "ledger": [
+    {
+      "canonical_span": [25, 27],
+      "canonical_token": "He",
+      "mutated_span": [25, 33],
+      "mutated_token": "Tim Cook",
+      "delta": +6
+    }
+  ]
+}
+```
+
+This is explicitly a future approach — the current LLM-in-prompt coref resolution works well and avoids the complexity of text mutation and offset tracking. The ledger becomes valuable if extraction volume justifies a dedicated coref model (faster, cheaper than LLM per-token) as a preprocessing step.
+
+### Re-extraction Logic
+
+Re-extracting a source produces a superset of statements with verification of missing ones:
+
+1. Load existing statements for the source
+2. Extract new statement set from current source text
+3. Match new vs existing by content hash (exact) then embedding cosine > 0.92 (semantic)
+4. Existing statements not found in new set: verify via word-overlap heuristic (>30% match = still supported in source text → keep; otherwise → evict)
+5. Store new statements with embeddings
+6. Re-cluster all non-evicted statements
+7. Recompile sections and source summary
+
+This makes re-extraction a clean set operation with mechanical verification — no ambiguity about what changed.
+
+---
+
+## Appendix: Legacy Chunk Pipeline
+
+The chunk-first pipeline described below is retained for backward compatibility and for sources where chunk-level retrieval is specifically desired. **For new prose sources, the statement pipeline (above) is the default.**
+
+The chunk pipeline embeds text segments, uses embedding landscape analysis to determine extraction targets, then runs graduated LLM extraction. While superseded by the statement pipeline for primary extraction, it provides useful infrastructure (hierarchical chunking, landscape analysis) that informs future work.
 
 ### Stage 5: Hierarchical Chunking
 
@@ -916,8 +1044,10 @@ sqlx::query!("SELECT pg_advisory_xact_lock($1)", lock_key).execute(&mut tx).awai
 **Storage:**
 1. Upsert nodes (new or merged)
 2. Insert edges
-3. Insert extraction provenance records
+3. Insert extraction provenance records (with `chunk_id` or `statement_id` depending on pipeline)
 4. Update graph sidecar (incremental sync via outbox)
+
+**Future enhancement — HDBSCAN catch-all:** The Gemini architecture conversation proposed a 5th resolution tier: HDBSCAN clustering of all unresolved entities to dynamically discover entity clusters for human curation. The current 4-tier PgResolver handles the common cases well, but HDBSCAN would catch remaining duplicates where no individual matching signal is strong enough but the combination of weak signals across a cluster reveals common identity. This is a v2 enhancement — requires accumulating enough unresolved entities to make clustering meaningful.
 
 ---
 
@@ -1059,61 +1189,9 @@ Structural maintenance: TrustRank global recalibration, community detection refr
 - **Skip extraction for low-information chunks** — Chunks with very low token count or very high similarity to parent may not need LLM extraction
 - **Delta-only processing for append-only sources** — Hash comparison to avoid re-processing unchanged content
 
-## Statement Pipeline (ADR-0015)
+## Code Source Routing
 
-The chunk-first pipeline described above remains for backward compatibility and for sources where chunk-level retrieval is useful. However, the **primary extraction path** is now the statement-first pipeline (see [ADR-0015](../docs/adr/0015-statement-first-extraction.md)).
-
-The statement pipeline inverts the extraction order: extract knowledge from raw text first, then build hierarchy from the extracted knowledge. This eliminates noise at source — bibliography entries, boilerplate, author blocks are never extracted as statements because the LLM is prompted to skip them.
-
-### Coreference Resolution
-
-Statement extraction prompts explicitly require **full coreference resolution**. Every statement must be self-contained — no pronouns, no "this approach", no "the authors". The LLM resolves all anaphora to their explicit referents during extraction.
-
-Example:
-- **Source text:** "Josang proposed Subjective Logic in 2001. It models uncertainty using opinion tuples."
-- **Extracted statement:** "Subjective Logic, proposed by Audun Josang in 2001, models uncertainty using opinion tuples consisting of belief, disbelief, uncertainty, and base rate."
-
-This is the highest-value step in the pipeline. Self-contained statements are independently searchable, embeddable, and composable. Statements with unresolved pronouns ("it models uncertainty") lose retrievability because the embedding captures "uncertainty modeling" without connecting it to "Subjective Logic".
-
-### Offset Projection Ledger
-
-When coreference resolution modifies text (replacing pronouns with explicit referents), the byte offsets of downstream entities shift. The offset projection ledger maintains a mapping between the canonical source text and the coref-resolved text.
-
-**Current approach:** Statements store `byte_start`/`byte_end` referencing the *canonical* (unmodified) source text. The LLM extracts statements from the canonical text and is prompted to include explicit referents — the text isn't mutated, so no projection is needed.
-
-**Future approach:** If a separate coref resolution pass (e.g., fastcoref) is added before LLM extraction, the ledger pattern becomes necessary:
-
-```
-{
-  "canonical_text": "Tim Cook took the stage. He announced the product.",
-  "mutated_text": "Tim Cook took the stage. Tim Cook announced the product.",
-  "ledger": [
-    {
-      "canonical_span": [25, 27],
-      "canonical_token": "He",
-      "mutated_span": [25, 33],
-      "mutated_token": "Tim Cook",
-      "delta": +6
-    }
-  ]
-}
-```
-
-Downstream extraction indices (from the mutated text) are reverse-projected through the ledger to recover canonical source positions.
-
-### Code Source Routing
-
-When `source_type = "code"`, the ingestion pipeline routes to the AST-aware code pipeline (see [spec/12-code-ingestion](12-code-ingestion.md)) instead of the standard chunk pipeline. The code pipeline:
-
-1. Parses the source file via Tree-sitter
-2. Chunks by AST boundaries (functions, structs, modules)
-3. Generates semantic summaries for each code chunk
-4. Embeds the summaries (placing code in prose vector space)
-5. Runs statement extraction on the semantic summaries
-6. Extracts structural edges (call graph, type refs, module hierarchy) from the AST
-7. Links code entities to Components via PART_OF_COMPONENT edges
-
-Both code and prose pipelines produce the same entity types (Nodes, Edges, Statements, Sections) and participate equally in search and graph algorithms.
+When `source_type = "code"`, the ingestion pipeline routes to the AST-aware code pipeline (see [12-code-ingestion](12-code-ingestion.md)) instead of the statement or chunk pipeline. See the [Pipeline Architecture](#pipeline-architecture) section above for the routing diagram.
 
 ## Open Questions
 
@@ -1132,3 +1210,7 @@ Both code and prose pipelines produce the same entity types (Nodes, Edges, State
 - [x] Extraction budget → If LLM budget exhausts mid-ingestion, chunks needing DeltaCheck or FullExtraction are queued for next batch consolidation pass. They still get embedding linkage immediately. Graph is never hollow.
 - [x] Threshold calibration → Percentile-based thresholds from empirical parent-child similarity distribution. Requires 500+ pairs for stable calibration. Conservative defaults (more extraction) during cold start. Stored in model_calibrations table.
 - [x] Cross-document novelty → Checked during landscape analysis via pgvector ANN queries against existing node/chunk embeddings. Novel chunks upgrade extraction method; redundant chunks downgrade. One ANN query per chunk (~1ms each).
+- [x] Statement vs chunk pipeline → Statement pipeline is now default (ADR-0015). Two-pass design: statement extraction with coref → entity extraction from statements. Chunk pipeline retained for backward compatibility.
+- [x] HDBSCAN entity resolution → Deferred to v2. 4-tier PgResolver (exact, alias, vector, trigram) handles common cases. HDBSCAN catch-all for dynamic clustering of remaining unresolved entities is a future enhancement.
+- [x] Offset Projection Ledger → Future optimization. Current LLM-in-prompt coref resolution works well. Ledger becomes valuable if dedicated coref model (fastcoref) is added as preprocessing step.
+- [x] Single-pass vs two-pass extraction → Two-pass. Statement extraction (Pass 1) and entity extraction (Pass 2) are separate LLM calls. Single-pass attention dilution is a known failure mode (Gemini architecture conversation).

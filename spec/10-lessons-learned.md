@@ -160,3 +160,52 @@ Formal ontology is brittle — every new domain requires engineering, and the sc
 The middle ground: **emergent ontology with embedding-based normalization**. Let the LLM discover types. Then normalize them via vector similarity against a type registry. Types that embed close together get merged. Types that don't match anything get registered as new. Daily consolidation catches remaining drift.
 
 This gives you 90% of a formal ontology's consistency with 10% of its maintenance cost. And it scales to new domains without any schema engineering — the schema literally emerges from the data.
+
+## Lesson 13: Statement-First Extraction Eliminates Noise at Source
+
+**Date:** 2026-03-10
+**Source:** ADR-0015 implementation + production comparison
+
+Chunk-first pipelines structurally split text, embed the chunks, then extract entities from them. The problem: chunks contain bibliography entries, author blocks, boilerplate, and other noise. Every post-hoc quality filter fights noise that should never have entered the pipeline.
+
+Statement-first extraction inverts this: extract atomic, self-contained knowledge claims directly from source text via windowed LLM calls. All pronouns are resolved to explicit referents during extraction (coreference resolution). The statements — not chunks — become the primary retrieval unit.
+
+**Key properties of statements:**
+- Self-contained: no unresolved pronouns or dangling references
+- Deduplicable: content hash + embedding cosine > 0.92 catches semantic duplicates
+- Re-extractable: re-extracting a source produces a superset; missing statements are verified via word-overlap heuristic before eviction
+- Clusterable: HAC clustering groups statements into sections; sections get compiled summaries
+
+**The lesson:** Fix noise at the point of entry, not downstream. Post-hoc filters are never complete. Statement extraction is more expensive per-token than chunking, but the downstream quality improvements (cleaner entities, better search, no bibliography in results) more than compensate.
+
+## Lesson 14: Code and Prose Need a Shared Vector Space
+
+**Date:** 2026-03-10
+**Source:** Cross-domain search experiments, ADR-0016
+
+Raw code syntax (function signatures, struct definitions, import paths) embeds in a completely different vector neighborhood than natural language prose. A search for "how does entity resolution work?" will never find the `resolve_entity()` function via vector similarity alone, because the embeddings are in different regions of the space.
+
+**The fix:** Semantic summary wrapper. During code ingestion, each AST-bounded chunk gets an LLM-generated natural language description of its business logic. The summary — not the raw code — gets embedded. This places code entities in the same vector space as prose, enabling cross-domain search without explicit query routing.
+
+**Corollary:** The `ast_hash` (SHA-256 of AST structure ignoring whitespace/comments) enables efficient incremental updates. Only structurally changed code needs re-summarization. Whitespace reformatting, comment edits, and formatting changes don't trigger re-ingestion.
+
+## Lesson 15: The Component Bridge Is What Makes Self-Awareness Possible
+
+**Date:** 2026-03-10
+**Source:** Cross-domain analysis design, VISION.md emergent capabilities
+
+Code entities, spec topics, and research concepts exist in three disconnected subgraphs. No amount of vector similarity or graph traversal connects them meaningfully without an explicit bridge layer.
+
+**Component nodes** serve this role. A Component like "Entity Resolution" has edges to:
+- Spec topics (`IMPLEMENTS_INTENT`): the spec section describing how entity resolution should work
+- Code entities (`PART_OF_COMPONENT`): the Rust functions and structs that implement it
+- Research concepts (`THEORETICAL_BASIS`): the papers on HDBSCAN, vector similarity blocking, etc.
+
+With this bridge in place, five capabilities emerge naturally from graph queries:
+1. **Research-to-execution verification** — trace from paper to code
+2. **Architecture erosion detection** — measure drift(component) = 1 - mean(cosine(component, code))
+3. **Whitespace roadmap** — find research clusters with no bridge edges
+4. **Blast-radius simulation** — follow structural + semantic edges to compute modification impact
+5. **Dialectical design partner** — find counterarguments from the system's own knowledge
+
+These aren't separate features to build — they're graph traversal patterns that become possible once the three domains are connected.
