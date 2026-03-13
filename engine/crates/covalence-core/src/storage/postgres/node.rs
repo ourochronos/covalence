@@ -140,10 +140,11 @@ impl NodeRepo for PgRepo {
              FROM nodes n
              WHERE NOT EXISTS (
                  SELECT 1 FROM extractions e
-                 JOIN chunks c ON e.chunk_id = c.id
                  WHERE e.entity_type = 'node'
                    AND e.entity_id = n.id
                    AND e.is_superseded = false
+                   AND (e.chunk_id IS NOT NULL
+                        OR e.statement_id IS NOT NULL)
              )",
         )
         .fetch_all(&self.pool)
