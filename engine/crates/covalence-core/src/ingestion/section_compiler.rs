@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::error::Result;
 use crate::ingestion::chat_backend::ChatBackend;
+use crate::ingestion::utils::sanitize_latex_in_json;
 
 /// Input for section compilation.
 #[derive(Debug, Clone)]
@@ -147,6 +148,8 @@ impl SectionCompiler for LlmSectionCompiler {
 
         // Strip markdown code fences if the LLM wrapped the JSON.
         let cleaned = strip_markdown_fences(&content);
+        // Sanitize LaTeX escapes that break JSON parsing.
+        let cleaned = sanitize_latex_in_json(&cleaned);
 
         let raw: RawSectionOutput = match serde_json::from_str(&cleaned) {
             Ok(r) => r,

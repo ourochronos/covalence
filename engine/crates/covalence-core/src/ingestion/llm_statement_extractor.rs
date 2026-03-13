@@ -12,6 +12,7 @@ use crate::ingestion::chat_backend::ChatBackend;
 use crate::ingestion::statement_extractor::{
     ExtractedStatement, StatementExtractionResult, StatementExtractor,
 };
+use crate::ingestion::utils::sanitize_latex_in_json;
 
 const SYSTEM_PROMPT: &str = r#"You are a knowledge statement extractor. Given a passage of text, extract every atomic, self-contained knowledge claim as a separate statement.
 
@@ -78,6 +79,8 @@ impl StatementExtractor for LlmStatementExtractor {
 
         // Strip markdown code fences if the LLM wrapped the JSON.
         let cleaned = strip_markdown_fences(&content);
+        // Sanitize LaTeX escapes that break JSON parsing.
+        let cleaned = sanitize_latex_in_json(&cleaned);
 
         let raw: RawStatementResult = match serde_json::from_str(&cleaned) {
             Ok(r) => r,

@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use crate::ingestion::extractor::{
     ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,
 };
+use crate::ingestion::utils::sanitize_latex_in_json;
 
 const SYSTEM_PROMPT: &str = r#"You are an entity and relationship extractor. Given a text passage, extract all notable entities and relationships.
 
@@ -488,7 +489,8 @@ impl Extractor for LlmExtractor {
 /// Handles malformed responses gracefully by returning an empty result
 /// with a warning log so failures are visible to operators.
 fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
-    let raw: RawExtractionResult = match serde_json::from_str(json_str) {
+    let cleaned = sanitize_latex_in_json(json_str);
+    let raw: RawExtractionResult = match serde_json::from_str(&cleaned) {
         Ok(r) => r,
         Err(e) => {
             // Truncate raw output for logging to avoid flooding.
