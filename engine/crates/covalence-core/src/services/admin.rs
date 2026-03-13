@@ -364,22 +364,23 @@ impl AdminService {
     ///
     /// Builds hierarchical summary chunks that enable multi-resolution
     /// retrieval. Requires chat API keys to be configured.
-    pub async fn trigger_raptor(
-        &self,
-    ) -> Result<crate::consolidation::raptor::RaptorReport> {
-        let config = self.config.as_ref().ok_or_else(|| {
-            Error::Config("no configuration set on AdminService".into())
-        })?;
-        let chat_key = config.chat_api_key.as_ref().ok_or_else(|| {
-            Error::Config("RAPTOR requires CHAT_API_KEY to be set".into())
-        })?;
+    pub async fn trigger_raptor(&self) -> Result<crate::consolidation::raptor::RaptorReport> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| Error::Config("no configuration set on AdminService".into()))?;
+        let chat_key = config
+            .chat_api_key
+            .as_ref()
+            .ok_or_else(|| Error::Config("RAPTOR requires CHAT_API_KEY to be set".into()))?;
         let chat_base = config
             .chat_base_url
             .clone()
             .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-        let embedder = self.embedder.as_ref().ok_or_else(|| {
-            Error::Config("RAPTOR requires an embedder to be configured".into())
-        })?;
+        let embedder = self
+            .embedder
+            .as_ref()
+            .ok_or_else(|| Error::Config("RAPTOR requires an embedder to be configured".into()))?;
 
         let consolidator = crate::consolidation::raptor::RaptorConsolidator::new(
             Arc::clone(&self.repo),
@@ -413,11 +414,10 @@ impl AdminService {
             .await?;
         let search_trace_count: i64 = trace_row.get("count");
 
-        let summary_row = sqlx::query(
-            "SELECT COUNT(*) as count FROM chunks WHERE level LIKE 'summary_%'",
-        )
-        .fetch_one(self.repo.pool())
-        .await?;
+        let summary_row =
+            sqlx::query("SELECT COUNT(*) as count FROM chunks WHERE level LIKE 'summary_%'")
+                .fetch_one(self.repo.pool())
+                .await?;
         let summary_chunk_count: i64 = summary_row.get("count");
 
         Ok(Metrics {

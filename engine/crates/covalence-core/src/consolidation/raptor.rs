@@ -134,8 +134,7 @@ impl RaptorConsolidator {
 
     /// Summarize all sources that don't yet have summary chunks.
     pub async fn run_all_sources(&self) -> Result<RaptorReport> {
-        let sources =
-            crate::storage::traits::SourceRepo::list(&*self.repo, 1000, 0).await?;
+        let sources = crate::storage::traits::SourceRepo::list(&*self.repo, 1000, 0).await?;
         let mut report = RaptorReport::default();
 
         for source in &sources {
@@ -159,11 +158,9 @@ impl RaptorConsolidator {
                         error = %e,
                         "RAPTOR summarization failed for source"
                     );
-                    report.errors.push(format!(
-                        "{}: {}",
-                        source.id.into_uuid(),
-                        e
-                    ));
+                    report
+                        .errors
+                        .push(format!("{}: {}", source.id.into_uuid(), e));
                     report.sources_skipped += 1;
                 }
             }
@@ -213,8 +210,9 @@ impl RaptorConsolidator {
         }
 
         // --- Level 1: Summarize paragraphs grouped by section parent ---
-        let l1_summaries =
-            self.build_level_summaries(&base_chunks, source_id, 1, &mut report).await?;
+        let l1_summaries = self
+            .build_level_summaries(&base_chunks, source_id, 1, &mut report)
+            .await?;
 
         if l1_summaries.is_empty() {
             return Ok(report);
@@ -223,7 +221,8 @@ impl RaptorConsolidator {
         // --- Level 2: Summarize L1 summaries into a source summary ---
         if self.config.max_levels >= 2 && l1_summaries.len() >= self.config.min_children {
             let l1_refs: Vec<&Chunk> = l1_summaries.iter().collect();
-            self.build_level_summaries(&l1_refs, source_id, 2, &mut report).await?;
+            self.build_level_summaries(&l1_refs, source_id, 2, &mut report)
+                .await?;
         }
 
         Ok(report)
@@ -326,10 +325,8 @@ impl RaptorConsolidator {
             let parent_id = group.first().and_then(|c| c.parent_chunk_id);
 
             // Collect member chunk IDs for metadata.
-            let member_ids: Vec<String> = group
-                .iter()
-                .map(|c| c.id.into_uuid().to_string())
-                .collect();
+            let member_ids: Vec<String> =
+                group.iter().map(|c| c.id.into_uuid().to_string()).collect();
 
             // Create the summary chunk.
             let content_hash = Sha256::digest(summary_text.as_bytes()).to_vec();

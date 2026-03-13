@@ -987,18 +987,44 @@ fn is_noise_entity(name: &str, entity_type: &str) -> bool {
 
     // Generic English words that shouldn't be entities.
     const GENERIC_WORDS: &[&str] = &[
-        "alias", "brand", "charge", "checklist", "children", "clicking",
-        "collaboration", "compounds", "consequences", "covariates", "debate",
-        "drugs", "hobbies", "infrastructure", "likes", "ownership",
-        "popularity", "predicate", "regret", "spiciness", "timeliness",
-        "warnings", "auditable", "minima", "misaligned", "monotonicity",
-        "numeric", "purity", "reversible", "reward", "prepay",
-        "reactants", "court", "diversify", "possession", "association",
+        "alias",
+        "brand",
+        "charge",
+        "checklist",
+        "children",
+        "clicking",
+        "collaboration",
+        "compounds",
+        "consequences",
+        "covariates",
+        "debate",
+        "drugs",
+        "hobbies",
+        "infrastructure",
+        "likes",
+        "ownership",
+        "popularity",
+        "predicate",
+        "regret",
+        "spiciness",
+        "timeliness",
+        "warnings",
+        "auditable",
+        "minima",
+        "misaligned",
+        "monotonicity",
+        "numeric",
+        "purity",
+        "reversible",
+        "reward",
+        "prepay",
+        "reactants",
+        "court",
+        "diversify",
+        "possession",
+        "association",
     ];
-    if entity_type == "concept"
-        && !lower.contains(' ')
-        && GENERIC_WORDS.contains(&lower.as_str())
-    {
+    if entity_type == "concept" && !lower.contains(' ') && GENERIC_WORDS.contains(&lower.as_str()) {
         return true;
     }
 

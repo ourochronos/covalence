@@ -72,11 +72,7 @@ impl VectorDimension {
     /// This ensures chunk results come from sources that are
     /// globally relevant to the query, eliminating "right paragraph,
     /// wrong document" mismatches.
-    async fn hierarchical_search(
-        &self,
-        embedding: &[f64],
-        limit: i64,
-    ) -> Vec<(Uuid, f64, &str)> {
+    async fn hierarchical_search(&self, embedding: &[f64], limit: i64) -> Vec<(Uuid, f64, &str)> {
         let pgvec_source = match self.pgvec_for_table(embedding, "sources") {
             Ok(v) => v,
             Err(_) => return Vec::new(),
@@ -143,10 +139,7 @@ impl VectorDimension {
         // Include chunk results with parent boost:
         // If a chunk's source scores highly, slightly boost the chunk.
         for (chunk_id, source_id, chunk_score) in &chunk_rows {
-            let parent_boost = source_scores
-                .get(source_id)
-                .map(|s| s * 0.1)
-                .unwrap_or(0.0);
+            let parent_boost = source_scores.get(source_id).map(|s| s * 0.1).unwrap_or(0.0);
             combined.push((*chunk_id, chunk_score + parent_boost, "chunk"));
         }
 
@@ -198,10 +191,7 @@ impl SearchDimension for VectorDimension {
         // Hierarchical mode: coarse-to-fine source-gated search.
         let combined = if query.hierarchical {
             tracing::debug!("using hierarchical coarse-to-fine vector search");
-            let (node_limit, article_limit) = (
-                (limit / 4).max(2),
-                (limit / 8).max(2),
-            );
+            let (node_limit, article_limit) = ((limit / 4).max(2), (limit / 8).max(2));
             let pgvec_node = self.pgvec_for_table(embedding, "nodes")?;
             let pgvec_article = self.pgvec_for_table(embedding, "articles")?;
 

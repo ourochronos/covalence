@@ -282,10 +282,7 @@ pub fn detect_landmarks(
 ///
 /// Modifies communities in place, setting `label` from the canonical
 /// names of the top-3 most structurally important nodes.
-pub fn label_communities(
-    graph: &StableDiGraph<NodeMeta, EdgeMeta>,
-    communities: &mut [Community],
-) {
+pub fn label_communities(graph: &StableDiGraph<NodeMeta, EdgeMeta>, communities: &mut [Community]) {
     let landmarks = detect_landmarks(graph, communities, 3);
     for comm in communities.iter_mut() {
         if comm.label.is_some() {
