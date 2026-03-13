@@ -651,6 +651,26 @@ pub struct SeedOpinionsResponse {
     pub edges_vacuous: u64,
 }
 
+/// Request body for code-to-concept bridge creation.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BridgeRequest {
+    /// Minimum cosine similarity to create a bridge edge (default 0.6).
+    pub min_similarity: Option<f64>,
+    /// Maximum bridge edges per code node (default 3).
+    pub max_edges_per_node: Option<i64>,
+}
+
+/// Response for code-to-concept bridge creation.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BridgeResponse {
+    /// Code-type nodes checked for bridging.
+    pub code_nodes_checked: u64,
+    /// New bridge edges created.
+    pub edges_created: u64,
+    /// Pairs skipped because an edge already exists.
+    pub skipped_existing: u64,
+}
+
 /// Request body for co-occurrence edge synthesis.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CooccurrenceRequest {

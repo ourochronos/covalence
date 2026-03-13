@@ -81,7 +81,8 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/admin/nodes/summarize-code",
             post(admin::summarize_code_nodes),
-        );
+        )
+        .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts));
 
     // Resolve the dashboard directory relative to the working
     // directory. The binary is typically run from the repo root,

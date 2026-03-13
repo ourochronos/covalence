@@ -69,6 +69,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::backfill_node_embeddings,
         admin::seed_opinions,
         admin::summarize_code_nodes,
+        admin::bridge_code_to_concepts,
     ),
     components(schemas(
         dto::CreateSourceRequest,
@@ -137,6 +138,8 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::NoiseCleanupResponse,
         dto::NoiseEntityItem,
         dto::CodeSummaryResponse,
+        dto::BridgeRequest,
+        dto::BridgeResponse,
         mcp::McpTool,
         mcp::McpToolCall,
         mcp::McpToolResult,

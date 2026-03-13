@@ -6,15 +6,15 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, BackfillResponse, CodeSummaryResponse, CommunityParams, CommunityResponse,
-    ConfigAuditResponse, ConsolidateResponse, CooccurrenceRequest, CooccurrenceResponse,
-    DomainLinkResponse, DomainResponse, GcResponse, GraphStatsResponse, HealthResponse,
-    KnowledgeGapItem, KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse,
-    NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem, OntologyClusterItem,
-    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
-    RaptorResponse, ReloadResponse, SearchTraceResponse, SeedOpinionsResponse,
-    SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse,
-    TraceReplayResponse,
+    AuditLogResponse, BackfillResponse, BridgeRequest, BridgeResponse, CodeSummaryResponse,
+    CommunityParams, CommunityResponse, ConfigAuditResponse, ConsolidateResponse,
+    CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse, DomainResponse, GcResponse,
+    GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
+    KnowledgeGapsResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse,
+    NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse,
+    PaginationParams, PublishResponse, RaptorResponse, ReloadResponse, SearchTraceResponse,
+    SeedOpinionsResponse, SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
+    TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -732,5 +732,33 @@ pub async fn summarize_code_nodes(
         nodes_found: result.nodes_found,
         summarized: result.summarized,
         failed: result.failed,
+    }))
+}
+
+/// Create cross-domain bridge edges between code entities and concept nodes.
+#[utoipa::path(
+    post,
+    path = "/admin/edges/bridge",
+    request_body = BridgeRequest,
+    responses(
+        (status = 200, description = "Bridge results",
+         body = BridgeResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn bridge_code_to_concepts(
+    State(state): State<AppState>,
+    Json(req): Json<BridgeRequest>,
+) -> Result<Json<BridgeResponse>, ApiError> {
+    let min_sim = req.min_similarity.unwrap_or(0.6);
+    let max_edges = req.max_edges_per_node.unwrap_or(3);
+    let result = state
+        .admin_service
+        .bridge_code_to_concepts(min_sim, max_edges)
+        .await?;
+    Ok(Json(BridgeResponse {
+        code_nodes_checked: result.code_nodes_checked,
+        edges_created: result.edges_created,
+        skipped_existing: result.skipped_existing,
     }))
 }
