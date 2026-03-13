@@ -23,7 +23,8 @@ use crate::ingestion::statement_extractor::StatementExtractor;
 use crate::models::source::{Source, SourceType, UpdateClass};
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{
-    ChunkRepo, EdgeRepo, ExtractionRepo, LedgerRepo, NodeAliasRepo, NodeRepo, SourceRepo,
+    ChunkRepo, EdgeRepo, ExtractionRepo, LedgerRepo, NodeAliasRepo, NodeRepo, SectionRepo,
+    SourceRepo, StatementRepo, UnresolvedEntityRepo,
 };
 use crate::types::clearance::ClearanceLevel;
 use crate::types::ids::SourceId;
@@ -44,6 +45,10 @@ pub struct DeleteResult {
     pub nodes_deleted: u64,
     /// Number of edges deleted (from orphaned nodes).
     pub edges_deleted: u64,
+    /// Number of statements deleted (statement-first pipeline).
+    pub statements_deleted: u64,
+    /// Number of sections deleted (statement-first pipeline).
+    pub sections_deleted: u64,
 }
 
 /// Result of a source reprocessing operation.
@@ -705,12 +710,13 @@ impl SourceService {
     ///
     /// Cascade order:
     /// 1. Collect affected node IDs from extractions
-    /// 2. Delete extractions for this source's chunks
+    /// 2. Delete extractions for this source's chunks and statements
     /// 3. Nullify `node_aliases.source_chunk_id` references
-    /// 4. Delete chunks
-    /// 5. For each affected node with zero remaining active
-    ///    extractions: delete aliases, edges, then the node
-    /// 6. For nodes with remaining extractions: update
+    /// 4. Delete statements, sections, and unresolved entities
+    /// 5. Delete chunks and projection ledger
+    /// 6. For each affected node with zero remaining active
+    ///    extractions: delete aliases, edges, then the node.
+    ///    For nodes with remaining extractions: update
     ///    `mention_count`
     /// 7. Delete the source record
     pub async fn delete(&self, id: SourceId) -> Result<DeleteResult> {
@@ -727,11 +733,18 @@ impl SourceService {
         // node_aliases.source_chunk_id).
         NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
 
-        // Step 4: Delete chunks and projection ledger.
+        // Step 4: Delete statements and sections (statement-first
+        // pipeline). Must follow extraction deletion since extractions
+        // may reference statements via FK.
+        let statements_deleted = StatementRepo::delete_by_source(&*self.repo, id).await?;
+        let sections_deleted = SectionRepo::delete_by_source(&*self.repo, id).await?;
+        UnresolvedEntityRepo::delete_by_source(&*self.repo, id).await?;
+
+        // Step 5: Delete chunks and projection ledger.
         let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
         LedgerRepo::delete_by_source(&*self.repo, id).await?;
 
-        // Step 5: Handle affected nodes. For each node, check if
+        // Step 6: Handle affected nodes. For each node, check if
         // it still has active extractions from other sources.
         let mut nodes_deleted: u64 = 0;
         let mut edges_deleted: u64 = 0;
@@ -765,7 +778,7 @@ impl SourceService {
             }
         }
 
-        // Step 6: Delete the source record.
+        // Step 7: Delete the source record.
         let deleted = SourceRepo::delete(&*self.repo, id).await?;
 
         Ok(DeleteResult {
@@ -774,6 +787,8 @@ impl SourceService {
             extractions_deleted,
             nodes_deleted,
             edges_deleted,
+            statements_deleted,
+            sections_deleted,
         })
     }
 
@@ -830,6 +845,8 @@ mod tests {
             deleted: true,
             chunks_deleted: 5,
             extractions_deleted: 10,
+            statements_deleted: 2,
+            sections_deleted: 1,
             nodes_deleted: 3,
             edges_deleted: 7,
         };
@@ -837,6 +854,8 @@ mod tests {
         assert_eq!(json["deleted"], true);
         assert_eq!(json["chunks_deleted"], 5);
         assert_eq!(json["extractions_deleted"], 10);
+        assert_eq!(json["statements_deleted"], 2);
+        assert_eq!(json["sections_deleted"], 1);
         assert_eq!(json["nodes_deleted"], 3);
         assert_eq!(json["edges_deleted"], 7);
     }
@@ -847,12 +866,16 @@ mod tests {
             deleted: false,
             chunks_deleted: 0,
             extractions_deleted: 0,
+            statements_deleted: 0,
+            sections_deleted: 0,
             nodes_deleted: 0,
             edges_deleted: 0,
         };
         assert!(!result.deleted);
         assert_eq!(result.chunks_deleted, 0);
         assert_eq!(result.extractions_deleted, 0);
+        assert_eq!(result.statements_deleted, 0);
+        assert_eq!(result.sections_deleted, 0);
         assert_eq!(result.nodes_deleted, 0);
         assert_eq!(result.edges_deleted, 0);
     }

@@ -257,6 +257,8 @@ pub async fn delete_source(
         deleted: result.deleted,
         chunks_deleted: result.chunks_deleted,
         extractions_deleted: result.extractions_deleted,
+        statements_deleted: result.statements_deleted,
+        sections_deleted: result.sections_deleted,
         nodes_deleted: result.nodes_deleted,
         edges_deleted: result.edges_deleted,
     }))
