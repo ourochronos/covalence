@@ -163,6 +163,17 @@ ingest-codebase:
 			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"mime\": \"text/x-go\", \"uri\": \"file://$$f\"}" \
 			> /dev/null || echo "    FAILED: $$f"; \
 	done
+	@echo "Ingesting dashboard files..."
+	@for f in dashboard/index.html dashboard/style.css dashboard/dashboard.js; do \
+		[ -f "$$f" ] || continue; \
+		echo "  $$f"; \
+		b64=$$(base64 < "$$f"); \
+		mime=$$(case "$$f" in *.html) echo "text/html";; *.css) echo "text/css";; *.js) echo "application/javascript";; esac); \
+		curl -sf -X POST $(INGEST_API)/api/v1/sources \
+			-H 'Content-Type: application/json' \
+			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"mime\": \"$$mime\", \"uri\": \"file://$$f\"}" \
+			> /dev/null || echo "    FAILED: $$f"; \
+	done
 	@echo "Codebase ingestion complete."
 
 ingest-specs:
