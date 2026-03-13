@@ -128,15 +128,6 @@ pub struct ChunkResponse {
     pub ordinal: i32,
     pub content: String,
     pub token_count: i32,
-    /// Cosine similarity of this chunk's embedding to its parent section.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_alignment: Option<f64>,
-    /// Extraction method selected by landscape analysis (e.g. "full", "sample", "skip").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extraction_method: Option<String>,
-    /// Landscape analysis metrics (density, uniqueness, entropy, etc.).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub landscape_metrics: Option<serde_json::Value>,
 }
 
 // --- Search ---
@@ -775,6 +766,30 @@ pub struct OntologyClusterResponse {
     /// These are genuinely unique labels that don't belong to
     /// any density-based group.
     pub noise_labels: Vec<String>,
+}
+
+// --- Tier 5 HDBSCAN Resolution ---
+
+/// Request body for Tier 5 HDBSCAN batch resolution.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct Tier5ResolveRequest {
+    /// Minimum cluster size for HDBSCAN (default 2).
+    pub min_cluster_size: Option<usize>,
+}
+
+/// Response for Tier 5 batch resolution.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Tier5ResolveResponse {
+    /// Total entities processed from the pool.
+    pub entities_processed: usize,
+    /// Number of clusters formed by HDBSCAN.
+    pub clusters_formed: usize,
+    /// Number of entities resolved via clustering.
+    pub clustered_resolved: usize,
+    /// Number of noise entities promoted to individual nodes.
+    pub noise_promoted: usize,
+    /// Number of entities skipped (no embedding).
+    pub skipped_no_embedding: usize,
 }
 
 // --- Knowledge Gaps ---

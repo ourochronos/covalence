@@ -13,6 +13,7 @@ pub mod ontology;
 pub mod raptor;
 pub mod scheduler;
 pub mod summary;
+pub mod tier5;
 pub mod topic;
 
 pub use batch::{BatchConsolidator, BatchJob, BatchStatus};
@@ -30,4 +31,5 @@ pub use summary::{
     CommunitySummary, CommunitySummaryInput, CommunitySummaryNode, ConcatSummaryGenerator,
     SummaryGenerator, generate_community_summaries,
 };
+pub use tier5::{Tier5Config, Tier5Report, resolve_tier5};
 pub use topic::{SourceNodes, cluster_sources_by_community};

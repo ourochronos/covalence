@@ -15,6 +15,7 @@ use crate::models::section::Section;
 use crate::models::source::Source;
 use crate::models::statement::Statement;
 use crate::models::trace::{SearchFeedback, SearchTrace};
+use crate::models::unresolved_entity::UnresolvedEntity;
 use crate::types::ids::{
     AliasId, ArticleId, AuditLogId, ChunkId, EdgeId, ExtractionId, NodeId, SectionId, SourceId,
     StatementId,
@@ -99,34 +100,6 @@ pub trait ChunkRepo: Send + Sync {
         &self,
         id: ChunkId,
         embedding: &[f64],
-    ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Update the parent_alignment score for a chunk.
-    fn update_parent_alignment(
-        &self,
-        id: ChunkId,
-        alignment: f64,
-    ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Update landscape analysis results for a chunk.
-    fn update_landscape(
-        &self,
-        id: ChunkId,
-        parent_alignment: Option<f64>,
-        extraction_method: &str,
-        landscape_metrics: Option<serde_json::Value>,
-    ) -> impl Future<Output = Result<()>> + Send;
-
-    /// Merge additional landscape metrics into the existing
-    /// `landscape_metrics` JSONB for a chunk.
-    ///
-    /// New keys are added alongside any existing keys set by
-    /// [`update_landscape`](Self::update_landscape). Existing keys
-    /// with the same name are overwritten.
-    fn update_landscape_metrics(
-        &self,
-        id: ChunkId,
-        metrics: serde_json::Value,
     ) -> impl Future<Output = Result<()>> + Send;
 }
 
@@ -472,4 +445,35 @@ pub trait SectionRepo: Send + Sync {
 
     /// Count sections for a source.
     fn count_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<i64>> + Send;
+}
+
+/// Repository for [`UnresolvedEntity`] entries (Tier 5 HDBSCAN pool).
+pub trait UnresolvedEntityRepo: Send + Sync {
+    /// Insert a new unresolved entity.
+    fn create(&self, entity: &UnresolvedEntity) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get an unresolved entity by ID.
+    fn get(&self, id: uuid::Uuid) -> impl Future<Output = Result<Option<UnresolvedEntity>>> + Send;
+
+    /// List all pending (unresolved) entities.
+    fn list_pending(&self) -> impl Future<Output = Result<Vec<UnresolvedEntity>>> + Send;
+
+    /// List pending entities for a source.
+    fn list_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<Vec<UnresolvedEntity>>> + Send;
+
+    /// Mark an entity as resolved to a specific node.
+    fn mark_resolved(
+        &self,
+        id: uuid::Uuid,
+        node_id: NodeId,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Delete all unresolved entities for a source.
+    fn delete_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Count pending (unresolved) entities.
+    fn count_pending(&self) -> impl Future<Output = Result<i64>> + Send;
 }

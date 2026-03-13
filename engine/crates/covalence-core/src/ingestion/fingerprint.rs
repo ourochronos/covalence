@@ -80,10 +80,10 @@ pub struct FingerprintConfig {
     pub min_extract_tokens: usize,
     /// Token budget for extraction batching.
     pub extract_batch_tokens: usize,
-    /// Whether landscape gating is enabled.
-    pub landscape_enabled: bool,
     /// Whether entity resolution is enabled.
     pub resolve_enabled: bool,
+    /// Whether Tier 5 HDBSCAN deferred resolution is enabled.
+    pub tier5_enabled: bool,
     /// Trigram similarity threshold for resolution.
     pub trigram_threshold: f32,
     /// Vector cosine threshold for resolution.
@@ -211,8 +211,8 @@ pub fn fingerprint_config_from(
         chat_model: chat_model.to_string(),
         min_extract_tokens,
         extract_batch_tokens,
-        landscape_enabled: pipeline.landscape_enabled,
         resolve_enabled: pipeline.resolve_enabled,
+        tier5_enabled: pipeline.tier5_enabled,
         trigram_threshold: resolve_trigram_threshold,
         vector_threshold: resolve_vector_threshold,
         embed_model: embed_model.to_string(),
@@ -254,7 +254,6 @@ fn hash_extraction(cfg: &FingerprintConfig) -> u64 {
     cfg.chat_model.hash(&mut h);
     cfg.min_extract_tokens.hash(&mut h);
     cfg.extract_batch_tokens.hash(&mut h);
-    cfg.landscape_enabled.hash(&mut h);
     h.finish()
 }
 
@@ -262,6 +261,7 @@ fn hash_extraction(cfg: &FingerprintConfig) -> u64 {
 fn hash_resolution(cfg: &FingerprintConfig) -> u64 {
     let mut h = DefaultHasher::new();
     cfg.resolve_enabled.hash(&mut h);
+    cfg.tier5_enabled.hash(&mut h);
     // Hash f32 thresholds via their bit patterns to avoid
     // floating-point comparison issues.
     cfg.trigram_threshold.to_bits().hash(&mut h);
@@ -289,8 +289,8 @@ mod tests {
             chat_model: "gpt-4o".to_string(),
             min_extract_tokens: 30,
             extract_batch_tokens: 2000,
-            landscape_enabled: true,
             resolve_enabled: true,
+            tier5_enabled: false,
             trigram_threshold: 0.4,
             vector_threshold: 0.85,
             embed_model: "text-embedding-3-large".to_string(),
@@ -379,23 +379,6 @@ mod tests {
         let drift = a.compare(&b);
 
         assert!(drift.extraction_changed);
-        assert!(!drift.chunking_changed);
-        assert!(!drift.resolution_changed);
-    }
-
-    #[test]
-    fn changing_landscape_only_affects_extraction_stage() {
-        let cfg_a = default_config();
-        let mut cfg_b = default_config();
-        cfg_b.landscape_enabled = false;
-
-        let a = PipelineFingerprint::compute(&cfg_a);
-        let b = PipelineFingerprint::compute(&cfg_b);
-        let drift = a.compare(&b);
-
-        assert!(drift.extraction_changed);
-        assert!(!drift.conversion_changed);
-        assert!(!drift.preprocessing_changed);
         assert!(!drift.chunking_changed);
         assert!(!drift.resolution_changed);
     }

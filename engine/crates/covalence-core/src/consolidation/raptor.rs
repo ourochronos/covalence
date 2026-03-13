@@ -331,7 +331,7 @@ impl RaptorConsolidator {
             // Create the summary chunk.
             let content_hash = Sha256::digest(summary_text.as_bytes()).to_vec();
             let token_count = (summary_text.len() / 4) as i32; // rough estimate
-            let mut chunk = Chunk {
+            let chunk = Chunk {
                 id: ChunkId::new(),
                 source_id,
                 parent_chunk_id: parent_id,
@@ -343,9 +343,6 @@ impl RaptorConsolidator {
                 token_count,
                 structural_hierarchy: hierarchy,
                 clearance_level: ClearanceLevel::default(),
-                parent_alignment: None,
-                extraction_method: Some("raptor_summary".to_string()),
-                landscape_metrics: None,
                 metadata: serde_json::json!({
                     "raptor": {
                         "level": level,
@@ -382,9 +379,6 @@ impl RaptorConsolidator {
                     report.errors.push(format!("embed: {e}"));
                 }
             }
-
-            // Clear parent_alignment since it's not meaningful for summaries.
-            chunk.parent_alignment = None;
 
             *report.per_level.entry(level_name.clone()).or_default() += 1;
             report.summaries_created += 1;

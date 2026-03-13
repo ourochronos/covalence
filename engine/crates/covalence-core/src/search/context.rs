@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ingestion::landscape::cosine_similarity;
+use crate::ingestion::utils::cosine_similarity;
 
 /// Configuration for context assembly.
 #[derive(Debug, Clone, Serialize, Deserialize)]

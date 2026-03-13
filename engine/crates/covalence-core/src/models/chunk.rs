@@ -68,12 +68,6 @@ pub struct Chunk {
     pub structural_hierarchy: String,
     /// Federation clearance level.
     pub clearance_level: ClearanceLevel,
-    /// Cosine similarity between child and parent embeddings (null for document-level).
-    pub parent_alignment: Option<f64>,
-    /// Extraction method determined by landscape analysis.
-    pub extraction_method: Option<String>,
-    /// Additional landscape metrics (adjacent_similarity, sibling_outlier_score, etc.).
-    pub landscape_metrics: Option<serde_json::Value>,
     /// Additional metadata (heading text, page number, speaker, etc.).
     pub metadata: serde_json::Value,
     /// Byte offset in `Source.normalized_content` where this chunk
@@ -112,9 +106,6 @@ impl Chunk {
             token_count,
             structural_hierarchy: String::new(),
             clearance_level: ClearanceLevel::default(),
-            parent_alignment: None,
-            extraction_method: None,
-            landscape_metrics: None,
             metadata: serde_json::Value::Object(Default::default()),
             byte_start: None,
             byte_end: None,
@@ -244,8 +235,6 @@ mod tests {
         assert_eq!(chunk.token_count, 3);
         assert!(chunk.parent_chunk_id.is_none());
         assert!(chunk.contextual_prefix.is_none());
-        assert!(chunk.parent_alignment.is_none());
-        assert!(chunk.extraction_method.is_none());
         assert!(chunk.byte_start.is_none());
         assert_eq!(chunk.clearance_level, ClearanceLevel::default());
     }

@@ -54,9 +54,6 @@ pub struct SourceProfile {
 
     /// Whether to run coreference resolution.
     pub coreference: bool,
-
-    /// Whether to run landscape analysis.
-    pub landscape: bool,
 }
 
 impl SourceProfile {
@@ -112,7 +109,6 @@ pub const DOCUMENT: SourceProfile = SourceProfile {
     extraction_method: "llm",
     min_extract_tokens: 30,
     coreference: true,
-    landscape: true,
 };
 
 /// Profile for arXiv papers — like document but with MathJax stripping.
@@ -127,7 +123,6 @@ pub const ARXIV_PAPER: SourceProfile = SourceProfile {
     extraction_method: "llm",
     min_extract_tokens: 30,
     coreference: true,
-    landscape: true,
 };
 
 /// Profile for source code.
@@ -142,7 +137,6 @@ pub const CODE: SourceProfile = SourceProfile {
     extraction_method: "ast",
     min_extract_tokens: 10,
     coreference: false,
-    landscape: true,
 };
 
 /// Profile for web pages.
@@ -157,7 +151,6 @@ pub const WEB_PAGE: SourceProfile = SourceProfile {
     extraction_method: "llm",
     min_extract_tokens: 30,
     coreference: true,
-    landscape: true,
 };
 
 /// Profile for manually entered knowledge.
@@ -172,7 +165,6 @@ pub const MANUAL: SourceProfile = SourceProfile {
     extraction_method: "llm",
     min_extract_tokens: 20,
     coreference: false,
-    landscape: false,
 };
 
 // ---------------------------------------------------------------------------

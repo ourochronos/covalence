@@ -11,7 +11,8 @@ use crate::handlers::dto::{
     GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
     KnowledgeGapsResponse, MetricsResponse, OntologyClusterItem, OntologyClusterRequest,
     OntologyClusterResponse, PaginationParams, PublishResponse, RaptorResponse, ReloadResponse,
-    SearchTraceResponse, SidecarHealthResponse, TopologyResponse, TraceReplayResponse,
+    SearchTraceResponse, SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
+    TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -593,5 +594,34 @@ pub async fn config_audit(
         current_config: audit.current_config,
         sidecars,
         warnings: audit.warnings,
+    }))
+}
+
+/// Trigger Tier 5 HDBSCAN batch entity resolution.
+#[utoipa::path(
+    post,
+    path = "/admin/tier5/resolve",
+    request_body = Tier5ResolveRequest,
+    responses(
+        (status = 200, description = "Tier 5 resolution report",
+         body = Tier5ResolveResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn resolve_tier5(
+    State(state): State<AppState>,
+    Json(req): Json<Tier5ResolveRequest>,
+) -> Result<Json<Tier5ResolveResponse>, ApiError> {
+    let report = state
+        .admin_service
+        .resolve_tier5(req.min_cluster_size)
+        .await?;
+
+    Ok(Json(Tier5ResolveResponse {
+        entities_processed: report.entities_processed,
+        clusters_formed: report.clusters_formed,
+        clustered_resolved: report.clustered_resolved,
+        noise_promoted: report.noise_promoted,
+        skipped_no_embedding: report.skipped_no_embedding,
     }))
 }
