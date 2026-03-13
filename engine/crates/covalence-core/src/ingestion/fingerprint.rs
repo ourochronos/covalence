@@ -82,6 +82,8 @@ pub struct FingerprintConfig {
     pub extract_batch_tokens: usize,
     /// Whether entity resolution is enabled.
     pub resolve_enabled: bool,
+    /// Whether Tier 5 HDBSCAN deferred resolution is enabled.
+    pub tier5_enabled: bool,
     /// Trigram similarity threshold for resolution.
     pub trigram_threshold: f32,
     /// Vector cosine threshold for resolution.
@@ -210,6 +212,7 @@ pub fn fingerprint_config_from(
         min_extract_tokens,
         extract_batch_tokens,
         resolve_enabled: pipeline.resolve_enabled,
+        tier5_enabled: pipeline.tier5_enabled,
         trigram_threshold: resolve_trigram_threshold,
         vector_threshold: resolve_vector_threshold,
         embed_model: embed_model.to_string(),
@@ -258,6 +261,7 @@ fn hash_extraction(cfg: &FingerprintConfig) -> u64 {
 fn hash_resolution(cfg: &FingerprintConfig) -> u64 {
     let mut h = DefaultHasher::new();
     cfg.resolve_enabled.hash(&mut h);
+    cfg.tier5_enabled.hash(&mut h);
     // Hash f32 thresholds via their bit patterns to avoid
     // floating-point comparison issues.
     cfg.trigram_threshold.to_bits().hash(&mut h);
@@ -286,6 +290,7 @@ mod tests {
             min_extract_tokens: 30,
             extract_batch_tokens: 2000,
             resolve_enabled: true,
+            tier5_enabled: false,
             trigram_threshold: 0.4,
             vector_threshold: 0.85,
             embed_model: "text-embedding-3-large".to_string(),

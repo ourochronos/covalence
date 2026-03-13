@@ -306,6 +306,13 @@ pub struct PipelineConfig {
     /// Env: `COVALENCE_RESOLVE_ENABLED`. Default: `true`.
     pub resolve_enabled: bool,
 
+    /// Whether to defer unresolved entities to Tier 5 (HDBSCAN pool).
+    /// When enabled, entities that miss all 4 resolution tiers go to
+    /// the unresolved_entities table for batch clustering instead of
+    /// immediately creating new nodes.
+    /// Env: `COVALENCE_TIER5_ENABLED`. Default: `false`.
+    pub tier5_enabled: bool,
+
     /// NER model window size in characters.
     /// Env: `COVALENCE_NER_WINDOW_CHARS`. Default: `1200`.
     pub ner_window_chars: usize,
@@ -360,6 +367,7 @@ impl Default for PipelineConfig {
             normalize_enabled: true,
             coref_enabled: true,
             resolve_enabled: true,
+            tier5_enabled: false,
             ner_window_chars: 1200,
             ner_window_overlap: 200,
             coref_window_chars: 15_000,
@@ -511,6 +519,7 @@ impl Config {
                 normalize_enabled: env_parse_bool("COVALENCE_NORMALIZE_ENABLED", true),
                 coref_enabled: env_parse_bool("COVALENCE_COREF_ENABLED", true),
                 resolve_enabled: env_parse_bool("COVALENCE_RESOLVE_ENABLED", true),
+                tier5_enabled: env_parse_bool("COVALENCE_TIER5_ENABLED", false),
                 ner_window_chars: env_parse("COVALENCE_NER_WINDOW_CHARS", 1200)?,
                 ner_window_overlap: env_parse("COVALENCE_NER_WINDOW_OVERLAP", 200)?,
                 coref_window_chars: env_parse("COVALENCE_COREF_WINDOW_CHARS", 15_000)?,
@@ -712,6 +721,7 @@ mod tests {
         assert!(cfg.normalize_enabled);
         assert!(cfg.coref_enabled);
         assert!(cfg.resolve_enabled);
+        assert!(!cfg.tier5_enabled);
         assert_eq!(cfg.ner_window_chars, 1200);
         assert_eq!(cfg.ner_window_overlap, 200);
     }

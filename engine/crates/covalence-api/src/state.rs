@@ -205,7 +205,8 @@ impl AppState {
                 config.resolve_vector_threshold,
             )
             .with_node_embed_dim(config.embedding.table_dims.node)
-            .with_graph(Arc::clone(&graph)),
+            .with_graph(Arc::clone(&graph))
+            .with_tier5(config.pipeline.tier5_enabled),
             None => PgResolver::with_threshold(Arc::clone(&repo), config.resolve_trigram_threshold),
         });
 

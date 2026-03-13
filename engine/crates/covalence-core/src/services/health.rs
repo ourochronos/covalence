@@ -137,6 +137,7 @@ pub fn build_config_summary(config: &Config) -> serde_json::Value {
             "normalize_enabled": config.pipeline.normalize_enabled,
             "coref_enabled": config.pipeline.coref_enabled,
             "resolve_enabled": config.pipeline.resolve_enabled,
+            "tier5_enabled": config.pipeline.tier5_enabled,
             "ner_window_chars": config.pipeline.ner_window_chars,
             "ner_window_overlap": config.pipeline.ner_window_overlap,
             "coref_window_chars": config.pipeline.coref_window_chars,
