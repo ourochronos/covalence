@@ -949,6 +949,19 @@ impl AdminService {
             )
             .await?;
 
+            // Nullify invalidated_by FK references pointing at edges
+            // we are about to delete, to avoid FK violation.
+            sqlx::query(
+                "UPDATE edges SET invalidated_by = NULL \
+                 WHERE invalidated_by IN ( \
+                     SELECT id FROM edges \
+                     WHERE source_node_id = $1 OR target_node_id = $1 \
+                 )",
+            )
+            .bind(entity.node_id)
+            .execute(self.repo.pool())
+            .await?;
+
             edges_removed += EdgeRepo::delete_by_node(
                 &*self.repo,
                 crate::types::ids::NodeId::from_uuid(entity.node_id),
