@@ -172,6 +172,49 @@ impl NodeRepo for PgRepo {
 
         Ok(rows.iter().map(node_from_row).collect())
     }
+
+    async fn get_many(&self, ids: &[NodeId]) -> Result<Vec<Node>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.into_uuid()).collect();
+        let rows = sqlx::query(
+            "SELECT id, canonical_name, node_type, description,
+                    properties, confidence_breakdown,
+                    clearance_level, first_seen, last_seen,
+                    mention_count
+             FROM nodes WHERE id = ANY($1)",
+        )
+        .bind(&uuids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(node_from_row).collect())
+    }
+
+    async fn batch_update_opinions(
+        &self,
+        updates: &[(NodeId, Option<serde_json::Value>)],
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<uuid::Uuid> = updates.iter().map(|(id, _)| id.into_uuid()).collect();
+        let opinions: Vec<Option<serde_json::Value>> =
+            updates.iter().map(|(_, o)| o.clone()).collect();
+
+        sqlx::query(
+            "UPDATE nodes SET confidence_breakdown = v.opinion
+             FROM unnest($1::uuid[], $2::jsonb[])
+                  AS v(id, opinion)
+             WHERE nodes.id = v.id",
+        )
+        .bind(&ids)
+        .bind(&opinions)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 fn node_from_row(row: &sqlx::postgres::PgRow) -> Node {

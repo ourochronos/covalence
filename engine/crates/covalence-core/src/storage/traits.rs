@@ -141,6 +141,20 @@ pub trait NodeRepo: Send + Sync {
     /// their extractions were superseded during source reprocessing
     /// and are candidates for garbage collection.
     fn list_ungrounded(&self) -> impl Future<Output = Result<Vec<Node>>> + Send;
+
+    /// Fetch multiple nodes by ID in a single query.
+    fn get_many(&self, ids: &[NodeId]) -> impl Future<Output = Result<Vec<Node>>> + Send;
+
+    /// Batch-update the `confidence_breakdown` opinion for multiple
+    /// nodes in a single query.
+    ///
+    /// Each tuple is `(node_id, new_opinion_json)`. Nodes not found
+    /// in the table are silently skipped. Passing `None` sets the
+    /// column to `NULL` in the database.
+    fn batch_update_opinions(
+        &self,
+        updates: &[(NodeId, Option<serde_json::Value>)],
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Edge`] entities.
@@ -196,6 +210,20 @@ pub trait EdgeRepo: Send + Sync {
     /// source deletion to remove dangling edges before deleting
     /// orphaned nodes.
     fn delete_by_node(&self, node_id: NodeId) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Fetch multiple edges by ID in a single query.
+    fn get_many(&self, ids: &[EdgeId]) -> impl Future<Output = Result<Vec<Edge>>> + Send;
+
+    /// Batch-update `confidence` and `confidence_breakdown` for
+    /// multiple edges in a single query.
+    ///
+    /// Each tuple is `(edge_id, confidence_scalar, opinion_json)`.
+    /// Edges not found in the table are silently skipped. Passing
+    /// `None` for the opinion sets it to `NULL` in the database.
+    fn batch_update_opinions(
+        &self,
+        updates: &[(EdgeId, f64, Option<serde_json::Value>)],
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Article`] entities.
@@ -295,6 +323,18 @@ pub trait ExtractionRepo: Send + Sync {
         &self,
         source_id: SourceId,
     ) -> impl Future<Output = Result<Vec<EdgeId>>> + Send;
+
+    /// Get all active (non-superseded) extractions for multiple graph
+    /// entities of the same type in a single query.
+    ///
+    /// Returns extractions for all requested entities. Callers should
+    /// group by `entity_id` to partition per-entity results.
+    /// This is the batch counterpart to [`list_active_for_entity`].
+    fn list_active_for_entities(
+        &self,
+        entity_type: &str,
+        entity_ids: &[uuid::Uuid],
+    ) -> impl Future<Output = Result<Vec<Extraction>>> + Send;
 }
 
 /// Repository for [`NodeAlias`] entities.
