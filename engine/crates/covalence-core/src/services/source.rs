@@ -23,7 +23,7 @@ use crate::ingestion::statement_extractor::StatementExtractor;
 use crate::models::source::{Source, SourceType, UpdateClass};
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{
-    ChunkRepo, EdgeRepo, ExtractionRepo, NodeAliasRepo, NodeRepo, SourceRepo,
+    ChunkRepo, EdgeRepo, ExtractionRepo, LedgerRepo, NodeAliasRepo, NodeRepo, SourceRepo,
 };
 use crate::types::clearance::ClearanceLevel;
 use crate::types::ids::SourceId;
@@ -464,10 +464,12 @@ impl SourceService {
                 NodeAliasRepo::clear_source_chunks(&*self.repo, info.old_source_id).await?;
             let chunks_deleted =
                 ChunkRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
+            let ledger_deleted =
+                LedgerRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
             SourceRepo::clear_embedding(&*self.repo, info.old_source_id).await?;
             tracing::info!(
                 old_source = %info.old_source_id,
-                ext_deleted, aliases_cleared, chunks_deleted,
+                ext_deleted, aliases_cleared, chunks_deleted, ledger_deleted,
                 "cleaned up superseded source"
             );
         }
@@ -592,14 +594,16 @@ impl SourceService {
             "starting source reprocessing"
         );
 
-        // Delete old extractions → alias refs → chunks.
+        // Delete old extractions → alias refs → chunks → ledger.
         let extractions_superseded = ExtractionRepo::delete_by_source(&*self.repo, id).await?;
         let aliases_cleared = NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
         let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
+        let ledger_deleted = LedgerRepo::delete_by_source(&*self.repo, id).await?;
         tracing::debug!(
             extractions_superseded,
             aliases_cleared,
             chunks_deleted,
+            ledger_deleted,
             "cleaned up old data"
         );
 
@@ -723,8 +727,9 @@ impl SourceService {
         // node_aliases.source_chunk_id).
         NodeAliasRepo::clear_source_chunks(&*self.repo, id).await?;
 
-        // Step 4: Delete chunks (now safe — no FK references).
+        // Step 4: Delete chunks and projection ledger.
         let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, id).await?;
+        LedgerRepo::delete_by_source(&*self.repo, id).await?;
 
         // Step 5: Handle affected nodes. For each node, check if
         // it still has active extractions from other sources.

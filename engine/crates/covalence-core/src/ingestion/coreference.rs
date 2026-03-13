@@ -175,6 +175,16 @@ fn contains_word(text: &str, word: &str) -> bool {
 // Neural coreference resolution via Fastcoref sidecar
 // ---------------------------------------------------------------------------
 
+/// Result of neural coreference resolution containing the resolved
+/// text and byte offset mutations for the projection ledger.
+pub struct CorefResult {
+    /// Text with pronouns replaced by antecedents.
+    pub resolved: String,
+    /// Byte offset mutations recording each replacement. Empty if
+    /// no pronouns were resolved.
+    pub mutations: Vec<CorefMutation>,
+}
+
 /// Maximum input characters per coref window.
 const COREF_MAX_CHARS: usize = 15_000;
 /// Overlap between coref windows.
@@ -194,6 +204,30 @@ struct CorefResultData {
     resolved: String,
     #[allow(dead_code)]
     clusters: Vec<Vec<String>>,
+    /// Byte offset mutations from coreference replacement.
+    /// Each mutation records the canonical (original) and mutated
+    /// (resolved) byte spans plus the token strings. Used to build
+    /// the offset projection ledger.
+    #[serde(default)]
+    mutations: Vec<CorefMutation>,
+}
+
+/// A single coreference replacement with byte offsets in both the
+/// canonical (original) and mutated (resolved) texts.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CorefMutation {
+    /// Start byte offset in the original text.
+    pub canonical_start: usize,
+    /// End byte offset in the original text.
+    pub canonical_end: usize,
+    /// Start byte offset in the resolved (mutated) text.
+    pub mutated_start: usize,
+    /// End byte offset in the resolved (mutated) text.
+    pub mutated_end: usize,
+    /// The original mention token (e.g. "He").
+    pub canonical_token: String,
+    /// The replacement token (e.g. "Einstein").
+    pub mutated_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,10 +279,14 @@ impl FastcorefClient {
     ///
     /// Splits text into overlapping windows if it exceeds the
     /// model's context limit. Returns the resolved text with
-    /// pronouns replaced by their antecedents.
-    pub async fn resolve(&self, text: &str) -> Result<String> {
+    /// pronouns replaced by their antecedents, plus byte offset
+    /// mutations for the offset projection ledger.
+    pub async fn resolve(&self, text: &str) -> Result<CorefResult> {
         if text.trim().is_empty() {
-            return Ok(text.to_string());
+            return Ok(CorefResult {
+                resolved: text.to_string(),
+                mutations: Vec::new(),
+            });
         }
 
         if text.len() <= self.max_chars {
@@ -257,20 +295,39 @@ impl FastcorefClient {
 
         let windows = split_text_windows(text, self.max_chars, self.overlap_chars);
         let mut resolved_parts = Vec::with_capacity(windows.len());
+        let mut all_mutations = Vec::new();
+        let mut byte_offset: usize = 0;
+
         for window in &windows {
             match self.resolve_single(window).await {
-                Ok(r) => resolved_parts.push(r),
+                Ok(result) => {
+                    // Shift mutation offsets by the current byte position
+                    // in the concatenated output.
+                    for mut m in result.mutations {
+                        m.canonical_start += byte_offset;
+                        m.canonical_end += byte_offset;
+                        m.mutated_start += byte_offset;
+                        m.mutated_end += byte_offset;
+                        all_mutations.push(m);
+                    }
+                    resolved_parts.push(result.resolved);
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "coref window failed, using original");
                     resolved_parts.push(window.to_string());
                 }
             }
+            byte_offset += window.len();
         }
-        Ok(resolved_parts.join(" "))
+
+        Ok(CorefResult {
+            resolved: resolved_parts.join(" "),
+            mutations: all_mutations,
+        })
     }
 
     /// Call `/coref` for a single text.
-    async fn resolve_single(&self, text: &str) -> Result<String> {
+    async fn resolve_single(&self, text: &str) -> Result<CorefResult> {
         let body = CorefRequest { texts: vec![text] };
         let resp = self
             .client
@@ -293,12 +350,16 @@ impl FastcorefClient {
             .await
             .map_err(|e| Error::Ingestion(format!("failed to parse coref response: {e}")))?;
 
-        Ok(parsed
-            .results
-            .into_iter()
-            .next()
-            .map(|r| r.resolved)
-            .unwrap_or_else(|| text.to_string()))
+        match parsed.results.into_iter().next() {
+            Some(r) => Ok(CorefResult {
+                resolved: r.resolved,
+                mutations: r.mutations,
+            }),
+            None => Ok(CorefResult {
+                resolved: text.to_string(),
+                mutations: Vec::new(),
+            }),
+        }
     }
 }
 
@@ -573,7 +634,8 @@ mod tests {
     // --- FastcorefClient tests ---
 
     #[test]
-    fn coref_response_deserialization() {
+    fn coref_response_deserialization_without_mutations() {
+        // Backward compatible: no mutations field.
         let json = serde_json::json!({
             "results": [{
                 "original": "He went home.",
@@ -584,13 +646,49 @@ mod tests {
         let resp: CorefResponse = serde_json::from_value(json).unwrap();
         assert_eq!(resp.results.len(), 1);
         assert_eq!(resp.results[0].resolved, "John went home.");
+        assert!(resp.results[0].mutations.is_empty());
+    }
+
+    #[test]
+    fn coref_response_deserialization_with_mutations() {
+        let json = serde_json::json!({
+            "results": [{
+                "original": "Einstein published his theory. He won.",
+                "resolved": "Einstein published Einstein's theory. Einstein won.",
+                "clusters": [["Einstein", "his", "He"]],
+                "mutations": [
+                    {
+                        "canonical_start": 20,
+                        "canonical_end": 23,
+                        "mutated_start": 20,
+                        "mutated_end": 30,
+                        "canonical_token": "his",
+                        "mutated_token": "Einstein's"
+                    },
+                    {
+                        "canonical_start": 32,
+                        "canonical_end": 34,
+                        "mutated_start": 39,
+                        "mutated_end": 47,
+                        "canonical_token": "He",
+                        "mutated_token": "Einstein"
+                    }
+                ]
+            }]
+        });
+        let resp: CorefResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.results[0].mutations.len(), 2);
+        assert_eq!(resp.results[0].mutations[0].canonical_token, "his");
+        assert_eq!(resp.results[0].mutations[0].mutated_token, "Einstein's");
+        assert_eq!(resp.results[0].mutations[1].canonical_start, 32);
     }
 
     #[tokio::test]
     async fn fastcoref_empty_text_noop() {
         let client = FastcorefClient::new("http://localhost:9999".to_string());
         let result = client.resolve("   ").await.unwrap();
-        assert_eq!(result, "   ");
+        assert_eq!(result.resolved, "   ");
+        assert!(result.mutations.is_empty());
     }
 
     #[test]

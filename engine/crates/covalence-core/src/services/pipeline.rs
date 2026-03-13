@@ -364,7 +364,11 @@ impl SourceService {
         }
 
         // --- Stage 5.7: Neural coreference ---
-        // Skipped for code sources.
+        // Skipped for code sources. When the fastcoref sidecar is
+        // available, each chunk's text is resolved (pronouns →
+        // antecedents) and byte offset mutations are recorded in the
+        // offset projection ledger for reverse-projecting entity
+        // spans back to canonical source positions.
         let resolved_texts: Option<std::collections::HashMap<uuid::Uuid, String>> = if input.is_code
         {
             None
@@ -373,17 +377,45 @@ impl SourceService {
                 let extractable_indices: Vec<usize> = (0..chunk_outputs.len()).collect();
 
                 let mut resolved = std::collections::HashMap::new();
+                let mut all_ledger_entries: Vec<crate::models::projection::LedgerEntry> =
+                    Vec::new();
+
                 for &idx in &extractable_indices {
                     let co = &chunk_outputs[idx];
                     match coref_client.resolve(&co.text).await {
-                        Ok(r) => {
+                        Ok(result) => {
                             tracing::debug!(
                                 chunk_index = idx,
                                 original_len = co.text.len(),
-                                resolved_len = r.len(),
+                                resolved_len = result.resolved.len(),
+                                mutations = result.mutations.len(),
                                 "neural coref resolved"
                             );
-                            resolved.insert(co.id, r);
+                            // Record mutations as ledger entries for offset projection.
+                            // Mutation offsets from the coref client are
+                            // chunk-relative. Shift by the chunk's
+                            // byte_start to make them source-absolute.
+                            // Skip mutations entirely within the overlap
+                            // prefix (context_prefix_len) to avoid
+                            // double-counting — those were already
+                            // recorded for the previous chunk.
+                            let base = co.byte_start;
+                            let prefix = co.context_prefix_len;
+                            for m in &result.mutations {
+                                if m.canonical_end <= prefix {
+                                    continue;
+                                }
+                                all_ledger_entries.push(
+                                    crate::models::projection::LedgerEntry::new(
+                                        input.source_id,
+                                        (base + m.canonical_start, base + m.canonical_end),
+                                        m.canonical_token.clone(),
+                                        (base + m.mutated_start, base + m.mutated_end),
+                                        m.mutated_token.clone(),
+                                    ),
+                                );
+                            }
+                            resolved.insert(co.id, result.resolved);
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -394,6 +426,30 @@ impl SourceService {
                         }
                     }
                 }
+
+                // Store ledger entries in the database for later
+                // reverse projection of entity byte spans.
+                if !all_ledger_entries.is_empty() {
+                    use crate::storage::traits::LedgerRepo;
+                    let entry_count = all_ledger_entries.len();
+                    match LedgerRepo::create_batch(self.repo.as_ref(), &all_ledger_entries).await {
+                        Ok(()) => {
+                            tracing::info!(
+                                source_id = %input.source_id,
+                                entries = entry_count,
+                                "stored offset projection ledger"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                source_id = %input.source_id,
+                                error = %e,
+                                "failed to store projection ledger"
+                            );
+                        }
+                    }
+                }
+
                 if resolved.is_empty() {
                     None
                 } else {

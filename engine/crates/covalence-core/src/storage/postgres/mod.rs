@@ -8,6 +8,7 @@ mod audit;
 mod chunk;
 mod edge;
 mod extraction;
+mod ledger;
 mod node;
 mod node_alias;
 mod node_landmark;
