@@ -491,10 +491,12 @@ impl SourceService {
         .await?;
 
         // Run statement pipeline (parallel, opt-in).
+        // Statement failures are non-fatal: chunks and embeddings are
+        // already persisted, so the source is still searchable.
         if self.pipeline.statement_enabled {
             if let Some(ref stmt_extractor) = self.statement_extractor {
                 use super::statement_pipeline::{StatementPipelineInput, run_statement_pipeline};
-                run_statement_pipeline(
+                match run_statement_pipeline(
                     &self.repo,
                     stmt_extractor,
                     self.embedder.as_ref(),
@@ -509,10 +511,26 @@ impl SourceService {
                     self.section_compiler.as_ref(),
                     self.source_summary_compiler.as_ref(),
                 )
-                .await?;
-
-                // Extract entities from statements (Phase 4, ADR-0015).
-                self.extract_entities_from_statements(source.id).await?;
+                .await
+                {
+                    Ok(_result) => {
+                        // Extract entities from statements (Phase 4, ADR-0015).
+                        if let Err(e) = self.extract_entities_from_statements(source.id).await {
+                            tracing::warn!(
+                                source_id = %source.id,
+                                error = %e,
+                                "statement entity extraction failed (non-fatal)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            source_id = %source.id,
+                            error = %e,
+                            "statement pipeline failed (non-fatal, chunks still persisted)"
+                        );
+                    }
+                }
             }
         }
 
@@ -646,12 +664,14 @@ impl SourceService {
             .await?;
 
         // Run statement pipeline (parallel, opt-in).
+        // Statement failures are non-fatal: chunks and embeddings are
+        // already persisted, so the source is still searchable.
         if self.pipeline.statement_enabled {
             if let Some(ref stmt_extractor) = self.statement_extractor {
                 // Incremental re-extraction: superset behavior with
                 // eviction (Phase 5, ADR-0015).
                 use super::statement_pipeline::{StatementPipelineInput, reextract_statements};
-                let reextract_result = reextract_statements(
+                match reextract_statements(
                     &self.repo,
                     stmt_extractor,
                     self.embedder.as_ref(),
@@ -666,15 +686,31 @@ impl SourceService {
                     self.section_compiler.as_ref(),
                     self.source_summary_compiler.as_ref(),
                 )
-                .await?;
-                tracing::info!(
-                    added = reextract_result.added,
-                    evicted = reextract_result.evicted,
-                    "statement re-extraction complete"
-                );
-
-                // Extract entities from statements (Phase 4, ADR-0015).
-                self.extract_entities_from_statements(id).await?;
+                .await
+                {
+                    Ok(reextract_result) => {
+                        tracing::info!(
+                            added = reextract_result.added,
+                            evicted = reextract_result.evicted,
+                            "statement re-extraction complete"
+                        );
+                        // Extract entities from statements (Phase 4, ADR-0015).
+                        if let Err(e) = self.extract_entities_from_statements(id).await {
+                            tracing::warn!(
+                                source_id = %id,
+                                error = %e,
+                                "statement entity extraction failed (non-fatal)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            source_id = %id,
+                            error = %e,
+                            "statement re-extraction failed (non-fatal, chunks still persisted)"
+                        );
+                    }
+                }
             }
         }
 
