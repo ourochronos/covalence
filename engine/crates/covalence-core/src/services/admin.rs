@@ -161,6 +161,36 @@ pub struct CooccurrenceResult {
     pub candidates_evaluated: u64,
 }
 
+/// A noise entity identified for cleanup.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NoiseEntityInfo {
+    /// Node UUID.
+    pub node_id: uuid::Uuid,
+    /// Canonical entity name.
+    pub canonical_name: String,
+    /// Entity type.
+    pub node_type: String,
+    /// Number of edges connected to this node.
+    pub edge_count: u64,
+}
+
+/// Result of noise entity cleanup.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NoiseCleanupResult {
+    /// Number of noise nodes identified.
+    pub nodes_identified: u64,
+    /// Number of nodes actually deleted (0 in dry-run mode).
+    pub nodes_deleted: u64,
+    /// Number of edges removed (0 in dry-run mode).
+    pub edges_removed: u64,
+    /// Number of aliases removed (0 in dry-run mode).
+    pub aliases_removed: u64,
+    /// Whether this was a dry run.
+    pub dry_run: bool,
+    /// Details of identified noise entities.
+    pub entities: Vec<NoiseEntityInfo>,
+}
+
 /// Compute knowledge gap candidates from the graph sidecar.
 ///
 /// Returns tuples of `(uuid, name, type, in_degree, out_degree)` for
@@ -774,6 +804,144 @@ impl AdminService {
             nodes_evicted,
             edges_removed,
             aliases_removed,
+        })
+    }
+
+    /// Retroactively clean noise entities from the graph.
+    ///
+    /// Scans all nodes through the `is_noise_entity()` filter and
+    /// optionally removes matches along with their edges and aliases.
+    /// In dry-run mode (default), only reports what would be deleted.
+    pub async fn cleanup_noise_entities(&self, dry_run: bool) -> Result<NoiseCleanupResult> {
+        use super::pipeline::is_noise_entity;
+
+        // Fetch all nodes (id, canonical_name, node_type).
+        let rows: Vec<(uuid::Uuid, String, String)> =
+            sqlx::query_as("SELECT id, canonical_name, node_type FROM nodes")
+                .fetch_all(self.repo.pool())
+                .await?;
+
+        // Identify noise entities.
+        let mut noise: Vec<(uuid::Uuid, String, String)> = Vec::new();
+        for (id, name, ntype) in &rows {
+            if is_noise_entity(name, ntype) {
+                noise.push((*id, name.clone(), ntype.clone()));
+            }
+        }
+
+        if noise.is_empty() {
+            tracing::info!("noise cleanup: no noise entities found");
+            return Ok(NoiseCleanupResult {
+                nodes_identified: 0,
+                nodes_deleted: 0,
+                edges_removed: 0,
+                aliases_removed: 0,
+                dry_run,
+                entities: Vec::new(),
+            });
+        }
+
+        tracing::info!(
+            count = noise.len(),
+            dry_run,
+            "noise cleanup: identified noise entities"
+        );
+
+        // Count edges per noise node for reporting.
+        let mut entities: Vec<NoiseEntityInfo> = Vec::new();
+        for (id, name, ntype) in &noise {
+            let edge_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM edges \
+                 WHERE source_node_id = $1 OR target_node_id = $1",
+            )
+            .bind(id)
+            .fetch_one(self.repo.pool())
+            .await?;
+
+            entities.push(NoiseEntityInfo {
+                node_id: *id,
+                canonical_name: name.clone(),
+                node_type: ntype.clone(),
+                edge_count: edge_count as u64,
+            });
+        }
+
+        // Sort by edge count descending for visibility.
+        entities.sort_by(|a, b| b.edge_count.cmp(&a.edge_count));
+
+        let nodes_identified = entities.len() as u64;
+
+        if dry_run {
+            return Ok(NoiseCleanupResult {
+                nodes_identified,
+                nodes_deleted: 0,
+                edges_removed: 0,
+                aliases_removed: 0,
+                dry_run: true,
+                entities,
+            });
+        }
+
+        // Delete: aliases → edges → nodes (FK order).
+        let mut nodes_deleted: u64 = 0;
+        let mut edges_removed: u64 = 0;
+        let mut aliases_removed: u64 = 0;
+
+        for entity in &entities {
+            aliases_removed += NodeAliasRepo::delete_by_node(
+                &*self.repo,
+                crate::types::ids::NodeId::from_uuid(entity.node_id),
+            )
+            .await?;
+
+            edges_removed += EdgeRepo::delete_by_node(
+                &*self.repo,
+                crate::types::ids::NodeId::from_uuid(entity.node_id),
+            )
+            .await?;
+
+            if NodeRepo::delete(
+                &*self.repo,
+                crate::types::ids::NodeId::from_uuid(entity.node_id),
+            )
+            .await?
+            {
+                nodes_deleted += 1;
+            }
+        }
+
+        tracing::info!(
+            nodes_deleted,
+            edges_removed,
+            aliases_removed,
+            "noise cleanup: retroactive cleanup complete"
+        );
+
+        // Reload graph sidecar to reflect deletions.
+        if nodes_deleted > 0 {
+            full_reload(self.repo.pool(), self.graph.clone()).await?;
+        }
+
+        // Audit log.
+        let audit = AuditLog::new(
+            AuditAction::AdminAction,
+            "admin:cleanup_noise_entities".to_string(),
+            serde_json::json!({
+                "nodes_identified": nodes_identified,
+                "nodes_deleted": nodes_deleted,
+                "edges_removed": edges_removed,
+                "aliases_removed": aliases_removed,
+            }),
+        );
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        Ok(NoiseCleanupResult {
+            nodes_identified,
+            nodes_deleted,
+            edges_removed,
+            aliases_removed,
+            dry_run: false,
+            entities,
         })
     }
 

@@ -1177,7 +1177,7 @@ fn sniff_html(content: &[u8]) -> bool {
 /// Catches paper titles, generic single words, code syntax, and math
 /// symbols that the LLM extractor sometimes produces despite prompt
 /// instructions.
-fn is_noise_entity(name: &str, entity_type: &str) -> bool {
+pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     let trimmed = name.trim();
     let lower = trimmed.to_lowercase();
 
