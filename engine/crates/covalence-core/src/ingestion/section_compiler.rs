@@ -145,7 +145,10 @@ impl SectionCompiler for LlmSectionCompiler {
             .chat(SECTION_SYSTEM_PROMPT, &user_content, true, 0.3)
             .await?;
 
-        let raw: RawSectionOutput = match serde_json::from_str(&content) {
+        // Strip markdown code fences if the LLM wrapped the JSON.
+        let cleaned = strip_markdown_fences(&content);
+
+        let raw: RawSectionOutput = match serde_json::from_str(&cleaned) {
             Ok(r) => r,
             Err(e) => {
                 let preview: String = content.chars().take(500).collect();
@@ -224,6 +227,28 @@ impl SourceSummaryCompiler for MockSectionCompiler {
             .map(|s| s.summary.clone())
             .collect::<Vec<_>>()
             .join(" "))
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────
+
+/// Strip markdown code fences (```json ... ```) from LLM output.
+fn strip_markdown_fences(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let after_tag = if let Some(pos) = rest.find('\n') {
+            &rest[pos + 1..]
+        } else {
+            rest
+        };
+        let body = if let Some(stripped) = after_tag.strip_suffix("```") {
+            stripped
+        } else {
+            after_tag
+        };
+        body.trim().to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 

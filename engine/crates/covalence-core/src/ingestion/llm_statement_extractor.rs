@@ -76,7 +76,10 @@ impl StatementExtractor for LlmStatementExtractor {
             .chat(SYSTEM_PROMPT, &user_content, true, 0.0)
             .await?;
 
-        let raw: RawStatementResult = match serde_json::from_str(&content) {
+        // Strip markdown code fences if the LLM wrapped the JSON.
+        let cleaned = strip_markdown_fences(&content);
+
+        let raw: RawStatementResult = match serde_json::from_str(&cleaned) {
             Ok(r) => r,
             Err(e) => {
                 let preview: String = content.chars().take(500).collect();
@@ -146,9 +149,43 @@ fn default_confidence() -> f64 {
     0.9
 }
 
+/// Strip markdown code fences (```json ... ```) from LLM output.
+fn strip_markdown_fences(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        // Skip the language tag line (e.g. "json\n")
+        let after_tag = if let Some(pos) = rest.find('\n') {
+            &rest[pos + 1..]
+        } else {
+            rest
+        };
+        // Strip trailing fence
+        let body = if let Some(stripped) = after_tag.strip_suffix("```") {
+            stripped
+        } else {
+            after_tag
+        };
+        body.trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_markdown_fences_removes_json_fence() {
+        let input = "```json\n{\"statements\": []}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"statements\": []}");
+    }
+
+    #[test]
+    fn strip_markdown_fences_passthrough_clean_json() {
+        let input = "{\"statements\": []}";
+        assert_eq!(strip_markdown_fences(input), "{\"statements\": []}");
+    }
 
     #[test]
     fn raw_statement_deserialization() {
