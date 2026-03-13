@@ -12,6 +12,7 @@ use crate::ingestion::chat_backend::ChatBackend;
 use crate::ingestion::statement_extractor::{
     ExtractedStatement, StatementExtractionResult, StatementExtractor,
 };
+use crate::ingestion::utils::sanitize_latex_in_json;
 
 const SYSTEM_PROMPT: &str = r#"You are a knowledge statement extractor. Given a passage of text, extract every atomic, self-contained knowledge claim as a separate statement.
 
@@ -171,30 +172,6 @@ fn strip_markdown_fences(s: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-/// Escape invalid LaTeX backslash sequences inside JSON string
-/// values so that `serde_json` can parse the output.
-fn sanitize_latex_in_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 32);
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                if matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') {
-                    out.push('\\');
-                } else {
-                    out.push('\\');
-                    out.push('\\');
-                }
-            } else {
-                out.push('\\');
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 #[cfg(test)]
