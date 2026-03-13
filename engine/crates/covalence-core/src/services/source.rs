@@ -477,8 +477,15 @@ impl SourceService {
         if let Some(ref info) = supersedes_info {
             self.mark_superseded(info.old_source_id, &info.update_class)
                 .await?;
+            // FK ordering: extractions → statements → sections → chunks.
+            // extractions.statement_id FK → statements, statements.section_id FK → sections.
             let ext_deleted =
                 ExtractionRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
+            let stmts_deleted =
+                StatementRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
+            let sects_deleted =
+                SectionRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
+            UnresolvedEntityRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
             let aliases_cleared =
                 NodeAliasRepo::clear_source_chunks(&*self.repo, info.old_source_id).await?;
             let chunks_deleted =
@@ -488,7 +495,8 @@ impl SourceService {
             SourceRepo::clear_embedding(&*self.repo, info.old_source_id).await?;
             tracing::info!(
                 old_source = %info.old_source_id,
-                ext_deleted, aliases_cleared, chunks_deleted, ledger_deleted,
+                ext_deleted, stmts_deleted, sects_deleted,
+                aliases_cleared, chunks_deleted, ledger_deleted,
                 "cleaned up superseded source"
             );
         }
