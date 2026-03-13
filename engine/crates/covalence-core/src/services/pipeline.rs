@@ -395,8 +395,16 @@ impl SourceService {
                             // Mutation offsets from the coref client are
                             // chunk-relative. Shift by the chunk's
                             // byte_start to make them source-absolute.
+                            // Skip mutations entirely within the overlap
+                            // prefix (context_prefix_len) to avoid
+                            // double-counting — those were already
+                            // recorded for the previous chunk.
                             let base = co.byte_start;
+                            let prefix = co.context_prefix_len;
                             for m in &result.mutations {
+                                if m.canonical_end <= prefix {
+                                    continue;
+                                }
                                 all_ledger_entries.push(
                                     crate::models::projection::LedgerEntry::new(
                                         input.source_id,
