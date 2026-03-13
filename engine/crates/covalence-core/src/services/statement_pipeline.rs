@@ -513,8 +513,15 @@ pub async fn reextract_statements(
             continue; // Still present.
         }
         // Check source text support.
-        let start = old_stmt.byte_start as usize;
-        let end = old_stmt.byte_end as usize;
+        let mut start = old_stmt.byte_start as usize;
+        let mut end = old_stmt.byte_end as usize;
+        // Align to char boundaries to avoid panic on multi-byte chars.
+        while start > 0 && !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
         let supported = if start < text.len() && end <= text.len() && start < end {
             let source_window = &text[start..end];
             // Simple heuristic: if >30% of the statement words appear
