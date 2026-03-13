@@ -14,6 +14,8 @@ pub enum CodeLanguage {
     Rust,
     /// Python source code.
     Python,
+    /// Go source code.
+    Go,
 }
 
 impl CodeLanguage {
@@ -22,6 +24,7 @@ impl CodeLanguage {
         match mime {
             "text/x-rust" => Some(Self::Rust),
             "text/x-python" | "text/x-script.python" => Some(Self::Python),
+            "text/x-go" => Some(Self::Go),
             _ => None,
         }
     }
@@ -31,6 +34,7 @@ impl CodeLanguage {
         match ext {
             "rs" => Some(Self::Rust),
             "py" => Some(Self::Python),
+            "go" => Some(Self::Go),
             _ => None,
         }
     }
@@ -47,6 +51,7 @@ impl CodeLanguage {
         match self {
             Self::Rust => "rust",
             Self::Python => "python",
+            Self::Go => "go",
         }
     }
 
@@ -70,6 +75,13 @@ impl CodeLanguage {
                 "function_definition",
                 "class_definition",
                 "decorated_definition",
+            ],
+            Self::Go => &[
+                "function_declaration",
+                "method_declaration",
+                "type_declaration",
+                "const_declaration",
+                "var_declaration",
             ],
         }
     }
@@ -98,6 +110,7 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
     let ts_language = match lang {
         CodeLanguage::Rust => tree_sitter_rust::LANGUAGE,
         CodeLanguage::Python => tree_sitter_python::LANGUAGE,
+        CodeLanguage::Go => tree_sitter_go::LANGUAGE,
     };
 
     parser
@@ -176,6 +189,7 @@ fn extract_label(source: &str, node: &tree_sitter::Node, lang: CodeLanguage) -> 
     match lang {
         CodeLanguage::Rust => extract_rust_label(source, node),
         CodeLanguage::Python => extract_python_label(source, node),
+        CodeLanguage::Go => extract_go_label(source, node),
     }
 }
 
@@ -318,6 +332,47 @@ fn extract_python_label(source: &str, node: &tree_sitter::Node) -> String {
     }
 }
 
+/// Extract a label for a Go AST node.
+fn extract_go_label(source: &str, node: &tree_sitter::Node) -> String {
+    let kind = node.kind();
+    let text = &source[node.start_byte()..node.end_byte()];
+
+    match kind {
+        "function_declaration" | "method_declaration" => {
+            // Extract up to the opening brace.
+            if let Some(pos) = text.find('{') {
+                let sig = text[..pos].trim();
+                if sig.len() > 120 {
+                    let mut end = 117;
+                    while end > 0 && !sig.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &sig[..end])
+                } else {
+                    sig.to_string()
+                }
+            } else {
+                text.lines().next().unwrap_or(kind).to_string()
+            }
+        }
+        "type_declaration" => {
+            // "type Foo struct { ... }" or "type Bar interface { ... }"
+            // Extract the first line as the label.
+            let first_line = text.lines().next().unwrap_or(kind).trim();
+            if let Some(pos) = first_line.find('{') {
+                first_line[..pos].trim().to_string()
+            } else {
+                first_line.to_string()
+            }
+        }
+        "const_declaration" | "var_declaration" => {
+            // First line: "const Foo = ..." or "var bar int"
+            text.lines().next().unwrap_or(kind).trim().to_string()
+        }
+        _ => text.lines().next().unwrap_or(kind).to_string(),
+    }
+}
+
 /// Detect a code language from a MIME type or URI.
 ///
 /// Tries MIME first, then falls back to URI extension detection.
@@ -326,7 +381,12 @@ pub fn detect_code_language(mime: &str, uri: Option<&str>) -> Option<CodeLanguag
 }
 
 /// MIME types handled by the code chunker.
-pub const CODE_MIME_TYPES: &[&str] = &["text/x-rust", "text/x-python", "text/x-script.python"];
+pub const CODE_MIME_TYPES: &[&str] = &[
+    "text/x-rust",
+    "text/x-python",
+    "text/x-script.python",
+    "text/x-go",
+];
 
 #[cfg(test)]
 mod tests {
@@ -574,5 +634,70 @@ impl Display for Foo {
 
         let label = extract_python_label(&source, &func_node);
         assert!(label.ends_with("..."), "got: {label}");
+    }
+
+    #[test]
+    fn go_function_chunking() {
+        let source = r#"package main
+
+func Hello() {
+    fmt.Println("hello")
+}
+
+func Add(a, b int) int {
+    return a + b
+}
+"#;
+        let md = code_to_markdown(source.trim(), CodeLanguage::Go).unwrap();
+        assert!(md.contains("# func Hello()"), "got: {md}");
+        assert!(md.contains("# func Add(a, b int) int"), "got: {md}");
+        assert!(md.contains("```go"));
+    }
+
+    #[test]
+    fn go_struct_chunking() {
+        let source = r#"package main
+
+type Server struct {
+    Host string
+    Port int
+}
+"#;
+        let md = code_to_markdown(source.trim(), CodeLanguage::Go).unwrap();
+        assert!(md.contains("# type Server struct"), "got: {md}");
+    }
+
+    #[test]
+    fn go_interface_chunking() {
+        let source = r#"package main
+
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+"#;
+        let md = code_to_markdown(source.trim(), CodeLanguage::Go).unwrap();
+        assert!(md.contains("# type Reader interface"), "got: {md}");
+    }
+
+    #[test]
+    fn go_method_chunking() {
+        let source = r#"package main
+
+func (s *Server) Start() error {
+    return nil
+}
+"#;
+        let md = code_to_markdown(source.trim(), CodeLanguage::Go).unwrap();
+        assert!(md.contains("# func (s *Server) Start() error"), "got: {md}");
+    }
+
+    #[test]
+    fn go_language_detection() {
+        assert_eq!(CodeLanguage::from_extension("go"), Some(CodeLanguage::Go));
+        assert_eq!(CodeLanguage::from_mime("text/x-go"), Some(CodeLanguage::Go));
+        assert_eq!(
+            CodeLanguage::from_uri("cli/cmd/root.go"),
+            Some(CodeLanguage::Go)
+        );
     }
 }

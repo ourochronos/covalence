@@ -62,5 +62,6 @@ hdbscan = "0.10"
 
 # Code parsing
 tree-sitter = "0.26"
+tree-sitter-go = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"

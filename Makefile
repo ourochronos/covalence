@@ -160,7 +160,7 @@ ingest-codebase:
 		b64=$$(base64 < "$$f"); \
 		curl -sf -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
-			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"mime\": \"text/plain\", \"uri\": \"file://$$f\"}" \
+			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"mime\": \"text/x-go\", \"uri\": \"file://$$f\"}" \
 			> /dev/null || echo "    FAILED: $$f"; \
 	done
 	@echo "Codebase ingestion complete."

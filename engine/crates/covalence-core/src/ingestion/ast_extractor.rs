@@ -47,6 +47,7 @@ impl AstExtractor {
         let ts_language = match lang {
             CodeLanguage::Rust => tree_sitter_rust::LANGUAGE,
             CodeLanguage::Python => tree_sitter_python::LANGUAGE,
+            CodeLanguage::Go => tree_sitter_go::LANGUAGE,
         };
         parser
             .set_language(&ts_language.into())
@@ -64,6 +65,7 @@ impl AstExtractor {
         match lang {
             CodeLanguage::Rust => extract_rust(&raw_code, &tree),
             CodeLanguage::Python => extract_python(&raw_code, &tree),
+            CodeLanguage::Go => extract_go(&raw_code, &tree),
         }
     }
 
@@ -602,6 +604,262 @@ fn extract_python_function(
         description: Some(signature),
         confidence: 1.0,
     });
+}
+
+// ── Go extraction ───────────────────────────────────────────────
+
+/// Extract entities and relationships from a Go AST.
+fn extract_go(source: &str, tree: &tree_sitter::Tree) -> Result<ExtractionResult> {
+    let root = tree.root_node();
+    let mut entities: Vec<ExtractedEntity> = Vec::new();
+    let mut relationships: Vec<ExtractedRelationship> = Vec::new();
+
+    let child_count = root.child_count() as u32;
+    for i in 0..child_count {
+        let Some(node) = root.child(i) else {
+            continue;
+        };
+        extract_go_node(source, &node, &mut entities, &mut relationships);
+    }
+
+    Ok(ExtractionResult {
+        entities,
+        relationships,
+    })
+}
+
+/// Process a single top-level Go AST node.
+fn extract_go_node(
+    source: &str,
+    node: &tree_sitter::Node,
+    entities: &mut Vec<ExtractedEntity>,
+    relationships: &mut Vec<ExtractedRelationship>,
+) {
+    let kind = node.kind();
+    match kind {
+        "function_declaration" => {
+            extract_go_function(source, node, entities);
+        }
+        "method_declaration" => {
+            extract_go_method(source, node, entities, relationships);
+        }
+        "type_declaration" => {
+            extract_go_type_decl(source, node, entities, relationships);
+        }
+        _ => {}
+    }
+}
+
+/// Extract a Go function entity.
+fn extract_go_function(
+    source: &str,
+    node: &tree_sitter::Node,
+    entities: &mut Vec<ExtractedEntity>,
+) {
+    let name = match child_text_by_field(source, node, "name") {
+        Some(n) => n,
+        None => return,
+    };
+
+    let text = node_text(source, node);
+    let signature = extract_signature_before_brace(text);
+
+    entities.push(ExtractedEntity {
+        name,
+        entity_type: "function".to_string(),
+        description: Some(signature),
+        confidence: 1.0,
+    });
+}
+
+/// Extract a Go method entity and its receiver relationship.
+fn extract_go_method(
+    source: &str,
+    node: &tree_sitter::Node,
+    entities: &mut Vec<ExtractedEntity>,
+    relationships: &mut Vec<ExtractedRelationship>,
+) {
+    let name = match child_text_by_field(source, node, "name") {
+        Some(n) => n,
+        None => return,
+    };
+
+    let text = node_text(source, node);
+    let signature = extract_signature_before_brace(text);
+
+    // Extract receiver type for the relationship.
+    let receiver_type = node
+        .child_by_field_name("receiver")
+        .and_then(|r| extract_go_receiver_type(source, &r));
+
+    let method_name = if let Some(ref recv) = receiver_type {
+        format!("{recv}.{name}")
+    } else {
+        name.clone()
+    };
+
+    entities.push(ExtractedEntity {
+        name: method_name.clone(),
+        entity_type: "function".to_string(),
+        description: Some(signature),
+        confidence: 1.0,
+    });
+
+    // Relationship: receiver type `contains` this method.
+    if let Some(recv) = receiver_type {
+        relationships.push(ExtractedRelationship {
+            source_name: recv,
+            target_name: method_name,
+            rel_type: "contains".to_string(),
+            description: None,
+            confidence: 1.0,
+        });
+    }
+}
+
+/// Extract the receiver type name from a Go method receiver parameter list.
+fn extract_go_receiver_type(source: &str, receiver: &tree_sitter::Node) -> Option<String> {
+    // receiver is a parameter_list: `(s *Server)` or `(s Server)`
+    for i in 0..receiver.child_count() as u32 {
+        let Some(child) = receiver.child(i) else {
+            continue;
+        };
+        if child.kind() == "parameter_declaration" {
+            let type_node = child.child_by_field_name("type")?;
+            let type_text = node_text(source, &type_node).trim();
+            // Strip pointer prefix.
+            let clean = type_text.strip_prefix('*').unwrap_or(type_text);
+            return Some(clean.to_string());
+        }
+    }
+    None
+}
+
+/// Extract a Go type declaration (struct, interface, type alias).
+fn extract_go_type_decl(
+    source: &str,
+    node: &tree_sitter::Node,
+    entities: &mut Vec<ExtractedEntity>,
+    relationships: &mut Vec<ExtractedRelationship>,
+) {
+    // type_declaration may contain one or more type_spec children.
+    for i in 0..node.child_count() as u32 {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if child.kind() == "type_spec" {
+            extract_go_type_spec(source, &child, entities, relationships);
+        }
+    }
+}
+
+/// Extract a single Go type spec (struct, interface, or alias).
+fn extract_go_type_spec(
+    source: &str,
+    node: &tree_sitter::Node,
+    entities: &mut Vec<ExtractedEntity>,
+    relationships: &mut Vec<ExtractedRelationship>,
+) {
+    let name = match child_text_by_field(source, node, "name") {
+        Some(n) => n,
+        None => return,
+    };
+
+    let type_node = node.child_by_field_name("type");
+    let type_kind = type_node.as_ref().map(|t| t.kind());
+
+    let (entity_type, description) = match type_kind {
+        Some("struct_type") => {
+            let fields = count_go_struct_fields(type_node.as_ref().unwrap());
+            ("struct", format!("Struct with {fields} fields"))
+        }
+        Some("interface_type") => {
+            let methods = count_go_interface_methods(type_node.as_ref().unwrap());
+            ("trait", format!("Interface with {methods} methods"))
+        }
+        _ => ("struct", "Type alias".to_string()),
+    };
+
+    entities.push(ExtractedEntity {
+        name: name.clone(),
+        entity_type: entity_type.to_string(),
+        description: Some(description),
+        confidence: 1.0,
+    });
+
+    // Extract embedded types as `extends` relationships.
+    if let Some(ref tn) = type_node {
+        if tn.kind() == "struct_type" {
+            for embed in extract_go_embedded_types(source, tn) {
+                relationships.push(ExtractedRelationship {
+                    source_name: name.clone(),
+                    target_name: embed,
+                    rel_type: "extends".to_string(),
+                    description: None,
+                    confidence: 1.0,
+                });
+            }
+        }
+    }
+}
+
+/// Count fields in a Go struct type node.
+fn count_go_struct_fields(node: &tree_sitter::Node) -> usize {
+    let mut count = 0;
+    for i in 0..node.child_count() as u32 {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "field_declaration_list" {
+                for j in 0..child.child_count() as u32 {
+                    if let Some(field) = child.child(j) {
+                        if field.kind() == "field_declaration" {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Count methods in a Go interface type node.
+fn count_go_interface_methods(node: &tree_sitter::Node) -> usize {
+    let mut count = 0;
+    for i in 0..node.child_count() as u32 {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "method_spec" {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Extract embedded (anonymous) types from a Go struct.
+fn extract_go_embedded_types(source: &str, node: &tree_sitter::Node) -> Vec<String> {
+    let mut embeds = Vec::new();
+    for i in 0..node.child_count() as u32 {
+        let Some(child) = node.child(i) else { continue };
+        if child.kind() == "field_declaration_list" {
+            for j in 0..child.child_count() as u32 {
+                let Some(field) = child.child(j) else {
+                    continue;
+                };
+                if field.kind() == "field_declaration" {
+                    // Embedded fields have no name, just a type.
+                    let has_name = field.child_by_field_name("name").is_some();
+                    if !has_name {
+                        if let Some(type_node) = field.child_by_field_name("type") {
+                            let type_text = node_text(source, &type_node).trim();
+                            let clean = type_text.strip_prefix('*').unwrap_or(type_text);
+                            embeds.push(clean.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    embeds
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -1377,5 +1635,146 @@ fn process() {
             result.ends_with("..."),
             "expected truncated sig, got: {result}"
         );
+    }
+
+    // ── Go extraction tests ─────────────────────────────────────
+
+    fn go_context() -> ExtractionContext {
+        ExtractionContext {
+            source_uri: Some("file://cmd/root.go".to_string()),
+            source_type: Some("code".to_string()),
+            source_title: Some("root.go".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn go_function_extraction() {
+        let source = r#"package main
+
+func Hello() {
+    fmt.Println("hello")
+}
+
+func Add(a, b int) int {
+    return a + b
+}
+"#;
+        let md = crate::ingestion::code_chunker::code_to_markdown(
+            source.trim(),
+            crate::ingestion::code_chunker::CodeLanguage::Go,
+        )
+        .unwrap();
+        let extractor = AstExtractor::new();
+        let result = extractor.extract(&md, &go_context()).await.unwrap();
+        let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Hello"), "missing Hello in {names:?}");
+        assert!(names.contains(&"Add"), "missing Add in {names:?}");
+    }
+
+    #[tokio::test]
+    async fn go_struct_extraction() {
+        let source = r#"package main
+
+type Server struct {
+    Host string
+    Port int
+}
+"#;
+        let md = crate::ingestion::code_chunker::code_to_markdown(
+            source.trim(),
+            crate::ingestion::code_chunker::CodeLanguage::Go,
+        )
+        .unwrap();
+        let extractor = AstExtractor::new();
+        let result = extractor.extract(&md, &go_context()).await.unwrap();
+        let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Server"), "missing Server in {names:?}");
+        let server = result.entities.iter().find(|e| e.name == "Server").unwrap();
+        assert_eq!(server.entity_type, "struct");
+    }
+
+    #[tokio::test]
+    async fn go_interface_extraction() {
+        let source = r#"package main
+
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+"#;
+        let md = crate::ingestion::code_chunker::code_to_markdown(
+            source.trim(),
+            crate::ingestion::code_chunker::CodeLanguage::Go,
+        )
+        .unwrap();
+        let extractor = AstExtractor::new();
+        let result = extractor.extract(&md, &go_context()).await.unwrap();
+        let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Reader"), "missing Reader in {names:?}");
+        let reader = result.entities.iter().find(|e| e.name == "Reader").unwrap();
+        assert_eq!(reader.entity_type, "trait");
+    }
+
+    #[tokio::test]
+    async fn go_method_extraction() {
+        let source = r#"package main
+
+type Server struct {
+    Host string
+}
+
+func (s *Server) Start() error {
+    return nil
+}
+"#;
+        let md = crate::ingestion::code_chunker::code_to_markdown(
+            source.trim(),
+            crate::ingestion::code_chunker::CodeLanguage::Go,
+        )
+        .unwrap();
+        let extractor = AstExtractor::new();
+        let result = extractor.extract(&md, &go_context()).await.unwrap();
+        let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"Server.Start"),
+            "missing Server.Start in {names:?}"
+        );
+        // Should have a `contains` relationship from Server to Server.Start.
+        let contains = result
+            .relationships
+            .iter()
+            .find(|r| r.rel_type == "contains" && r.source_name == "Server");
+        assert!(contains.is_some(), "missing contains relationship");
+    }
+
+    #[tokio::test]
+    async fn go_embedded_type_extraction() {
+        let source = r#"package main
+
+type Base struct {
+    ID int
+}
+
+type Child struct {
+    Base
+    Name string
+}
+"#;
+        let md = crate::ingestion::code_chunker::code_to_markdown(
+            source.trim(),
+            crate::ingestion::code_chunker::CodeLanguage::Go,
+        )
+        .unwrap();
+        let extractor = AstExtractor::new();
+        let result = extractor.extract(&md, &go_context()).await.unwrap();
+        let extends = result
+            .relationships
+            .iter()
+            .find(|r| r.rel_type == "extends" && r.source_name == "Child");
+        assert!(
+            extends.is_some(),
+            "missing extends relationship: {:?}",
+            result.relationships
+        );
+        assert_eq!(extends.unwrap().target_name, "Base");
     }
 }
