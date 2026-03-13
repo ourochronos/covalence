@@ -230,6 +230,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
 
     // HTML/markdown artifacts: comment markers, table syntax, tildes.
     if trimmed.starts_with("<!--")
+        || trimmed.starts_with("<!")
         || trimmed.starts_with("-->")
         || trimmed.starts_with("~~~")
         || trimmed.starts_with("| ")
@@ -237,6 +238,33 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         || trimmed.starts_with("|--")
         || trimmed == "@"
         || trimmed == "|"
+    {
+        return true;
+    }
+
+    // File paths: `file://...`, `/path/to/file`.
+    if trimmed.starts_with("file://") {
+        return true;
+    }
+
+    // Array/dict indexing or template syntax:
+    // `items[i]`, `json["key"]`, `[{parent.level}: ...]`.
+    if trimmed.contains('[') && trimmed.contains(']') {
+        return true;
+    }
+
+    // Breadcrumb navigation or trailing `>`: `Section > Subsection`,
+    // `next >`, `cite as:`.
+    if trimmed.contains(" > ") || trimmed.ends_with(" >") {
+        return true;
+    }
+
+    // Quote-wrapped sentences: the LLM sometimes wraps example text
+    // from the source in quotes and extracts it as an entity.
+    // e.g., `"He went to the store."`, `"You are helpful."`.
+    if unquoted != trimmed
+        && unquoted.contains(' ')
+        && unquoted.ends_with(|c: char| c == '.' || c == '!' || c == '?')
     {
         return true;
     }
@@ -578,5 +606,43 @@ mod tests {
         assert!(is_noise_entity("'a'", "concept"));
         // But real abbreviations inside quotes should be kept.
         assert!(!is_noise_entity("\"AI\"", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_file_paths() {
+        assert!(is_noise_entity("file://spec/01-architecture.md", "other"));
+        assert!(is_noise_entity("file://cli/cmd/search.go", "other"));
+    }
+
+    #[test]
+    fn noise_entity_array_indexing() {
+        assert!(is_noise_entity("items[i].score", "concept"));
+        assert!(is_noise_entity("json[\"response_format\"][\"type\"]", "concept"));
+        assert!(is_noise_entity("[{parent.level}: {parent.ctx}]", "other"));
+        // But markdown links [text](url) are caught by the markdown
+        // link filter, not this one.
+    }
+
+    #[test]
+    fn noise_entity_breadcrumb_nav() {
+        assert!(is_noise_entity("Introduction > Methods", "other"));
+        assert!(is_noise_entity("next >", "concept"));
+        // Real entities with ">" in a different context should not
+        // be caught.
+        assert!(!is_noise_entity("greater than operator", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_quoted_sentences() {
+        assert!(is_noise_entity("\"He went to the store.\"", "other"));
+        assert!(is_noise_entity("\"You are helpful.\"", "other"));
+        // Non-sentence quoted text (no trailing period) should pass.
+        assert!(!is_noise_entity("\"knowledge graph\"", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_doctype() {
+        assert!(is_noise_entity("<!doctype", "concept"));
+        assert!(is_noise_entity("<!DOCTYPE html>", "concept"));
     }
 }
