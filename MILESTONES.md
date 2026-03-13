@@ -384,7 +384,7 @@ Execute the uncompromising `design/v2-migration-plan.md`:
 
 - [x] Schema: Create `statements`, `offset_projection_ledgers`, and `unresolved_entities` tables.
 - [x] Integration: Build Offset Projection mathematical engine (`projection.rs`).
-- [ ] Integration: Build `fastcoref` sidecar client (Python — requires separate process).
+- [x] Integration: Build `fastcoref` sidecar client (Python — requires separate process).
 - [x] Integration: Build Gemini Flash 3.0 HTTP/CLI client for two-pass extraction.
 - [x] Pipeline: Diverge `SourceService::ingest()` (Code stays AST, Prose goes to Statement Pipeline).
 - [x] Pipeline: Implement 2-pass extraction (Pass 1: Statements, Pass 2: Triples).
