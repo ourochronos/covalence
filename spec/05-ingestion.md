@@ -1059,6 +1059,62 @@ Structural maintenance: TrustRank global recalibration, community detection refr
 - **Skip extraction for low-information chunks** — Chunks with very low token count or very high similarity to parent may not need LLM extraction
 - **Delta-only processing for append-only sources** — Hash comparison to avoid re-processing unchanged content
 
+## Statement Pipeline (ADR-0015)
+
+The chunk-first pipeline described above remains for backward compatibility and for sources where chunk-level retrieval is useful. However, the **primary extraction path** is now the statement-first pipeline (see [ADR-0015](../docs/adr/0015-statement-first-extraction.md)).
+
+The statement pipeline inverts the extraction order: extract knowledge from raw text first, then build hierarchy from the extracted knowledge. This eliminates noise at source — bibliography entries, boilerplate, author blocks are never extracted as statements because the LLM is prompted to skip them.
+
+### Coreference Resolution
+
+Statement extraction prompts explicitly require **full coreference resolution**. Every statement must be self-contained — no pronouns, no "this approach", no "the authors". The LLM resolves all anaphora to their explicit referents during extraction.
+
+Example:
+- **Source text:** "Josang proposed Subjective Logic in 2001. It models uncertainty using opinion tuples."
+- **Extracted statement:** "Subjective Logic, proposed by Audun Josang in 2001, models uncertainty using opinion tuples consisting of belief, disbelief, uncertainty, and base rate."
+
+This is the highest-value step in the pipeline. Self-contained statements are independently searchable, embeddable, and composable. Statements with unresolved pronouns ("it models uncertainty") lose retrievability because the embedding captures "uncertainty modeling" without connecting it to "Subjective Logic".
+
+### Offset Projection Ledger
+
+When coreference resolution modifies text (replacing pronouns with explicit referents), the byte offsets of downstream entities shift. The offset projection ledger maintains a mapping between the canonical source text and the coref-resolved text.
+
+**Current approach:** Statements store `byte_start`/`byte_end` referencing the *canonical* (unmodified) source text. The LLM extracts statements from the canonical text and is prompted to include explicit referents — the text isn't mutated, so no projection is needed.
+
+**Future approach:** If a separate coref resolution pass (e.g., fastcoref) is added before LLM extraction, the ledger pattern becomes necessary:
+
+```
+{
+  "canonical_text": "Tim Cook took the stage. He announced the product.",
+  "mutated_text": "Tim Cook took the stage. Tim Cook announced the product.",
+  "ledger": [
+    {
+      "canonical_span": [25, 27],
+      "canonical_token": "He",
+      "mutated_span": [25, 33],
+      "mutated_token": "Tim Cook",
+      "delta": +6
+    }
+  ]
+}
+```
+
+Downstream extraction indices (from the mutated text) are reverse-projected through the ledger to recover canonical source positions.
+
+### Code Source Routing
+
+When `source_type = "code"`, the ingestion pipeline routes to the AST-aware code pipeline (see [spec/12-code-ingestion](12-code-ingestion.md)) instead of the standard chunk pipeline. The code pipeline:
+
+1. Parses the source file via Tree-sitter
+2. Chunks by AST boundaries (functions, structs, modules)
+3. Generates semantic summaries for each code chunk
+4. Embeds the summaries (placing code in prose vector space)
+5. Runs statement extraction on the semantic summaries
+6. Extracts structural edges (call graph, type refs, module hierarchy) from the AST
+7. Links code entities to Components via PART_OF_COMPONENT edges
+
+Both code and prose pipelines produce the same entity types (Nodes, Edges, Statements, Sections) and participate equally in search and graph algorithms.
+
 ## Open Questions
 
 - [x] Extraction model → General-purpose LLM for v1 (flexibility for open-domain KG). GLiNER (NAACL 2024) matches GPT-4o at fraction of cost — use for v2 production volume optimization. Hybrid: LLM for schema discovery, fine-tuned model for bulk extraction.

@@ -425,6 +425,54 @@ For orientation and exploration queries, the system provides a three-layer navig
 
 These are computed during deep consolidation and cached. See [04-graph](04-graph.md#landmark-detection).
 
+## Cross-Domain Search
+
+When the graph contains code entities with semantic summaries embedded in prose vector space, cross-domain queries work naturally through existing search dimensions.
+
+### How It Works
+
+Code entities (functions, structs, modules) have their `embedding` computed from their `semantic_summary` — a natural language description of what the code does. This means:
+
+- **Vector search** finds code and prose together. Query "entity resolution" returns spec statements, research paper claims, AND code function summaries about entity resolution.
+- **Lexical search** matches against `semantic_summary` content, not raw code syntax.
+- **Graph search** follows cross-domain edges (CALLS, PART_OF_COMPONENT, IMPLEMENTS_INTENT) to connect code to its design intent and research foundation.
+
+### Query Patterns
+
+**"What implements X?"** — Find code that implements a spec concept:
+1. Vector search finds the spec topic node
+2. Graph traversal follows: Spec Topic ←[IMPLEMENTS_INTENT]← Component ←[PART_OF_COMPONENT]← code_function
+3. Return the code functions with their semantic summaries and file locations
+
+**"What depends on X?"** — Find code that depends on a module or function:
+1. Identify the target code node
+2. Graph traversal follows CALLS and DEPENDS_ON edges
+3. Return dependent code with hop distance
+
+**"How does X work?"** — Combined prose + code explanation:
+1. Vector search across all entity types (statements, sections, code summaries, articles)
+2. Results from different domains provide complementary perspectives
+3. A statement might say "uses HAC clustering with cosine similarity"
+4. A code summary might say "cluster_statements() performs agglomerative clustering on statement embeddings using complete linkage"
+
+### Result Type Enrichment
+
+Search results for code entities include additional metadata:
+
+```json
+{
+  "result_type": "code_function",
+  "canonical_name": "run_statement_pipeline",
+  "semantic_summary": "Orchestrates the full statement extraction pipeline...",
+  "file_path": "src/services/statement_pipeline.rs",
+  "line_start": 71,
+  "line_end": 220,
+  "language": "rust",
+  "component": "Statement Pipeline",
+  "signature": "pub async fn run_statement_pipeline(...) -> Result<StatementPipelineResult>"
+}
+```
+
 ## Open Questions
 
 - [x] **Multi-turn conversation** → v1 search is stateless by design. The search API accepts a single query and returns results. Multi-turn context (coreference resolution, topic continuity) is the caller's responsibility. Recommended pattern: caller rewrites follow-up queries to be self-contained before calling search. E.g., conversation "Tell me about Tim Cook" → "What did he announce?" should be rewritten to "What did Tim Cook announce?" before hitting the search API. This keeps the search layer simple and testable. Session-aware search (automatic conversation tracking, query rewriting) is a v2 consideration.

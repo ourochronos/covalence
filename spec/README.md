@@ -39,12 +39,16 @@ A hybrid knowledge base combining PostgreSQL/pgvector persistence with a Rust pe
 | [09-federation](09-federation.md) | Clearance levels, egress filtering, dual synthesis, ZK edges, trust tiers |
 | [10-lessons-learned](10-lessons-learned.md) | Hard-won lessons: blanket extraction failure, embedding topology as signal, modifications vs rewrites, SING pattern, memory API |
 | [11-evaluation](11-evaluation.md) | Evaluation methodology: RAGAS metrics, retrieval/generation/graph quality, regression gates, eval dataset construction |
+| [12-code-ingestion](12-code-ingestion.md) | AST-aware code ingestion: Tree-sitter chunking, semantic summary wrapper, structural edge extraction, component linking |
+| [13-cross-domain-analysis](13-cross-domain-analysis.md) | Cross-domain analysis: erosion detection, coverage analysis, blast radius, whitespace roadmap, dialectical critique |
 
 **Reading paths:**
 - **Implementing ingestion?** → 02 (data model) → 05 (pipeline) → 03 (storage schema)
 - **Implementing search?** → 06 (search) → 04 (graph algorithms) → 07 (confidence integration)
 - **Understanding the architecture?** → 01 → README → 10 (lessons)
 - **Setting up evaluation?** → 11 → 06 (search metrics) → 08 (trace API)
+- **Adding code ingestion?** → 12 (code pipeline) → 02 (data model: code entities) → 13 (analysis capabilities)
+- **Understanding cross-domain analysis?** → 13 → 04 (graph algorithms) → 06 (cross-domain search)
 
 ## Prior Art (Internal)
 

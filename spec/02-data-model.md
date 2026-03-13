@@ -206,12 +206,147 @@ Article {
 
 Articles are produced by the batch consolidation tier (see [01-architecture](01-architecture.md#layer-responsibilities)). They serve as the primary retrieval unit for search — empirically validated chunk size range for high faithfulness and relevancy.
 
+### Statement (Atomic Knowledge Claim)
+
+A self-contained factual claim extracted from a source via windowed LLM extraction (see [ADR-0015](../docs/adr/0015-statement-first-extraction.md)). Statements are the fundamental retrieval unit — each is independently meaningful with all pronouns resolved to explicit referents.
+
+```
+Statement {
+  id: UUID,
+  source_id: UUID,            -- FK → Source
+  content: Text,              -- self-contained claim (no pronouns, no context dependencies)
+  content_hash: Bytes,        -- SHA-256 of content for dedup across extraction windows
+  embedding: Vector?,         -- pgvector halfvec (dimension matches chunk table)
+  byte_start: Int,            -- byte offset in Source.normalized_content where supporting text starts
+  byte_end: Int,              -- byte offset in Source.normalized_content where supporting text ends
+  heading_path: Text?,        -- heading context at extraction location ("Chapter 2 > Methods")
+  paragraph_index: Int?,      -- paragraph position within source section
+  ordinal: Int,               -- position within the source's statement sequence
+  confidence: Float,          -- extraction confidence from the LLM
+  section_id: UUID?,          -- FK → Section (set after clustering)
+  clearance_level: Int,       -- inherited from source
+  is_evicted: Bool,           -- true if re-extraction determined this claim is no longer supported
+  created_at: Timestamp,
+}
+```
+
+### Section (Topic Cluster Summary)
+
+A compiled summary of semantically similar statements within a single source. Sections represent local topics — they are clustered by semantic similarity (HAC on statement embeddings), not by document structure. The document's physical layout is preserved as metadata on the constituent statements, not as section boundaries.
+
+```
+Section {
+  id: UUID,
+  source_id: UUID,            -- FK → Source
+  title: Text,                -- LLM-generated topic title
+  body: Text,                 -- LLM-compiled narrative summary of the clustered statements
+  embedding: Vector?,         -- pgvector halfvec
+  ordinal: Int,               -- position within the source's section sequence
+  clearance_level: Int,       -- inherited from source
+  created_at: Timestamp,
+}
+```
+
+### Component (Design Doc Bridge)
+
+A logical grouping that bridges natural language intent (specs, design docs, research) to code implementation. Components are the translation layer between business logic expressed in prose and execution expressed in code.
+
+```
+Component {
+  id: UUID,
+  name: String,               -- e.g. "Ingestion Pipeline", "Statement Extractor", "RRF Fusion"
+  description: Text?,         -- natural language summary of this component's purpose
+  embedding: Vector?,         -- pgvector halfvec (embedded from description)
+  source_id: UUID?,           -- FK → Source (the design doc or spec this component was extracted from)
+  metadata: JSONB,            -- language, file patterns, module paths, etc.
+  created_at: Timestamp,
+  updated_at: Timestamp,
+}
+```
+
+Components are connected to the graph via typed edges:
+- `IMPLEMENTS_INTENT`: Component → Spec/Topic Node (upward, toward design intent)
+- `PART_OF_COMPONENT`: Code Node → Component (upward, toward logical grouping)
+- `THEORETICAL_BASIS`: Component → Research Node (lateral, toward academic foundation)
+
+### Code Entities (Specialized Node Types)
+
+Code entities are graph Nodes with specialized `node_type` values and code-specific properties in JSONB. They are created by the AST-aware code ingestion pipeline (see [spec/12-code-ingestion](12-code-ingestion.md)).
+
+**Code node types:**
+- `code_function` — a function, method, or closure
+- `code_struct` — a struct, class, or record type
+- `code_trait` — a trait, interface, or protocol
+- `code_module` — a module, package, or namespace
+- `code_impl` — an impl block (Rust) or class implementation
+- `code_type` — a type alias, enum, or constant
+- `code_test` — a test function or test module
+
+**Code-specific Node properties** (stored in `properties` JSONB):
+
+```json
+{
+  "language": "rust",
+  "file_path": "engine/crates/covalence-core/src/ingestion/embedder.rs",
+  "line_start": 42,
+  "line_end": 87,
+  "signature": "pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>",
+  "visibility": "public",
+  "semantic_summary": "Embeds a batch of text strings into vector representations using the configured embedding provider (Voyage or OpenAI). Handles rate limiting and retries.",
+  "raw_source": "...",
+  "ast_hash": "sha256_of_ast_structure"
+}
+```
+
+The `semantic_summary` is the key bridge: it's a natural language description of the code's business logic, generated by passing the AST chunk to an LLM. The Node's `embedding` is computed from this summary, not from the raw code — placing code entities in the same semantic vector space as prose concepts.
+
+`ast_hash` enables structural change detection without re-running the LLM: if the AST hash changes, the semantic summary needs regeneration.
+
+## Edge Type Vocabulary (Extended)
+
+In addition to the dynamically-assigned edge types from LLM extraction (see [07-epistemic-model](07-epistemic-model.md#edge-type-vocabulary)), the following structured edge types are used:
+
+### Code Structure Edges
+
+| Edge Type | From | To | Description |
+|-----------|------|----|-------------|
+| `CALLS` | code_function | code_function | Static call graph edge (from AST) |
+| `USES_TYPE` | code_function | code_struct/code_type | Type reference (parameter, return, field) |
+| `IMPLEMENTS` | code_impl | code_trait | Trait implementation |
+| `CONTAINS` | code_module | code_function/code_struct/code_trait | Module membership |
+| `DEPENDS_ON` | code_module | code_module | Module dependency (imports) |
+
+### Cross-Domain Bridge Edges
+
+| Edge Type | From | To | Description |
+|-----------|------|----|-------------|
+| `IMPLEMENTS_INTENT` | Component | Node (concept/topic) | Links implementation to design intent |
+| `PART_OF_COMPONENT` | Node (code_*) | Component | Groups code into logical components |
+| `THEORETICAL_BASIS` | Component/Node | Node (concept) | Links implementation to academic foundation |
+| `SUPERSEDES` | Source | Source | Version chain for mutating sources |
+| `CORRECTS` | Node (claim) | Node (claim) | Explicit retraction or correction |
+
+### Analysis Edges (Computed)
+
+| Edge Type | From | To | Description |
+|-----------|------|----|-------------|
+| `SEMANTIC_DRIFT` | Node (code_*) | Component | Generated when code's semantic summary diverges from component description |
+| `COVERAGE_GAP` | Node (concept) | Component | Generated when a spec concept has no implementing code |
+
 ## Relationships Between Entities
 
 ```
 Source ──1:N──→ Chunk ──1:N──→ Chunk (parent-child hierarchy)
                   │
                   └──1:N──→ Extraction ──→ Node or Edge
+
+Source ──1:N──→ Statement ──N:1──→ Section
+                  │
+                  └──1:N──→ Extraction ──→ Node or Edge (statement provenance)
+
+Component ──IMPLEMENTS_INTENT──→ Node (spec/topic concept)
+Component ←──PART_OF_COMPONENT── Node (code_* entity)
+Component ──THEORETICAL_BASIS──→ Node (research concept)
 
 Node ──1:N──→ NodeAlias
 Node ──M:N──→ Node (via Edge)

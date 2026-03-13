@@ -40,8 +40,8 @@ cli/                                Go CLI (Cobra) — binary name: cove
   cmd/                              Subcommands: source, search, node, admin
   internal/                         HTTP client + output helpers
 dashboard/                          Web dashboard (stats, observability, future interaction)
-spec/                               Design specs (read-only reference)
-docs/adr/                           Architecture Decision Records
+spec/                               Design specs (12 specs + README)
+docs/adr/                           Architecture Decision Records (17 ADRs)
 ```
 
 ### Key Dependencies
@@ -375,6 +375,8 @@ Design specs in `spec/`:
 - `09-federation.md` — Clearance levels, egress filtering, ZK edges, federation protocol
 - `10-lessons-learned.md` — Implementation lessons and design trade-offs
 - `11-evaluation.md` — Evaluation harness, fixture-based testing, metrics
+- `12-code-ingestion.md` — AST-aware code ingestion, Tree-sitter chunking, semantic summary wrapper, Component bridge layer
+- `13-cross-domain-analysis.md` — Erosion detection, coverage analysis, blast radius, whitespace roadmap, dialectical critique
 
 ## ADR Process
 

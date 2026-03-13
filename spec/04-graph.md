@@ -313,6 +313,104 @@ type SharedGraph = Arc<RwLock<GraphSidecar>>;
 - Write operations (sync from PG) take a write lock
 - Write lock contention should be minimal since syncs are batched
 
+## Cross-Domain Analysis
+
+When the graph contains code entities, spec topics, and research concepts connected via Component bridge nodes, the sidecar enables cross-domain analysis that traditional tools cannot perform.
+
+### Erosion Detection
+
+Architecture erosion is measured as the semantic distance between a Component's design intent and its code's actual behavior.
+
+```rust
+/// Compute drift for a component by comparing its embedding against
+/// the aggregate of its code entities' semantic summary embeddings.
+fn compute_drift(&self, component_id: NodeId) -> f64 {
+    let comp_idx = self.index[&component_id.0];
+    let comp_embedding = &self.graph[comp_idx].embedding;
+
+    let code_nodes: Vec<_> = self.graph.edges_directed(comp_idx, Incoming)
+        .filter(|e| e.weight().rel_type == "PART_OF_COMPONENT")
+        .map(|e| e.source())
+        .collect();
+
+    if code_nodes.is_empty() { return 0.0; }
+
+    let avg_similarity: f64 = code_nodes.iter()
+        .filter_map(|&idx| self.graph[idx].embedding.as_ref())
+        .map(|emb| cosine_similarity(comp_embedding, emb))
+        .sum::<f64>() / code_nodes.len() as f64;
+
+    1.0 - avg_similarity  // higher = more drift
+}
+```
+
+### Coverage Traversal
+
+Find orphan code (no path to spec) and unimplemented spec topics (no IMPLEMENTS_INTENT edges):
+
+```rust
+/// Find code nodes with no PART_OF_COMPONENT edge.
+fn orphan_code(&self) -> Vec<NodeIndex> {
+    self.graph.node_indices()
+        .filter(|&idx| self.graph[idx].node_type.starts_with("code_"))
+        .filter(|&idx| !self.graph.edges_directed(idx, Outgoing)
+            .any(|e| e.weight().rel_type == "PART_OF_COMPONENT"))
+        .collect()
+}
+
+/// Find spec/concept nodes with no incoming IMPLEMENTS_INTENT edge.
+fn unimplemented_specs(&self) -> Vec<NodeIndex> {
+    self.graph.node_indices()
+        .filter(|&idx| self.graph[idx].node_type == "concept"
+            && self.graph[idx].properties.get("domain") == Some(&"spec".into()))
+        .filter(|&idx| !self.graph.edges_directed(idx, Incoming)
+            .any(|e| e.weight().rel_type == "IMPLEMENTS_INTENT"))
+        .collect()
+}
+```
+
+### Blast Radius
+
+Impact analysis follows semantic chains, not just import chains:
+
+```rust
+/// Compute the blast radius of modifying a given node.
+/// Returns all affected nodes within `max_hops` traversal via
+/// CALLS, USES_TYPE, PART_OF_COMPONENT, and IMPLEMENTS_INTENT edges.
+fn blast_radius(&self, start: NodeId, max_hops: usize) -> BTreeMap<NodeIndex, usize> {
+    let mut visited = BTreeMap::new();
+    let mut frontier = vec![(self.index[&start.0], 0usize)];
+
+    while let Some((idx, depth)) = frontier.pop() {
+        if depth > max_hops { continue; }
+        if visited.contains_key(&idx) { continue; }
+        visited.insert(idx, depth);
+
+        // Follow structural edges in both directions
+        for edge in self.graph.edges(idx) {
+            let rel = &edge.weight().rel_type;
+            if matches!(rel.as_str(),
+                "CALLS" | "USES_TYPE" | "PART_OF_COMPONENT" |
+                "IMPLEMENTS_INTENT" | "DEPENDS_ON" | "THEORETICAL_BASIS"
+            ) {
+                frontier.push((edge.target(), depth + 1));
+            }
+        }
+        // Also follow incoming edges (callers, dependents)
+        for edge in self.graph.edges_directed(idx, Incoming) {
+            let rel = &edge.weight().rel_type;
+            if matches!(rel.as_str(), "CALLS" | "DEPENDS_ON" | "PART_OF_COMPONENT") {
+                frontier.push((edge.source(), depth + 1));
+            }
+        }
+    }
+
+    visited
+}
+```
+
+See [spec/13-cross-domain-analysis](13-cross-domain-analysis.md) for the full set of analysis capabilities and API endpoints.
+
 ## Open Questions
 
 - [x] Should community detection run continuously or on-demand? → On deep consolidation schedule, with on-demand triggered by high epistemic delta
