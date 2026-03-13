@@ -104,6 +104,12 @@ pub struct DeleteSourceResponse {
     pub sections_deleted: u64,
     pub nodes_deleted: u64,
     pub edges_deleted: u64,
+    /// Number of surviving nodes whose epistemic opinions were
+    /// recalculated after losing extraction support (TMS cascade).
+    pub nodes_recalculated: usize,
+    /// Number of surviving edges whose epistemic opinions were
+    /// recalculated after losing extraction support (TMS cascade).
+    pub edges_recalculated: usize,
 }
 
 /// Response for source reprocessing.

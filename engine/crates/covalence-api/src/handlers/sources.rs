@@ -261,5 +261,7 @@ pub async fn delete_source(
         sections_deleted: result.sections_deleted,
         nodes_deleted: result.nodes_deleted,
         edges_deleted: result.edges_deleted,
+        nodes_recalculated: result.nodes_recalculated,
+        edges_recalculated: result.edges_recalculated,
     }))
 }
