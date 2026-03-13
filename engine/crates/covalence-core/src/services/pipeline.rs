@@ -1420,7 +1420,36 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         return true;
     }
 
+    // Document structure artifacts: "Table 8", "Figure 12", "Section 3.1",
+    // "Appendix D.1", "Claim_New: ...".
+    if is_document_artifact(trimmed) {
+        return true;
+    }
+
+    // "X insight" pattern: LLM extracts "RAPTOR insight" or "STAR-RAG insight"
+    // from spec text. The real entity is X, not "X insight".
+    if lower.ends_with(" insight") || lower.ends_with(" insights") {
+        return true;
+    }
+
     false
+}
+
+/// Returns true if the name is a document structure reference.
+fn is_document_artifact(name: &str) -> bool {
+    use std::sync::LazyLock;
+
+    static DOC_ARTIFACT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^(Table|Figure|Fig\.|Section|Appendix|Algorithm|Listing|Equation|Theorem|Lemma|Corollary|Definition|Proposition|Example|Remark)\s+(?-i)[\dA-Z]",
+        )
+        .unwrap()
+    });
+
+    static CLAIM_PREFIX_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)^Claim_").unwrap());
+
+    DOC_ARTIFACT_RE.is_match(name) || CLAIM_PREFIX_RE.is_match(name)
 }
 
 #[cfg(test)]
@@ -1523,5 +1552,33 @@ mod tests {
         // Real entities that happen to contain parens.
         assert!(!is_noise_entity("PageRank algorithm", "concept"));
         assert!(!is_noise_entity("Precision@5 (search metric)", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_document_artifacts() {
+        assert!(is_noise_entity("Table 8", "concept"));
+        assert!(is_noise_entity("Figure 12", "concept"));
+        assert!(is_noise_entity("Section 3.1.6", "concept"));
+        assert!(is_noise_entity("Appendix D.1", "concept"));
+        assert!(is_noise_entity("Algorithm 2", "concept"));
+        assert!(is_noise_entity("Theorem 1", "concept"));
+        assert!(is_noise_entity(
+            "Claim_New: The API uses GraphQL",
+            "concept"
+        ));
+    }
+
+    #[test]
+    fn noise_entity_insight_pattern() {
+        assert!(is_noise_entity("RAPTOR insight", "concept"));
+        assert!(is_noise_entity("STAR-RAG insight", "concept"));
+        assert!(is_noise_entity("Graph traversal insights", "concept"));
+    }
+
+    #[test]
+    fn not_noise_real_table_or_figure() {
+        // Entities that start with these words but aren't doc artifacts.
+        assert!(!is_noise_entity("Table storage", "concept"));
+        assert!(!is_noise_entity("Figure-ground segregation", "concept"));
     }
 }
