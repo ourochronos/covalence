@@ -483,12 +483,37 @@ impl Extractor for LlmExtractor {
     }
 }
 
+/// Escape invalid LaTeX backslash sequences inside JSON string
+/// values so that `serde_json` can parse the output.
+fn sanitize_latex_in_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                if matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') {
+                    out.push('\\');
+                } else {
+                    out.push('\\');
+                    out.push('\\');
+                }
+            } else {
+                out.push('\\');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Parse the LLM's JSON output into an ExtractionResult.
 ///
 /// Handles malformed responses gracefully by returning an empty result
 /// with a warning log so failures are visible to operators.
 fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
-    let raw: RawExtractionResult = match serde_json::from_str(json_str) {
+    let cleaned = sanitize_latex_in_json(json_str);
+    let raw: RawExtractionResult = match serde_json::from_str(&cleaned) {
         Ok(r) => r,
         Err(e) => {
             // Truncate raw output for logging to avoid flooding.

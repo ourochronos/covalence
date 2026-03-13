@@ -78,6 +78,8 @@ impl StatementExtractor for LlmStatementExtractor {
 
         // Strip markdown code fences if the LLM wrapped the JSON.
         let cleaned = strip_markdown_fences(&content);
+        // Sanitize LaTeX escapes that break JSON parsing.
+        let cleaned = sanitize_latex_in_json(&cleaned);
 
         let raw: RawStatementResult = match serde_json::from_str(&cleaned) {
             Ok(r) => r,
@@ -169,6 +171,30 @@ fn strip_markdown_fences(s: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// Escape invalid LaTeX backslash sequences inside JSON string
+/// values so that `serde_json` can parse the output.
+fn sanitize_latex_in_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                if matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') {
+                    out.push('\\');
+                } else {
+                    out.push('\\');
+                    out.push('\\');
+                }
+            } else {
+                out.push('\\');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

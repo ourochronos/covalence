@@ -147,6 +147,8 @@ impl SectionCompiler for LlmSectionCompiler {
 
         // Strip markdown code fences if the LLM wrapped the JSON.
         let cleaned = strip_markdown_fences(&content);
+        // Sanitize LaTeX escapes that break JSON parsing.
+        let cleaned = sanitize_latex_in_json(&cleaned);
 
         let raw: RawSectionOutput = match serde_json::from_str(&cleaned) {
             Ok(r) => r,
@@ -252,6 +254,36 @@ fn strip_markdown_fences(s: &str) -> String {
     }
 }
 
+/// Escape invalid LaTeX backslash sequences inside JSON string
+/// values. LLMs sometimes emit raw LaTeX (`\omega`, `\ddot{u}`)
+/// inside JSON strings, which are not valid JSON escapes.
+///
+/// Strategy: replace any `\X` where X is not a valid JSON escape
+/// char (`"`, `\`, `/`, `b`, `f`, `n`, `r`, `t`, `u`) with `\\X`.
+fn sanitize_latex_in_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                if matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') {
+                    // Valid JSON escape — pass through.
+                    out.push('\\');
+                } else {
+                    // Invalid escape — double the backslash.
+                    out.push('\\');
+                    out.push('\\');
+                }
+            } else {
+                out.push('\\');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 // ── Response deserialization ────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -329,5 +361,40 @@ mod tests {
         let output = compiler.compile_section(&input).await.unwrap();
         assert_eq!(output.title, "Section (0)");
         assert!(output.summary.is_empty());
+    }
+
+    #[test]
+    fn sanitize_latex_escapes_basic() {
+        let input = r#"{"title": "\omega_{x|y} values"}"#;
+        let sanitized = sanitize_latex_in_json(input);
+        // \o and \_ should be double-escaped; the rest stays
+        let parsed: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        assert!(parsed["title"].as_str().unwrap().contains("omega"));
+    }
+
+    #[test]
+    fn sanitize_latex_escapes_preserves_valid() {
+        let input = r#"{"title": "line1\nline2", "tab": "\t"}"#;
+        let sanitized = sanitize_latex_in_json(input);
+        assert_eq!(sanitized, input, "valid escapes must be unchanged");
+    }
+
+    #[test]
+    fn sanitize_latex_ddot_and_overline() {
+        let input = r#"{"summary": "The value \ddot{u} for \overline{y}"}"#;
+        let sanitized = sanitize_latex_in_json(input);
+        let parsed: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        let summary = parsed["summary"].as_str().unwrap();
+        assert!(summary.contains("ddot"));
+        assert!(summary.contains("overline"));
+    }
+
+    #[test]
+    fn sanitize_latex_trailing_backslash() {
+        let input = r#"{"x": "end\"#;
+        let sanitized = sanitize_latex_in_json(input);
+        // Trailing backslash stays single — JSON will still fail
+        // but we don't mangle the rest.
+        assert!(sanitized.ends_with('\\'));
     }
 }
