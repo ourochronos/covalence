@@ -296,32 +296,74 @@ impl FastcorefClient {
         let windows = split_text_windows(text, self.max_chars, self.overlap_chars);
         let mut resolved_parts = Vec::with_capacity(windows.len());
         let mut all_mutations = Vec::new();
-        let mut byte_offset: usize = 0;
+        let mut mutated_byte_offset: usize = 0;
+        let mut prev_canonical_end: usize = 0;
 
-        for window in &windows {
+        for (win_idx, window) in windows.iter().enumerate() {
+            // Compute the canonical start position of this window.
+            // Safe: windows are subslices of the original text.
+            let canonical_offset = window.as_ptr() as usize - text.as_ptr() as usize;
+
+            // How many bytes at the start of this window overlap with the
+            // previous window.
+            let overlap_size = if win_idx > 0 {
+                prev_canonical_end.saturating_sub(canonical_offset)
+            } else {
+                0
+            };
+
             match self.resolve_single(window).await {
                 Ok(result) => {
-                    // Shift mutation offsets by the current byte position
-                    // in the concatenated output.
+                    // Compute how many resolved-text bytes correspond to
+                    // the overlap prefix so we can strip them.
+                    let resolved_overlap =
+                        compute_resolved_overlap(overlap_size, &result.mutations);
+
+                    // Shift non-overlap mutations to global offsets.
                     for mut m in result.mutations {
-                        m.canonical_start += byte_offset;
-                        m.canonical_end += byte_offset;
-                        m.mutated_start += byte_offset;
-                        m.mutated_end += byte_offset;
+                        // Skip mutations in the overlap prefix — already
+                        // captured by the previous window.
+                        if m.canonical_start < overlap_size {
+                            continue;
+                        }
+                        // Canonical offsets: relative to original text.
+                        m.canonical_start += canonical_offset;
+                        m.canonical_end += canonical_offset;
+                        // Mutated offsets: relative to the joined resolved
+                        // text, accounting for overlap stripping.
+                        m.mutated_start = m.mutated_start - resolved_overlap + mutated_byte_offset;
+                        m.mutated_end = m.mutated_end - resolved_overlap + mutated_byte_offset;
                         all_mutations.push(m);
                     }
-                    resolved_parts.push(result.resolved);
+
+                    // Strip the overlap prefix from the resolved text.
+                    let mut skip = resolved_overlap;
+                    while skip < result.resolved.len() && !result.resolved.is_char_boundary(skip) {
+                        skip += 1;
+                    }
+                    let part = if skip > 0 && skip < result.resolved.len() {
+                        result.resolved[skip..].to_string()
+                    } else if skip >= result.resolved.len() {
+                        String::new()
+                    } else {
+                        result.resolved
+                    };
+                    mutated_byte_offset += part.len();
+                    resolved_parts.push(part);
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "coref window failed, using original");
-                    resolved_parts.push(window.to_string());
+                    let skip = overlap_size.min(window.len());
+                    let part = &window[skip..];
+                    mutated_byte_offset += part.len();
+                    resolved_parts.push(part.to_string());
                 }
             }
-            byte_offset += window.len();
+            prev_canonical_end = canonical_offset + window.len();
         }
 
         Ok(CorefResult {
-            resolved: resolved_parts.join(" "),
+            resolved: resolved_parts.concat(),
             mutations: all_mutations,
         })
     }
@@ -366,6 +408,23 @@ impl FastcorefClient {
 // ---------------------------------------------------------------------------
 // Windowing utilities (shared with sidecar_extractor)
 // ---------------------------------------------------------------------------
+
+/// Compute the byte length in the resolved text that corresponds to
+/// `overlap_size` bytes in the canonical text, accounting for mutations
+/// that expand or contract text within the overlap region.
+fn compute_resolved_overlap(overlap_size: usize, mutations: &[CorefMutation]) -> usize {
+    if overlap_size == 0 {
+        return 0;
+    }
+    let mut delta: isize = 0;
+    for m in mutations {
+        if m.canonical_start >= overlap_size {
+            break;
+        }
+        delta += m.mutated_token.len() as isize - m.canonical_token.len() as isize;
+    }
+    (overlap_size as isize + delta).max(0) as usize
+}
 
 /// Split text into overlapping windows at sentence boundaries.
 ///
@@ -695,5 +754,85 @@ mod tests {
     fn fastcoref_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<FastcorefClient>();
+    }
+
+    // --- compute_resolved_overlap tests ---
+
+    #[test]
+    fn resolved_overlap_zero() {
+        assert_eq!(compute_resolved_overlap(0, &[]), 0);
+    }
+
+    #[test]
+    fn resolved_overlap_no_mutations() {
+        assert_eq!(compute_resolved_overlap(100, &[]), 100);
+    }
+
+    #[test]
+    fn resolved_overlap_with_expansion() {
+        // "He" (2 bytes) → "Einstein" (8 bytes) within the overlap.
+        let mutations = vec![CorefMutation {
+            canonical_start: 10,
+            canonical_end: 12,
+            mutated_start: 10,
+            mutated_end: 18,
+            canonical_token: "He".to_string(),
+            mutated_token: "Einstein".to_string(),
+        }];
+        // overlap=50, mutation adds 6 bytes → 56
+        assert_eq!(compute_resolved_overlap(50, &mutations), 56);
+    }
+
+    #[test]
+    fn resolved_overlap_mutation_outside() {
+        // Mutation at byte 60 is outside the 50-byte overlap.
+        let mutations = vec![CorefMutation {
+            canonical_start: 60,
+            canonical_end: 62,
+            mutated_start: 60,
+            mutated_end: 68,
+            canonical_token: "He".to_string(),
+            mutated_token: "Einstein".to_string(),
+        }];
+        assert_eq!(compute_resolved_overlap(50, &mutations), 50);
+    }
+
+    #[test]
+    fn resolved_overlap_with_contraction() {
+        // "Einstein" (8 bytes) → "He" (2 bytes) — contracts by 6.
+        let mutations = vec![CorefMutation {
+            canonical_start: 5,
+            canonical_end: 13,
+            mutated_start: 5,
+            mutated_end: 7,
+            canonical_token: "Einstein".to_string(),
+            mutated_token: "He".to_string(),
+        }];
+        // overlap=50, mutation removes 6 bytes → 44
+        assert_eq!(compute_resolved_overlap(50, &mutations), 44);
+    }
+
+    #[test]
+    fn resolved_overlap_multiple_mutations() {
+        let mutations = vec![
+            CorefMutation {
+                canonical_start: 5,
+                canonical_end: 7,
+                mutated_start: 5,
+                mutated_end: 13,
+                canonical_token: "He".to_string(),
+                mutated_token: "Einstein".to_string(),
+            },
+            CorefMutation {
+                canonical_start: 20,
+                canonical_end: 23,
+                mutated_start: 26,
+                mutated_end: 36,
+                canonical_token: "his".to_string(),
+                mutated_token: "Einstein's".to_string(),
+            },
+        ];
+        // overlap=30: mutation 1 adds 6, mutation 2 adds 7 → 30 + 13 = 43
+        assert_eq!(compute_resolved_overlap(30, &mutations), 43);
     }
 }
