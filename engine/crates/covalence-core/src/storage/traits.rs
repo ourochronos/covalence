@@ -149,7 +149,8 @@ pub trait NodeRepo: Send + Sync {
     /// nodes in a single query.
     ///
     /// Each tuple is `(node_id, new_opinion_json)`. Nodes not found
-    /// in the table are silently skipped.
+    /// in the table are silently skipped. Passing `None` sets the
+    /// column to `NULL` in the database.
     fn batch_update_opinions(
         &self,
         updates: &[(NodeId, Option<serde_json::Value>)],
@@ -217,7 +218,8 @@ pub trait EdgeRepo: Send + Sync {
     /// multiple edges in a single query.
     ///
     /// Each tuple is `(edge_id, confidence_scalar, opinion_json)`.
-    /// Edges not found in the table are silently skipped.
+    /// Edges not found in the table are silently skipped. Passing
+    /// `None` for the opinion sets it to `NULL` in the database.
     fn batch_update_opinions(
         &self,
         updates: &[(EdgeId, f64, Option<serde_json::Value>)],

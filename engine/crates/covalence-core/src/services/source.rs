@@ -784,8 +784,8 @@ impl SourceService {
         let affected_node_ids = ExtractionRepo::list_node_ids_by_source(&*self.repo, id).await?;
         // Note: affected_edge_ids is a superset — it may include
         // edges later deleted by EdgeRepo::delete_by_node in step 6.
-        // The cascade handles this gracefully via EdgeRepo::get
-        // returning None (the loop continues to the next edge).
+        // The batch cascade handles this gracefully: get_many omits
+        // deleted IDs (absent from DB), so they are skipped.
         let affected_edge_ids = ExtractionRepo::list_edge_ids_by_source(&*self.repo, id).await?;
 
         // Step 2: Delete extractions (must precede chunk deletion
