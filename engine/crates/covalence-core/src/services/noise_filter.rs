@@ -38,16 +38,39 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         return true;
     }
 
+    // Strip surrounding quotes before length check — the LLM
+    // extractor sometimes wraps entities in quotes: `"_"`, `'@'`.
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
+        .unwrap_or(trimmed);
+
+    // Entirely non-alphanumeric names (punctuation, symbols, whitespace).
+    if !unquoted.is_empty() && !unquoted.chars().any(|c| c.is_alphanumeric()) {
+        return true;
+    }
+
+    // HTML tag fragments: `<h3`, `<div`, `<span` — LLM extracts
+    // these from HTML content.
+    if unquoted.starts_with('<') && unquoted[1..].starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return true;
+    }
+
     // Very short names (1-2 chars by char count) are noise unless
     // they're well-known abbreviations. Single letters like "C", "D",
     // "E" are mathematical variables from papers, not real entities.
-    let char_count = trimmed.chars().count();
+    let char_count = unquoted.chars().count();
     if char_count <= 2 {
         const SHORT_ALLOWLIST: &[&str] = &[
             "AI", "DB", "GI", "IE", "IR", "IT", "KG", "ML", "NE", "NL", "NLP", "QA", "RL", "UI",
             "UX",
         ];
-        if !SHORT_ALLOWLIST.contains(&trimmed) {
+        if !SHORT_ALLOWLIST.contains(&unquoted) {
             return true;
         }
     }
@@ -518,5 +541,42 @@ mod tests {
         assert!(is_noise_entity("MY_TEST_CONSTANT", "technology"));
         // Single underscore in all-caps with non-concept type is OK.
         assert!(!is_noise_entity("API_KEY", "technology"));
+    }
+
+    #[test]
+    fn noise_entity_quote_wrapped_punctuation() {
+        // LLM extracts quoted punctuation from source text.
+        assert!(is_noise_entity("\"_\"", "concept"));
+        assert!(is_noise_entity("'@'", "other"));
+        assert!(is_noise_entity("'|'", "other"));
+        assert!(is_noise_entity("':'", "other"));
+        assert!(is_noise_entity("'-'", "other"));
+        assert!(is_noise_entity("' '", "other"));
+    }
+
+    #[test]
+    fn noise_entity_pure_punctuation() {
+        assert!(is_noise_entity("@", "other"));
+        assert!(is_noise_entity("|", "other"));
+        assert!(is_noise_entity("-", "other"));
+        assert!(is_noise_entity("...", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_html_tag_fragments() {
+        assert!(is_noise_entity("<h3", "concept"));
+        assert!(is_noise_entity("<div", "other"));
+        assert!(is_noise_entity("<span", "concept"));
+        // Paired tags are caught by the existing < + > filter.
+        assert!(is_noise_entity("<h3>Title</h3>", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_quoted_short_names() {
+        // Quote-wrapped short names: the inner content is too short.
+        assert!(is_noise_entity("\"x\"", "concept"));
+        assert!(is_noise_entity("'a'", "concept"));
+        // But real abbreviations inside quotes should be kept.
+        assert!(!is_noise_entity("\"AI\"", "concept"));
     }
 }

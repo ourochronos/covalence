@@ -286,8 +286,13 @@ impl SearchService {
             if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
                 let strategy_str = strategy_name(&strategy);
                 match cache.lookup(emb, strategy_str).await {
-                    Ok(Some(cached_results)) => {
+                    Ok(Some(mut cached_results)) => {
                         tracing::debug!("cache hit for query");
+                        // The cache stores the full pre-truncation
+                        // result set. Apply the caller's limit here
+                        // so that limit=15 after a limit=5 cache
+                        // write still returns all available results.
+                        cached_results.truncate(limit);
                         let mut trace = QueryTrace::new(query, &strategy);
                         trace.cache_hit = true;
                         trace.final_count = cached_results.len();
@@ -1207,9 +1212,23 @@ impl SearchService {
             }
         }
 
+        // --- Step 11: Cache population ---
+        // Store the full post-diversification result set BEFORE
+        // truncation so that a later query with a larger limit
+        // returns all available results from cache.
+        if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
+            let strategy_str = strategy_name(&strategy);
+            if let Err(e) = cache.store(query, emb, strategy_str, &fused).await {
+                tracing::warn!(
+                    error = %e,
+                    "failed to store search results in cache"
+                );
+            }
+        }
+
         fused.truncate(limit);
 
-        // --- Step 11: Cache population + trace ---
+        // --- Step 12: Trace ---
         for result in &fused {
             let rtype = result.result_type.as_deref().unwrap_or("unknown");
             trace.record_result_type(rtype);
@@ -1230,16 +1249,6 @@ impl SearchService {
             crate::storage::traits::SearchTraceRepo::create(&*self.repo, &db_trace).await
         {
             tracing::warn!(error = %e, "failed to persist search trace");
-        }
-
-        if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
-            let strategy_str = strategy_name(&strategy);
-            if let Err(e) = cache.store(query, emb, strategy_str, &fused).await {
-                tracing::warn!(
-                    error = %e,
-                    "failed to store search results in cache"
-                );
-            }
         }
 
         Ok(fused)
