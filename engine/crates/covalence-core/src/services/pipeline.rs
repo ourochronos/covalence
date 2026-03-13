@@ -402,7 +402,7 @@ impl SourceService {
                             let base = co.byte_start;
                             let prefix = co.context_prefix_len;
                             for m in &result.mutations {
-                                if m.canonical_end <= prefix {
+                                if m.canonical_start < prefix {
                                     continue;
                                 }
                                 all_ledger_entries.push(

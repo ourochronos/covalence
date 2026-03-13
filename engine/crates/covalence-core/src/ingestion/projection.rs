@@ -39,6 +39,13 @@ pub fn reverse_project(
         return (mutated_start, mutated_end);
     }
 
+    debug_assert!(
+        ledger
+            .windows(2)
+            .all(|w| w.first().unwrap().mutated_span_start <= w.last().unwrap().mutated_span_start),
+        "ledger must be sorted by mutated_span_start"
+    );
+
     // Delta from mutations entirely before the span — affects both
     // start and end equally.
     let mut delta_before: isize = 0;
