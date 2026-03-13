@@ -389,7 +389,7 @@ Execute the uncompromising `design/v2-migration-plan.md`:
 - [x] Pipeline: Diverge `SourceService::ingest()` (Code stays AST, Prose goes to Statement Pipeline).
 - [x] Pipeline: Implement 2-pass extraction (Pass 1: Statements, Pass 2: Triples).
 - [x] Resolution: Add Tier 5 deferred routing in PgResolver (entities → unresolved_entities pool).
-- [ ] Resolution: Implement HDBSCAN background worker for Tier 5 batch clustering.
+- [x] Resolution: Implement HDBSCAN background worker for Tier 5 batch clustering.
 - [x] Cleanup: Delete legacy chunk landscape analysis logic (`landscape.rs`).
 - [ ] Migration: Wipe local graph and execute blue/green re-ingestion of all sources.
 

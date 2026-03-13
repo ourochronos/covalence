@@ -477,3 +477,25 @@ pub trait UnresolvedEntityRepo: Send + Sync {
     /// Count pending (unresolved) entities.
     fn count_pending(&self) -> impl Future<Output = Result<i64>> + Send;
 }
+
+/// Repository for [`LedgerEntry`] records (offset projection ledger).
+///
+/// Stores byte offset mutations from coreference resolution so that
+/// entity spans extracted from mutated text can be reverse-projected
+/// back to canonical source positions.
+pub trait LedgerRepo: Send + Sync {
+    /// Insert a batch of ledger entries for a source.
+    fn create_batch(
+        &self,
+        entries: &[crate::models::projection::LedgerEntry],
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get all ledger entries for a source, sorted by mutated position.
+    fn list_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<Vec<crate::models::projection::LedgerEntry>>> + Send;
+
+    /// Delete all ledger entries for a source (e.g. on re-ingestion).
+    fn delete_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
+}

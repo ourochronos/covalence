@@ -43,7 +43,7 @@ pub use converter::{
     CodeConverter, ConverterRegistry, HtmlConverter, MarkdownConverter, PdfConverter,
     PlainTextConverter, ReaderLmConverter, SourceConverter, linearize_tables,
 };
-pub use coreference::{CorefLink, CorefResolver, FastcorefClient};
+pub use coreference::{CorefLink, CorefMutation, CorefResolver, CorefResult, FastcorefClient};
 pub use embedder::{Embedder, MockEmbedder};
 pub use extractor::{
     ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,

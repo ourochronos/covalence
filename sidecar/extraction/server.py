@@ -123,19 +123,118 @@ def coreference(req: CorefRequest):
     preds = model.predict(texts=req.texts)
     results = []
     for text, pred in zip(req.texts, preds):
-        clusters = pred.get_clusters(as_strings=True)
-        resolved = text
-        for cluster in clusters:
-            antecedent = cluster[0]
-            for mention in cluster[1:]:
-                if len(mention) <= 5:
-                    resolved = resolved.replace(mention, antecedent, 1)
+        clusters_str = pred.get_clusters(as_strings=True)
+        clusters_spans = pred.get_clusters(as_strings=False)
+        resolved, mutations = _resolve_with_mutations(text, clusters_str, clusters_spans)
         results.append({
             "original": text,
             "resolved": resolved,
-            "clusters": clusters,
+            "clusters": clusters_str,
+            "mutations": mutations,
         })
     return CorefResponse(results=results)
+
+
+def _resolve_with_mutations(
+    text: str,
+    clusters_str: list[list[str]],
+    clusters_spans: list[list[tuple[int, int]]],
+) -> tuple[str, list[dict]]:
+    """Replace anaphoric mentions with antecedents using exact character spans.
+
+    Returns (resolved_text, mutations) where each mutation records:
+      - canonical_start/end: byte offsets in the original text
+      - mutated_start/end: byte offsets in the resolved text
+      - canonical_token: the original mention (e.g. "He")
+      - mutated_token: the replacement (e.g. "Einstein")
+
+    This is the data the Rust engine needs to build the offset
+    projection ledger for reverse-projecting entity byte spans back
+    to canonical source positions.
+    """
+    # Build list of (char_start, char_end, antecedent) replacements,
+    # sorted by position. We skip the first mention in each cluster
+    # (the antecedent itself) and only replace shorter mentions
+    # (pronouns, abbreviated references).
+    replacements = []
+    for str_cluster, span_cluster in zip(clusters_str, clusters_spans):
+        if len(str_cluster) < 2 or len(span_cluster) < 2:
+            continue
+        antecedent = str_cluster[0]
+        for mention_str, (char_start, char_end) in zip(str_cluster[1:], span_cluster[1:]):
+            # Only replace mentions shorter than the antecedent
+            # (pronouns like "he", "it", "they", possessives, etc.)
+            if len(mention_str) < len(antecedent):
+                replacements.append((char_start, char_end, antecedent))
+
+    if not replacements:
+        return text, []
+
+    # Sort by position (ascending) and deduplicate overlapping spans
+    # (keep the first one encountered).
+    replacements.sort(key=lambda r: r[0])
+    deduped = []
+    last_end = -1
+    for start, end, antecedent in replacements:
+        if start >= last_end:
+            deduped.append((start, end, antecedent))
+            last_end = end
+    replacements = deduped
+
+    # Convert character offsets to byte offsets in the original text.
+    # Python strings are UTF-8 internally when encoded.
+    text_bytes = text.encode("utf-8")
+    char_to_byte = _build_char_to_byte_map(text)
+
+    mutations = []
+    resolved_parts = []
+    # Track byte position in the resolved output.
+    mutated_byte_pos = 0
+    prev_byte_end = 0
+
+    for char_start, char_end, antecedent in replacements:
+        byte_start = char_to_byte[char_start]
+        byte_end = char_to_byte[char_end] if char_end < len(char_to_byte) else len(text_bytes)
+        canonical_token = text_bytes[byte_start:byte_end].decode("utf-8", errors="replace")
+        mutated_token = antecedent
+
+        # Append unchanged text before this replacement.
+        unchanged = text_bytes[prev_byte_end:byte_start]
+        resolved_parts.append(unchanged)
+        mutated_byte_pos += len(unchanged)
+
+        # Append replacement.
+        replacement_bytes = mutated_token.encode("utf-8")
+        resolved_parts.append(replacement_bytes)
+
+        mutations.append({
+            "canonical_start": byte_start,
+            "canonical_end": byte_end,
+            "mutated_start": mutated_byte_pos,
+            "mutated_end": mutated_byte_pos + len(replacement_bytes),
+            "canonical_token": canonical_token,
+            "mutated_token": mutated_token,
+        })
+
+        mutated_byte_pos += len(replacement_bytes)
+        prev_byte_end = byte_end
+
+    # Append remaining text after last replacement.
+    resolved_parts.append(text_bytes[prev_byte_end:])
+    resolved_text = b"".join(resolved_parts).decode("utf-8", errors="replace")
+
+    return resolved_text, mutations
+
+
+def _build_char_to_byte_map(text: str) -> list[int]:
+    """Map character index → byte offset in UTF-8 encoding."""
+    result = []
+    byte_pos = 0
+    for ch in text:
+        result.append(byte_pos)
+        byte_pos += len(ch.encode("utf-8"))
+    result.append(byte_pos)  # sentinel for end-of-string
+    return result
 
 
 @app.post("/ner", response_model=NerResponse)
@@ -200,14 +299,9 @@ def full_extract(req: NerRequest):
     pred = preds[0]
     clusters = pred.get_clusters(as_strings=True)
 
-    # Simple string-based resolution: replace pronouns with antecedents
-    resolved = req.text
-    for cluster in clusters:
-        antecedent = cluster[0]
-        for mention in cluster[1:]:
-            # Only replace short pronouns, not longer noun phrases
-            if len(mention) <= 5:
-                resolved = resolved.replace(mention, antecedent, 1)
+    # Span-based resolution with mutation tracking
+    clusters_spans = pred.get_clusters(as_strings=False)
+    resolved, mutations = _resolve_with_mutations(req.text, clusters, clusters_spans)
 
     # Step 2: NER on resolved text
     gliner = get_gliner()
@@ -244,6 +338,7 @@ def full_extract(req: NerRequest):
     return {
         "resolved_text": resolved,
         "coref_clusters": clusters,
+        "mutations": mutations,
         "entities": [
             {"text": e["text"], "label": e["label"], "score": round(e["score"], 4)}
             for e in entities
