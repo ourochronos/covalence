@@ -892,7 +892,7 @@ impl AdminService {
     /// optionally removes matches along with their edges and aliases.
     /// In dry-run mode (default), only reports what would be deleted.
     pub async fn cleanup_noise_entities(&self, dry_run: bool) -> Result<NoiseCleanupResult> {
-        use super::pipeline::is_noise_entity;
+        use super::noise_filter::is_noise_entity;
 
         // Fetch all nodes (id, canonical_name, node_type).
         let rows: Vec<(uuid::Uuid, String, String)> =
