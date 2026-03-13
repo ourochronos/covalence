@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 use crate::graph::SharedGraph;
 use crate::graph::sync::full_reload;
 use crate::ingestion::Embedder;
+use crate::ingestion::chat_backend::ChatBackend;
 use crate::models::audit::{AuditAction, AuditLog};
 use crate::models::trace::{SearchFeedback, SearchTrace};
 use crate::storage::postgres::PgRepo;
@@ -215,6 +216,17 @@ pub struct SeedOpinionsResult {
     pub edges_vacuous: u64,
 }
 
+/// Result of LLM code node summarization.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CodeSummaryResult {
+    /// Code nodes found without semantic summaries.
+    pub nodes_found: u64,
+    /// Nodes successfully summarized and re-embedded.
+    pub summarized: u64,
+    /// Nodes where LLM summary failed.
+    pub failed: u64,
+}
+
 /// Compute knowledge gap candidates from the graph sidecar.
 ///
 /// Returns tuples of `(uuid, name, type, in_degree, out_degree)` for
@@ -277,6 +289,7 @@ pub struct AdminService {
     repo: Arc<PgRepo>,
     graph: SharedGraph,
     embedder: Option<Arc<dyn Embedder>>,
+    chat_backend: Option<Arc<dyn ChatBackend>>,
     config: Option<crate::config::Config>,
 }
 
@@ -287,6 +300,7 @@ impl AdminService {
             repo,
             graph,
             embedder: None,
+            chat_backend: None,
             config: None,
         }
     }
@@ -294,6 +308,12 @@ impl AdminService {
     /// Set the embedder for ontology clustering.
     pub fn with_embedder(mut self, embedder: Option<Arc<dyn Embedder>>) -> Self {
         self.embedder = embedder;
+        self
+    }
+
+    /// Set the chat backend for LLM operations.
+    pub fn with_chat_backend(mut self, backend: Option<Arc<dyn ChatBackend>>) -> Self {
+        self.chat_backend = backend;
         self
     }
 
@@ -1175,6 +1195,166 @@ impl AdminService {
             "opinion seeding complete"
         );
         Ok(result)
+    }
+
+    /// Generate LLM semantic summaries for code-type nodes and
+    /// re-embed them using the summary text.
+    ///
+    /// Finds nodes with code entity types (struct, function, trait,
+    /// enum, impl_block, constant, macro, module, class) that don't
+    /// already have a `semantic_summary` in their properties. For
+    /// each, sends `canonical_name + description` to the LLM for a
+    /// plain-English summary, stores it in `properties.semantic_summary`,
+    /// and re-generates the embedding from the summary text.
+    pub async fn summarize_code_nodes(&self) -> Result<CodeSummaryResult> {
+        use crate::ingestion::embedder::truncate_and_validate;
+
+        let chat = self
+            .chat_backend
+            .as_ref()
+            .ok_or_else(|| Error::Config("no chat backend configured".into()))?;
+        let embedder = self
+            .embedder
+            .as_ref()
+            .ok_or_else(|| Error::Config("no embedder configured".into()))?;
+        let node_dim = self
+            .config
+            .as_ref()
+            .map(|c| c.embedding.table_dims.node)
+            .unwrap_or(256);
+
+        let code_types = [
+            "struct",
+            "function",
+            "trait",
+            "enum",
+            "impl_block",
+            "constant",
+            "macro",
+            "module",
+            "class",
+        ];
+
+        // Fetch code nodes without semantic summaries.
+        type CodeNodeRow = (
+            uuid::Uuid,
+            String,
+            String,
+            Option<String>,
+            Option<serde_json::Value>,
+        );
+        let rows: Vec<CodeNodeRow> = sqlx::query_as(
+            "SELECT id, canonical_name, node_type, description, properties \
+                 FROM nodes \
+                 WHERE node_type = ANY($1) \
+                   AND (properties IS NULL \
+                        OR properties->>'semantic_summary' IS NULL)",
+        )
+        .bind(&code_types[..])
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        if rows.is_empty() {
+            return Ok(CodeSummaryResult {
+                nodes_found: 0,
+                summarized: 0,
+                failed: 0,
+            });
+        }
+
+        let nodes_found = rows.len() as u64;
+        tracing::info!(nodes_found, "summarizing code nodes");
+
+        let system_prompt = "You are a code documentation assistant. Given a code entity \
+            (struct, function, trait, interface, etc.) with its name and description, write a \
+            concise 1-3 sentence natural language summary of what it does. Focus on purpose \
+            and behavior, not syntax. Use domain terminology that would appear in design docs \
+            or specifications. Do not use markdown formatting.";
+
+        let mut summarized = 0u64;
+        let mut failed = 0u64;
+
+        for (id, name, node_type, desc, props) in &rows {
+            let user_prompt = format!(
+                "Entity: {name}\nType: {node_type}\nDescription: {}",
+                desc.as_deref().unwrap_or("(none)")
+            );
+
+            match chat.chat(system_prompt, &user_prompt, false, 0.3).await {
+                Ok(summary) => {
+                    let summary = summary.trim().to_string();
+                    if summary.is_empty() {
+                        failed += 1;
+                        continue;
+                    }
+
+                    // Store semantic_summary in properties.
+                    let mut new_props = props.clone().unwrap_or(serde_json::json!({}));
+                    new_props["semantic_summary"] = serde_json::json!(&summary);
+
+                    sqlx::query(
+                        "UPDATE nodes SET properties = $2, \
+                             description = $3 \
+                         WHERE id = $1",
+                    )
+                    .bind(id)
+                    .bind(&new_props)
+                    .bind(&summary)
+                    .execute(self.repo.pool())
+                    .await?;
+
+                    // Re-embed using the summary text.
+                    let embed_text = format!("{name}: {summary}");
+                    match embedder.embed(&[embed_text]).await {
+                        Ok(embeddings) => {
+                            if let Some(emb) = embeddings.first() {
+                                if let Ok(truncated) = truncate_and_validate(emb, node_dim, "nodes")
+                                {
+                                    let nid = crate::types::ids::NodeId::from_uuid(*id);
+                                    let _ =
+                                        NodeRepo::update_embedding(&*self.repo, nid, &truncated)
+                                            .await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                node = %name,
+                                error = %e,
+                                "re-embed after summary failed"
+                            );
+                        }
+                    }
+
+                    summarized += 1;
+                    if summarized % 50 == 0 {
+                        tracing::info!(summarized, "code summary progress");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(node = %name, error = %e, "LLM summary failed");
+                    failed += 1;
+                }
+            }
+        }
+
+        let audit = AuditLog::new(
+            AuditAction::AdminAction,
+            "admin:summarize_code_nodes".to_string(),
+            serde_json::json!({
+                "nodes_found": nodes_found,
+                "summarized": summarized,
+                "failed": failed,
+            }),
+        );
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        tracing::info!(summarized, failed, "code summary complete");
+        Ok(CodeSummaryResult {
+            nodes_found,
+            summarized,
+            failed,
+        })
     }
 }
 

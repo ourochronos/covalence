@@ -195,12 +195,22 @@ fn extract_rust_struct(
 
     let visibility = detect_visibility(source, node);
     let fields = extract_rust_fields(source, node);
-    let field_count = fields.len();
 
-    let description = if field_count > 0 {
-        Some(format!("Struct with {field_count} fields"))
+    let description = if !fields.is_empty() {
+        let field_summary: Vec<String> = fields
+            .iter()
+            .filter_map(|f| {
+                let n = f.get("name")?.as_str()?;
+                let t = f.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                Some(format!("{n}: {t}"))
+            })
+            .collect();
+        Some(format!(
+            "{visibility} Rust struct with fields: {}",
+            field_summary.join(", ")
+        ))
     } else {
-        Some("Unit or tuple struct".to_string())
+        Some(format!("{visibility} Rust unit or tuple struct"))
     };
 
     let mut metadata = serde_json::json!({
@@ -228,12 +238,14 @@ fn extract_rust_enum(source: &str, node: &tree_sitter::Node, entities: &mut Vec<
 
     let visibility = detect_visibility(source, node);
     let variants = extract_rust_enum_variants(source, node);
-    let variant_count = variants.len();
 
-    let description = if variant_count > 0 {
-        Some(format!("Enum with {variant_count} variants"))
+    let description = if !variants.is_empty() {
+        Some(format!(
+            "{visibility} Rust enum with variants: {}",
+            variants.join(", ")
+        ))
     } else {
-        Some("Empty enum".to_string())
+        Some(format!("{visibility} Rust empty enum"))
     };
 
     let mut metadata = serde_json::json!({
@@ -261,12 +273,14 @@ fn extract_rust_trait(source: &str, node: &tree_sitter::Node, entities: &mut Vec
 
     let visibility = detect_visibility(source, node);
     let methods = extract_rust_trait_methods(source, node);
-    let method_count = methods.len();
 
-    let description = if method_count > 0 {
-        Some(format!("Trait with {method_count} methods"))
+    let description = if !methods.is_empty() {
+        Some(format!(
+            "{visibility} Rust trait with methods: {}",
+            methods.join(", ")
+        ))
     } else {
-        Some("Marker trait".to_string())
+        Some(format!("{visibility} Rust marker trait"))
     };
 
     let mut metadata = serde_json::json!({
@@ -771,13 +785,13 @@ fn extract_go_type_spec(
     let (entity_type, description) = match type_kind {
         Some("struct_type") => {
             let fields = count_go_struct_fields(type_node.as_ref().unwrap());
-            ("struct", format!("Struct with {fields} fields"))
+            ("struct", format!("Go struct with {fields} fields"))
         }
         Some("interface_type") => {
             let methods = count_go_interface_methods(type_node.as_ref().unwrap());
-            ("trait", format!("Interface with {methods} methods"))
+            ("trait", format!("Go interface with {methods} methods"))
         }
-        _ => ("struct", "Type alias".to_string()),
+        _ => ("struct", "Go type alias".to_string()),
     };
 
     entities.push(ExtractedEntity {
@@ -1153,7 +1167,11 @@ pub struct Config {
         assert_eq!(entity.name, "Config");
         assert_eq!(entity.entity_type, "struct");
         assert_eq!(entity.confidence, 1.0);
-        assert!(entity.description.as_deref().unwrap().contains("3 fields"));
+        let desc = entity.description.as_deref().unwrap();
+        assert!(desc.contains("Rust struct"), "desc: {desc}");
+        assert!(desc.contains("chunk_size"), "desc: {desc}");
+        assert!(desc.contains("embed_dim"), "desc: {desc}");
+        assert!(desc.contains("name"), "desc: {desc}");
     }
 
     #[tokio::test]
@@ -1325,13 +1343,11 @@ pub enum Color {
         assert_eq!(entity.name, "Color");
         assert_eq!(entity.entity_type, "enum");
         assert_eq!(entity.confidence, 1.0);
-        assert!(
-            entity
-                .description
-                .as_deref()
-                .unwrap()
-                .contains("3 variants")
-        );
+        let desc = entity.description.as_deref().unwrap();
+        assert!(desc.contains("Rust enum"), "desc: {desc}");
+        assert!(desc.contains("Red"), "desc: {desc}");
+        assert!(desc.contains("Green"), "desc: {desc}");
+        assert!(desc.contains("Blue"), "desc: {desc}");
     }
 
     #[tokio::test]

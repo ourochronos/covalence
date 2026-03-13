@@ -6,14 +6,15 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, BackfillResponse, CommunityParams, CommunityResponse, ConfigAuditResponse,
-    ConsolidateResponse, CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse,
-    DomainResponse, GcResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem,
-    KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse, NoiseCleanupRequest,
-    NoiseCleanupResponse, NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest,
-    OntologyClusterResponse, PaginationParams, PublishResponse, RaptorResponse, ReloadResponse,
-    SearchTraceResponse, SeedOpinionsResponse, SidecarHealthResponse, Tier5ResolveRequest,
-    Tier5ResolveResponse, TopologyResponse, TraceReplayResponse,
+    AuditLogResponse, BackfillResponse, CodeSummaryResponse, CommunityParams, CommunityResponse,
+    ConfigAuditResponse, ConsolidateResponse, CooccurrenceRequest, CooccurrenceResponse,
+    DomainLinkResponse, DomainResponse, GcResponse, GraphStatsResponse, HealthResponse,
+    KnowledgeGapItem, KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse,
+    NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem, OntologyClusterItem,
+    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
+    RaptorResponse, ReloadResponse, SearchTraceResponse, SeedOpinionsResponse,
+    SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse,
+    TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -710,5 +711,26 @@ pub async fn seed_opinions(
         nodes_vacuous: result.nodes_vacuous,
         edges_seeded: result.edges_seeded,
         edges_vacuous: result.edges_vacuous,
+    }))
+}
+
+/// Generate LLM semantic summaries for code nodes.
+#[utoipa::path(
+    post,
+    path = "/admin/nodes/summarize-code",
+    responses(
+        (status = 200, description = "Summarization results",
+         body = CodeSummaryResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn summarize_code_nodes(
+    State(state): State<AppState>,
+) -> Result<Json<CodeSummaryResponse>, ApiError> {
+    let result = state.admin_service.summarize_code_nodes().await?;
+    Ok(Json(CodeSummaryResponse {
+        nodes_found: result.nodes_found,
+        summarized: result.summarized,
+        failed: result.failed,
     }))
 }

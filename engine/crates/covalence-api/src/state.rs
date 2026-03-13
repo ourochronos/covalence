@@ -282,44 +282,44 @@ impl AppState {
             )));
         }
 
-        // Wire statement extractor when statement pipeline is enabled.
-        if config.pipeline.statement_enabled {
-            // Resolve the model name: statement_model overrides chat_model.
-            let stmt_model = config
+        // Build the chat backend (shared by statement pipeline + admin endpoints).
+        let chat_backend: Option<Arc<dyn ChatBackend>> = {
+            let chat_model = config
                 .pipeline
                 .statement_model
                 .clone()
                 .unwrap_or_else(|| config.chat_model.clone());
 
-            // Build the chat backend based on configuration.
-            let backend: Option<Arc<dyn ChatBackend>> = if config.chat_backend == "cli" {
+            if config.chat_backend == "cli" {
                 tracing::info!(
                     command = %config.chat_cli_command,
-                    model = %stmt_model,
-                    "using CLI chat backend for statement pipeline"
+                    model = %chat_model,
+                    "using CLI chat backend"
                 );
                 Some(Arc::new(CliChatBackend::new(
                     config.chat_cli_command.clone(),
-                    stmt_model.clone(),
+                    chat_model,
                 )) as Arc<dyn ChatBackend>)
             } else {
-                // HTTP backend (default) — requires an API key.
                 let chat_key = config
                     .chat_api_key
                     .as_ref()
                     .or(config.openai_api_key.as_ref());
                 chat_key.map(|key| {
                     Arc::new(HttpChatBackend::new(
-                        stmt_model.clone(),
+                        chat_model,
                         key.clone(),
                         config.chat_base_url.clone(),
                     )) as Arc<dyn ChatBackend>
                 })
-            };
+            }
+        };
 
-            if let Some(backend) = backend {
+        // Wire statement extractor when statement pipeline is enabled.
+        if config.pipeline.statement_enabled {
+            if let Some(ref backend) = chat_backend {
                 let stmt_extractor =
-                    Arc::new(LlmStatementExtractor::with_backend(Arc::clone(&backend)));
+                    Arc::new(LlmStatementExtractor::with_backend(Arc::clone(backend)));
                 source_svc = source_svc.with_statement_extractor(
                     stmt_extractor as Arc<dyn covalence_core::ingestion::StatementExtractor>,
                 );
@@ -327,7 +327,7 @@ impl AppState {
                 // Wire section compiler + source summary compiler
                 // (same LlmSectionCompiler implements both traits).
                 let section_compiler =
-                    Arc::new(LlmSectionCompiler::with_backend(Arc::clone(&backend)));
+                    Arc::new(LlmSectionCompiler::with_backend(Arc::clone(backend)));
                 source_svc = source_svc
                     .with_section_compiler(Arc::clone(&section_compiler)
                         as Arc<dyn covalence_core::ingestion::SectionCompiler>)
@@ -378,6 +378,7 @@ impl AppState {
         let admin_service = Arc::new(
             AdminService::new(Arc::clone(&repo), Arc::clone(&graph))
                 .with_embedder(embedder)
+                .with_chat_backend(chat_backend)
                 .with_config(config.clone()),
         );
 

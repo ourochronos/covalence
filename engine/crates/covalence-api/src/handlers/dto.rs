@@ -660,6 +660,17 @@ pub struct CooccurrenceRequest {
     pub max_degree: Option<i64>,
 }
 
+/// Response for LLM code node summarization.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CodeSummaryResponse {
+    /// Code nodes found without semantic summaries.
+    pub nodes_found: u64,
+    /// Nodes successfully summarized and re-embedded.
+    pub summarized: u64,
+    /// Nodes where LLM summary failed.
+    pub failed: u64,
+}
+
 /// Response for co-occurrence edge synthesis.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CooccurrenceResponse {

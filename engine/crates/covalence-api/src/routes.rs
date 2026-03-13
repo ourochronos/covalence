@@ -77,7 +77,11 @@ pub fn router(state: AppState) -> Router {
             "/admin/nodes/backfill-embeddings",
             post(admin::backfill_node_embeddings),
         )
-        .route("/admin/opinions/seed", post(admin::seed_opinions));
+        .route("/admin/opinions/seed", post(admin::seed_opinions))
+        .route(
+            "/admin/nodes/summarize-code",
+            post(admin::summarize_code_nodes),
+        );
 
     // Resolve the dashboard directory relative to the working
     // directory. The binary is typically run from the repo root,
