@@ -1374,7 +1374,8 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     }
 
     // Code syntax: angle brackets, double colons, parens, dots with
-    // uppercase (Go/Rust method calls).
+    // uppercase (Go/Rust method calls), backtick-wrapped, URL paths,
+    // snake_case identifiers, function calls with ().
     if trimmed.contains('<') && trimmed.contains('>') {
         return true;
     }
@@ -1387,6 +1388,33 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
             .split('.')
             .any(|p| p.starts_with(|c: char| c.is_uppercase()))
     {
+        return true;
+    }
+    // Backtick-wrapped names (e.g. `apply_event` method).
+    if trimmed.starts_with('`') || trimmed.ends_with('`') {
+        return true;
+    }
+    // Function-call syntax (e.g. "foo()", "self.bar()").
+    if trimmed.contains("()") {
+        return true;
+    }
+    // URL paths (e.g. "/admin/publish/:source_id").
+    if trimmed.starts_with('/') {
+        return true;
+    }
+    // Snake_case identifiers that look like code (at least two underscored
+    // segments, e.g. "batch_futures", "active_resolver"). We exempt
+    // well-known multi-word technical terms by requiring no spaces.
+    if entity_type == "concept"
+        && !trimmed.contains(' ')
+        && trimmed.contains('_')
+        && trimmed.matches('_').count() >= 1
+        && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_')
+    {
+        return true;
+    }
+    // Wildcard/glob suffixes (e.g. "aeval*", "an*").
+    if trimmed.ends_with('*') {
         return true;
     }
 
@@ -1656,5 +1684,44 @@ mod tests {
         // Entities that start with these words but aren't doc artifacts.
         assert!(!is_noise_entity("Table storage", "concept"));
         assert!(!is_noise_entity("Figure-ground segregation", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_backtick_wrapped() {
+        assert!(is_noise_entity("`apply_event` method", "concept"));
+        assert!(is_noise_entity("`assemble_empty` test case", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_function_call() {
+        assert!(is_noise_entity(
+            "abstention_check.should_abstain()",
+            "concept"
+        ));
+        assert!(is_noise_entity("ast_ext.as_ref()", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_url_path() {
+        assert!(is_noise_entity("/admin/publish/:source_id", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_snake_case() {
+        assert!(is_noise_entity("batch_futures", "concept"));
+        assert!(is_noise_entity("active_resolver", "concept"));
+        assert!(is_noise_entity("alias_dim", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_wildcard() {
+        assert!(is_noise_entity("aeval*", "concept"));
+        assert!(is_noise_entity("an*", "concept"));
+    }
+
+    #[test]
+    fn not_noise_snake_case_tech() {
+        // Technology entities can have underscores (e.g. crate names).
+        assert!(!is_noise_entity("pg_trgm", "technology"));
     }
 }
