@@ -1434,6 +1434,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "diversify",
         "drugs",
         "edges",
+        "generation",
         "hobbies",
         "infrastructure",
         "likes",
@@ -1450,8 +1451,10 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "purity",
         "reactants",
         "regret",
+        "response",
         "reversible",
         "reward",
+        "sources",
         "spiciness",
         "structural",
         "timeliness",
@@ -1462,7 +1465,12 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     }
 
     // Multi-word generic phrases that shouldn't be entities.
-    const GENERIC_PHRASES: &[&str] = &["ai use", "vector space"];
+    const GENERIC_PHRASES: &[&str] = &[
+        "ai use",
+        "predictive model",
+        "predictive models",
+        "vector space",
+    ];
     if entity_type == "concept" && GENERIC_PHRASES.contains(&lower.as_str()) {
         return true;
     }
@@ -1544,6 +1552,15 @@ mod tests {
     fn noise_entity_generic_word() {
         assert!(is_noise_entity("children", "concept"));
         assert!(is_noise_entity("clicking", "concept"));
+        assert!(is_noise_entity("generation", "concept"));
+        assert!(is_noise_entity("Response", "concept"));
+        assert!(is_noise_entity("Sources", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_generic_phrase_extended() {
+        assert!(is_noise_entity("predictive model", "concept"));
+        assert!(is_noise_entity("predictive models", "concept"));
     }
 
     #[test]
