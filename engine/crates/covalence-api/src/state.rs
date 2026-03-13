@@ -309,11 +309,15 @@ impl AppState {
                 if let Some(key) = http_key {
                     tracing::info!(
                         command = %config.chat_cli_command,
-                        model = %chat_model,
+                        cli_model = %chat_model,
+                        http_model = %config.chat_model,
                         "using CLI chat backend with HTTP fallback"
                     );
+                    // HTTP fallback uses config.chat_model (OpenRouter
+                    // format, e.g. "google/gemini-2.5-flash") rather
+                    // than the CLI-format statement_model.
                     let http = Box::new(HttpChatBackend::new(
-                        chat_model.clone(),
+                        config.chat_model.clone(),
                         key,
                         config.chat_base_url.clone(),
                     ));
