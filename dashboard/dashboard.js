@@ -339,6 +339,80 @@ async function fetchTopology() {
   }
 }
 
+// --- Search interface ---
+
+async function executeSearch() {
+  const input = document.getElementById("search-input");
+  const query = input.value.trim();
+  if (!query) return;
+
+  const strategy = document.getElementById("search-strategy").value;
+  const hierarchical = document.getElementById("search-hierarchical").checked;
+  const container = document.getElementById("search-results");
+  container.innerHTML = '<span class="dim">Searching...</span>';
+
+  try {
+    const body = { query, limit: 10 };
+    if (strategy !== "auto") body.strategy = strategy;
+    if (hierarchical) body.hierarchical = true;
+
+    const res = await fetch(`${API_BASE}/search`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const results = await res.json();
+
+    if (results.length === 0) {
+      container.innerHTML = '<span class="dim">No results found</span>';
+      return;
+    }
+
+    let html = `<table>
+      <thead><tr>
+        <th>#</th><th>Score</th><th>Type</th><th>Name</th><th>Source</th>
+      </tr></thead><tbody>`;
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      let name = r.name || "--";
+      if (name.length > 60) name = name.substring(0, 60) + "...";
+      const source = r.source_title || "";
+      const sourceShort =
+        source.length > 30 ? source.substring(0, 30) + "..." : source;
+      html += `<tr class="search-result-row" data-idx="${i}">
+        <td>${i + 1}</td>
+        <td class="mono">${r.fused_score.toFixed(4)}</td>
+        <td>${r.entity_type || "--"}</td>
+        <td>${escapeHtml(name)}</td>
+        <td class="dim">${escapeHtml(sourceShort)}</td>
+      </tr>`;
+      if (r.snippet || r.content) {
+        const text = r.snippet || r.content || "";
+        const preview = text.length > 200 ? text.substring(0, 200) + "..." : text;
+        html += `<tr class="search-detail"><td colspan="5" class="dim">${escapeHtml(preview)}</td></tr>`;
+      }
+    }
+    html += "</tbody></table>";
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<span class="error-text">Search failed: ${escapeHtml(e.message)}</span>`;
+  }
+}
+
+// Allow Enter key to trigger search
+document.addEventListener("DOMContentLoaded", () => {
+  const input = document.getElementById("search-input");
+  if (input) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") executeSearch();
+    });
+  }
+});
+
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;

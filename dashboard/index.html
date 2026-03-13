@@ -13,6 +13,26 @@
   </header>
 
   <main>
+    <!-- Search -->
+    <section class="card wide" id="search-card">
+      <h2>Search</h2>
+      <div class="search-bar">
+        <input type="text" id="search-input" placeholder="Search the knowledge graph..." />
+        <select id="search-strategy">
+          <option value="auto">Auto</option>
+          <option value="balanced">Balanced</option>
+          <option value="precise">Precise</option>
+          <option value="exploratory">Exploratory</option>
+          <option value="recent">Recent</option>
+          <option value="graph_first">Graph First</option>
+          <option value="global">Global</option>
+        </select>
+        <label class="search-option"><input type="checkbox" id="search-hierarchical" /> Hierarchical</label>
+        <button id="search-btn" onclick="executeSearch()">Search</button>
+      </div>
+      <div id="search-results" class="search-results-container"></div>
+    </section>
+
     <!-- Graph Stats -->
     <section class="card" id="graph-card">
       <h2>Knowledge Graph</h2>
