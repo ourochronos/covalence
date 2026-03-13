@@ -285,6 +285,16 @@ pub trait ExtractionRepo: Send + Sync {
         entity_type: &str,
         entity_id: uuid::Uuid,
     ) -> impl Future<Output = Result<i64>> + Send;
+
+    /// List distinct entity IDs of type "edge" extracted from a
+    /// source's chunks or statements.
+    ///
+    /// Used by the TMS epistemic cascade to identify edges whose
+    /// opinions need recalculation after source retraction.
+    fn list_edge_ids_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<Vec<EdgeId>>> + Send;
 }
 
 /// Repository for [`NodeAlias`] entities.

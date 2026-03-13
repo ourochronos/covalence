@@ -11,6 +11,7 @@
 //! The [`convergence`] module ties stages 3-5 together with damped fixed-point
 //! iteration to prevent epistemic oscillation.
 
+pub mod cascade;
 pub mod confidence;
 pub mod contradiction;
 pub mod convergence;

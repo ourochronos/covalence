@@ -5,7 +5,7 @@ use sqlx::Row;
 use crate::error::Result;
 use crate::models::extraction::Extraction;
 use crate::storage::traits::ExtractionRepo;
-use crate::types::ids::{ChunkId, ExtractionId, NodeId, SourceId};
+use crate::types::ids::{ChunkId, EdgeId, ExtractionId, NodeId, SourceId};
 
 use super::PgRepo;
 
@@ -165,6 +165,31 @@ impl ExtractionRepo for PgRepo {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get("cnt"))
+    }
+
+    async fn list_edge_ids_by_source(&self, source_id: SourceId) -> Result<Vec<EdgeId>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT entity_id
+             FROM extractions
+             WHERE entity_type = 'edge'
+               AND (
+                   chunk_id IN (SELECT id FROM chunks WHERE source_id = $1)
+                   OR statement_id IN (
+                       SELECT id FROM statements WHERE source_id = $1
+                   )
+               )",
+        )
+        .bind(source_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let uuid: uuid::Uuid = r.get("entity_id");
+                EdgeId::from_uuid(uuid)
+            })
+            .collect())
     }
 }
 

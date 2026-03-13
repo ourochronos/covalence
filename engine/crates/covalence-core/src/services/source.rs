@@ -27,7 +27,7 @@ use crate::storage::traits::{
     SourceRepo, StatementRepo, UnresolvedEntityRepo,
 };
 use crate::types::clearance::ClearanceLevel;
-use crate::types::ids::SourceId;
+use crate::types::ids::{EdgeId, NodeId, SourceId};
 
 use super::ingestion_helpers::{SupersedesInfo, detect_update_class};
 use super::pipeline::PipelineInput;
@@ -49,6 +49,10 @@ pub struct DeleteResult {
     pub statements_deleted: u64,
     /// Number of sections deleted (statement-first pipeline).
     pub sections_deleted: u64,
+    /// Number of surviving nodes whose opinions were recalculated.
+    pub nodes_recalculated: usize,
+    /// Number of surviving edges whose opinions were recalculated.
+    pub edges_recalculated: usize,
 }
 
 /// Result of a source reprocessing operation.
@@ -774,9 +778,11 @@ impl SourceService {
     ///    `mention_count`
     /// 7. Delete the source record
     pub async fn delete(&self, id: SourceId) -> Result<DeleteResult> {
-        // Step 1: Collect node IDs affected by this source's
-        // extractions before we delete anything.
+        // Step 1: Collect affected entity IDs before we delete
+        // anything. These are needed for both structural cleanup
+        // and epistemic cascade.
         let affected_node_ids = ExtractionRepo::list_node_ids_by_source(&*self.repo, id).await?;
+        let affected_edge_ids = ExtractionRepo::list_edge_ids_by_source(&*self.repo, id).await?;
 
         // Step 2: Delete extractions (must precede chunk deletion
         // due to FK on extractions.chunk_id).
@@ -802,6 +808,7 @@ impl SourceService {
         // it still has active extractions from other sources.
         let mut nodes_deleted: u64 = 0;
         let mut edges_deleted: u64 = 0;
+        let mut surviving_node_ids: Vec<NodeId> = Vec::new();
 
         for node_id in &affected_node_ids {
             let remaining =
@@ -817,17 +824,51 @@ impl SourceService {
                     nodes_deleted += 1;
                 }
             } else {
-                // Node survives — update mention_count to reflect
-                // the remaining extraction count.
+                // Node survives — track for epistemic cascade.
+                surviving_node_ids.push(*node_id);
+                // Update mention_count to reflect the remaining
+                // extraction count.
                 if let Some(mut node) = NodeRepo::get(&*self.repo, *node_id).await? {
-                    let count: i64 = ExtractionRepo::count_active_by_entity(
-                        &*self.repo,
-                        "node",
-                        node_id.into_uuid(),
-                    )
-                    .await?;
-                    node.mention_count = count as i32;
+                    node.mention_count = remaining as i32;
                     NodeRepo::update(&*self.repo, &node).await?;
+                }
+            }
+        }
+
+        // Step 6b: Epistemic cascade — recalculate opinions for
+        // surviving entities that lost extraction support (#105).
+        // This implements TMS dependency-directed backtracking:
+        // claims that lost their sole source become vacuous,
+        // claims with remaining support are re-fused.
+        let mut nodes_recalculated: usize = 0;
+        let mut edges_recalculated: usize = 0;
+
+        if !surviving_node_ids.is_empty() || !affected_edge_ids.is_empty() {
+            let cascade =
+                epistemic_cascade(&self.repo, &surviving_node_ids, &affected_edge_ids).await;
+            match cascade {
+                Ok(result) => {
+                    nodes_recalculated = result.nodes_recalculated + result.nodes_vacuated;
+                    edges_recalculated = result.edges_recalculated + result.edges_vacuated;
+                    if result.total_affected() > 0 {
+                        tracing::info!(
+                            source_id = %id,
+                            nodes_recalculated = result.nodes_recalculated,
+                            nodes_vacuated = result.nodes_vacuated,
+                            edges_recalculated = result.edges_recalculated,
+                            edges_vacuated = result.edges_vacuated,
+                            "epistemic cascade complete"
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Cascade failure is non-fatal — structural
+                    // cleanup already succeeded.
+                    tracing::warn!(
+                        source_id = %id,
+                        error = %e,
+                        "epistemic cascade failed (non-fatal)"
+                    );
                 }
             }
         }
@@ -843,6 +884,8 @@ impl SourceService {
             edges_deleted,
             statements_deleted,
             sections_deleted,
+            nodes_recalculated,
+            edges_recalculated,
         })
     }
 
@@ -886,12 +929,35 @@ impl SourceService {
     }
 }
 
+/// Run TMS epistemic cascade for entities affected by source
+/// retraction.
+///
+/// Recalculates opinions for surviving nodes and edges from their
+/// remaining active extractions. Nodes/edges that lost all support
+/// get vacuous opinions (u=1.0). Those with remaining support get
+/// re-fused opinions via cumulative fusion.
+///
+/// This implements the dependency-directed backtracking described
+/// in spec 07 (Epistemic Model, §TMS Cascade).
+async fn epistemic_cascade(
+    repo: &PgRepo,
+    surviving_node_ids: &[NodeId],
+    affected_edge_ids: &[EdgeId],
+) -> Result<crate::epistemic::cascade::CascadeResult> {
+    use crate::epistemic::cascade::{recalculate_edge_opinions, recalculate_node_opinions};
+
+    let mut result = recalculate_node_opinions(repo, surviving_node_ids).await?;
+    let edge_result = recalculate_edge_opinions(repo, affected_edge_ids).await?;
+    result.merge(&edge_result);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ingestion::code_chunker;
     use crate::models::extraction::Extraction;
-    use crate::types::ids::{ChunkId, NodeId};
+    use crate::types::ids::ChunkId;
 
     #[test]
     fn delete_result_serializes_all_fields() {
@@ -903,6 +969,8 @@ mod tests {
             sections_deleted: 1,
             nodes_deleted: 3,
             edges_deleted: 7,
+            nodes_recalculated: 4,
+            edges_recalculated: 2,
         };
         let json = serde_json::to_value(&result).expect("serialize");
         assert_eq!(json["deleted"], true);
@@ -912,6 +980,8 @@ mod tests {
         assert_eq!(json["sections_deleted"], 1);
         assert_eq!(json["nodes_deleted"], 3);
         assert_eq!(json["edges_deleted"], 7);
+        assert_eq!(json["nodes_recalculated"], 4);
+        assert_eq!(json["edges_recalculated"], 2);
     }
 
     #[test]
@@ -924,6 +994,8 @@ mod tests {
             sections_deleted: 0,
             nodes_deleted: 0,
             edges_deleted: 0,
+            nodes_recalculated: 0,
+            edges_recalculated: 0,
         };
         assert!(!result.deleted);
         assert_eq!(result.chunks_deleted, 0);
@@ -932,6 +1004,8 @@ mod tests {
         assert_eq!(result.sections_deleted, 0);
         assert_eq!(result.nodes_deleted, 0);
         assert_eq!(result.edges_deleted, 0);
+        assert_eq!(result.nodes_recalculated, 0);
+        assert_eq!(result.edges_recalculated, 0);
     }
 
     // --- Code source pipeline tests ---
@@ -1116,6 +1190,13 @@ mod tests {
             _entity_id: uuid::Uuid,
         ) -> crate::error::Result<i64> {
             Ok(0)
+        }
+
+        async fn list_edge_ids_by_source(
+            &self,
+            _source_id: SourceId,
+        ) -> crate::error::Result<Vec<EdgeId>> {
+            Ok(Vec::new())
         }
     }
 
