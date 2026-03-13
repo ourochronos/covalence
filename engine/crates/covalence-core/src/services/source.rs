@@ -18,6 +18,8 @@ use crate::ingestion::extractor::Extractor;
 use crate::ingestion::fingerprint::{FingerprintConfig, PipelineFingerprint};
 use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
+use crate::ingestion::section_compiler::{SectionCompiler, SourceSummaryCompiler};
+use crate::ingestion::statement_extractor::StatementExtractor;
 use crate::models::source::{Source, SourceType, UpdateClass};
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{
@@ -77,6 +79,9 @@ pub struct SourceService {
     pub(crate) extract_batch_tokens: usize,
     pub(crate) pipeline: PipelineConfig,
     pub(crate) fingerprint_config: Option<FingerprintConfig>,
+    pub(crate) statement_extractor: Option<Arc<dyn StatementExtractor>>,
+    pub(crate) section_compiler: Option<Arc<dyn SectionCompiler>>,
+    pub(crate) source_summary_compiler: Option<Arc<dyn SourceSummaryCompiler>>,
 }
 
 impl SourceService {
@@ -113,6 +118,9 @@ impl SourceService {
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
             fingerprint_config: None,
+            statement_extractor: None,
+            section_compiler: None,
+            source_summary_compiler: None,
         }
     }
 
@@ -139,6 +147,9 @@ impl SourceService {
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
             fingerprint_config: None,
+            statement_extractor: None,
+            section_compiler: None,
+            source_summary_compiler: None,
         }
     }
 
@@ -167,6 +178,9 @@ impl SourceService {
             extract_batch_tokens: Self::DEFAULT_EXTRACT_BATCH_TOKENS,
             pipeline: PipelineConfig::default(),
             fingerprint_config: None,
+            statement_extractor: None,
+            section_compiler: None,
+            source_summary_compiler: None,
         }
     }
 
@@ -237,6 +251,27 @@ impl SourceService {
     /// the `"pipeline_fingerprint"` key.
     pub fn with_fingerprint_config(mut self, config: FingerprintConfig) -> Self {
         self.fingerprint_config = Some(config);
+        self
+    }
+
+    /// Set the statement extractor for the statement-first pipeline.
+    pub fn with_statement_extractor(mut self, extractor: Arc<dyn StatementExtractor>) -> Self {
+        self.statement_extractor = Some(extractor);
+        self
+    }
+
+    /// Set the section compiler for clustering and compilation.
+    pub fn with_section_compiler(mut self, compiler: Arc<dyn SectionCompiler>) -> Self {
+        self.section_compiler = Some(compiler);
+        self
+    }
+
+    /// Set the source summary compiler.
+    pub fn with_source_summary_compiler(
+        mut self,
+        compiler: Arc<dyn SourceSummaryCompiler>,
+    ) -> Self {
+        self.source_summary_compiler = Some(compiler);
         self
     }
 
@@ -449,6 +484,32 @@ impl SourceService {
         })
         .await?;
 
+        // Run statement pipeline (parallel, opt-in).
+        if self.pipeline.statement_enabled {
+            if let Some(ref stmt_extractor) = self.statement_extractor {
+                use super::statement_pipeline::{StatementPipelineInput, run_statement_pipeline};
+                run_statement_pipeline(
+                    &self.repo,
+                    stmt_extractor,
+                    self.embedder.as_ref(),
+                    &self.table_dims,
+                    &StatementPipelineInput {
+                        source_id: source.id,
+                        normalized_text: &prepared.normalized,
+                        source_title: source.title.as_deref(),
+                        window_chars: self.pipeline.statement_window_chars,
+                        window_overlap: self.pipeline.statement_window_overlap,
+                    },
+                    self.section_compiler.as_ref(),
+                    self.source_summary_compiler.as_ref(),
+                )
+                .await?;
+
+                // Extract entities from statements (Phase 4, ADR-0015).
+                self.extract_entities_from_statements(source.id).await?;
+            }
+        }
+
         Ok(source.id)
     }
 
@@ -576,6 +637,39 @@ impl SourceService {
                 is_first_ingestion: false,
             })
             .await?;
+
+        // Run statement pipeline (parallel, opt-in).
+        if self.pipeline.statement_enabled {
+            if let Some(ref stmt_extractor) = self.statement_extractor {
+                // Incremental re-extraction: superset behavior with
+                // eviction (Phase 5, ADR-0015).
+                use super::statement_pipeline::{StatementPipelineInput, reextract_statements};
+                let reextract_result = reextract_statements(
+                    &self.repo,
+                    stmt_extractor,
+                    self.embedder.as_ref(),
+                    &self.table_dims,
+                    &StatementPipelineInput {
+                        source_id: id,
+                        normalized_text: &prepared.normalized,
+                        source_title: source.title.as_deref(),
+                        window_chars: self.pipeline.statement_window_chars,
+                        window_overlap: self.pipeline.statement_window_overlap,
+                    },
+                    self.section_compiler.as_ref(),
+                    self.source_summary_compiler.as_ref(),
+                )
+                .await?;
+                tracing::info!(
+                    added = reextract_result.added,
+                    evicted = reextract_result.evicted,
+                    "statement re-extraction complete"
+                );
+
+                // Extract entities from statements (Phase 4, ADR-0015).
+                self.extract_entities_from_statements(id).await?;
+            }
+        }
 
         tracing::info!(
             source_id = %id,

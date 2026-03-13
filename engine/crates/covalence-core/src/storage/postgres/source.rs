@@ -18,13 +18,15 @@ impl SourceRepo for PgRepo {
                 ingested_at, content_hash, metadata, raw_content,
                 trust_alpha, trust_beta, reliability_score,
                 clearance_level, update_class, supersedes_id,
-                content_version, normalized_content, normalized_hash
+                content_version, normalized_content, normalized_hash,
+                summary
             ) VALUES (
                 $1, $2, $3, $4, $5, $6,
                 $7, $8, $9, $10,
                 $11, $12, $13,
                 $14, $15, $16,
-                $17, $18, $19
+                $17, $18, $19,
+                $20
             )",
         )
         .bind(source.id)
@@ -46,6 +48,7 @@ impl SourceRepo for PgRepo {
         .bind(source.content_version)
         .bind(&source.normalized_content)
         .bind(&source.normalized_hash)
+        .bind(&source.summary)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -58,7 +61,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash
+                    normalized_content, normalized_hash, summary
              FROM sources WHERE id = $1",
         )
         .bind(id)
@@ -75,7 +78,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash
+                    normalized_content, normalized_hash, summary
              FROM sources WHERE content_hash = $1",
         )
         .bind(hash)
@@ -92,7 +95,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash
+                    normalized_content, normalized_hash, summary
              FROM sources WHERE normalized_hash = $1",
         )
         .bind(hash)
@@ -112,7 +115,8 @@ impl SourceRepo for PgRepo {
                 reliability_score = $13, clearance_level = $14,
                 update_class = $15, supersedes_id = $16,
                 content_version = $17,
-                normalized_content = $18, normalized_hash = $19
+                normalized_content = $18, normalized_hash = $19,
+                summary = $20
              WHERE id = $1",
         )
         .bind(source.id)
@@ -134,6 +138,7 @@ impl SourceRepo for PgRepo {
         .bind(source.content_version)
         .bind(&source.normalized_content)
         .bind(&source.normalized_hash)
+        .bind(&source.summary)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -154,7 +159,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash
+                    normalized_content, normalized_hash, summary
              FROM sources
              ORDER BY ingested_at DESC
              LIMIT $1 OFFSET $2",
@@ -202,6 +207,15 @@ impl SourceRepo for PgRepo {
             .await?;
         Ok(())
     }
+
+    async fn update_summary(&self, id: SourceId, summary: &str) -> Result<()> {
+        sqlx::query("UPDATE sources SET summary = $2 WHERE id = $1")
+            .bind(id)
+            .bind(summary)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
@@ -227,5 +241,6 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
         embedding: None, // Loaded separately; halfvec is not directly mapped.
         normalized_content: row.get("normalized_content"),
         normalized_hash: row.get("normalized_hash"),
+        summary: row.get("summary"),
     }
 }

@@ -21,11 +21,12 @@ pub fn recency_score(elapsed_secs: i64) -> f64 {
     }
 }
 
-/// Time-based scoring using recency decay or explicit time-range filtering.
+/// Time-based scoring using recency decay or explicit time-range
+/// filtering.
 ///
-/// When a `time_range` is provided, only chunks within the range are
-/// returned and scored by their position within it. Otherwise, all
-/// chunks are scored by recency: `score = 1.0 / (1.0 + days_old)`.
+/// Searches chunks and statements by recency. When a `time_range`
+/// is provided, only items within the range are returned. Otherwise
+/// all items are scored by recency: `score = 1.0 / (1.0 + days_old)`.
 pub struct TemporalDimension {
     pool: PgPool,
 }
@@ -40,53 +41,83 @@ impl TemporalDimension {
 impl SearchDimension for TemporalDimension {
     async fn search(&self, query: &SearchQuery) -> Result<Vec<SearchResult>> {
         let now = Utc::now();
+        let half = (query.limit as i64 / 2).max(2);
 
-        let rows: Vec<(Uuid, DateTime<Utc>)> = if let Some((start, end)) = query.time_range {
-            sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
-                "SELECT id, created_at \
-                     FROM chunks \
+        // Query chunks and statements concurrently.
+        let (chunk_rows, stmt_rows) = if let Some((start, end)) = query.time_range {
+            tokio::join!(
+                sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+                    "SELECT id, created_at FROM chunks \
                      WHERE created_at >= $1 AND created_at <= $2 \
-                     ORDER BY created_at DESC \
-                     LIMIT $3",
+                     ORDER BY created_at DESC LIMIT $3",
+                )
+                .bind(start)
+                .bind(end)
+                .bind(half)
+                .fetch_all(&self.pool),
+                sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+                    "SELECT id, created_at FROM statements \
+                     WHERE NOT is_evicted \
+                       AND created_at >= $1 AND created_at <= $2 \
+                     ORDER BY created_at DESC LIMIT $3",
+                )
+                .bind(start)
+                .bind(end)
+                .bind(half)
+                .fetch_all(&self.pool),
             )
-            .bind(start)
-            .bind(end)
-            .bind(query.limit as i64)
-            .fetch_all(&self.pool)
-            .await?
         } else {
-            sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
-                "SELECT id, created_at \
-                     FROM chunks \
-                     ORDER BY created_at DESC \
-                     LIMIT $1",
+            tokio::join!(
+                sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+                    "SELECT id, created_at FROM chunks \
+                     ORDER BY created_at DESC LIMIT $1",
+                )
+                .bind(half)
+                .fetch_all(&self.pool),
+                sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+                    "SELECT id, created_at FROM statements \
+                     WHERE NOT is_evicted \
+                     ORDER BY created_at DESC LIMIT $1",
+                )
+                .bind(half)
+                .fetch_all(&self.pool),
             )
-            .bind(query.limit as i64)
-            .fetch_all(&self.pool)
-            .await?
         };
 
-        let results = rows
+        let chunk_rows = chunk_rows?;
+        let stmt_rows = stmt_rows?;
+
+        // Merge chunk and statement rows, scoring by recency.
+        let mut scored: Vec<(Uuid, f64, &str)> = Vec::new();
+        for (id, created_at) in &chunk_rows {
+            let elapsed_secs = (now - *created_at).num_seconds();
+            let score = recency_score(elapsed_secs);
+            if elapsed_secs < -60 {
+                tracing::debug!(
+                    chunk_id = %id,
+                    seconds_in_future = -elapsed_secs,
+                    "chunk has future timestamp, demoting"
+                );
+            }
+            scored.push((*id, score, "chunk"));
+        }
+        for (id, created_at) in &stmt_rows {
+            let elapsed_secs = (now - *created_at).num_seconds();
+            scored.push((*id, recency_score(elapsed_secs), "statement"));
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(query.limit);
+
+        let results = scored
             .into_iter()
             .enumerate()
-            .map(|(i, (id, created_at))| {
-                let elapsed_secs = (now - created_at).num_seconds();
-                let score = recency_score(elapsed_secs);
-                if elapsed_secs < -60 {
-                    tracing::debug!(
-                        chunk_id = %id,
-                        seconds_in_future = -elapsed_secs,
-                        "chunk has future timestamp, demoting"
-                    );
-                }
-                SearchResult {
-                    id,
-                    score,
-                    rank: i + 1,
-                    dimension: "temporal".to_string(),
-                    snippet: None,
-                    result_type: Some("chunk".to_string()),
-                }
+            .map(|(i, (id, score, rtype))| SearchResult {
+                id,
+                score,
+                rank: i + 1,
+                dimension: "temporal".to_string(),
+                snippet: None,
+                result_type: Some(rtype.to_string()),
             })
             .collect();
 

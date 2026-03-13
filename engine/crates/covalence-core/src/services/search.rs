@@ -27,8 +27,10 @@ use crate::search::skewroute::{detect_intent, select_strategy};
 use crate::search::strategy::SearchStrategy;
 use crate::search::trace::QueryTrace;
 use crate::storage::postgres::PgRepo;
-use crate::storage::traits::{ArticleRepo, ChunkRepo, NodeRepo, SourceRepo};
-use crate::types::ids::{ArticleId, ChunkId, NodeId};
+use crate::storage::traits::{
+    ArticleRepo, ChunkRepo, NodeRepo, SectionRepo, SourceRepo, StatementRepo,
+};
+use crate::types::ids::{ArticleId, ChunkId, NodeId, SectionId, StatementId};
 
 use super::search_helpers::{
     ENTITY_DEMOTION_FACTOR, derive_chunk_name_qualified, kwic_snippet, strategy_name,
@@ -697,6 +699,50 @@ impl SearchService {
                         }
                     }
                 }
+                Some("statement") => {
+                    if let Ok(Some(stmt)) =
+                        StatementRepo::get(&*self.repo, StatementId::from_uuid(result.id)).await
+                    {
+                        result.content = Some(stmt.content.clone());
+                        result.entity_type = Some("statement".to_string());
+                        result.confidence = Some(stmt.confidence);
+                        result.created_at = Some(stmt.created_at.to_rfc3339());
+                        // Look up source for URI/title.
+                        if let Ok(Some(source)) = SourceRepo::get(&*self.repo, stmt.source_id).await
+                        {
+                            result.source_uri = source.uri;
+                            result.source_title = source.title.clone();
+                            result.source_type = Some(source.source_type.clone());
+                        }
+                        // Use the statement content as name (truncated).
+                        result.name = Some(truncate_with_ellipsis(&stmt.content, 80));
+                        // Content-based snippet fallback.
+                        if result.snippet.is_none() {
+                            result.snippet = Some(kwic_snippet(&stmt.content, query, 200));
+                        }
+                    }
+                }
+                Some("section") => {
+                    if let Ok(Some(sect)) =
+                        SectionRepo::get(&*self.repo, SectionId::from_uuid(result.id)).await
+                    {
+                        result.name = Some(sect.title.clone());
+                        result.entity_type = Some("section".to_string());
+                        result.content = Some(sect.summary.clone());
+                        result.created_at = Some(sect.created_at.to_rfc3339());
+                        // Look up source for URI/title.
+                        if let Ok(Some(source)) = SourceRepo::get(&*self.repo, sect.source_id).await
+                        {
+                            result.source_uri = source.uri;
+                            result.source_title = source.title.clone();
+                            result.source_type = Some(source.source_type.clone());
+                        }
+                        // Content-based snippet fallback.
+                        if result.snippet.is_none() {
+                            result.snippet = Some(kwic_snippet(&sect.summary, query, 300));
+                        }
+                    }
+                }
                 _ => {
                     // Chunk or unknown — try chunk lookup for
                     // source_uri and content, then node lookup
@@ -795,11 +841,9 @@ impl SearchService {
             const MAX_NEIGHBORS: usize = 10;
             let graph = self.graph.read().await;
             for result in &mut fused {
-                if result
-                    .entity_type
-                    .as_deref()
-                    .is_none_or(|t| t == "chunk" || t == "article" || t == "source")
-                {
+                if result.entity_type.as_deref().is_none_or(|t| {
+                    matches!(t, "chunk" | "article" | "source" | "statement" | "section")
+                }) {
                     continue;
                 }
                 let Some(idx) = graph.node_index(result.id) else {

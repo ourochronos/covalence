@@ -1,8 +1,9 @@
 //! Global / community summary search dimension.
 //!
-//! Searches community summary embeddings for thematic and global
-//! queries. Handles broad questions that can't be answered by any
-//! single chunk — they require synthesizing across the corpus.
+//! Searches community summary embeddings and section embeddings
+//! for thematic and global queries. Handles broad questions that
+//! can't be answered by any single chunk — they require synthesizing
+//! across the corpus.
 //!
 //! Falls back to article embeddings when no community summary
 //! nodes are available (articles are compiled from communities,
@@ -44,6 +45,7 @@ impl GlobalDimension {
         let target_dim = match table {
             "nodes" => self.table_dims.node,
             "articles" => self.table_dims.article,
+            "sections" => self.table_dims.chunk, // sections use chunk dim
             _ => self.table_dims.chunk,
         };
         let truncated = truncate_and_validate(embedding, target_dim, table)?;
@@ -69,34 +71,62 @@ impl SearchDimension for GlobalDimension {
         // Truncate query embedding per-table to match column dims.
         let pgvec_nodes = self.pgvec_for_table(embedding, "nodes")?;
         let pgvec_articles = self.pgvec_for_table(embedding, "articles")?;
+        let pgvec_sections = self.pgvec_for_table(embedding, "sections")?;
 
-        // First, try community summary nodes.
-        let summary_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-             GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
-             FROM nodes \
-             WHERE embedding IS NOT NULL \
-               AND node_type = 'community_summary' \
-             ORDER BY embedding <=> $1::halfvec \
-             LIMIT $2",
-        )
-        .bind(&pgvec_nodes)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        // Run community summaries + sections concurrently.
+        let section_limit = (limit / 2).max(2);
+        let summary_limit = limit - section_limit;
+        let (summary_rows, section_rows) = tokio::join!(
+            sqlx::query_as::<_, (Uuid, f64)>(
+                "SELECT id, \
+                 GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
+                 FROM nodes \
+                 WHERE embedding IS NOT NULL \
+                   AND node_type = 'community_summary' \
+                 ORDER BY embedding <=> $1::halfvec \
+                 LIMIT $2",
+            )
+            .bind(&pgvec_nodes)
+            .bind(summary_limit)
+            .fetch_all(&self.pool),
+            sqlx::query_as::<_, (Uuid, f64)>(
+                "SELECT id, \
+                 GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
+                 FROM sections \
+                 WHERE embedding IS NOT NULL \
+                 ORDER BY embedding <=> $1::halfvec \
+                 LIMIT $2",
+            )
+            .bind(&pgvec_sections)
+            .bind(section_limit)
+            .fetch_all(&self.pool),
+        );
+        let summary_rows = summary_rows?;
+        let section_rows = section_rows?;
 
-        // If community summaries exist, use them.
-        if !summary_rows.is_empty() {
-            return Ok(summary_rows
+        // Merge community summaries and sections.
+        let mut combined: Vec<(Uuid, f64, &str)> = Vec::new();
+        for (id, score) in &summary_rows {
+            combined.push((*id, *score, "node"));
+        }
+        for (id, score) in &section_rows {
+            combined.push((*id, *score, "section"));
+        }
+
+        // If we have results from summaries or sections, use them.
+        if !combined.is_empty() {
+            combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            combined.truncate(limit as usize);
+            return Ok(combined
                 .into_iter()
                 .enumerate()
-                .map(|(i, (id, score))| SearchResult {
+                .map(|(i, (id, score, rtype))| SearchResult {
                     id,
                     score,
                     rank: i + 1,
                     dimension: "global".to_string(),
                     snippet: None,
-                    result_type: Some("node".to_string()),
+                    result_type: Some(rtype.to_string()),
                 })
                 .collect());
         }

@@ -4,7 +4,8 @@
        spec spec-fetch \
        cli-build cli-install \
        docker-up docker-down \
-       ingest-codebase ingest-specs ingest-adrs ingest-prod
+       ingest-codebase ingest-specs ingest-adrs ingest-prod \
+       reprocess-statements
 
 # === Engine ===
 
@@ -192,6 +193,18 @@ ingest-adrs:
 
 ingest-prod: ingest-codebase ingest-specs ingest-adrs
 	@echo "=== All ingestion complete ==="
+
+reprocess-statements:
+	@echo "Reprocessing all sources through statement pipeline..."
+	@ids=$$(curl -sf $(INGEST_API)/api/v1/sources?limit=1000 | python3 -c "import sys,json; [print(s['id']) for s in json.load(sys.stdin).get('sources',[])]" 2>/dev/null); \
+	total=$$(echo "$$ids" | wc -l | tr -d ' '); \
+	i=0; \
+	for id in $$ids; do \
+		i=$$((i+1)); \
+		echo "  [$$i/$$total] reprocessing $$id..."; \
+		curl -sf -X POST $(INGEST_API)/api/v1/sources/$$id/reprocess > /dev/null || echo "    FAILED: $$id"; \
+	done
+	@echo "=== Statement reprocessing complete ==="
 
 # === OpenAPI ===
 

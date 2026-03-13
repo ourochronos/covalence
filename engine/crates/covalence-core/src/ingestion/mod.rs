@@ -5,6 +5,7 @@
 
 pub mod accept;
 pub mod ast_extractor;
+pub mod chat_backend;
 pub mod chunker;
 pub mod code_chunker;
 pub mod converter;
@@ -15,14 +16,18 @@ pub mod fingerprint;
 pub mod gliner_extractor;
 pub mod landscape;
 pub mod llm_extractor;
+pub mod llm_statement_extractor;
 pub mod normalize;
 pub mod openai_embedder;
 pub mod parser;
 pub mod pg_resolver;
 pub mod pii;
 pub mod resolver;
+pub mod section_compiler;
 pub mod sidecar_extractor;
 pub mod source_profile;
+pub mod statement_cluster;
+pub mod statement_extractor;
 pub mod takedown;
 pub mod two_pass_extractor;
 pub mod url_fetcher;
@@ -30,6 +35,7 @@ pub mod voyage;
 
 pub use accept::{AcceptResult, compute_content_hash};
 pub use ast_extractor::AstExtractor;
+pub use chat_backend::{ChatBackend, CliChatBackend, HttpChatBackend};
 pub use chunker::{ChunkLevel, ChunkOutput, chunk_document, chunk_document_with_merge};
 pub use code_chunker::{CodeLanguage, code_to_markdown, detect_code_language};
 pub use converter::{
@@ -52,6 +58,7 @@ pub use landscape::{
     compute_chunk_landscape_metrics_default, cosine_similarity,
 };
 pub use llm_extractor::LlmExtractor;
+pub use llm_statement_extractor::LlmStatementExtractor;
 pub use normalize::{
     ArtifactLinePass, BlankLineCollapsePass, ControlCharPass, InlineArtifactPass, MathJaxPass,
     NormalizeChain, NormalizePass, TrimPass, UnicodeNfcPass, WhitespacePass, normalize,
@@ -62,8 +69,16 @@ pub use parser::{ParsedDocument, parse};
 pub use pg_resolver::PgResolver;
 pub use pii::{PiiDetector, PiiMatch, RegexPiiDetector};
 pub use resolver::{EntityResolver, MatchType, MockResolver, ResolvedEntity};
+pub use section_compiler::{
+    LlmSectionCompiler, MockSectionCompiler, SectionCompilationInput, SectionCompilationOutput,
+    SectionCompiler, SectionSummaryEntry, SourceSummaryCompiler, SourceSummaryInput,
+};
 pub use sidecar_extractor::SidecarExtractor;
 pub use source_profile::{ProfileRegistry, SourceProfile};
+pub use statement_cluster::{ClusterAssignments, ClusterConfig, cluster_statements};
+pub use statement_extractor::{
+    ExtractedStatement, MockStatementExtractor, StatementExtractionResult, StatementExtractor,
+};
 pub use takedown::TakedownResult;
 pub use two_pass_extractor::TwoPassExtractor;
 pub use url_fetcher::{FetchResult, fetch_url};

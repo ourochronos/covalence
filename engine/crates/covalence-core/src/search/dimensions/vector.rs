@@ -1,8 +1,8 @@
 //! Vector search dimension — multi-granularity semantic similarity via pgvector.
 //!
-//! Searches chunks, nodes, sources, and articles by embedding cosine
-//! distance. Each table is queried independently with a per-table
-//! truncated query embedding to match column dimensions.
+//! Searches chunks, nodes, sources, articles, statements, and sections
+//! by embedding cosine distance. Each table is queried independently
+//! with a per-table truncated query embedding to match column dimensions.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -15,11 +15,12 @@ use crate::search::SearchResult;
 
 /// Semantic similarity search using pgvector cosine distance.
 ///
-/// Queries the `chunks`, `nodes`, `sources`, and `articles` tables
-/// for the closest embeddings to the query vector using the `<=>`
-/// (cosine distance) operator. Each table is queried independently
-/// with its own truncated embedding to match the column dimension.
-/// Results from all granularities are merged and re-ranked.
+/// Queries the `chunks`, `nodes`, `sources`, `articles`,
+/// `statements`, and `sections` tables for the closest embeddings
+/// to the query vector using the `<=>` (cosine distance) operator.
+/// Each table is queried independently with its own truncated
+/// embedding to match the column dimension. Results from all
+/// granularities are merged and re-ranked.
 pub struct VectorDimension {
     pool: PgPool,
     table_dims: TableDimensions,
@@ -156,7 +157,7 @@ impl VectorDimension {
     /// invalid pgvector literal.
     fn pgvec_for_table(&self, embedding: &[f64], table: &str) -> Result<String> {
         let target_dim = match table {
-            "chunks" => self.table_dims.chunk,
+            "chunks" | "statements" | "sections" => self.table_dims.chunk,
             "nodes" => self.table_dims.node,
             "sources" => self.table_dims.source,
             "articles" => self.table_dims.article,
@@ -214,18 +215,22 @@ impl SearchDimension for VectorDimension {
             combined
         } else {
             // Standard flat search across all tables.
-            let (chunk_limit, node_limit, source_limit, article_limit) = per_table_limits(limit);
+            let limits = per_table_limits(limit);
 
             let pgvec_chunk = self.pgvec_for_table(embedding, "chunks")?;
             let pgvec_node = self.pgvec_for_table(embedding, "nodes")?;
             let pgvec_source = self.pgvec_for_table(embedding, "sources")?;
             let pgvec_article = self.pgvec_for_table(embedding, "articles")?;
+            let pgvec_statement = self.pgvec_for_table(embedding, "statements")?;
+            let pgvec_section = self.pgvec_for_table(embedding, "sections")?;
 
-            let (chunk_rows, node_rows, source_rows, article_rows) = tokio::join!(
-                self.query_table("chunks", &pgvec_chunk, chunk_limit),
-                self.query_table("nodes", &pgvec_node, node_limit),
-                self.query_table("sources", &pgvec_source, source_limit),
-                self.query_table("articles", &pgvec_article, article_limit),
+            let (chunk_rows, node_rows, source_rows, article_rows, stmt_rows, sect_rows) = tokio::join!(
+                self.query_table("chunks", &pgvec_chunk, limits.chunk),
+                self.query_table("nodes", &pgvec_node, limits.node),
+                self.query_table("sources", &pgvec_source, limits.source),
+                self.query_table("articles", &pgvec_article, limits.article),
+                self.query_table("statements", &pgvec_statement, limits.statement),
+                self.query_table("sections", &pgvec_section, limits.section),
             );
 
             let mut combined: Vec<(Uuid, f64, &str)> = Vec::new();
@@ -240,6 +245,12 @@ impl SearchDimension for VectorDimension {
             }
             for (id, score) in article_rows {
                 combined.push((id, score, "article"));
+            }
+            for (id, score) in stmt_rows {
+                combined.push((id, score, "statement"));
+            }
+            for (id, score) in sect_rows {
+                combined.push((id, score, "section"));
             }
             combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             combined.truncate(query.limit);
@@ -267,16 +278,36 @@ impl SearchDimension for VectorDimension {
     }
 }
 
+/// Per-table limit budget for vector search.
+pub struct TableLimits {
+    /// Chunks: primary content retrieval units.
+    pub chunk: i64,
+    /// Nodes: graph entities.
+    pub node: i64,
+    /// Sources: full documents.
+    pub source: i64,
+    /// Articles: compiled summaries.
+    pub article: i64,
+    /// Statements: atomic knowledge claims.
+    pub statement: i64,
+    /// Sections: compiled statement clusters.
+    pub section: i64,
+}
+
 /// Compute per-table limits from a total limit budget.
 ///
-/// Chunks get half, nodes a quarter, sources and articles an eighth
-/// each. Every table gets at least 2 results.
-pub fn per_table_limits(total: i64) -> (i64, i64, i64, i64) {
-    let chunk = (total / 2).max(2);
-    let node = (total / 4).max(2);
-    let source = (total / 8).max(2);
-    let article = (total / 8).max(2);
-    (chunk, node, source, article)
+/// Budget allocation: chunks 35%, statements 20%, nodes 20%,
+/// sections 10%, sources 8%, articles 7%. Every table gets at
+/// least 2 results.
+pub fn per_table_limits(total: i64) -> TableLimits {
+    TableLimits {
+        chunk: (total * 35 / 100).max(2),
+        statement: (total * 20 / 100).max(2),
+        node: (total * 20 / 100).max(2),
+        section: (total * 10 / 100).max(2),
+        source: (total * 8 / 100).max(2),
+        article: (total * 7 / 100).max(2),
+    }
 }
 
 #[cfg(test)]
@@ -285,30 +316,36 @@ mod tests {
 
     #[test]
     fn per_table_limits_default() {
-        let (chunk, node, source, article) = per_table_limits(20);
-        assert_eq!(chunk, 10);
-        assert_eq!(node, 5);
-        assert_eq!(source, 2);
-        assert_eq!(article, 2);
+        let limits = per_table_limits(20);
+        assert_eq!(limits.chunk, 7);
+        assert_eq!(limits.statement, 4);
+        assert_eq!(limits.node, 4);
+        assert_eq!(limits.section, 2);
+        assert_eq!(limits.source, 2);
+        assert_eq!(limits.article, 2);
     }
 
     #[test]
     fn per_table_limits_small_budget() {
         // With limit=1, every table should get at least 2
-        let (chunk, node, source, article) = per_table_limits(1);
-        assert_eq!(chunk, 2);
-        assert_eq!(node, 2);
-        assert_eq!(source, 2);
-        assert_eq!(article, 2);
+        let limits = per_table_limits(1);
+        assert_eq!(limits.chunk, 2);
+        assert_eq!(limits.statement, 2);
+        assert_eq!(limits.node, 2);
+        assert_eq!(limits.section, 2);
+        assert_eq!(limits.source, 2);
+        assert_eq!(limits.article, 2);
     }
 
     #[test]
     fn per_table_limits_large_budget() {
-        let (chunk, node, source, article) = per_table_limits(100);
-        assert_eq!(chunk, 50);
-        assert_eq!(node, 25);
-        assert_eq!(source, 12);
-        assert_eq!(article, 12);
+        let limits = per_table_limits(100);
+        assert_eq!(limits.chunk, 35);
+        assert_eq!(limits.statement, 20);
+        assert_eq!(limits.node, 20);
+        assert_eq!(limits.section, 10);
+        assert_eq!(limits.source, 8);
+        assert_eq!(limits.article, 7);
     }
 
     #[test]

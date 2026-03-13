@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::types::ids::{ChunkId, ExtractionId};
+use crate::types::ids::{ChunkId, ExtractionId, StatementId};
 
 /// The type of entity an extraction links to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,13 +34,18 @@ impl ExtractedEntityType {
     }
 }
 
-/// Links a graph element back to the chunk it was extracted from.
+/// Links a graph element back to the chunk or statement it was
+/// extracted from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Extraction {
     /// Unique identifier.
     pub id: ExtractionId,
-    /// FK to the chunk this was extracted from.
-    pub chunk_id: ChunkId,
+    /// FK to the chunk this was extracted from (None for
+    /// statement-based extractions).
+    pub chunk_id: Option<ChunkId>,
+    /// FK to the statement this was extracted from (None for
+    /// chunk-based extractions).
+    pub statement_id: Option<StatementId>,
     /// Whether this extraction produced a node or edge.
     pub entity_type: String,
     /// ID of the extracted node or edge.
@@ -56,7 +61,7 @@ pub struct Extraction {
 }
 
 impl Extraction {
-    /// Create a new extraction record.
+    /// Create a new extraction record from a chunk.
     pub fn new(
         chunk_id: ChunkId,
         entity_type: ExtractedEntityType,
@@ -66,7 +71,29 @@ impl Extraction {
     ) -> Self {
         Self {
             id: ExtractionId::new(),
-            chunk_id,
+            chunk_id: Some(chunk_id),
+            statement_id: None,
+            entity_type: entity_type.as_str().to_string(),
+            entity_id,
+            extraction_method,
+            confidence,
+            is_superseded: false,
+            extracted_at: Utc::now(),
+        }
+    }
+
+    /// Create a new extraction record from a statement.
+    pub fn from_statement(
+        statement_id: StatementId,
+        entity_type: ExtractedEntityType,
+        entity_id: uuid::Uuid,
+        extraction_method: String,
+        confidence: f64,
+    ) -> Self {
+        Self {
+            id: ExtractionId::new(),
+            chunk_id: None,
+            statement_id: Some(statement_id),
             entity_type: entity_type.as_str().to_string(),
             entity_id,
             extraction_method,
@@ -112,12 +139,31 @@ mod tests {
             0.95,
         );
 
-        assert_eq!(ext.chunk_id, chunk_id);
+        assert_eq!(ext.chunk_id, Some(chunk_id));
+        assert!(ext.statement_id.is_none());
         assert_eq!(ext.entity_type, "node");
         assert_eq!(ext.entity_id, entity_id);
         assert_eq!(ext.extraction_method, "llm_gpt4");
         assert!((ext.confidence - 0.95).abs() < 1e-10);
         assert!(!ext.is_superseded);
+    }
+
+    #[test]
+    fn extraction_from_statement_defaults() {
+        let statement_id = StatementId::new();
+        let entity_id = uuid::Uuid::new_v4();
+        let ext = Extraction::from_statement(
+            statement_id,
+            ExtractedEntityType::Node,
+            entity_id,
+            "llm_statement".into(),
+            0.9,
+        );
+
+        assert!(ext.chunk_id.is_none());
+        assert_eq!(ext.statement_id, Some(statement_id));
+        assert_eq!(ext.entity_type, "node");
+        assert_eq!(ext.extraction_method, "llm_statement");
     }
 
     #[test]

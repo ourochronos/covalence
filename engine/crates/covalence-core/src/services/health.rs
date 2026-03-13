@@ -277,6 +277,8 @@ mod tests {
             chat_model: "gpt-4o".to_string(),
             chat_api_key: None,
             chat_base_url: None,
+            chat_backend: "http".to_string(),
+            chat_cli_command: "gemini".to_string(),
             chunk_size: 1000,
             chunk_overlap: 200,
             min_section_size: 200,

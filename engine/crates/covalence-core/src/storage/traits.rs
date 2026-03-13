@@ -11,10 +11,13 @@ use crate::models::edge::Edge;
 use crate::models::extraction::Extraction;
 use crate::models::node::Node;
 use crate::models::node_alias::NodeAlias;
+use crate::models::section::Section;
 use crate::models::source::Source;
+use crate::models::statement::Statement;
 use crate::models::trace::{SearchFeedback, SearchTrace};
 use crate::types::ids::{
-    AliasId, ArticleId, AuditLogId, ChunkId, EdgeId, ExtractionId, NodeId, SourceId,
+    AliasId, ArticleId, AuditLogId, ChunkId, EdgeId, ExtractionId, NodeId, SectionId, SourceId,
+    StatementId,
 };
 
 /// Repository for [`Source`] entities.
@@ -56,6 +59,13 @@ pub trait SourceRepo: Send + Sync {
     /// Clear the embedding for a superseded source so it doesn't
     /// appear in vector search results.
     fn clear_embedding(&self, id: SourceId) -> impl Future<Output = Result<()>> + Send;
+
+    /// Update the summary text for a source.
+    fn update_summary(
+        &self,
+        id: SourceId,
+        summary: &str,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Repository for [`Chunk`] entities.
@@ -372,4 +382,94 @@ pub trait NodeLandmarkRepo: Send + Sync {
     /// List nodes ordered by mention count descending (proxy for
     /// betweenness centrality).
     fn list_landmarks(&self, limit: i64) -> impl Future<Output = Result<Vec<Node>>> + Send;
+}
+
+/// Repository for [`Statement`] entities.
+pub trait StatementRepo: Send + Sync {
+    /// Insert a new statement.
+    fn create(&self, statement: &Statement) -> impl Future<Output = Result<()>> + Send;
+
+    /// Insert multiple statements in a single batch operation.
+    fn batch_create(&self, statements: &[Statement]) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get a statement by ID.
+    fn get(&self, id: StatementId) -> impl Future<Output = Result<Option<Statement>>> + Send;
+
+    /// Get all statements for a given source.
+    fn list_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<Vec<Statement>>> + Send;
+
+    /// Get all statements in a given section.
+    fn list_by_section(
+        &self,
+        section_id: SectionId,
+    ) -> impl Future<Output = Result<Vec<Statement>>> + Send;
+
+    /// Find a statement by content hash (for dedup).
+    fn get_by_content_hash(
+        &self,
+        source_id: SourceId,
+        hash: &[u8],
+    ) -> impl Future<Output = Result<Option<Statement>>> + Send;
+
+    /// Delete all statements for a source.
+    fn delete_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Update the embedding vector for a statement.
+    fn update_embedding(
+        &self,
+        id: StatementId,
+        embedding: &[f64],
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Assign a statement to a section.
+    fn assign_section(
+        &self,
+        id: StatementId,
+        section_id: SectionId,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Mark a statement as evicted.
+    fn mark_evicted(&self, id: StatementId) -> impl Future<Output = Result<()>> + Send;
+
+    /// Count statements for a source.
+    fn count_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<i64>> + Send;
+}
+
+/// Repository for [`Section`] entities.
+pub trait SectionRepo: Send + Sync {
+    /// Insert a new section.
+    fn create(&self, section: &Section) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get a section by ID.
+    fn get(&self, id: SectionId) -> impl Future<Output = Result<Option<Section>>> + Send;
+
+    /// Get all sections for a given source.
+    fn list_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<Vec<Section>>> + Send;
+
+    /// Delete all sections for a source.
+    fn delete_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Update the embedding vector for a section.
+    fn update_embedding(
+        &self,
+        id: SectionId,
+        embedding: &[f64],
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Update the summary and content hash for a section.
+    fn update_summary(
+        &self,
+        id: SectionId,
+        summary: &str,
+        content_hash: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Count sections for a source.
+    fn count_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<i64>> + Send;
 }

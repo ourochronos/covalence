@@ -7,5 +7,7 @@ pub mod edge;
 pub mod extraction;
 pub mod node;
 pub mod node_alias;
+pub mod section;
 pub mod source;
+pub mod statement;
 pub mod trace;

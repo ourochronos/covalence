@@ -172,6 +172,8 @@ pub struct Source {
     /// SHA-256 hash of `normalized_content` for fast change
     /// detection during re-ingestion.
     pub normalized_hash: Option<Vec<u8>>,
+    /// LLM-compiled summary of the source (statement pipeline).
+    pub summary: Option<String>,
 }
 
 impl Source {
@@ -200,6 +202,7 @@ impl Source {
             embedding: None,
             normalized_content: None,
             normalized_hash: None,
+            summary: None,
         }
     }
 

@@ -1,9 +1,10 @@
 //! Lexical search dimension — multi-granularity full-text search
 //! via tsvector.
 //!
-//! Searches chunks, nodes, and articles using PostgreSQL full-text
-//! search with trigram fallback for chunks. Chunk results include
-//! `ts_headline` snippets highlighting the matched terms.
+//! Searches chunks, nodes, articles, statements, and sections using
+//! PostgreSQL full-text search with trigram fallback for chunks.
+//! Chunk and statement results include `ts_headline` snippets
+//! highlighting the matched terms.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -62,6 +63,60 @@ impl LexicalDimension {
             "SELECT id, \
                     ts_rank_cd(body_tsv, query)::float8 AS score \
              FROM articles, \
+                  plainto_tsquery('english', $1) query \
+             WHERE body_tsv @@ query \
+             ORDER BY score DESC \
+             LIMIT $2",
+        )
+        .bind(&query.text)
+        .bind(query.limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Search statements via `content_tsv` with ts_headline snippets.
+    async fn search_statements(&self, query: &SearchQuery) -> Result<Vec<SearchResult>> {
+        let rows = sqlx::query_as::<_, (Uuid, f64, String)>(
+            "SELECT s.id, \
+                    ts_rank_cd(s.content_tsv, q)::float8 AS score, \
+                    ts_headline('english', s.content, q, \
+                        'MaxWords=' || $3 || \
+                        ', MinWords=15, ShortWord=3') \
+                        AS snippet \
+             FROM statements s, \
+                  plainto_tsquery('english', $1) q \
+             WHERE s.content_tsv @@ q \
+               AND NOT s.is_evicted \
+             ORDER BY score DESC \
+             LIMIT $2",
+        )
+        .bind(&query.text)
+        .bind(query.limit as i64)
+        .bind(SNIPPET_MAX_WORDS)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, score, snippet))| SearchResult {
+                id,
+                score,
+                rank: i + 1,
+                dimension: "lexical".to_string(),
+                snippet: Some(snippet),
+                result_type: Some("statement".to_string()),
+            })
+            .collect())
+    }
+
+    /// Search sections via `body_tsv` (title + summary).
+    async fn search_sections(&self, query: &SearchQuery) -> Result<Vec<(Uuid, f64)>> {
+        let rows = sqlx::query_as::<_, (Uuid, f64)>(
+            "SELECT id, \
+                    ts_rank_cd(body_tsv, query)::float8 AS score \
+             FROM sections, \
                   plainto_tsquery('english', $1) query \
              WHERE body_tsv @@ query \
              ORDER BY score DESC \
@@ -156,15 +211,19 @@ impl SearchDimension for LexicalDimension {
             return Ok(Vec::new());
         }
 
-        // Run all three sub-searches concurrently.
-        let (chunk_results, node_rows, article_rows) = tokio::join!(
+        // Run all sub-searches concurrently.
+        let (chunk_results, node_rows, article_rows, stmt_results, section_rows) = tokio::join!(
             self.search_chunks(query),
             self.search_nodes(query),
             self.search_articles(query),
+            self.search_statements(query),
+            self.search_sections(query),
         );
         let chunk_results = chunk_results?;
         let node_rows = node_rows?;
         let article_rows = article_rows?;
+        let stmt_results = stmt_results?;
+        let section_rows = section_rows?;
 
         // Merge all results and re-rank by score descending.
         let mut combined: Vec<(Uuid, f64, &str, Option<String>)> = Vec::new();
@@ -176,6 +235,12 @@ impl SearchDimension for LexicalDimension {
         }
         for (id, score) in &article_rows {
             combined.push((*id, *score, "article", None));
+        }
+        for r in &stmt_results {
+            combined.push((r.id, r.score, "statement", r.snippet.clone()));
+        }
+        for (id, score) in &section_rows {
+            combined.push((*id, *score, "section", None));
         }
         combined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         combined.truncate(query.limit);

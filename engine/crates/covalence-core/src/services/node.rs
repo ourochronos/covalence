@@ -120,9 +120,11 @@ impl NodeService {
         let mut chunks = Vec::new();
         let mut source_ids = std::collections::HashSet::new();
         for ext in &extractions {
-            if let Some(chunk) = ChunkRepo::get(&*self.repo, ext.chunk_id).await? {
-                source_ids.insert(chunk.source_id);
-                chunks.push(chunk);
+            if let Some(chunk_id) = ext.chunk_id {
+                if let Some(chunk) = ChunkRepo::get(&*self.repo, chunk_id).await? {
+                    source_ids.insert(chunk.source_id);
+                    chunks.push(chunk);
+                }
             }
         }
 
@@ -159,8 +161,10 @@ impl NodeService {
 
         let mut source_ids = std::collections::HashSet::new();
         for ext in &extractions {
-            if let Some(chunk) = ChunkRepo::get(&*self.repo, ext.chunk_id).await? {
-                source_ids.insert(chunk.source_id);
+            if let Some(chunk_id) = ext.chunk_id {
+                if let Some(chunk) = ChunkRepo::get(&*self.repo, chunk_id).await? {
+                    source_ids.insert(chunk.source_id);
+                }
             }
         }
 

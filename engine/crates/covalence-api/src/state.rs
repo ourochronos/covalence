@@ -12,7 +12,8 @@ use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
-    ConverterRegistry, FastcorefClient, GlinerExtractor, LlmExtractor, OpenAiEmbedder,
+    ChatBackend, CliChatBackend, ConverterRegistry, FastcorefClient, GlinerExtractor,
+    HttpChatBackend, LlmExtractor, LlmSectionCompiler, LlmStatementExtractor, OpenAiEmbedder,
     PdfConverter, PgResolver, ReaderLmConverter, SidecarExtractor, TwoPassExtractor, VoyageConfig,
     VoyageEmbedder, fingerprint_config_from,
 };
@@ -278,6 +279,70 @@ impl AppState {
                 config.pipeline.coref_window_chars,
                 config.pipeline.coref_window_overlap,
             )));
+        }
+
+        // Wire statement extractor when statement pipeline is enabled.
+        if config.pipeline.statement_enabled {
+            // Resolve the model name: statement_model overrides chat_model.
+            let stmt_model = config
+                .pipeline
+                .statement_model
+                .clone()
+                .unwrap_or_else(|| config.chat_model.clone());
+
+            // Build the chat backend based on configuration.
+            let backend: Option<Arc<dyn ChatBackend>> = if config.chat_backend == "cli" {
+                tracing::info!(
+                    command = %config.chat_cli_command,
+                    model = %stmt_model,
+                    "using CLI chat backend for statement pipeline"
+                );
+                Some(Arc::new(CliChatBackend::new(
+                    config.chat_cli_command.clone(),
+                    stmt_model.clone(),
+                )) as Arc<dyn ChatBackend>)
+            } else {
+                // HTTP backend (default) — requires an API key.
+                let chat_key = config
+                    .chat_api_key
+                    .as_ref()
+                    .or(config.openai_api_key.as_ref());
+                chat_key.map(|key| {
+                    Arc::new(HttpChatBackend::new(
+                        stmt_model.clone(),
+                        key.clone(),
+                        config.chat_base_url.clone(),
+                    )) as Arc<dyn ChatBackend>
+                })
+            };
+
+            if let Some(backend) = backend {
+                let stmt_extractor =
+                    Arc::new(LlmStatementExtractor::with_backend(Arc::clone(&backend)));
+                source_svc = source_svc.with_statement_extractor(
+                    stmt_extractor as Arc<dyn covalence_core::ingestion::StatementExtractor>,
+                );
+
+                // Wire section compiler + source summary compiler
+                // (same LlmSectionCompiler implements both traits).
+                let section_compiler =
+                    Arc::new(LlmSectionCompiler::with_backend(Arc::clone(&backend)));
+                source_svc = source_svc
+                    .with_section_compiler(Arc::clone(&section_compiler)
+                        as Arc<dyn covalence_core::ingestion::SectionCompiler>)
+                    .with_source_summary_compiler(
+                        section_compiler
+                            as Arc<dyn covalence_core::ingestion::SourceSummaryCompiler>,
+                    );
+
+                tracing::info!(
+                    backend = %config.chat_backend,
+                    model = %config.chat_model,
+                    window_chars = config.pipeline.statement_window_chars,
+                    window_overlap = config.pipeline.statement_window_overlap,
+                    "statement-first extraction pipeline enabled (with clustering + compilation)"
+                );
+            }
         }
 
         let source_service = Arc::new(source_svc);

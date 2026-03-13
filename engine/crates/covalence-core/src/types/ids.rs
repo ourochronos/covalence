@@ -126,6 +126,16 @@ define_id!(
     AuditLogId
 );
 
+define_id!(
+    /// Unique identifier for an atomic statement.
+    StatementId
+);
+
+define_id!(
+    /// Unique identifier for a statement-derived section.
+    SectionId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

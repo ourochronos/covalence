@@ -45,6 +45,13 @@ pub struct Config {
     /// Separate base URL for chat/extraction (falls back to OPENAI_BASE_URL).
     pub chat_base_url: Option<String>,
 
+    /// Chat backend type: "http" (OpenAI-compatible API, default) or
+    /// "cli" (shell out to a CLI command like `gemini`).
+    pub chat_backend: String,
+
+    /// CLI command for the "cli" chat backend (default: "gemini").
+    pub chat_cli_command: String,
+
     /// Maximum chunk size in bytes before paragraph splitting.
     pub chunk_size: usize,
 
@@ -193,6 +200,16 @@ pub struct TableDimensions {
     /// Must match node dimension for cosine comparisons.
     /// Env: `COVALENCE_EMBED_DIM_ALIAS`. Default: `256`.
     pub alias: usize,
+
+    /// Statement-level embeddings (atomic knowledge claims).
+    /// Same dimension as chunks for search parity.
+    /// Env: `COVALENCE_EMBED_DIM_STATEMENT`. Default: `1024`.
+    pub statement: usize,
+
+    /// Section-level embeddings (compiled statement clusters).
+    /// Same dimension as chunks for search parity.
+    /// Env: `COVALENCE_EMBED_DIM_SECTION`. Default: `1024`.
+    pub section: usize,
 }
 
 impl Default for TableDimensions {
@@ -203,6 +220,8 @@ impl Default for TableDimensions {
             article: 1024,
             node: 256,
             alias: 256,
+            statement: 1024,
+            section: 1024,
         }
     }
 }
@@ -216,6 +235,8 @@ impl TableDimensions {
             .max(self.article)
             .max(self.node)
             .max(self.alias)
+            .max(self.statement)
+            .max(self.section)
     }
 }
 
@@ -313,6 +334,28 @@ pub struct PipelineConfig {
     /// Relationship extraction window overlap in characters.
     /// Env: `COVALENCE_RE_WINDOW_OVERLAP`. Default: `500`.
     pub re_window_overlap: usize,
+
+    /// Enable the statement-first extraction pipeline.
+    /// When enabled, atomic statements are extracted from source text
+    /// and used as the primary retrieval unit alongside chunks.
+    /// Env: `COVALENCE_STATEMENT_ENABLED`. Default: `false`.
+    pub statement_enabled: bool,
+
+    /// Statement extraction window size in characters.
+    /// Env: `COVALENCE_STATEMENT_WINDOW_CHARS`. Default: `8000`.
+    pub statement_window_chars: usize,
+
+    /// Statement extraction window overlap in characters.
+    /// Env: `COVALENCE_STATEMENT_WINDOW_OVERLAP`. Default: `1000`.
+    pub statement_window_overlap: usize,
+
+    /// Model override for the statement pipeline. When set, the
+    /// statement extractor and section compiler use this model
+    /// instead of `chat_model`. Useful when the statement pipeline
+    /// uses a CLI backend with a different model name format.
+    /// Env: `COVALENCE_STATEMENT_MODEL`. Default: `None` (uses
+    /// `chat_model`).
+    pub statement_model: Option<String>,
 }
 
 impl Default for PipelineConfig {
@@ -329,6 +372,10 @@ impl Default for PipelineConfig {
             coref_window_overlap: 500,
             re_window_chars: 15_000,
             re_window_overlap: 500,
+            statement_enabled: true,
+            statement_window_chars: 8_000,
+            statement_window_overlap: 1_000,
+            statement_model: None,
         }
     }
 }
@@ -416,6 +463,8 @@ impl Config {
             chat_model: env_or("COVALENCE_CHAT_MODEL", "gpt-4o"),
             chat_api_key: optional_env("COVALENCE_CHAT_API_KEY"),
             chat_base_url: optional_env("COVALENCE_CHAT_BASE_URL"),
+            chat_backend: env_or("COVALENCE_CHAT_BACKEND", "http"),
+            chat_cli_command: env_or("COVALENCE_CHAT_CLI_COMMAND", "gemini"),
             chunk_size: env_parse("COVALENCE_CHUNK_SIZE", 1000)?,
             chunk_overlap: env_parse("COVALENCE_CHUNK_OVERLAP", 200)?,
             min_section_size: env_parse("COVALENCE_MIN_SECTION_SIZE", 200)?,
@@ -434,6 +483,8 @@ impl Config {
                         article: env_parse("COVALENCE_EMBED_DIM_ARTICLE", legacy_dim)?,
                         node: env_parse("COVALENCE_EMBED_DIM_NODE", legacy_node)?,
                         alias: env_parse("COVALENCE_EMBED_DIM_ALIAS", legacy_node)?,
+                        statement: env_parse("COVALENCE_EMBED_DIM_STATEMENT", legacy_dim)?,
+                        section: env_parse("COVALENCE_EMBED_DIM_SECTION", legacy_dim)?,
                     },
                 }
             },
@@ -473,6 +524,10 @@ impl Config {
                 coref_window_overlap: env_parse("COVALENCE_COREF_WINDOW_OVERLAP", 500)?,
                 re_window_chars: env_parse("COVALENCE_RE_WINDOW_CHARS", 15_000)?,
                 re_window_overlap: env_parse("COVALENCE_RE_WINDOW_OVERLAP", 500)?,
+                statement_enabled: env_parse_bool("COVALENCE_STATEMENT_ENABLED", true),
+                statement_window_chars: env_parse("COVALENCE_STATEMENT_WINDOW_CHARS", 8_000)?,
+                statement_window_overlap: env_parse("COVALENCE_STATEMENT_WINDOW_OVERLAP", 1_000)?,
+                statement_model: optional_env("COVALENCE_STATEMENT_MODEL"),
             },
             coref_url: optional_env("COVALENCE_COREF_URL"),
             pdf_url: optional_env("COVALENCE_PDF_URL"),
@@ -614,6 +669,8 @@ mod tests {
         assert_eq!(dims.article, 1024);
         assert_eq!(dims.node, 256);
         assert_eq!(dims.alias, 256);
+        assert_eq!(dims.statement, 1024);
+        assert_eq!(dims.section, 1024);
     }
 
     #[test]
@@ -627,6 +684,8 @@ mod tests {
             article: 1024,
             node: 256,
             alias: 256,
+            statement: 1024,
+            section: 1024,
         };
         assert_eq!(custom.max_dim(), 4096); // chunk is largest
     }
@@ -726,6 +785,8 @@ mod tests {
                 chat_model: "gpt-4o".into(),
                 chat_api_key: None,
                 chat_base_url: None,
+                chat_backend: "http".into(),
+                chat_cli_command: "gemini".into(),
                 chunk_size: 1000,
                 chunk_overlap: 200,
                 min_section_size: 200,

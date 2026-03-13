@@ -13,6 +13,7 @@ pub(crate) mod pipeline;
 pub mod search;
 pub(crate) mod search_helpers;
 pub mod source;
+pub(crate) mod statement_pipeline;
 
 pub use admin::{AdminService, CooccurrenceResult, GcResult};
 pub use article::ArticleService;

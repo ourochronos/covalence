@@ -13,13 +13,14 @@ impl ExtractionRepo for PgRepo {
     async fn create(&self, extraction: &Extraction) -> Result<()> {
         sqlx::query(
             "INSERT INTO extractions (
-                id, chunk_id, entity_type, entity_id,
+                id, chunk_id, statement_id, entity_type, entity_id,
                 extraction_method, confidence,
                 is_superseded, extracted_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(extraction.id)
         .bind(extraction.chunk_id)
+        .bind(extraction.statement_id)
         .bind(&extraction.entity_type)
         .bind(extraction.entity_id)
         .bind(&extraction.extraction_method)
@@ -33,7 +34,7 @@ impl ExtractionRepo for PgRepo {
 
     async fn get(&self, id: ExtractionId) -> Result<Option<Extraction>> {
         let row = sqlx::query(
-            "SELECT id, chunk_id, entity_type, entity_id,
+            "SELECT id, chunk_id, statement_id, entity_type, entity_id,
                     extraction_method, confidence,
                     is_superseded, extracted_at
              FROM extractions WHERE id = $1",
@@ -47,7 +48,7 @@ impl ExtractionRepo for PgRepo {
 
     async fn list_by_chunk(&self, chunk_id: ChunkId) -> Result<Vec<Extraction>> {
         let rows = sqlx::query(
-            "SELECT id, chunk_id, entity_type, entity_id,
+            "SELECT id, chunk_id, statement_id, entity_type, entity_id,
                     extraction_method, confidence,
                     is_superseded, extracted_at
              FROM extractions
@@ -67,7 +68,7 @@ impl ExtractionRepo for PgRepo {
         entity_id: uuid::Uuid,
     ) -> Result<Vec<Extraction>> {
         let rows = sqlx::query(
-            "SELECT id, chunk_id, entity_type, entity_id,
+            "SELECT id, chunk_id, statement_id, entity_type, entity_id,
                     extraction_method, confidence,
                     is_superseded, extracted_at
              FROM extractions
@@ -100,8 +101,9 @@ impl ExtractionRepo for PgRepo {
         let result = sqlx::query(
             "UPDATE extractions
              SET is_superseded = true
-             WHERE chunk_id IN (
-                 SELECT id FROM chunks WHERE source_id = $1
+             WHERE (
+                 chunk_id IN (SELECT id FROM chunks WHERE source_id = $1)
+                 OR statement_id IN (SELECT id FROM statements WHERE source_id = $1)
              )
              AND NOT is_superseded",
         )
@@ -114,9 +116,8 @@ impl ExtractionRepo for PgRepo {
     async fn delete_by_source(&self, source_id: SourceId) -> Result<u64> {
         let result = sqlx::query(
             "DELETE FROM extractions
-             WHERE chunk_id IN (
-                 SELECT id FROM chunks WHERE source_id = $1
-             )",
+             WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id = $1)
+                OR statement_id IN (SELECT id FROM statements WHERE source_id = $1)",
         )
         .bind(source_id)
         .execute(&self.pool)
@@ -129,8 +130,9 @@ impl ExtractionRepo for PgRepo {
             "SELECT DISTINCT entity_id
              FROM extractions
              WHERE entity_type = 'node'
-               AND chunk_id IN (
-                   SELECT id FROM chunks WHERE source_id = $1
+               AND (
+                   chunk_id IN (SELECT id FROM chunks WHERE source_id = $1)
+                   OR statement_id IN (SELECT id FROM statements WHERE source_id = $1)
                )",
         )
         .bind(source_id)
@@ -170,6 +172,7 @@ fn extraction_from_row(row: &sqlx::postgres::PgRow) -> Extraction {
     Extraction {
         id: row.get("id"),
         chunk_id: row.get("chunk_id"),
+        statement_id: row.get("statement_id"),
         entity_type: row.get("entity_type"),
         entity_id: row.get("entity_id"),
         extraction_method: row.get("extraction_method"),
