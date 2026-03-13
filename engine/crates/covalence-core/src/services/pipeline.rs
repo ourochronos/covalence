@@ -875,6 +875,67 @@ impl SourceService {
                 .await?;
         }
 
+        // For code entities resolved to existing nodes: compare
+        // ast_hash. If the hash changed, clear semantic_summary so
+        // the node gets re-summarized. Always update ast_hash.
+        if !matches!(match_type, MatchType::New) {
+            if let Some(new_hash) = entity
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("ast_hash"))
+                .and_then(|v| v.as_str())
+            {
+                let row: Option<(Option<serde_json::Value>,)> =
+                    sqlx::query_as("SELECT properties FROM nodes WHERE id = $1")
+                        .bind(node_id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                let old_hash = row
+                    .as_ref()
+                    .and_then(|(p,)| p.as_ref())
+                    .and_then(|p| p.get("ast_hash"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if old_hash != new_hash {
+                    // Hash changed → clear semantic_summary, update
+                    // ast_hash and description.
+                    let mut props = row
+                        .and_then(|(p,)| p)
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    props["ast_hash"] = serde_json::json!(new_hash);
+                    props.as_object_mut().map(|o| o.remove("semantic_summary"));
+                    sqlx::query(
+                        "UPDATE nodes SET properties = $2, \
+                             description = COALESCE($3, description) \
+                         WHERE id = $1",
+                    )
+                    .bind(node_id)
+                    .bind(&props)
+                    .bind(&entity.description)
+                    .execute(&mut *tx)
+                    .await?;
+                    tracing::debug!(
+                        node = %entity.name,
+                        "ast_hash changed, cleared semantic_summary"
+                    );
+                } else {
+                    // Hash unchanged — just update ast_hash (idempotent).
+                    sqlx::query(
+                        "UPDATE nodes \
+                         SET properties = jsonb_set(\
+                             COALESCE(properties, '{}'), \
+                             '{ast_hash}', $2::jsonb) \
+                         WHERE id = $1",
+                    )
+                    .bind(node_id)
+                    .bind(serde_json::json!(new_hash))
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
+
         let ext_id = uuid::Uuid::new_v4();
         match provenance {
             ExtractionProvenance::Chunk(chunk_id) => {
@@ -924,6 +985,17 @@ impl SourceService {
     ) -> Result<Node> {
         let mut node = Node::new(entity.name.clone(), entity.entity_type.clone());
         node.description = entity.description.clone();
+
+        // Merge entity metadata (e.g. ast_hash) into node properties.
+        if let Some(ref meta) = entity.metadata {
+            if let Some(obj) = meta.as_object() {
+                if let Some(p) = node.properties.as_object_mut() {
+                    for (k, v) in obj {
+                        p.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
 
         let confidence_json = node.confidence_breakdown.as_ref().map(|o| o.to_json());
 

@@ -519,6 +519,7 @@ mod tests {
             entity_type: "person".to_string(),
             description: Some("A test entity".to_string()),
             confidence: 0.95,
+            metadata: None,
         };
         let resolved = ResolvedEntity {
             node_id: None,

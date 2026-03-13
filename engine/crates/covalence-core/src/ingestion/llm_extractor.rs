@@ -516,6 +516,7 @@ fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
             entity_type: e.entity_type,
             description: e.description,
             confidence: e.confidence.clamp(0.0, 1.0),
+            metadata: None,
         })
         .collect();
 

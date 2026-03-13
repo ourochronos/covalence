@@ -7,11 +7,30 @@
 //! Design principle: struct/class fields become metadata properties
 //! on their parent entity, NOT separate graph nodes.
 
+use sha2::{Digest, Sha256};
+
 use crate::error::{Error, Result};
 use crate::ingestion::code_chunker::CodeLanguage;
 use crate::ingestion::extractor::{
     ExtractedEntity, ExtractedRelationship, ExtractionContext, ExtractionResult, Extractor,
 };
+
+/// Compute a SHA-256 hash of a tree-sitter node's source text.
+///
+/// Used to fingerprint individual AST items (functions, structs, etc.)
+/// so that incremental re-ingestion can skip unchanged code entities.
+/// The hash is stored in `ExtractedEntity.metadata.ast_hash` and
+/// persisted on graph nodes in `properties.ast_hash`.
+fn compute_ast_hash(source: &str, node: &tree_sitter::Node) -> String {
+    let text = &source[node.start_byte()..node.end_byte()];
+    let hash = Sha256::digest(text.as_bytes());
+    format!("{hash:x}")
+}
+
+/// Build the metadata JSON carrying an AST hash for a code entity.
+fn ast_metadata(source: &str, node: &tree_sitter::Node) -> Option<serde_json::Value> {
+    Some(serde_json::json!({ "ast_hash": compute_ast_hash(source, node) }))
+}
 
 /// Deterministic extractor that walks tree-sitter ASTs to extract
 /// code entities and relationships.
@@ -213,19 +232,12 @@ fn extract_rust_struct(
         Some(format!("{visibility} Rust unit or tuple struct"))
     };
 
-    let mut metadata = serde_json::json!({
-        "visibility": visibility,
-        "kind": "struct",
-    });
-    if !fields.is_empty() {
-        metadata["fields"] = serde_json::json!(fields);
-    }
-
     entities.push(ExtractedEntity {
         name,
         entity_type: "struct".to_string(),
         description,
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -248,19 +260,12 @@ fn extract_rust_enum(source: &str, node: &tree_sitter::Node, entities: &mut Vec<
         Some(format!("{visibility} Rust empty enum"))
     };
 
-    let mut metadata = serde_json::json!({
-        "visibility": visibility,
-        "kind": "enum",
-    });
-    if !variants.is_empty() {
-        metadata["variants"] = serde_json::json!(variants);
-    }
-
     entities.push(ExtractedEntity {
         name,
         entity_type: "enum".to_string(),
         description,
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -283,19 +288,12 @@ fn extract_rust_trait(source: &str, node: &tree_sitter::Node, entities: &mut Vec
         Some(format!("{visibility} Rust marker trait"))
     };
 
-    let mut metadata = serde_json::json!({
-        "visibility": visibility,
-        "kind": "trait",
-    });
-    if !methods.is_empty() {
-        metadata["methods"] = serde_json::json!(methods);
-    }
-
     entities.push(ExtractedEntity {
         name,
         entity_type: "trait".to_string(),
         description,
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -310,22 +308,15 @@ fn extract_rust_function(
         None => return,
     };
 
-    let visibility = detect_visibility(source, node);
     let text = node_text(source, node);
     let signature = extract_signature_before_brace(text);
-
-    let description = Some(signature.clone());
-
-    let _metadata = serde_json::json!({
-        "visibility": visibility,
-        "signature": signature,
-    });
 
     entities.push(ExtractedEntity {
         name,
         entity_type: "function".to_string(),
-        description,
+        description: Some(signature),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -353,6 +344,7 @@ fn extract_rust_impl(
         entity_type: "impl_block".to_string(),
         description: Some(header),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 
     // Relationship: impl with trait → `implements`
@@ -410,6 +402,7 @@ fn extract_rust_mod(source: &str, node: &tree_sitter::Node, entities: &mut Vec<E
         entity_type: "module".to_string(),
         description: Some("Module declaration".to_string()),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -432,6 +425,7 @@ fn extract_rust_constant(
         entity_type: "constant".to_string(),
         description: Some(format!("{keyword} declaration")),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -447,6 +441,7 @@ fn extract_rust_macro(source: &str, node: &tree_sitter::Node, entities: &mut Vec
         entity_type: "macro".to_string(),
         description: Some("Macro definition".to_string()),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -564,21 +559,12 @@ fn extract_python_class(
         Some("Empty class".to_string())
     };
 
-    let mut metadata = serde_json::json!({
-        "kind": "class",
-    });
-    if !methods.is_empty() {
-        metadata["methods"] = serde_json::json!(methods);
-    }
-    if !bases.is_empty() {
-        metadata["bases"] = serde_json::json!(bases);
-    }
-
     entities.push(ExtractedEntity {
         name: name.clone(),
         entity_type: "class".to_string(),
         description,
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 
     // Inheritance → `extends` relationships.
@@ -617,6 +603,7 @@ fn extract_python_function(
         entity_type: "function".to_string(),
         description: Some(signature),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -683,6 +670,7 @@ fn extract_go_function(
         entity_type: "function".to_string(),
         description: Some(signature),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 }
 
@@ -717,6 +705,7 @@ fn extract_go_method(
         entity_type: "function".to_string(),
         description: Some(signature),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 
     // Relationship: receiver type `contains` this method.
@@ -799,6 +788,7 @@ fn extract_go_type_spec(
         entity_type: entity_type.to_string(),
         description: Some(description),
         confidence: 1.0,
+        metadata: ast_metadata(source, node),
     });
 
     // Extract embedded types as `extends` relationships.
@@ -1792,5 +1782,65 @@ type Child struct {
             result.relationships
         );
         assert_eq!(extends.unwrap().target_name, "Base");
+    }
+
+    #[tokio::test]
+    async fn ast_hash_present_on_code_entities() {
+        let source = r#"
+pub fn hello() -> String {
+    "hello".to_string()
+}
+"#
+        .trim();
+        let extractor = AstExtractor::new();
+        let ctx = make_context("lib.rs");
+        let result = extractor.extract(source, &ctx).await.unwrap();
+        assert_eq!(result.entities.len(), 1);
+
+        let meta = result.entities[0].metadata.as_ref().unwrap();
+        let hash = meta.get("ast_hash").unwrap().as_str().unwrap();
+        assert_eq!(hash.len(), 64, "SHA-256 hex should be 64 chars");
+
+        // Same source → same hash (deterministic).
+        let result2 = extractor.extract(source, &ctx).await.unwrap();
+        let hash2 = result2.entities[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .get("ast_hash")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(hash, hash2);
+    }
+
+    #[tokio::test]
+    async fn ast_hash_changes_on_code_change() {
+        let source1 = "pub fn greet() -> &'static str { \"hi\" }";
+        let source2 = "pub fn greet() -> &'static str { \"hello\" }";
+
+        let extractor = AstExtractor::new();
+        let ctx = make_context("lib.rs");
+
+        let r1 = extractor.extract(source1, &ctx).await.unwrap();
+        let r2 = extractor.extract(source2, &ctx).await.unwrap();
+
+        let h1 = r1.entities[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .get("ast_hash")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        let h2 = r2.entities[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .get("ast_hash")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_ne!(h1, h2, "different code should produce different hashes");
     }
 }

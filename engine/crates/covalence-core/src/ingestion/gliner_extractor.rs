@@ -140,6 +140,7 @@ impl Extractor for GlinerExtractor {
                 entity_type: e.label,
                 description: None,
                 confidence: e.score.clamp(0.0, 1.0),
+                metadata: None,
             })
             .collect();
 
@@ -283,6 +284,7 @@ mod tests {
                 entity_type: e.label,
                 description: None,
                 confidence: e.score.clamp(0.0, 1.0),
+                metadata: None,
             })
             .collect();
 

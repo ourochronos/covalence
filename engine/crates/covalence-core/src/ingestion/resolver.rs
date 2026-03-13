@@ -70,6 +70,7 @@ mod tests {
             entity_type: "person".to_string(),
             description: None,
             confidence: 0.9,
+            metadata: None,
         };
         let result = resolver.resolve(&entity).await.unwrap();
         assert_eq!(result.match_type, MatchType::New);

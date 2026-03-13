@@ -31,6 +31,9 @@ pub struct ExtractedEntity {
     pub description: Option<String>,
     /// Extraction confidence score in [0.0, 1.0].
     pub confidence: f64,
+    /// Optional metadata (e.g. `ast_hash` for code entities).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// A relationship extracted between two entities.
