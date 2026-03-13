@@ -636,11 +636,18 @@ impl SourceService {
         source.content_version += 1;
 
         // Prepare content (convert → parse → normalize).
-        let mime = source
+        // Normalize format_origin values that are not actual MIME types
+        // (e.g., "arxiv" from URL-based ingestion) to text/markdown.
+        let format_origin = source
             .metadata
             .get("format_origin")
             .and_then(|v| v.as_str())
             .unwrap_or("text/plain");
+        let mime = if format_origin.contains('/') {
+            format_origin
+        } else {
+            "text/markdown"
+        };
         let prepared = self
             .prepare_content(content_bytes, mime, source.uri.as_deref())
             .await?;
