@@ -55,8 +55,14 @@ pub fn reverse_project(
             // Mutation entirely after our span — stop processing.
             break;
         } else {
-            // Mutation overlaps our span. Expand to cover the full
-            // canonical range of the overlapping mutation.
+            // Mutation overlaps our span.
+            if m_start == mutated_start && m_end == mutated_end {
+                // Span exactly matches this mutation — return the
+                // canonical range directly.
+                return (entry.canonical_span_start, entry.canonical_span_end);
+            }
+            // Expand to cover the full canonical range of the
+            // overlapping mutation.
             if m_start < mutated_start {
                 // Mutation starts before our span — snap start to
                 // the canonical start of this mutation.
@@ -175,30 +181,11 @@ mod tests {
 
     #[test]
     fn span_exactly_covers_mutation() {
-        // Span = the mutation itself
+        // Span exactly matches the mutation range.
+        // "he" (2 bytes at 10..12) → "Albert Einstein" (15 bytes at 10..25)
+        // When span = mutation, we should return the canonical range directly.
         let ledger = vec![make_entry((10, 12), "he", (10, 25), "Albert Einstein")];
-        // mutated_start=10 >= m_start=10 and mutated_end=25 <= m_end=25
-        // delta = +13, cumulative_delta = 13
-        // canonical_start = 10 - 13 = -3 → clamped to 0? No wait...
-        // Actually the mutation starts at m_start=10 which is NOT < mutated_start=10
-        // And m_end=25 which is NOT > mutated_end=25
-        // So the mutation is fully contained: cumulative_delta += 13
-        // canonical_start = 10 - 13 = -3 → clamped to 0
-        // Hmm, that's wrong. Let me think again...
-        //
-        // Actually when the span exactly covers the mutation, the mutation IS
-        // the content. The canonical range should be (10, 12).
-        // With delta=13: 10-13=-3, 25-13=12. Clamp: (0, 12).
-        // This is slightly wrong — start should be 10, not 0.
-        // The issue is that when a span exactly matches a mutation,
-        // we should return the canonical range directly.
-        //
-        // For now, the conservative expansion covers the right content.
-        // TODO: handle exact-match case more precisely.
-        let result = reverse_project(10, 25, &ledger);
-        // The canonical content (10, 12) should be covered by the result.
-        assert!(result.0 <= 10);
-        assert!(result.1 >= 12);
+        assert_eq!(reverse_project(10, 25, &ledger), (10, 12));
     }
 
     #[test]
