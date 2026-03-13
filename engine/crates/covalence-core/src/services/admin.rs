@@ -715,11 +715,11 @@ impl AdminService {
         min_cooccurrences: i64,
         max_degree: i64,
     ) -> Result<CooccurrenceResult> {
-        // Single SQL query: find co-occurring entity pairs where at
-        // least one entity is poorly connected. This avoids pulling
-        // all 151K pairs into Rust — the DB does the heavy filtering.
+        // Find co-occurring entity pairs from both chunk-level and
+        // statement-level extractions, where at least one entity is
+        // poorly connected. The DB does the heavy filtering.
         let rows: Vec<(uuid::Uuid, uuid::Uuid, i64)> = sqlx::query_as(
-            "WITH pair_freq AS ( \
+            "WITH chunk_pairs AS ( \
                 SELECT e1.entity_id AS n1, e2.entity_id AS n2, \
                        count(DISTINCT e1.chunk_id) AS freq \
                 FROM extractions e1 \
@@ -730,8 +730,32 @@ impl AdminService {
                   AND e2.entity_type = 'node' \
                   AND e1.is_superseded = false \
                   AND e2.is_superseded = false \
+                  AND e1.chunk_id IS NOT NULL \
                 GROUP BY e1.entity_id, e2.entity_id \
-                HAVING count(DISTINCT e1.chunk_id) >= $1 \
+            ), \
+            stmt_pairs AS ( \
+                SELECT e1.entity_id AS n1, e2.entity_id AS n2, \
+                       count(DISTINCT e1.statement_id) AS freq \
+                FROM extractions e1 \
+                JOIN extractions e2 \
+                  ON e1.statement_id = e2.statement_id \
+                 AND e1.entity_id < e2.entity_id \
+                WHERE e1.entity_type = 'node' \
+                  AND e2.entity_type = 'node' \
+                  AND e1.is_superseded = false \
+                  AND e2.is_superseded = false \
+                  AND e1.statement_id IS NOT NULL \
+                GROUP BY e1.entity_id, e2.entity_id \
+            ), \
+            pair_freq AS ( \
+                SELECT n1, n2, SUM(freq)::bigint AS freq \
+                FROM ( \
+                    SELECT n1, n2, freq FROM chunk_pairs \
+                    UNION ALL \
+                    SELECT n1, n2, freq FROM stmt_pairs \
+                ) combined \
+                GROUP BY n1, n2 \
+                HAVING SUM(freq) >= $1 \
             ), \
             node_degree AS ( \
                 SELECT n.id, \
