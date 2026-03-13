@@ -16,6 +16,7 @@ var (
 	searchSourceLayers  []string
 	searchMode          string
 	searchGranularity   string
+	searchHierarchical  bool
 )
 
 var searchCmd = &cobra.Command{
@@ -49,6 +50,9 @@ var searchCmd = &cobra.Command{
 		}
 		if searchGranularity != "section" {
 			body["granularity"] = searchGranularity
+		}
+		if searchHierarchical {
+			body["hierarchical"] = true
 		}
 
 		if searchMode == "context" {
@@ -194,6 +198,8 @@ func init() {
 		"Delivery mode: results (default) or context")
 	searchCmd.Flags().StringVar(&searchGranularity, "granularity", "section",
 		"Content granularity: section (default), paragraph, or source")
+	searchCmd.Flags().BoolVar(&searchHierarchical, "hierarchical", false,
+		"Enable coarse-to-fine hierarchical search (source-gated)")
 	rootCmd.AddCommand(searchCmd)
 }
 

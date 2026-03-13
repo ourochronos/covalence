@@ -127,10 +127,17 @@ pub async fn search(
     };
 
     let limit = req.limit.unwrap_or(10).min(200);
-    let mut results = state
-        .search_service
-        .search(&req.query, strategy, limit, filters)
-        .await?;
+    let mut results = if req.hierarchical {
+        state
+            .search_service
+            .search_hierarchical(&req.query, strategy, limit, filters)
+            .await?
+    } else {
+        state
+            .search_service
+            .search(&req.query, strategy, limit, filters)
+            .await?
+    };
 
     // --- Granularity adjustment ---
     apply_granularity(&state, &req.granularity, &mut results).await;

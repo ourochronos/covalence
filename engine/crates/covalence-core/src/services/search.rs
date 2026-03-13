@@ -189,7 +189,7 @@ impl SearchService {
         }
     }
 
-    /// Execute a fused search across all dimensions.
+    /// Execute a fused search across all dimensions (standard flat).
     ///
     /// Pipeline:
     /// 1. Check semantic query cache (if enabled)
@@ -209,6 +209,34 @@ impl SearchService {
         strategy: SearchStrategy,
         limit: usize,
         filters: Option<SearchFilters>,
+    ) -> Result<Vec<FusedResult>> {
+        self.search_inner(query, strategy, limit, filters, false)
+            .await
+    }
+
+    /// Execute a hierarchical (coarse-to-fine) search.
+    ///
+    /// Finds relevant sources first via source embeddings, then
+    /// restricts chunk retrieval to those sources. This eliminates
+    /// "right paragraph, wrong document" mismatches.
+    pub async fn search_hierarchical(
+        &self,
+        query: &str,
+        strategy: SearchStrategy,
+        limit: usize,
+        filters: Option<SearchFilters>,
+    ) -> Result<Vec<FusedResult>> {
+        self.search_inner(query, strategy, limit, filters, true)
+            .await
+    }
+
+    async fn search_inner(
+        &self,
+        query: &str,
+        strategy: SearchStrategy,
+        limit: usize,
+        filters: Option<SearchFilters>,
+        hierarchical: bool,
     ) -> Result<Vec<FusedResult>> {
         let start = Instant::now();
         let time_range = filters.as_ref().and_then(|f| f.date_range);
@@ -343,6 +371,7 @@ impl SearchService {
             limit: internal_limit,
             time_range,
             embedding: query_embedding.clone(),
+            hierarchical,
             ..SearchQuery::default()
         };
 

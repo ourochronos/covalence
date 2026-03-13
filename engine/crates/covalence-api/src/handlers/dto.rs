@@ -221,6 +221,10 @@ pub struct SearchRequest {
     /// or `source`.
     #[serde(default)]
     pub granularity: SearchGranularity,
+    /// Enable hierarchical (coarse-to-fine) search. Finds relevant
+    /// sources first, then retrieves chunks only from those sources.
+    #[serde(default)]
+    pub hierarchical: bool,
 }
 
 /// A single fused search result.

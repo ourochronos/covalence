@@ -74,6 +74,10 @@ pub struct SearchQuery {
     pub strategy: SearchStrategy,
     /// Maximum number of results to return per dimension.
     pub limit: usize,
+    /// Enable hierarchical (coarse-to-fine) retrieval: search
+    /// summaries/sources first, then restrict chunk search to
+    /// the top-K most relevant sources.
+    pub hierarchical: bool,
 }
 
 impl Default for SearchQuery {
@@ -85,6 +89,7 @@ impl Default for SearchQuery {
             seed_nodes: Vec::new(),
             strategy: SearchStrategy::default(),
             limit: 10,
+            hierarchical: false,
         }
     }
 }
