@@ -906,6 +906,34 @@ impl SearchService {
             }
         }
 
+        // --- Step 8c: Code-chunk demotion ---
+        // Chunks from `code` sources contain keywords (function
+        // names, command descriptions) that match lexically but
+        // rarely answer conceptual queries. Dampen their scores
+        // so they appear lower in results.
+        {
+            let mut code_demoted = 0usize;
+            for result in &mut fused {
+                if result.source_type.as_deref() == Some("code")
+                    && result.result_type.as_deref() != Some("node")
+                {
+                    result.fused_score *= 0.5;
+                    code_demoted += 1;
+                }
+            }
+            if code_demoted > 0 {
+                tracing::debug!(
+                    code_demoted,
+                    "demoted code-source chunks in search results"
+                );
+                fused.sort_by(|a, b| {
+                    b.fused_score
+                        .partial_cmp(&a.fused_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+
         // --- Step 9: Reranking ---
         // Build documents for the reranker. Prefer snippet, then
         // name, then truncated content. Vector-only chunk results
