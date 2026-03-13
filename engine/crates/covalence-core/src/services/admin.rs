@@ -1304,13 +1304,11 @@ impl AdminService {
                     new_props["semantic_summary"] = serde_json::json!(&summary);
 
                     sqlx::query(
-                        "UPDATE nodes SET properties = $2, \
-                             description = $3 \
+                        "UPDATE nodes SET properties = $2 \
                          WHERE id = $1",
                     )
                     .bind(id)
                     .bind(&new_props)
-                    .bind(&summary)
                     .execute(self.repo.pool())
                     .await?;
 
@@ -1319,12 +1317,29 @@ impl AdminService {
                     match embedder.embed(&[embed_text]).await {
                         Ok(embeddings) => {
                             if let Some(emb) = embeddings.first() {
-                                if let Ok(truncated) = truncate_and_validate(emb, node_dim, "nodes")
-                                {
-                                    let nid = crate::types::ids::NodeId::from_uuid(*id);
-                                    let _ =
-                                        NodeRepo::update_embedding(&*self.repo, nid, &truncated)
-                                            .await;
+                                match truncate_and_validate(emb, node_dim, "nodes") {
+                                    Ok(truncated) => {
+                                        let nid = crate::types::ids::NodeId::from_uuid(*id);
+                                        if let Err(e) =
+                                            NodeRepo::update_embedding(&*self.repo, nid, &truncated)
+                                                .await
+                                        {
+                                            tracing::warn!(
+                                                node = %name,
+                                                error = %e,
+                                                "embedding storage after summary failed"
+                                            );
+                                            failed += 1;
+                                            continue;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            node = %name,
+                                            error = %e,
+                                            "embedding truncation after summary failed"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1478,6 +1493,11 @@ impl AdminService {
                     "bridge edge created"
                 );
             }
+        }
+
+        // Reload graph sidecar so new edges are visible to graph-dimension searches.
+        if edges_created > 0 {
+            full_reload(self.repo.pool(), self.graph.clone()).await?;
         }
 
         let audit = AuditLog::new(

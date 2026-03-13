@@ -647,6 +647,9 @@ fn extract_go_node(
         "type_declaration" => {
             extract_go_type_decl(source, node, entities, relationships);
         }
+        "const_declaration" | "var_declaration" => {
+            extract_go_const_var(source, node, entities);
+        }
         _ => {}
     }
 }
@@ -780,7 +783,7 @@ fn extract_go_type_spec(
             let methods = count_go_interface_methods(type_node.as_ref().unwrap());
             ("trait", format!("Go interface with {methods} methods"))
         }
-        _ => ("struct", "Go type alias".to_string()),
+        _ => ("type_alias", "Go type alias".to_string()),
     };
 
     entities.push(ExtractedEntity {
@@ -801,6 +804,40 @@ fn extract_go_type_spec(
                     rel_type: "extends".to_string(),
                     description: None,
                     confidence: 1.0,
+                });
+            }
+        }
+    }
+}
+
+/// Extract Go package-level const or var declarations.
+fn extract_go_const_var(
+    source: &str,
+    node: &tree_sitter::Node,
+    entities: &mut Vec<ExtractedEntity>,
+) {
+    let kind = node.kind(); // "const_declaration" or "var_declaration"
+    let entity_type = if kind == "const_declaration" {
+        "constant"
+    } else {
+        "variable"
+    };
+
+    // Each const/var declaration may have multiple specs.
+    for i in 0..node.child_count() as u32 {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if child.kind() == "const_spec" || child.kind() == "var_spec" {
+            if let Some(name) = child_text_by_field(source, &child, "name") {
+                let type_hint = child_text_by_field(source, &child, "type")
+                    .unwrap_or_else(|| "(inferred)".to_string());
+                entities.push(ExtractedEntity {
+                    name,
+                    entity_type: entity_type.to_string(),
+                    description: Some(format!("Go {kind}: {type_hint}")),
+                    confidence: 1.0,
+                    metadata: ast_metadata(source, &child),
                 });
             }
         }
