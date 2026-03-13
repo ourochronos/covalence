@@ -12,10 +12,10 @@ use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
-    ChatBackend, CliChatBackend, ConverterRegistry, FastcorefClient, GlinerExtractor,
-    HttpChatBackend, LlmExtractor, LlmSectionCompiler, LlmStatementExtractor, OpenAiEmbedder,
-    PdfConverter, PgResolver, ReaderLmConverter, SidecarExtractor, TwoPassExtractor, VoyageConfig,
-    VoyageEmbedder, fingerprint_config_from,
+    ChatBackend, CliChatBackend, ConverterRegistry, FallbackChatBackend, FastcorefClient,
+    GlinerExtractor, HttpChatBackend, LlmExtractor, LlmSectionCompiler, LlmStatementExtractor,
+    OpenAiEmbedder, PdfConverter, PgResolver, ReaderLmConverter, SidecarExtractor,
+    TwoPassExtractor, VoyageConfig, VoyageEmbedder, fingerprint_config_from,
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
@@ -283,6 +283,10 @@ impl AppState {
         }
 
         // Build the chat backend (shared by statement pipeline + admin endpoints).
+        //
+        // When "cli" is selected and HTTP credentials exist, a
+        // FallbackChatBackend wraps CLI→HTTP so quota exhaustion
+        // is handled transparently.
         let chat_backend: Option<Arc<dyn ChatBackend>> = {
             let chat_model = config
                 .pipeline
@@ -290,25 +294,46 @@ impl AppState {
                 .clone()
                 .unwrap_or_else(|| config.chat_model.clone());
 
+            let http_key = config
+                .chat_api_key
+                .as_ref()
+                .or(config.openai_api_key.as_ref())
+                .cloned();
+
             if config.chat_backend == "cli" {
-                tracing::info!(
-                    command = %config.chat_cli_command,
-                    model = %chat_model,
-                    "using CLI chat backend"
-                );
-                Some(Arc::new(CliChatBackend::new(
+                let cli = Box::new(CliChatBackend::new(
                     config.chat_cli_command.clone(),
-                    chat_model,
-                )) as Arc<dyn ChatBackend>)
+                    chat_model.clone(),
+                ));
+
+                if let Some(key) = http_key {
+                    tracing::info!(
+                        command = %config.chat_cli_command,
+                        model = %chat_model,
+                        "using CLI chat backend with HTTP fallback"
+                    );
+                    let http = Box::new(HttpChatBackend::new(
+                        config.chat_model.clone(),
+                        key,
+                        config.chat_base_url.clone(),
+                    ));
+                    Some(Arc::new(FallbackChatBackend::new(cli, http)) as Arc<dyn ChatBackend>)
+                } else {
+                    tracing::info!(
+                        command = %config.chat_cli_command,
+                        model = %chat_model,
+                        "using CLI chat backend (no HTTP fallback)"
+                    );
+                    Some(Arc::new(CliChatBackend::new(
+                        config.chat_cli_command.clone(),
+                        chat_model,
+                    )) as Arc<dyn ChatBackend>)
+                }
             } else {
-                let chat_key = config
-                    .chat_api_key
-                    .as_ref()
-                    .or(config.openai_api_key.as_ref());
-                chat_key.map(|key| {
+                http_key.map(|key| {
                     Arc::new(HttpChatBackend::new(
                         chat_model,
-                        key.clone(),
+                        key,
                         config.chat_base_url.clone(),
                     )) as Arc<dyn ChatBackend>
                 })

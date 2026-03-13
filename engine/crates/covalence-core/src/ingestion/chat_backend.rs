@@ -216,6 +216,56 @@ impl ChatBackend for CliChatBackend {
     }
 }
 
+// ── Fallback backend (CLI → HTTP) ───────────────────────────────
+
+/// Chat backend that tries the CLI first and falls back to HTTP
+/// on any error (quota exhaustion, command not found, etc.).
+///
+/// This is the recommended backend for production: it prefers
+/// the free Gemini CLI quota, but seamlessly degrades to the
+/// paid OpenRouter HTTP API when quota is exhausted.
+pub struct FallbackChatBackend {
+    /// Primary backend (typically CLI).
+    primary: Box<dyn ChatBackend>,
+    /// Fallback backend (typically HTTP).
+    fallback: Box<dyn ChatBackend>,
+}
+
+impl FallbackChatBackend {
+    /// Create a new fallback backend.
+    pub fn new(primary: Box<dyn ChatBackend>, fallback: Box<dyn ChatBackend>) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+#[async_trait::async_trait]
+impl ChatBackend for FallbackChatBackend {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        json_mode: bool,
+        temperature: f64,
+    ) -> Result<String> {
+        match self
+            .primary
+            .chat(system_prompt, user_prompt, json_mode, temperature)
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(primary_err) => {
+                tracing::warn!(
+                    error = %primary_err,
+                    "primary chat backend failed, falling back to secondary"
+                );
+                self.fallback
+                    .chat(system_prompt, user_prompt, json_mode, temperature)
+                    .await
+            }
+        }
+    }
+}
+
 // ── HTTP serialization types ────────────────────────────────────
 
 #[derive(Serialize)]
