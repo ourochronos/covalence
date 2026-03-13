@@ -54,6 +54,18 @@ var sourceAddCmd = &cobra.Command{
 		}
 		if sourceAddURI != "" {
 			body["uri"] = sourceAddURI
+		} else {
+			// Auto-derive file:// URI from the path. Use the path
+			// relative to the git repo root for portability; fall
+			// back to the absolute path if outside a repo.
+			absPath, _ := filepath.Abs(filePath)
+			uri := "file://" + absPath
+			if repoRoot := findRepoRoot(absPath); repoRoot != "" {
+				if rel, err := filepath.Rel(repoRoot, absPath); err == nil {
+					uri = "file://" + rel
+				}
+			}
+			body["uri"] = uri
 		}
 
 		client := newClient()
@@ -290,6 +302,21 @@ func detectMIME(path string) string {
 		return "text/x-python"
 	default:
 		return "text/plain"
+	}
+}
+
+// findRepoRoot walks up from dir looking for a .git directory.
+// Returns the repo root path or "" if not inside a git repo.
+func findRepoRoot(dir string) string {
+	for {
+		if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
 	}
 }
 
