@@ -281,8 +281,16 @@ impl SearchService {
         // keys on (embedding, strategy) only, so cached results would
         // bypass min_confidence, node_types, source_types,
         // source_layers, and date_range filters.
+        //
+        // Also skip cache for Auto strategy — SkewRoute adaptively
+        // selects a strategy per query, so caching under "auto" would
+        // conflate results from different resolved strategies. The
+        // store step keys on the *resolved* strategy, so explicit
+        // strategy queries can still hit cache entries populated by
+        // Auto queries that resolved to the same strategy.
         let has_post_filters = filters.is_some();
-        if !has_post_filters {
+        let is_auto = strategy == SearchStrategy::Auto;
+        if !has_post_filters && !is_auto {
             if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
                 let strategy_str = strategy_name(&strategy);
                 match cache.lookup(emb, strategy_str).await {
@@ -531,10 +539,15 @@ impl SearchService {
         // dimensions (quality-gated to near-zero) is redistributed
         // proportionally to active dimensions so effective weights
         // still sum to the strategy's intended total.
+        // Only count dimensions that were ORIGINALLY empty (no results
+        // at all), not dimensions whose lists were cleared by Step 5b2
+        // after dampening. Those dampened dimensions already contributed
+        // their weight reduction to `dampened_weight` — counting their
+        // residual near-zero weight here would double-count.
         let empty_weight: f64 = ranked_lists
             .iter()
             .zip(weights.iter())
-            .filter(|(list, _)| list.is_empty())
+            .filter(|(list, w)| list.is_empty() && **w >= 1e-12)
             .map(|(_, &w)| w)
             .sum();
         let total_redistribute = empty_weight + dampened_weight;
@@ -942,8 +955,8 @@ impl SearchService {
             if demoted_count > 0 {
                 tracing::debug!(
                     demoted_count,
-                    factor = ENTITY_DEMOTION_FACTOR,
-                    "demoted bare entity nodes in search results"
+                    "demoted bare entity nodes in search results \
+                     (1-dim=0.3, 2-dim=0.5, 3+-dim=0.7)"
                 );
                 trace.entities_demoted = demoted_count;
                 // Re-sort after demotion.
@@ -1217,7 +1230,10 @@ impl SearchService {
         // truncation so that a later query with a larger limit
         // returns all available results from cache.
         if let (Some(cache), Some(emb)) = (&self.cache, &query_embedding) {
-            let strategy_str = strategy_name(&strategy);
+            // Use the resolved strategy (not the caller's `Auto`)
+            // so queries that resolve to different strategies don't
+            // share a cache entry.
+            let strategy_str = strategy_name(&effective_strategy);
             if let Err(e) = cache.store(query, emb, strategy_str, &fused).await {
                 tracing::warn!(
                     error = %e,
