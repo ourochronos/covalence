@@ -84,15 +84,17 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     // Code syntax: angle brackets, double colons, parens, dots with
     // uppercase (Go/Rust method calls), backtick-wrapped, URL paths,
     // snake_case identifiers, function calls with ().
-    if trimmed.contains('<') && trimmed.contains('>') {
+    // NOTE: use `unquoted` for syntactic checks so that quoted entities
+    // like `"web_page"` are correctly detected after quote stripping.
+    if unquoted.contains('<') && unquoted.contains('>') {
         return true;
     }
-    if trimmed.contains("::") {
+    if unquoted.contains("::") {
         return true;
     }
     if entity_type == "concept"
-        && trimmed.contains('.')
-        && trimmed
+        && unquoted.contains('.')
+        && unquoted
             .split('.')
             .any(|p| p.starts_with(|c: char| c.is_uppercase()))
     {
@@ -103,26 +105,52 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         return true;
     }
     // Function-call syntax (e.g. "foo()", "self.bar()").
-    if trimmed.contains("()") {
+    if unquoted.contains("()") {
         return true;
     }
     // URL paths (e.g. "/admin/publish/:source_id").
-    if trimmed.starts_with('/') {
+    if unquoted.starts_with('/') {
         return true;
     }
     // Snake_case identifiers that look like code (at least two underscored
     // segments, e.g. "batch_futures", "active_resolver"). We exempt
     // well-known multi-word technical terms by requiring no spaces.
     if entity_type == "concept"
-        && !trimmed.contains(' ')
-        && trimmed.contains('_')
-        && trimmed.matches('_').count() >= 1
-        && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && !unquoted.contains(' ')
+        && unquoted.contains('_')
+        && unquoted.matches('_').count() >= 1
+        && unquoted.chars().all(|c| c.is_alphanumeric() || c == '_')
     {
         return true;
     }
     // Wildcard/glob suffixes (e.g. "aeval*", "an*").
-    if trimmed.ends_with('*') {
+    if unquoted.ends_with('*') {
+        return true;
+    }
+
+    // Rust/Go primitive types as entities: f64, i64, u8, &str, etc.
+    // These leak from code examples in papers and specs.
+    const PRIMITIVE_TYPES: &[&str] = &[
+        "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8",
+        "u16", "u32", "u64", "u128", "usize", "&str", "&mut",
+    ];
+    if PRIMITIVE_TYPES.contains(&unquoted) {
+        return true;
+    }
+
+    // Markdown italic (`_text_`) or bold (`**text**`) wrapping.
+    if unquoted.starts_with('_') && unquoted.ends_with('_') && unquoted.len() > 2 {
+        return true;
+    }
+    if unquoted.starts_with("**") && unquoted.ends_with("**") && unquoted.len() > 4 {
+        return true;
+    }
+
+    // Ampersand-prefixed type references (`&str`, `&[u8]`, `&self`).
+    if unquoted.starts_with('&')
+        && unquoted.len() > 1
+        && unquoted[1..].starts_with(|c: char| c.is_ascii_lowercase())
+    {
         return true;
     }
 
@@ -259,13 +287,11 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         return true;
     }
 
-    // Quote-wrapped sentences: the LLM sometimes wraps example text
+    // Quote-wrapped text: the LLM sometimes wraps example text
     // from the source in quotes and extracts it as an entity.
-    // e.g., `"He went to the store."`, `"You are helpful."`.
-    if unquoted != trimmed
-        && unquoted.contains(' ')
-        && unquoted.ends_with(|c: char| c == '.' || c == '!' || c == '?')
-    {
+    // Catch both sentences (`"He went to the store."`) and shorter
+    // quoted phrases (`"hello world"`, `"for example"`).
+    if unquoted != trimmed && unquoted.contains(' ') {
         return true;
     }
     // HTML entities (&#39; etc.)
@@ -617,7 +643,10 @@ mod tests {
     #[test]
     fn noise_entity_array_indexing() {
         assert!(is_noise_entity("items[i].score", "concept"));
-        assert!(is_noise_entity("json[\"response_format\"][\"type\"]", "concept"));
+        assert!(is_noise_entity(
+            "json[\"response_format\"][\"type\"]",
+            "concept"
+        ));
         assert!(is_noise_entity("[{parent.level}: {parent.ctx}]", "other"));
         // But markdown links [text](url) are caught by the markdown
         // link filter, not this one.
@@ -633,16 +662,59 @@ mod tests {
     }
 
     #[test]
-    fn noise_entity_quoted_sentences() {
+    fn noise_entity_quoted_multi_word() {
         assert!(is_noise_entity("\"He went to the store.\"", "other"));
         assert!(is_noise_entity("\"You are helpful.\"", "other"));
-        // Non-sentence quoted text (no trailing period) should pass.
-        assert!(!is_noise_entity("\"knowledge graph\"", "concept"));
+        // Multi-word quoted text without punctuation is also noise.
+        assert!(is_noise_entity("\"hello world\"", "concept"));
+        assert!(is_noise_entity("\"for example\"", "concept"));
+        assert!(is_noise_entity("\"Source type: document\"", "concept"));
+        // Single-word quoted text is fine (handled by other rules).
+        assert!(!is_noise_entity("\"knowledge_graph\"", "technology"));
     }
 
     #[test]
     fn noise_entity_doctype() {
         assert!(is_noise_entity("<!doctype", "concept"));
         assert!(is_noise_entity("<!DOCTYPE html>", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_rust_primitives() {
+        assert!(is_noise_entity("f64", "concept"));
+        assert!(is_noise_entity("i64", "concept"));
+        assert!(is_noise_entity("u8", "concept"));
+        assert!(is_noise_entity("usize", "concept"));
+        assert!(is_noise_entity("bool", "concept"));
+        assert!(is_noise_entity("&str", "concept"));
+        assert!(is_noise_entity("&mut", "concept"));
+        // But legitimate entities with these as substrings are fine.
+        assert!(!is_noise_entity("f64 precision arithmetic", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_markdown_italic_bold() {
+        assert!(is_noise_entity("_The Book of Why_", "concept"));
+        assert!(is_noise_entity("_emphasis text_", "concept"));
+        assert!(is_noise_entity("**bold text**", "concept"));
+        // Single underscore is already caught by short-name filter.
+        // Real entities with underscores in the middle are fine.
+        assert!(!is_noise_entity("pg_trgm", "technology"));
+    }
+
+    #[test]
+    fn noise_entity_ampersand_refs() {
+        assert!(is_noise_entity("&self", "concept"));
+        assert!(is_noise_entity("&str", "concept"));
+        // But &amp; is caught by HTML entity filter.
+        assert!(is_noise_entity("&amp;", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_quoted_snake_case() {
+        // Quoted snake_case identifiers — the unquoting + snake_case
+        // filter now catches these.
+        assert!(is_noise_entity("\"web_page\"", "concept"));
+        assert!(is_noise_entity("\"tool_output\"", "concept"));
     }
 }
