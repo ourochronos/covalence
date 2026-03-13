@@ -1216,6 +1216,14 @@ fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     if trimmed.contains('_') && trimmed.contains('^') {
         return true;
     }
+    // Short math expressions: "P(x)", "f(x)", "P(A|B)", etc.
+    if trimmed.len() < 10
+        && trimmed.contains('(')
+        && trimmed.contains(')')
+        && trimmed.chars().filter(|c| c.is_alphabetic()).count() <= 4
+    {
+        return true;
+    }
     // Unicode math symbols (excluding common ASCII).
     if trimmed
         .chars()
@@ -1228,6 +1236,9 @@ fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     // Generic English words that shouldn't be entities.
     const GENERIC_WORDS: &[&str] = &[
         "alias",
+        "association",
+        "auditable",
+        "biology",
         "brand",
         "charge",
         "checklist",
@@ -1236,35 +1247,42 @@ fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "collaboration",
         "compounds",
         "consequences",
+        "court",
         "covariates",
         "debate",
+        "diversify",
         "drugs",
+        "edges",
         "hobbies",
         "infrastructure",
         "likes",
-        "ownership",
-        "popularity",
-        "predicate",
-        "regret",
-        "spiciness",
-        "timeliness",
-        "warnings",
-        "auditable",
         "minima",
         "misaligned",
         "monotonicity",
+        "nodes",
         "numeric",
+        "ownership",
+        "popularity",
+        "possession",
+        "predicate",
+        "prepay",
         "purity",
+        "reactants",
+        "regret",
         "reversible",
         "reward",
-        "prepay",
-        "reactants",
-        "court",
-        "diversify",
-        "possession",
-        "association",
+        "spiciness",
+        "structural",
+        "timeliness",
+        "warnings",
     ];
     if entity_type == "concept" && !lower.contains(' ') && GENERIC_WORDS.contains(&lower.as_str()) {
+        return true;
+    }
+
+    // Multi-word generic phrases that shouldn't be entities.
+    const GENERIC_PHRASES: &[&str] = &["ai use", "vector space"];
+    if entity_type == "concept" && GENERIC_PHRASES.contains(&lower.as_str()) {
         return true;
     }
 
@@ -1343,5 +1361,33 @@ mod tests {
     fn not_noise_short_acronym() {
         assert!(!is_noise_entity("RRF", "concept"));
         assert!(!is_noise_entity("NLP", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_math_expression() {
+        assert!(is_noise_entity("P(x)", "concept"));
+        assert!(is_noise_entity("f(x)", "concept"));
+        assert!(is_noise_entity("P(A|B)", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_graph_terms() {
+        assert!(is_noise_entity("Nodes", "concept"));
+        assert!(is_noise_entity("edges", "concept"));
+        assert!(is_noise_entity("Structural", "concept"));
+        assert!(is_noise_entity("biology", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_generic_phrase() {
+        assert!(is_noise_entity("AI use", "concept"));
+        assert!(is_noise_entity("vector space", "concept"));
+    }
+
+    #[test]
+    fn not_noise_qualified_math() {
+        // Real entities that happen to contain parens.
+        assert!(!is_noise_entity("PageRank algorithm", "concept"));
+        assert!(!is_noise_entity("Precision@5 (search metric)", "concept"));
     }
 }
