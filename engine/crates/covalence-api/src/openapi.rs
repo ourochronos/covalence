@@ -64,6 +64,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::config_audit,
         admin::synthesize_cooccurrence,
         admin::cluster_ontology,
+        admin::resolve_tier5,
     ),
     components(schemas(
         dto::CreateSourceRequest,
@@ -126,6 +127,8 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::OntologyClusterRequest,
         dto::OntologyClusterItem,
         dto::OntologyClusterResponse,
+        dto::Tier5ResolveRequest,
+        dto::Tier5ResolveResponse,
         mcp::McpTool,
         mcp::McpToolCall,
         mcp::McpToolResult,

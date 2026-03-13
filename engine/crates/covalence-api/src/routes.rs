@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/cache/clear", post(admin::clear_cache))
         .route("/admin/knowledge-gaps", get(admin::knowledge_gaps))
         .route("/admin/config-audit", post(admin::config_audit))
+        .route("/admin/tier5/resolve", post(admin::resolve_tier5))
         .route(
             "/admin/edges/synthesize",
             post(admin::synthesize_cooccurrence),

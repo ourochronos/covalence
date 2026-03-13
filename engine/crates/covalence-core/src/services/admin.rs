@@ -776,6 +776,34 @@ impl AdminService {
             aliases_removed,
         })
     }
+
+    /// Run Tier 5 HDBSCAN batch resolution on the unresolved_entities pool.
+    ///
+    /// Fetches pending entities, embeds names, clusters with HDBSCAN,
+    /// and resolves each cluster to a canonical node. Noise entities
+    /// are promoted to individual nodes.
+    pub async fn resolve_tier5(
+        &self,
+        min_cluster_size: Option<usize>,
+    ) -> Result<crate::consolidation::tier5::Tier5Report> {
+        let embedder = self
+            .embedder
+            .as_ref()
+            .ok_or_else(|| Error::Config("no embedder configured for Tier 5 resolution".into()))?;
+
+        let node_embed_dim = self
+            .config
+            .as_ref()
+            .map(|c| c.embedding.table_dims.node)
+            .unwrap_or(256);
+
+        let config = crate::consolidation::tier5::Tier5Config {
+            min_cluster_size: min_cluster_size.unwrap_or(2),
+            node_embed_dim,
+        };
+
+        crate::consolidation::tier5::resolve_tier5(&self.repo, embedder.as_ref(), &config).await
+    }
 }
 
 #[cfg(test)]

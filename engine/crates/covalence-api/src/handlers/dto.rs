@@ -768,6 +768,30 @@ pub struct OntologyClusterResponse {
     pub noise_labels: Vec<String>,
 }
 
+// --- Tier 5 HDBSCAN Resolution ---
+
+/// Request body for Tier 5 HDBSCAN batch resolution.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct Tier5ResolveRequest {
+    /// Minimum cluster size for HDBSCAN (default 2).
+    pub min_cluster_size: Option<usize>,
+}
+
+/// Response for Tier 5 batch resolution.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Tier5ResolveResponse {
+    /// Total entities processed from the pool.
+    pub entities_processed: usize,
+    /// Number of clusters formed by HDBSCAN.
+    pub clusters_formed: usize,
+    /// Number of entities resolved via clustering.
+    pub clustered_resolved: usize,
+    /// Number of noise entities promoted to individual nodes.
+    pub noise_promoted: usize,
+    /// Number of entities skipped (no embedding).
+    pub skipped_no_embedding: usize,
+}
+
 // --- Knowledge Gaps ---
 
 /// Query parameters for knowledge gap detection.
