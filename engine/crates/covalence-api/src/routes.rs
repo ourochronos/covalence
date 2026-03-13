@@ -72,7 +72,12 @@ pub fn router(state: AppState) -> Router {
             "/admin/edges/synthesize",
             post(admin::synthesize_cooccurrence),
         )
-        .route("/admin/nodes/cleanup", post(admin::cleanup_noise_entities));
+        .route("/admin/nodes/cleanup", post(admin::cleanup_noise_entities))
+        .route(
+            "/admin/nodes/backfill-embeddings",
+            post(admin::backfill_node_embeddings),
+        )
+        .route("/admin/opinions/seed", post(admin::seed_opinions));
 
     // Resolve the dashboard directory relative to the working
     // directory. The binary is typically run from the repo root,

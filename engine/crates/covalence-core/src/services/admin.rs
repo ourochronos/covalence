@@ -191,6 +191,30 @@ pub struct NoiseCleanupResult {
     pub entities: Vec<NoiseEntityInfo>,
 }
 
+/// Result of backfilling node embeddings.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BackfillResult {
+    /// Total nodes found without embeddings.
+    pub total_missing: u64,
+    /// Nodes successfully embedded.
+    pub embedded: u64,
+    /// Nodes that failed to embed.
+    pub failed: u64,
+}
+
+/// Result of seeding epistemic opinions.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SeedOpinionsResult {
+    /// Nodes that received computed opinions from extractions.
+    pub nodes_seeded: u64,
+    /// Nodes set to vacuous opinion (no extractions).
+    pub nodes_vacuous: u64,
+    /// Edges that received computed opinions from extractions.
+    pub edges_seeded: u64,
+    /// Edges set to vacuous opinion (no extractions).
+    pub edges_vacuous: u64,
+}
+
 /// Compute knowledge gap candidates from the graph sidecar.
 ///
 /// Returns tuples of `(uuid, name, type, in_degree, out_degree)` for
@@ -981,6 +1005,176 @@ impl AdminService {
         };
 
         crate::consolidation::tier5::resolve_tier5(&self.repo, embedder.as_ref(), &config).await
+    }
+
+    /// Backfill embeddings for nodes that are missing them.
+    ///
+    /// Fetches all node IDs with `embedding IS NULL`, generates
+    /// embeddings from `canonical_name: description` text, and
+    /// stores them via `update_embedding`.
+    pub async fn backfill_node_embeddings(&self) -> Result<BackfillResult> {
+        use crate::ingestion::embedder::truncate_and_validate;
+
+        let embedder = self
+            .embedder
+            .as_ref()
+            .ok_or_else(|| Error::Config("no embedder configured".into()))?;
+
+        let node_dim = self
+            .config
+            .as_ref()
+            .map(|c| c.embedding.table_dims.node)
+            .unwrap_or(256);
+
+        // Fetch nodes missing embeddings.
+        let rows: Vec<(uuid::Uuid, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, canonical_name, description \
+             FROM nodes WHERE embedding IS NULL",
+        )
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        if rows.is_empty() {
+            return Ok(BackfillResult {
+                total_missing: 0,
+                embedded: 0,
+                failed: 0,
+            });
+        }
+
+        let total_missing = rows.len();
+        tracing::info!(total_missing, "backfilling node embeddings");
+
+        // Batch embed in chunks of 100.
+        let mut embedded = 0u64;
+        let mut failed = 0u64;
+        for batch in rows.chunks(100) {
+            let texts: Vec<String> = batch
+                .iter()
+                .map(|(_, name, desc)| match desc {
+                    Some(d) if !d.is_empty() => format!("{name}: {d}"),
+                    _ => name.clone(),
+                })
+                .collect();
+
+            match embedder.embed(&texts).await {
+                Ok(embeddings) => {
+                    for ((id, _, _), emb) in batch.iter().zip(embeddings.iter()) {
+                        match truncate_and_validate(emb, node_dim, "nodes") {
+                            Ok(truncated) => {
+                                let nid = crate::types::ids::NodeId::from_uuid(*id);
+                                if let Err(e) =
+                                    NodeRepo::update_embedding(&*self.repo, nid, &truncated).await
+                                {
+                                    tracing::warn!(node_id = %id, error = %e, "embed store failed");
+                                    failed += 1;
+                                } else {
+                                    embedded += 1;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(node_id = %id, error = %e, "truncate failed");
+                                failed += 1;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "batch embed failed");
+                    failed += batch.len() as u64;
+                }
+            }
+        }
+
+        let audit = AuditLog::new(
+            AuditAction::AdminAction,
+            "admin:backfill_node_embeddings".to_string(),
+            serde_json::json!({
+                "total_missing": total_missing,
+                "embedded": embedded,
+                "failed": failed,
+            }),
+        );
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        tracing::info!(embedded, failed, "backfill complete");
+        Ok(BackfillResult {
+            total_missing: total_missing as u64,
+            embedded,
+            failed,
+        })
+    }
+
+    /// Seed epistemic opinions on all nodes and edges from their
+    /// extraction records.
+    ///
+    /// Uses the batch cascade functions to compute Subjective Logic
+    /// opinions via cumulative fusion across all active extractions.
+    /// Nodes/edges with no extractions get vacuous opinions.
+    pub async fn seed_opinions(&self) -> Result<SeedOpinionsResult> {
+        use crate::epistemic::cascade::{recalculate_edge_opinions, recalculate_node_opinions};
+        use crate::types::ids::{EdgeId, NodeId};
+
+        // Fetch all node IDs.
+        let node_uuids: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM nodes")
+            .fetch_all(self.repo.pool())
+            .await?;
+        let node_ids: Vec<NodeId> = node_uuids.iter().map(|u| NodeId::from_uuid(*u)).collect();
+
+        // Fetch all edge IDs.
+        let edge_uuids: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM edges WHERE NOT is_synthetic")
+                .fetch_all(self.repo.pool())
+                .await?;
+        let edge_ids: Vec<EdgeId> = edge_uuids.iter().map(|u| EdgeId::from_uuid(*u)).collect();
+
+        tracing::info!(
+            nodes = node_ids.len(),
+            edges = edge_ids.len(),
+            "seeding opinions"
+        );
+
+        // Process nodes in batches of 500.
+        let mut node_result = crate::epistemic::cascade::CascadeResult::default();
+        for batch in node_ids.chunks(500) {
+            let r = recalculate_node_opinions(&*self.repo, batch).await?;
+            node_result.merge(&r);
+        }
+
+        // Process edges in batches of 500.
+        let mut edge_result = crate::epistemic::cascade::CascadeResult::default();
+        for batch in edge_ids.chunks(500) {
+            let r = recalculate_edge_opinions(&*self.repo, batch).await?;
+            edge_result.merge(&r);
+        }
+
+        let result = SeedOpinionsResult {
+            nodes_seeded: node_result.nodes_recalculated as u64,
+            nodes_vacuous: node_result.nodes_vacuated as u64,
+            edges_seeded: edge_result.edges_recalculated as u64,
+            edges_vacuous: edge_result.edges_vacuated as u64,
+        };
+
+        let audit = AuditLog::new(
+            AuditAction::AdminAction,
+            "admin:seed_opinions".to_string(),
+            serde_json::json!({
+                "nodes_seeded": result.nodes_seeded,
+                "nodes_vacuous": result.nodes_vacuous,
+                "edges_seeded": result.edges_seeded,
+                "edges_vacuous": result.edges_vacuous,
+            }),
+        );
+        AuditLogRepo::create(&*self.repo, &audit).await?;
+
+        tracing::info!(
+            nodes_seeded = result.nodes_seeded,
+            nodes_vacuous = result.nodes_vacuous,
+            edges_seeded = result.edges_seeded,
+            edges_vacuous = result.edges_vacuous,
+            "opinion seeding complete"
+        );
+        Ok(result)
     }
 }
 

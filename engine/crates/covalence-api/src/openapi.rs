@@ -66,6 +66,8 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::cluster_ontology,
         admin::resolve_tier5,
         admin::cleanup_noise_entities,
+        admin::backfill_node_embeddings,
+        admin::seed_opinions,
     ),
     components(schemas(
         dto::CreateSourceRequest,

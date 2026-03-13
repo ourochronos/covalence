@@ -6,14 +6,14 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, CommunityParams, CommunityResponse, ConfigAuditResponse, ConsolidateResponse,
-    CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse, DomainResponse, GcResponse,
-    GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
-    KnowledgeGapsResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse,
-    NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse,
-    PaginationParams, PublishResponse, RaptorResponse, ReloadResponse, SearchTraceResponse,
-    SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse,
-    TraceReplayResponse,
+    AuditLogResponse, BackfillResponse, CommunityParams, CommunityResponse, ConfigAuditResponse,
+    ConsolidateResponse, CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse,
+    DomainResponse, GcResponse, GraphStatsResponse, HealthResponse, KnowledgeGapItem,
+    KnowledgeGapParams, KnowledgeGapsResponse, MetricsResponse, NoiseCleanupRequest,
+    NoiseCleanupResponse, NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest,
+    OntologyClusterResponse, PaginationParams, PublishResponse, RaptorResponse, ReloadResponse,
+    SearchTraceResponse, SeedOpinionsResponse, SidecarHealthResponse, Tier5ResolveRequest,
+    Tier5ResolveResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -667,5 +667,48 @@ pub async fn cleanup_noise_entities(
         aliases_removed: result.aliases_removed,
         dry_run: result.dry_run,
         entities,
+    }))
+}
+
+/// Backfill embeddings for nodes that are missing them.
+#[utoipa::path(
+    post,
+    path = "/admin/nodes/backfill-embeddings",
+    responses(
+        (status = 200, description = "Backfill results",
+         body = BackfillResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn backfill_node_embeddings(
+    State(state): State<AppState>,
+) -> Result<Json<BackfillResponse>, ApiError> {
+    let result = state.admin_service.backfill_node_embeddings().await?;
+    Ok(Json(BackfillResponse {
+        total_missing: result.total_missing,
+        embedded: result.embedded,
+        failed: result.failed,
+    }))
+}
+
+/// Seed epistemic opinions on all nodes and edges.
+#[utoipa::path(
+    post,
+    path = "/admin/opinions/seed",
+    responses(
+        (status = 200, description = "Seeding results",
+         body = SeedOpinionsResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn seed_opinions(
+    State(state): State<AppState>,
+) -> Result<Json<SeedOpinionsResponse>, ApiError> {
+    let result = state.admin_service.seed_opinions().await?;
+    Ok(Json(SeedOpinionsResponse {
+        nodes_seeded: result.nodes_seeded,
+        nodes_vacuous: result.nodes_vacuous,
+        edges_seeded: result.edges_seeded,
+        edges_vacuous: result.edges_vacuous,
     }))
 }

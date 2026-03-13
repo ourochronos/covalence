@@ -627,6 +627,30 @@ pub struct NoiseCleanupResponse {
     pub entities: Vec<NoiseEntityItem>,
 }
 
+/// Response for embedding backfill.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackfillResponse {
+    /// Total nodes found without embeddings.
+    pub total_missing: u64,
+    /// Nodes successfully embedded.
+    pub embedded: u64,
+    /// Nodes that failed to embed.
+    pub failed: u64,
+}
+
+/// Response for opinion seeding.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SeedOpinionsResponse {
+    /// Nodes that received computed opinions from extractions.
+    pub nodes_seeded: u64,
+    /// Nodes set to vacuous opinion (no extractions).
+    pub nodes_vacuous: u64,
+    /// Edges that received computed opinions from extractions.
+    pub edges_seeded: u64,
+    /// Edges set to vacuous opinion (no extractions).
+    pub edges_vacuous: u64,
+}
+
 /// Request body for co-occurrence edge synthesis.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CooccurrenceRequest {
