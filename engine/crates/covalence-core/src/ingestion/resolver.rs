@@ -21,6 +21,9 @@ pub enum MatchType {
     Vector,
     /// No match found — new entity.
     New,
+    /// Deferred to Tier 5 (HDBSCAN clustering pool).
+    /// Entity is stored in `unresolved_entities` for batch resolution.
+    Deferred,
 }
 
 /// Result of resolving an extracted entity against the knowledge graph.

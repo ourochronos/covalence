@@ -504,8 +504,12 @@ impl SourceService {
                             entity,
                             ExtractionProvenance::Chunk(chunk_id),
                             extraction_method,
+                            input.source_id,
                         )
                         .await?;
+                    let Some(node_id) = node_id else {
+                        continue; // Deferred to Tier 5
+                    };
                     name_to_node.insert(entity.name.to_lowercase(), node_id);
 
                     if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
@@ -663,7 +667,8 @@ impl SourceService {
         entity: &crate::ingestion::extractor::ExtractedEntity,
         provenance: ExtractionProvenance,
         extraction_method: &str,
-    ) -> Result<NodeId> {
+        source_id: SourceId,
+    ) -> Result<Option<NodeId>> {
         use crate::ingestion::resolver::MatchType;
         use sqlx::Row;
 
@@ -686,6 +691,32 @@ impl SourceService {
         let (node_id, match_type) = if let Some(resolver) = active_resolver {
             let resolved = resolver.resolve(entity).await?;
             match resolved.match_type {
+                MatchType::Deferred => {
+                    // Route to unresolved_entities pool for Tier 5 HDBSCAN.
+                    let mut unresolved = crate::models::unresolved_entity::UnresolvedEntity::new(
+                        source_id,
+                        entity.name.clone(),
+                        entity.entity_type.clone(),
+                        entity.confidence,
+                    );
+                    unresolved.description = entity.description.clone();
+                    match &provenance {
+                        ExtractionProvenance::Chunk(cid) => {
+                            unresolved.chunk_id = Some(cid.into_uuid());
+                        }
+                        ExtractionProvenance::Statement(sid) => {
+                            unresolved.statement_id = Some(sid.into_uuid());
+                        }
+                    }
+                    use crate::storage::traits::UnresolvedEntityRepo;
+                    UnresolvedEntityRepo::create(self.repo.as_ref(), &unresolved).await?;
+                    tx.commit().await?;
+                    tracing::debug!(
+                        entity_name = %entity.name,
+                        "deferred entity to Tier 5 pool"
+                    );
+                    return Ok(None);
+                }
                 MatchType::New => {
                     let node = self.create_node_in_tx(&mut tx, entity).await?;
                     (node.id, MatchType::New)
@@ -765,7 +796,7 @@ impl SourceService {
 
         tx.commit().await?;
 
-        Ok(node_id)
+        Ok(Some(node_id))
     }
 
     /// Insert a new node inside an existing transaction.
@@ -962,8 +993,12 @@ impl SourceService {
                         entity,
                         ExtractionProvenance::Statement(stmt_id),
                         "llm_statement",
+                        source_id,
                     )
                     .await?;
+                let Some(node_id) = node_id else {
+                    continue; // Deferred to Tier 5
+                };
                 name_to_node.insert(entity.name.to_lowercase(), node_id);
                 entity_count += 1;
             }

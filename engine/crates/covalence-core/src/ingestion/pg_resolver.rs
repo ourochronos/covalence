@@ -67,6 +67,11 @@ pub struct PgResolver {
     /// checked against the candidate's 1-hop neighborhood. If no
     /// neighbor shares the entity type, the match is rejected.
     graph: Option<SharedGraph>,
+    /// When true, entities that fail all 4 resolution tiers are
+    /// returned as `MatchType::Deferred` instead of `MatchType::New`,
+    /// signaling the pipeline to route them to the unresolved_entities
+    /// pool for HDBSCAN batch clustering (Tier 5).
+    tier5_enabled: bool,
 }
 
 impl PgResolver {
@@ -80,6 +85,7 @@ impl PgResolver {
             vector_threshold: DEFAULT_VECTOR_THRESHOLD,
             node_embed_dim: 256,
             graph: None,
+            tier5_enabled: false,
         }
     }
 
@@ -92,6 +98,7 @@ impl PgResolver {
             vector_threshold: DEFAULT_VECTOR_THRESHOLD,
             node_embed_dim: 256,
             graph: None,
+            tier5_enabled: false,
         }
     }
 
@@ -113,7 +120,18 @@ impl PgResolver {
             vector_threshold,
             node_embed_dim: 256,
             graph: None,
+            tier5_enabled: false,
         }
+    }
+
+    /// Enable Tier 5 (HDBSCAN deferred resolution).
+    ///
+    /// When enabled, entities that fail all 4 resolution tiers are
+    /// returned as `MatchType::Deferred` instead of `MatchType::New`,
+    /// routing them to the unresolved_entities pool for batch clustering.
+    pub fn with_tier5(mut self, enabled: bool) -> Self {
+        self.tier5_enabled = enabled;
+        self
     }
 
     /// Set the target dimension for node embeddings.
@@ -431,11 +449,16 @@ impl EntityResolver for PgResolver {
             }
         }
 
-        // 5. No match — new entity.
+        // 5. No match — new entity or deferred to Tier 5.
+        let match_type = if self.tier5_enabled {
+            MatchType::Deferred
+        } else {
+            MatchType::New
+        };
         Ok(ResolvedEntity {
             node_id: None,
             canonical_name: entity.name.clone(),
-            match_type: MatchType::New,
+            match_type,
         })
     }
 }
@@ -606,5 +629,26 @@ mod tests {
         // "is_" alone should not strip to empty — the prefix
         // stripping only fires if something remains after removal.
         assert_eq!(normalize_rel_type("is_"), "is");
+    }
+
+    /// Verify MatchType::Deferred variant round-trips correctly.
+    #[test]
+    fn deferred_match_type_round_trips() {
+        let resolved = ResolvedEntity {
+            node_id: None,
+            canonical_name: "test".to_string(),
+            match_type: MatchType::Deferred,
+        };
+        assert_eq!(resolved.match_type, MatchType::Deferred);
+        assert!(resolved.node_id.is_none());
+    }
+
+    /// Verify with_tier5 builder compiles and is chainable.
+    #[test]
+    fn with_tier5_builder_compiles() {
+        fn _check_api() {
+            // Ensures with_tier5 signature is correct at compile time.
+            let _: fn(PgResolver, bool) -> PgResolver = PgResolver::with_tier5;
+        }
     }
 }

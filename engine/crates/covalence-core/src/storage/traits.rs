@@ -15,6 +15,7 @@ use crate::models::section::Section;
 use crate::models::source::Source;
 use crate::models::statement::Statement;
 use crate::models::trace::{SearchFeedback, SearchTrace};
+use crate::models::unresolved_entity::UnresolvedEntity;
 use crate::types::ids::{
     AliasId, ArticleId, AuditLogId, ChunkId, EdgeId, ExtractionId, NodeId, SectionId, SourceId,
     StatementId,
@@ -444,4 +445,35 @@ pub trait SectionRepo: Send + Sync {
 
     /// Count sections for a source.
     fn count_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<i64>> + Send;
+}
+
+/// Repository for [`UnresolvedEntity`] entries (Tier 5 HDBSCAN pool).
+pub trait UnresolvedEntityRepo: Send + Sync {
+    /// Insert a new unresolved entity.
+    fn create(&self, entity: &UnresolvedEntity) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get an unresolved entity by ID.
+    fn get(&self, id: uuid::Uuid) -> impl Future<Output = Result<Option<UnresolvedEntity>>> + Send;
+
+    /// List all pending (unresolved) entities.
+    fn list_pending(&self) -> impl Future<Output = Result<Vec<UnresolvedEntity>>> + Send;
+
+    /// List pending entities for a source.
+    fn list_by_source(
+        &self,
+        source_id: SourceId,
+    ) -> impl Future<Output = Result<Vec<UnresolvedEntity>>> + Send;
+
+    /// Mark an entity as resolved to a specific node.
+    fn mark_resolved(
+        &self,
+        id: uuid::Uuid,
+        node_id: NodeId,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Delete all unresolved entities for a source.
+    fn delete_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Count pending (unresolved) entities.
+    fn count_pending(&self) -> impl Future<Output = Result<i64>> + Send;
 }

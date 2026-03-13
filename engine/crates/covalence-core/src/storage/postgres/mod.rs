@@ -15,6 +15,7 @@ mod section;
 mod source;
 mod statement;
 mod trace;
+mod unresolved_entity;
 
 use sqlx::postgres::PgPoolOptions;
 

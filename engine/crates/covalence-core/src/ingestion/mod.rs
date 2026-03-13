@@ -21,6 +21,7 @@ pub mod openai_embedder;
 pub mod parser;
 pub mod pg_resolver;
 pub mod pii;
+pub mod projection;
 pub mod resolver;
 pub mod section_compiler;
 pub mod sidecar_extractor;
@@ -63,6 +64,7 @@ pub use openai_embedder::OpenAiEmbedder;
 pub use parser::{ParsedDocument, parse};
 pub use pg_resolver::PgResolver;
 pub use pii::{PiiDetector, PiiMatch, RegexPiiDetector};
+pub use projection::{reverse_project, reverse_project_batch, sort_ledger};
 pub use resolver::{EntityResolver, MatchType, MockResolver, ResolvedEntity};
 pub use section_compiler::{
     LlmSectionCompiler, MockSectionCompiler, SectionCompilationInput, SectionCompilationOutput,
