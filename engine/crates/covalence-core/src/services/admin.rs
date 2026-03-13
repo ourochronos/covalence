@@ -900,6 +900,16 @@ impl AdminService {
             )
             .await?;
 
+            // Clear unresolved_entities FK references before deletion
+            // to avoid FK violation if this node was a Tier 5 target.
+            sqlx::query(
+                "UPDATE unresolved_entities SET resolved_node_id = NULL \
+                 WHERE resolved_node_id = $1",
+            )
+            .bind(entity.node_id)
+            .execute(self.repo.pool())
+            .await?;
+
             if NodeRepo::delete(
                 &*self.repo,
                 crate::types::ids::NodeId::from_uuid(entity.node_id),
