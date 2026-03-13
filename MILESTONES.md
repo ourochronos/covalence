@@ -378,7 +378,7 @@ Comprehensive spec audit and implementation of all remaining gaps, plus per-tabl
 - [x] Voyage defaults: `voyage-3-large`, `output_dimension`, `input_type`
 - [x] 479 tests (436 core + 43 eval), clippy clean, fmt clean
 
-## Wave 8 — Gemini Flash 3.0 & Statement-First Architecture (In Progress)
+## Wave 8 — Gemini Flash 3.0 & Statement-First Architecture *(complete)*
 
 Execute the uncompromising `design/v2-migration-plan.md`:
 
@@ -391,7 +391,9 @@ Execute the uncompromising `design/v2-migration-plan.md`:
 - [x] Resolution: Add Tier 5 deferred routing in PgResolver (entities → unresolved_entities pool).
 - [x] Resolution: Implement HDBSCAN background worker for Tier 5 batch clustering.
 - [x] Cleanup: Delete legacy chunk landscape analysis logic (`landscape.rs`).
-- [ ] Migration: Wipe local graph and execute blue/green re-ingestion of all sources.
+- [x] Pipeline: Explicit code/prose divergence — code sources skip statement pipeline.
+
+**Note:** Blue/green re-ingestion tracked separately in #109. All pipeline code is complete.
 
 ## Future
 

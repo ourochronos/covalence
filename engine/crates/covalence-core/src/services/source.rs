@@ -498,10 +498,11 @@ impl SourceService {
             );
         }
 
-        // Run statement pipeline (parallel, opt-in).
+        // Run statement pipeline for prose sources (parallel, opt-in).
         // Statement failures are non-fatal: chunks and embeddings are
         // already persisted, so the source is still searchable.
-        if self.pipeline.statement_enabled {
+        // Code sources skip statements — they use AST extraction instead.
+        if self.pipeline.statement_enabled && !prepared.is_code {
             if let Some(ref stmt_extractor) = self.statement_extractor {
                 use super::statement_pipeline::{StatementPipelineInput, run_statement_pipeline};
                 match run_statement_pipeline(
@@ -678,10 +679,11 @@ impl SourceService {
             })
             .await?;
 
-        // Run statement pipeline (parallel, opt-in).
+        // Run statement pipeline for prose sources (parallel, opt-in).
         // Statement failures are non-fatal: chunks and embeddings are
         // already persisted, so the source is still searchable.
-        if self.pipeline.statement_enabled {
+        // Code sources skip statements — they use AST extraction instead.
+        if self.pipeline.statement_enabled && !prepared.is_code {
             if let Some(ref stmt_extractor) = self.statement_extractor {
                 // Incremental re-extraction: superset behavior with
                 // eviction (Phase 5, ADR-0015).
