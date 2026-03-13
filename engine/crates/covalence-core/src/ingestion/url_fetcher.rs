@@ -5,6 +5,7 @@
 //! metadata (title, author, date) from HTML content.
 
 use crate::error::{Error, Result};
+use crate::ingestion::utils::decode_html_entities;
 
 /// Result of fetching a URL.
 pub struct FetchResult {
@@ -305,18 +306,6 @@ fn extract_meta_property(html: &str, property: &str) -> Option<String> {
     }
 
     None
-}
-
-/// Decode common HTML entities.
-fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&#x27;", "'")
-        .replace("&nbsp;", " ")
 }
 
 #[cfg(test)]

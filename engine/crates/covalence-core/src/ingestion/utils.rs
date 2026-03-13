@@ -53,6 +53,18 @@ pub fn sanitize_latex_in_json(s: &str) -> String {
     out
 }
 
+/// Decode common HTML entities to their plain-text equivalents.
+pub fn decode_html_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
+}
+
 /// Strip markdown code fences (`` ```json ... ``` ``) from LLM output.
 ///
 /// Handles the common case where an LLM wraps its JSON response in
@@ -117,6 +129,25 @@ mod tests {
     #[test]
     fn zero_vector() {
         assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 2.0]), 0.0);
+    }
+
+    #[test]
+    fn decode_entities_basic() {
+        assert_eq!(decode_html_entities("a &amp; b"), "a & b");
+        assert_eq!(decode_html_entities("&lt;div&gt;"), "<div>");
+        assert_eq!(decode_html_entities("&quot;hi&quot;"), "\"hi\"");
+    }
+
+    #[test]
+    fn decode_entities_apostrophes() {
+        assert_eq!(decode_html_entities("it&#39;s"), "it's");
+        assert_eq!(decode_html_entities("it&apos;s"), "it's");
+        assert_eq!(decode_html_entities("it&#x27;s"), "it's");
+    }
+
+    #[test]
+    fn decode_entities_nbsp() {
+        assert_eq!(decode_html_entities("hello&nbsp;world"), "hello world");
     }
 
     #[test]

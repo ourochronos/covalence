@@ -21,6 +21,7 @@ use crate::ingestion::section_compiler::{
 };
 use crate::ingestion::statement_cluster::{ClusterConfig, cluster_statements};
 use crate::ingestion::statement_extractor::StatementExtractor;
+use crate::ingestion::utils::cosine_similarity;
 use crate::models::section::Section;
 use crate::models::statement::Statement;
 use crate::storage::postgres::PgRepo;
@@ -740,18 +741,6 @@ pub struct ReextractionResult {
     pub added: usize,
     /// Number of statements evicted.
     pub evicted: usize,
-}
-
-/// Cosine similarity between two vectors.
-fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a = a.iter().map(|x| x * x).sum::<f64>().sqrt();
-    let norm_b = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        0.0
-    } else {
-        dot / (norm_a * norm_b)
-    }
 }
 
 /// Compute window boundaries for sliding-window extraction.

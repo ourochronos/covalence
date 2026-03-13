@@ -6,6 +6,7 @@
 //! appropriate converter based on the content type of incoming data.
 
 use crate::error::{Error, Result};
+use crate::ingestion::utils::decode_html_entities;
 
 /// Trait for converting raw source content into Markdown.
 ///
@@ -564,16 +565,6 @@ fn remove_block_elements(html: &str) -> String {
         }
     }
     result
-}
-
-/// Decode a small set of common HTML entities.
-fn decode_html_entities(text: &str) -> String {
-    text.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&nbsp;", " ")
-        .replace("&#39;", "'")
 }
 
 /// Collapse runs of 3+ consecutive newlines into exactly 2, and trim
