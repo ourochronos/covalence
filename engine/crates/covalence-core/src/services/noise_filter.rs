@@ -18,6 +18,26 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     let trimmed = name.trim();
     let lower = trimmed.to_lowercase();
 
+    // Embedded newlines: entity names should be single-line.
+    if trimmed.contains('\n') {
+        return true;
+    }
+
+    // Named HTML entities (&amp;, &lt;, etc.) anywhere in the name.
+    if trimmed.contains("&amp;") || trimmed.contains("&lt;") || trimmed.contains("&gt;") {
+        return true;
+    }
+
+    // ALL_CAPS_SNAKE test constants (e.g., COVALENCE_TEST_CLAMP_12345).
+    if trimmed.contains('_')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && trimmed.chars().filter(|c| *c == '_').count() >= 2
+    {
+        return true;
+    }
+
     // Very short names (1-2 chars by char count) are noise unless
     // they're well-known abbreviations. Single letters like "C", "D",
     // "E" are mathematical variables from papers, not real entities.
@@ -474,5 +494,29 @@ mod tests {
     #[test]
     fn noise_entity_citation_fragment() {
         assert!(is_noise_entity("486(3-5):75\u{2013}174", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_embedded_newline() {
+        assert!(is_noise_entity(
+            "Just plain markdown\nwith no tables.",
+            "other"
+        ));
+    }
+
+    #[test]
+    fn noise_entity_html_named_entities() {
+        assert!(is_noise_entity(
+            "&amp; &lt; &gt; &quot; &nbsp; &#39;",
+            "concept"
+        ));
+    }
+
+    #[test]
+    fn noise_entity_test_constants() {
+        assert!(is_noise_entity("COVALENCE_TEST_CLAMP_12345", "other"));
+        assert!(is_noise_entity("MY_TEST_CONSTANT", "technology"));
+        // Single underscore in all-caps with non-concept type is OK.
+        assert!(!is_noise_entity("API_KEY", "technology"));
     }
 }
