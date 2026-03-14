@@ -555,7 +555,7 @@ fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
 /// instead of making its own HTTP calls.
 ///
 /// This is the preferred extractor when the pipeline uses a CLI-based
-/// chat backend (e.g. GitHub Copilot) — it reuses the same backend,
+/// chat backend (e.g. `copilot`, `gemini`) — it reuses the same backend,
 /// prompts, and JSON parsing as [`LlmExtractor`] but routes through
 /// the shared chat backend.
 pub struct ChatBackendExtractor {

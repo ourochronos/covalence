@@ -376,10 +376,17 @@ impl AppState {
             }
         }
 
-        // When a CLI chat backend is available, use it for entity
-        // extraction too — it's more reliable than the HTTP extractor
-        // (which may have exhausted API credits).
-        if config.chat_backend == "cli" {
+        // When a CLI chat backend is available and the entity extractor
+        // is the default LLM (HTTP-based), replace it with a
+        // ChatBackendExtractor that routes through the CLI — more
+        // reliable when HTTP API credits are exhausted. Don't replace
+        // sidecar/gliner2/two_pass which are intentionally configured.
+        if config.chat_backend == "cli"
+            && !matches!(
+                config.entity_extractor.as_str(),
+                "sidecar" | "gliner2" | "two_pass"
+            )
+        {
             if let Some(ref backend) = chat_backend {
                 tracing::info!("using chat backend for entity extraction (CLI mode)");
                 source_svc = source_svc
