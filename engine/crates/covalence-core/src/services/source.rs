@@ -263,6 +263,12 @@ impl SourceService {
         self
     }
 
+    /// Replace or set the entity/relationship extractor.
+    pub fn with_extractor(mut self, extractor: Arc<dyn Extractor>) -> Self {
+        self.extractor = Some(extractor);
+        self
+    }
+
     /// Set the statement extractor for the statement-first pipeline.
     pub fn with_statement_extractor(mut self, extractor: Arc<dyn StatementExtractor>) -> Self {
         self.statement_extractor = Some(extractor);

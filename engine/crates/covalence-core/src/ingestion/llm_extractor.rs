@@ -549,6 +549,60 @@ fn parse_extraction_json(json_str: &str) -> Result<ExtractionResult> {
     })
 }
 
+// ── ChatBackend-based extractor ─────────────────────────────────
+
+/// An entity/relationship extractor that delegates to a [`ChatBackend`]
+/// instead of making its own HTTP calls.
+///
+/// This is the preferred extractor when the pipeline uses a CLI-based
+/// chat backend (e.g. GitHub Copilot) — it reuses the same backend,
+/// prompts, and JSON parsing as [`LlmExtractor`] but routes through
+/// the shared chat backend.
+pub struct ChatBackendExtractor {
+    backend: std::sync::Arc<dyn crate::ingestion::chat_backend::ChatBackend>,
+}
+
+impl ChatBackendExtractor {
+    /// Create a new extractor wrapping the given chat backend.
+    pub fn new(backend: std::sync::Arc<dyn crate::ingestion::chat_backend::ChatBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait::async_trait]
+impl Extractor for ChatBackendExtractor {
+    async fn extract(&self, text: &str, context: &ExtractionContext) -> Result<ExtractionResult> {
+        if text.trim().is_empty() {
+            return Ok(ExtractionResult::default());
+        }
+
+        // Build user message with optional source metadata (same as LlmExtractor).
+        let mut user_msg = String::new();
+        if let Some(ref st) = context.source_type {
+            user_msg.push_str(&format!("Source type: {st}\n"));
+        }
+        if let Some(ref uri) = context.source_uri {
+            user_msg.push_str(&format!("Source URI: {uri}\n"));
+        }
+        if let Some(ref title) = context.source_title {
+            user_msg.push_str(&format!("Source title: {title}\n"));
+        }
+        if !user_msg.is_empty() {
+            user_msg.push_str("\n---\n\n");
+        }
+        user_msg.push_str(text);
+
+        let content = self
+            .backend
+            .chat(SYSTEM_PROMPT, &user_msg, true, 0.0)
+            .await?;
+
+        // Strip markdown fences (CLI backends often wrap JSON in ```).
+        let cleaned = crate::ingestion::utils::strip_markdown_fences(&content);
+        parse_extraction_json(&cleaned)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

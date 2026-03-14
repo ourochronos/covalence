@@ -12,10 +12,10 @@ use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
-    ChatBackend, CliChatBackend, ConverterRegistry, FallbackChatBackend, FastcorefClient,
-    GlinerExtractor, HttpChatBackend, LlmExtractor, LlmSectionCompiler, LlmStatementExtractor,
-    OpenAiEmbedder, PdfConverter, PgResolver, ReaderLmConverter, SidecarExtractor,
-    TwoPassExtractor, VoyageConfig, VoyageEmbedder, fingerprint_config_from,
+    ChatBackend, ChatBackendExtractor, CliChatBackend, ConverterRegistry, FallbackChatBackend,
+    FastcorefClient, GlinerExtractor, HttpChatBackend, LlmExtractor, LlmSectionCompiler,
+    LlmStatementExtractor, OpenAiEmbedder, PdfConverter, PgResolver, ReaderLmConverter,
+    SidecarExtractor, TwoPassExtractor, VoyageConfig, VoyageEmbedder, fingerprint_config_from,
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
@@ -243,6 +243,7 @@ impl AppState {
             }
         });
 
+        let has_http_extractor = extractor.is_some();
         let mut source_svc = SourceService::with_full_pipeline(
             Arc::clone(&repo),
             embedder.clone(),
@@ -372,6 +373,28 @@ impl AppState {
                     window_overlap = config.pipeline.statement_window_overlap,
                     "statement-first extraction pipeline enabled (with clustering + compilation)"
                 );
+            }
+        }
+
+        // When a CLI chat backend is available, use it for entity
+        // extraction too — it's more reliable than the HTTP extractor
+        // (which may have exhausted API credits).
+        if config.chat_backend == "cli" {
+            if let Some(ref backend) = chat_backend {
+                tracing::info!("using chat backend for entity extraction (CLI mode)");
+                source_svc = source_svc
+                    .with_extractor(Arc::new(ChatBackendExtractor::new(Arc::clone(backend)))
+                        as Arc<dyn Extractor>);
+            }
+        } else if !has_http_extractor {
+            if let Some(ref backend) = chat_backend {
+                tracing::info!(
+                    "no HTTP entity extractor available; \
+                     using chat backend for entity extraction"
+                );
+                source_svc = source_svc
+                    .with_extractor(Arc::new(ChatBackendExtractor::new(Arc::clone(backend)))
+                        as Arc<dyn Extractor>);
             }
         }
 

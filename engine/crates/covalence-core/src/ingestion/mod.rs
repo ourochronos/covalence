@@ -53,7 +53,7 @@ pub use fingerprint::{
     FingerprintConfig, FingerprintDrift, PipelineFingerprint, fingerprint_config_from,
 };
 pub use gliner_extractor::GlinerExtractor;
-pub use llm_extractor::LlmExtractor;
+pub use llm_extractor::{ChatBackendExtractor, LlmExtractor};
 pub use llm_statement_extractor::LlmStatementExtractor;
 pub use normalize::{
     ArtifactLinePass, BlankLineCollapsePass, ControlCharPass, InlineArtifactPass, MathJaxPass,
