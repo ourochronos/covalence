@@ -75,19 +75,23 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         }
     }
 
-    // Paper titles: concept entities with >50 chars are almost always
+    // Paper titles: concept entities with >55 chars are almost always
     // paper titles (real concepts are shorter).
-    if entity_type == "concept" && trimmed.len() > 50 {
+    if entity_type == "concept" && trimmed.len() > 55 {
         return true;
     }
     // Subtitle-style titles: "Topic: A Detailed Guide for YYYY".
+    // Requires colon separator, total >35 chars, and a 4-digit
+    // number that looks like a year (19xx or 20xx). Excludes ADR
+    // references which use "ADR-NNNN:" format.
     if entity_type == "concept"
         && trimmed.contains(": ")
-        && trimmed.len() > 30
-        && trimmed
-            .as_bytes()
-            .windows(4)
-            .any(|w| w.iter().all(|b| b.is_ascii_digit()))
+        && trimmed.len() > 35
+        && !trimmed.starts_with("ADR-")
+        && trimmed.as_bytes().windows(4).any(|w| {
+            w.iter().all(|b| b.is_ascii_digit())
+                && (w[0] == b'1' && w[1] == b'9' || w[0] == b'2' && w[1] == b'0')
+        })
     {
         return true;
     }
@@ -294,8 +298,8 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     // with question words.
     if entity_type == "concept" {
         const QUESTION_WORDS: &[&str] = &[
-            "what ", "how ", "why ", "when ", "where ", "who ", "which ",
-            "is ", "does ", "can ", "should ", "could ", "would ",
+            "what ", "how ", "why ", "when ", "where ", "who ", "which ", "is ", "does ", "can ",
+            "should ", "could ", "would ",
         ];
         if QUESTION_WORDS.iter().any(|q| lower.starts_with(q)) {
             return true;
@@ -353,10 +357,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     }
 
     // Ordinal date fragments: "1st April", "2nd March".
-    if entity_type == "event"
-        && trimmed.len() < 20
-        && trimmed.split_whitespace().count() == 2
-    {
+    if entity_type == "event" && trimmed.len() < 20 && trimmed.split_whitespace().count() == 2 {
         let first = trimmed.split_whitespace().next().unwrap_or("");
         if first.ends_with("st")
             || first.ends_with("nd")
@@ -933,29 +934,36 @@ mod tests {
 
     #[test]
     fn noise_entity_subtitle_titles() {
+        // Caught by subtitle-year: colon + >35 chars + 19xx/20xx year.
         assert!(is_noise_entity(
             "Roi Align: A Comprehensive Guide for 2025",
             "concept"
         ));
         assert!(is_noise_entity(
-            "Health Service Research Methodology: A Focus on AIDS",
+            "Health Service Research Methodology: Trends Since 2019",
             "concept"
         ));
         // Short or without year is fine.
         assert!(!is_noise_entity("Rate Limiting", "concept"));
+        // ADR references with colon + year are allowed.
+        assert!(!is_noise_entity(
+            "ADR-0009: Three-Timescale Consolidation Pipeline",
+            "concept"
+        ));
     }
 
     #[test]
-    fn noise_entity_lowered_title_threshold() {
-        // 55 chars was too generous; now 50.
+    fn noise_entity_long_concept_titles() {
+        // >55 chars — almost always paper titles, not real concepts.
         assert!(is_noise_entity(
-            "Roi Align: A Comprehensive Guide for the Year 2025!",
+            "A Survey of Graph Neural Networks for Knowledge Graph Completion Tasks",
             "concept"
         ));
-        // Real concepts under 50 chars are fine.
+        // Real concepts under 55 chars are fine.
         assert!(!is_noise_entity(
-            "Reciprocal Rank Fusion",
+            "emergent ontology with embedding-based normalization",
             "concept"
         ));
+        assert!(!is_noise_entity("Reciprocal Rank Fusion", "concept"));
     }
 }

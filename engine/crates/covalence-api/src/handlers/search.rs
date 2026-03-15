@@ -154,10 +154,7 @@ pub async fn search(
             is_reference_section, is_title_only,
         };
         results.retain(|r| {
-            let is_chunk = r
-                .result_type
-                .as_deref()
-                .is_none_or(|rt| rt == "chunk");
+            let is_chunk = r.result_type.as_deref().is_none_or(|rt| rt == "chunk");
             if !is_chunk {
                 return true;
             }
