@@ -24,6 +24,28 @@ async function apiFetch(path) {
   return res.json();
 }
 
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+async function apiPost(path, body) {
+  const opts = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
+  if (apiKey) {
+    opts.headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+  const res = await fetch(`${API_BASE}${path}`, opts);
+  if (!res.ok) {
+    throw new Error(`${res.status} ${res.statusText}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
 function fmt(n) {
   if (typeof n !== "number") return "--";
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -419,6 +441,47 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// --- Cross-Domain Analysis ---
+
+async function fetchAnalysis() {
+  try {
+    // Fire coverage, whitespace, and erosion in parallel
+    const [coverageRes, whitespaceRes, erosionRes] = await Promise.allSettled([
+      apiPost("/analysis/coverage", {}),
+      apiPost("/analysis/whitespace", { min_cluster_size: 3 }),
+      apiPost("/analysis/erosion", { threshold: 0.3 }),
+    ]);
+
+    if (coverageRes.status === "fulfilled") {
+      const c = coverageRes.value;
+      setText("coverage-score", `${(c.coverage_score * 100).toFixed(1)}%`);
+      setText("orphan-code", c.orphan_code.length);
+      setText("unimpl-specs", c.unimplemented_specs.length);
+    }
+
+    if (whitespaceRes.status === "fulfilled") {
+      const w = whitespaceRes.value;
+      setText("whitespace-score", `${(w.whitespace_score * 100).toFixed(1)}%`);
+    }
+
+    if (erosionRes.status === "fulfilled") {
+      const e = erosionRes.value;
+      setText("eroded-count", `${e.eroded_components.length}/${e.total_components}`);
+      const container = document.getElementById("erosion-details");
+      if (e.eroded_components.length > 0) {
+        container.innerHTML = e.eroded_components
+          .sort((a, b) => b.drift_score - a.drift_score)
+          .map(c => `<div class="list-item"><strong>${esc(c.component_name)}</strong> <span class="dim">drift: ${c.drift_score.toFixed(3)}, divergent: ${c.divergent_nodes.length}</span></div>`)
+          .join("");
+      } else {
+        container.innerHTML = '<div class="list-item dim">No erosion detected</div>';
+      }
+    }
+  } catch (err) {
+    console.warn("analysis fetch failed:", err);
+  }
+}
+
 async function refreshAll() {
   // Fire all fetches in parallel
   await Promise.allSettled([
@@ -432,6 +495,7 @@ async function refreshAll() {
     fetchGaps(),
     fetchMemory(),
     fetchTopology(),
+    fetchAnalysis(),
   ]);
   document.getElementById("last-refresh").textContent =
     `Last refresh: ${new Date().toLocaleTimeString()}`;
