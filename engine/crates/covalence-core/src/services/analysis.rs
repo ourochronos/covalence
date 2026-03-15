@@ -626,6 +626,10 @@ impl AnalysisService {
     }
 
     /// Create bridge edges from ANN match results, skipping duplicates.
+    ///
+    /// **Important:** `matches` must be sorted by ascending distance so the
+    /// early-exit `break` on `threshold` is correct.  All callers currently
+    /// pass the vector returned by `query_embeddings`, which is pre-sorted.
     async fn create_bridge_edges(
         &self,
         comp_id: uuid::Uuid,
@@ -1089,12 +1093,7 @@ impl AnalysisService {
         let mut total_unbridged = 0u64;
 
         for (source_id, title, uri, node_count, bridged_count) in &rows {
-            total_research += 1;
-            if *bridged_count > 0 {
-                continue; // This source has at least one bridge edge.
-            }
-
-            // Apply domain filter if specified (matches against title/URI).
+            // Apply domain filter first so both counts reflect the same set.
             if let Some(filter) = domain_filter {
                 let lower = filter.to_lowercase();
                 let matches = title.to_lowercase().contains(&lower)
@@ -1102,6 +1101,12 @@ impl AnalysisService {
                 if !matches {
                     continue;
                 }
+            }
+
+            total_research += 1;
+
+            if *bridged_count > 0 {
+                continue; // This source has at least one bridge edge.
             }
 
             total_unbridged += 1;
@@ -1535,7 +1540,13 @@ impl AnalysisService {
                     e.distance,
                     e.description
                         .as_deref()
-                        .map(|d| format!(": {}", &d[..d.len().min(120)]))
+                        .map(|d| {
+                            let mut end = d.len().min(120);
+                            while end > 0 && !d.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            format!(": {}", &d[..end])
+                        })
                         .unwrap_or_default()
                 ));
             }
@@ -1586,9 +1597,13 @@ impl AnalysisService {
                 serde_json::from_str(json_str)
             })
             .map_err(|e| {
+                let mut end = response.len().min(200);
+                while end > 0 && !response.is_char_boundary(end) {
+                    end -= 1;
+                }
                 tracing::warn!(
                     error = %e,
-                    response_preview = &response[..response.len().min(200)],
+                    response_preview = &response[..end],
                     "failed to parse critique synthesis"
                 );
                 Error::Ingestion(format!("failed to parse LLM critique: {e}"))
