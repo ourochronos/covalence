@@ -1118,8 +1118,12 @@ pub struct BlastRadiusHopResponse {
 /// Response for blast-radius simulation.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlastRadiusResponse {
-    /// The target node.
+    /// The target node ID.
+    pub target_node_id: Uuid,
+    /// The target node name.
     pub target_name: String,
+    /// The target node type.
+    pub target_node_type: String,
     /// Target's component (if assigned).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,

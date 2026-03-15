@@ -80,10 +80,10 @@ const COMPONENT_DEFS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Module path prefixes mapped to component names for PART_OF_COMPONENT linking.
+/// Module path segments mapped to component names for PART_OF_COMPONENT linking.
 ///
-/// Code nodes whose `properties.file_path` starts with one of these
-/// prefixes are linked to the corresponding Component.
+/// Code nodes whose source URI contains one of these path segments
+/// are linked to the corresponding Component.
 const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
     // Ingestion Pipeline
     ("src/ingestion/pipeline", "Ingestion Pipeline"),
