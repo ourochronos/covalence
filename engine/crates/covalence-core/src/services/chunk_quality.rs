@@ -230,6 +230,8 @@ pub fn is_bibliography_entry(text: &str) -> bool {
     }
 
     // Pattern: "- Author (Year)" or "- Author et al. (Year)"
+    // Also matches "\[YYYY\]" (escaped bracket) and "[YYYY]" year formats,
+    // and entries with ↑ markers (ArXiv HTML citation arrows).
     if first.starts_with("- ") && first.len() < 80 {
         // Check for "(YYYY)" pattern
         if first
@@ -238,6 +240,26 @@ pub fn is_bibliography_entry(text: &str) -> bool {
             .windows(6)
             .any(|w| w[0] == '(' && w[1..5].iter().all(|c| c.is_ascii_digit()) && w[5] == ')')
         {
+            return true;
+        }
+        // Check for "\[YYYY\]" or "[YYYY]" pattern (square bracket years)
+        if first.contains("\\[")
+            && first.contains("\\]")
+            && first
+                .as_bytes()
+                .windows(8) // "\[YYYY\]"
+                .any(|w| {
+                    w[0] == b'\\'
+                        && w[1] == b'['
+                        && w[6] == b'\\'
+                        && w[7] == b']'
+                        && w[2..6].iter().all(|b| b.is_ascii_digit())
+                })
+        {
+            return true;
+        }
+        // Check for ↑ marker (ArXiv citation arrow)
+        if first.contains('\u{2191}') {
             return true;
         }
     }
@@ -581,6 +603,23 @@ mod tests {
         assert!(is_bibliography_entry(
             "\\[42\\]\u{2191}\nSome Author et al.\n\nSome paper title."
         ));
+    }
+
+    #[test]
+    fn bibliography_entry_escaped_bracket_year() {
+        // "- Lee et al. \[2011\]↑" — ArXiv citation with escaped bracket year
+        assert!(is_bibliography_entry(
+            "- Lee et al. \\[2011\\]\u{2191}\nHeeyoung Lee, Yves Peirsman, \
+             Angel Chang, Nathanael Chambers, Mihai Surdeanu, and Dan Jurafsky.\n\n\
+             Stanford's multi-pass sieve coreference resolution system \
+             at the conll-2011 shared task."
+        ));
+    }
+
+    #[test]
+    fn bibliography_entry_arrow_without_bracket() {
+        // "- Author (year)↑" — citation with arrow marker
+        assert!(is_bibliography_entry("- Smith (2020)\u{2191}\nA paper."));
     }
 
     #[test]
