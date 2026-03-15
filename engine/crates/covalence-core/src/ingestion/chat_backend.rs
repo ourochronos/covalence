@@ -175,11 +175,14 @@ impl ChatBackend for CliChatBackend {
             prompt.push_str("\n\nBe precise and deterministic in your response.");
         }
 
+        // Run from /tmp to prevent CLI agents (gemini, copilot) from
+        // picking up the repo cwd and entering agentic/tool-use mode.
         let output = Command::new(&self.command)
             .arg("-p")
             .arg(&prompt)
             .arg("--model")
             .arg(&self.model)
+            .current_dir("/tmp")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

@@ -2,6 +2,7 @@ services:
   dev-pg:
     image: pgvector/pgvector:pg17
     container_name: covalence-dev-pg
+    restart: unless-stopped
     environment:
       POSTGRES_USER: covalence
       POSTGRES_PASSWORD: covalence
@@ -36,6 +37,7 @@ services:
   prod-pg:
     image: pgvector/pgvector:pg17
     container_name: covalence-prod-pg
+    restart: unless-stopped
     environment:
       POSTGRES_USER: covalence
       POSTGRES_PASSWORD: covalence
