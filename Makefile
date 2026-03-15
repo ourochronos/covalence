@@ -5,7 +5,8 @@
        cli-build cli-install \
        docker-up docker-down \
        ingest-codebase ingest-specs ingest-adrs ingest-prod \
-       reprocess-statements
+       reprocess-statements \
+       eval-search
 
 # === Engine ===
 
@@ -33,6 +34,16 @@ clippy:
 	cd engine && cargo clippy --workspace -- -D warnings
 
 check: fmt-check clippy test-unit
+
+# === Search Regression ===
+
+EVAL_API ?= http://localhost:8441
+
+eval-search:
+	cd engine && cargo run -p covalence-eval -- \
+		--layer search-regression \
+		--input crates/covalence-eval/fixtures/search_precision_baseline.json \
+		--api-url $(EVAL_API)
 
 # === Database: Dev (port 5435) ===
 

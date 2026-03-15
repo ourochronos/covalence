@@ -11,13 +11,15 @@ use covalence_eval::chunker_eval::{ChunkerEval, ChunkerInput};
 use covalence_eval::extractor_eval::{EvalEntity, ExtractorEval, ExtractorOutput};
 use covalence_eval::fixtures::load_fixture;
 use covalence_eval::search_eval::{RankedResult, SearchEval, SearchOutput};
+use covalence_eval::search_regression;
 
 /// Layer-by-layer evaluation harness for the Covalence pipeline.
 #[derive(Parser, Debug)]
 #[command(name = "covalence-eval")]
 #[command(about = "Evaluate individual Covalence pipeline layers")]
 struct Cli {
-    /// Which layer to evaluate: chunker, extractor, or search.
+    /// Which layer to evaluate: chunker, extractor, search,
+    /// or search-regression.
     #[arg(long)]
     layer: String,
 
@@ -33,6 +35,10 @@ struct Cli {
     #[arg(long, default_value = "10")]
     k: usize,
 
+    /// API URL for live evaluation (search-regression layer).
+    #[arg(long, default_value = "http://localhost:8441")]
+    api_url: String,
+
     /// Output as JSON instead of human-readable text.
     #[arg(long)]
     json: bool,
@@ -41,17 +47,24 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let fixture = load_fixture(&cli.input).context("failed to load fixture")?;
-
     match cli.layer.as_str() {
-        "chunker" => run_chunker_eval(&cli, &fixture),
-        "extractor" => run_extractor_eval(&cli, &fixture),
-        "search" => run_search_eval(&cli, &fixture),
-        other => {
-            anyhow::bail!(
-                "unknown layer '{other}': \
-                 expected chunker, extractor, or search"
-            );
+        "search-regression" => {
+            let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+            rt.block_on(run_search_regression(&cli))
+        }
+        _ => {
+            let fixture = load_fixture(&cli.input).context("failed to load fixture")?;
+            match cli.layer.as_str() {
+                "chunker" => run_chunker_eval(&cli, &fixture),
+                "extractor" => run_extractor_eval(&cli, &fixture),
+                "search" => run_search_eval(&cli, &fixture),
+                other => {
+                    anyhow::bail!(
+                        "unknown layer '{other}': expected chunker, \
+                         extractor, search, or search-regression"
+                    );
+                }
+            }
         }
     }
 }
@@ -178,6 +191,70 @@ fn run_search_eval(cli: &Cli, fixture: &covalence_eval::fixtures::EvalFixture) -
             println!("Result count:      {}", metrics.result_count);
             println!();
         }
+    }
+
+    Ok(())
+}
+
+async fn run_search_regression(cli: &Cli) -> Result<()> {
+    let baseline =
+        search_regression::load_baseline(&cli.input).context("failed to load search baseline")?;
+
+    println!(
+        "Running {} queries against {} ...",
+        baseline.queries.len(),
+        cli.api_url
+    );
+    println!(
+        "Baseline: P@5 = {:.2}, gate = {:.2}",
+        baseline.baseline_score, baseline.quality_gate
+    );
+    println!();
+
+    let report = search_regression::run_regression(&cli.api_url, &baseline).await?;
+
+    for qr in &report.queries {
+        let status = if qr.regressed { "REGR" } else { " OK " };
+        let count_delta = qr.live_count as i32 - qr.baseline_count as i32;
+        let delta_str = if count_delta >= 0 {
+            format!("+{count_delta}")
+        } else {
+            format!("{count_delta}")
+        };
+
+        println!(
+            "[{status}] \"{query}\"  baseline_p5={bp5:.1}  \
+             results={live}/{base} ({delta})",
+            query = qr.query,
+            bp5 = qr.baseline_p5,
+            live = qr.live_count,
+            base = qr.baseline_count,
+            delta = delta_str,
+        );
+
+        if !qr.top_results.is_empty() && !cli.json {
+            for (i, r) in qr.top_results.iter().enumerate() {
+                println!("       {}: {r}", i + 1);
+            }
+        }
+
+        if let Some(ref reason) = qr.regression_reason {
+            println!("       ** {reason}");
+        }
+
+        println!();
+    }
+
+    println!("---");
+    println!(
+        "Stable: {}/{}, Regressions: {}",
+        report.stable,
+        report.queries.len(),
+        report.regressions,
+    );
+
+    if report.regressions > 0 {
+        std::process::exit(1);
     }
 
     Ok(())

@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod ragas;
 pub mod regression;
 pub mod search_eval;
+pub mod search_regression;
 
 pub use chunker_eval::ChunkerEval;
 pub use error::{EvalError, Result};
