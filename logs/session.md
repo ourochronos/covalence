@@ -1110,11 +1110,76 @@ Session 33 completed section backfill for 27 sources, retried 10 large timed-out
 - Code review agent running
 
 ### Remaining Wave 9 Items
-- [ ] Whitespace roadmap (research cluster gap detection)
-- [ ] Research-to-execution verification
-- [ ] Dialectical design partner
+- [x] Whitespace roadmap (research cluster gap detection)
+- [x] Research-to-execution verification
+- [x] Dialectical design partner
 
 ### Insights
 - Coverage score of 2.9% reveals that the bridge is thin — most spec concepts have no IMPLEMENTS_INTENT links yet. This is because the linking only creates 5 edges per component (45 total max) while there are ~200 spec concepts. Consider increasing max_edges_per_component or running multiple passes with different similarity thresholds.
 - Module-path matching works well for Covalence's own code (219 edges) but won't generalize to external codebases without additional heuristics.
 - Erosion scores of 0.35-0.48 are all in the "moderate drift" range — expected because Component descriptions are high-level architecture summaries while code semantic summaries describe implementation details. The drift metric is more useful for *relative* comparison between components than absolute thresholds.
+
+---
+
+## Session 35 — 2026-03-15
+
+### Assessment
+- Active plan: Wave 9 (Cross-Domain Analysis), 3 remaining capabilities
+- Prior state: Session 34 completed Wave 9 Phase 1-2 (bootstrap, link, coverage, erosion, blast-radius), 1,235 tests
+- 3 unchecked boxes: whitespace roadmap, verify-implementation, dialectical critique
+
+### Executed
+**Branch:** `feature/wave9-remaining-analysis` — 3 commits
+
+1. **Whitespace roadmap** (`analysis.rs`): SQL joins sources→chunks→extractions→nodes with LEFT JOIN on THEORETICAL_BASIS edges, groups by source. Identifies research clusters with no bridge to Components. Optional domain filter. Whitespace score = unbridged/total.
+
+2. **Research-to-execution verification** (`analysis.rs`): Embeds query → ANN search research nodes → traces THEORETICAL_BASIS to Components → traces PART_OF_COMPONENT to code nodes. Alignment score = 1.0 - mean(research_dist + code_dist)/2.
+
+3. **Dialectical critique** (`analysis.rs`): Embeds proposal → searches 3 domains (research, spec, code) independently → optional LLM synthesis via ChatBackend. Structured prompt returns JSON with counter_arguments (claim+evidence+strength) and supporting_arguments (claim+evidence) plus recommendation.
+
+4. **API layer**: 3 new handlers, 14 new DTO types, OpenAPI schema entries, route registration, state wiring (ChatBackend passed to AnalysisService).
+
+5. **Code review fixes** (3rd commit): char-boundary safe truncation at 2 locations, whitespace score domain filter ordering fix, doc comment on create_bridge_edges sort-order requirement.
+
+### Technical Decisions
+- `AnalysisService` now takes optional `ChatBackend` via `with_chat_backend()` builder — only critique synthesis requires it, all other endpoints work without
+- Critique synthesis parses LLM JSON response with `serde_json::from_str` fallback — if parsing fails, returns evidence without synthesis rather than erroring
+- Whitespace roadmap counts sources (not individual nodes) for gap detection — matches the spec's "research cluster" concept better
+- Verify-implementation uses 2-hop trace through Component bridge rather than direct research→code similarity — leverages the bridge architecture
+
+### Quality
+- 1,239 tests passing (21 api + 1,171 core + 47 eval), 0 failures
+- Zero clippy warnings, fmt clean
+- Two rounds of code review completed, all findings addressed
+
+### Wave 9 Complete
+All 8 analysis capabilities from spec/13 now implemented:
+1. POST /analysis/bootstrap — Component node creation
+2. POST /analysis/link — Cross-domain bridge edges
+3. POST /analysis/coverage — Orphan code + unimplemented spec detection
+4. POST /analysis/erosion — Architecture drift measurement
+5. POST /analysis/blast-radius — Change impact simulation
+6. POST /analysis/whitespace — Research gap detection
+7. POST /analysis/verify — Research-to-execution alignment
+8. POST /analysis/critique — Dialectical design analysis
+
+### Search Quality Investigation (#130)
+Diagnosed vector search returning no results: the engine was started without sourcing `.env.prod`, so the Voyage API key wasn't available. After fixing startup, discovered:
+
+1. **Reranker bias**: snippets with highlighted search terms biased the reranker toward keyword matches. Fixed by sending full chunk content (1000 chars) to the reranker instead of snippets.
+2. **Bibliography filter gaps**: "- Lee et al. \[2011\]↑" escaped existing patterns. Added detection for escaped-bracket years and arrow-marker citations.
+3. **Result**: "entity resolution coreference" → #1 changed from "Human smuggling networks" to "LLM-CER: In-Context Clustering for Efficient Entity Resolution"
+
+### Wave 9 Review Follow-up
+Addressed 3 findings from thorough code review:
+1. Moved domain filter into SQL (was applied post-LIMIT, understating counts)
+2. Populated `connected_components` field via THEORETICAL_BASIS query (was always empty)
+3. Moved `use petgraph::Direction` to function scope
+
+### Insights
+- The verify-implementation endpoint revealed that many code nodes lack embeddings (ANN search returns 0 results). This is a data quality issue — the backfill_node_embeddings admin endpoint exists but may not have been run recently on all code nodes.
+- Whitespace roadmap showing 50% unbridged research sources is expected — many ingested papers cover tangential topics. The metric becomes more actionable as the bridge gets richer.
+- ChatBackend integration is clean — the FallbackChatBackend wraps CLI→HTTP and the critique endpoint degrades gracefully if no backend is configured (returns evidence without synthesis).
+- **Engine startup must source `.env.prod`** — manually specifying only DATABASE_URL and BIND_ADDR drops the Voyage API key, disabling vector search and the reranker. The `make run-prod` target handles this correctly.
+- **Reranker document construction matters more than fusion weights** for search quality. Snippets are optimized for display (highlighting matched terms), not for semantic evaluation. Sending full content to the reranker is always the right call.
+- **CC fusion coverage multiplier is working as designed** — single-dimension results are penalized 25-50% depending on active dimensions. The remaining noise is from lexical matches in topically adjacent content (e.g., domain examples in methodology papers).

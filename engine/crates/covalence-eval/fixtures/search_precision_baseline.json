@@ -1,0 +1,172 @@
+{
+  "description": "Baseline search precision@5 evaluation (Session 36, 2026-03-15). 20 queries spanning all knowledge domains. Judged against prod with 393 sources, 5568 nodes, 77688 edges.",
+  "date": "2026-03-15",
+  "metric": "precision_at_5",
+  "baseline_score": 0.86,
+  "quality_gate": 0.80,
+  "total_queries": 20,
+  "total_relevant": 85,
+  "total_judged": 97,
+  "queries": [
+    {
+      "query": "reciprocal rank fusion hybrid retrieval",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "All results directly about RRF/CC fusion for hybrid retrieval"
+    },
+    {
+      "query": "entity resolution coreference neural matching",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "ER/coref from Practical GraphRAG, RAKG, and Covalence article"
+    },
+    {
+      "query": "subjective logic opinion uncertainty epistemic",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "SL articles, DS theory chunk, and epistemic spec section"
+    },
+    {
+      "query": "community detection graph algorithms k-core",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "k-core articles, spec sections, and core-based hierarchies"
+    },
+    {
+      "query": "knowledge graph construction LLM extraction",
+      "precision_at_5": 0.8,
+      "relevant_count": 4,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 0, 1],
+      "notes": "#4 'Advancing KG QA' is about QA not construction"
+    },
+    {
+      "query": "chunking strategies RAG question answering",
+      "precision_at_5": 0.4,
+      "relevant_count": 2,
+      "result_count": 5,
+      "judgments": [0, 0, 1, 0, 1],
+      "notes": "Weak: PIKE-RAG case studies (not about chunking), NodeRAG IR section. Missing: 'A Systematic Analysis of Chunking Strategies', 'Beyond Chunk-Then-Embed', 'Meta-Chunking'"
+    },
+    {
+      "query": "GraphRAG retrieval augmented generation survey",
+      "precision_at_5": 0.8,
+      "relevant_count": 4,
+      "result_count": 4,
+      "judgments": [1, 1, 1, 1],
+      "notes": "Only 4 results returned. Article, survey statement, GraphRAG-Bench, GraphRAG entity"
+    },
+    {
+      "query": "Bayesian model reduction forgetting",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "Spec sections and statements about BMR forgetting"
+    },
+    {
+      "query": "Dempster-Shafer evidence theory fusion",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "DS theory articles, Zadeh paradox section, confidence propagation"
+    },
+    {
+      "query": "belief revision AGM theory",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "AGM theory from both Huber and Stanford Encyclopedia sources"
+    },
+    {
+      "query": "matryoshka embedding representation learning",
+      "precision_at_5": 0.8,
+      "relevant_count": 4,
+      "result_count": 4,
+      "judgments": [1, 1, 1, 1],
+      "notes": "Only 4 results. MRL statements, article, and storage spec section"
+    },
+    {
+      "query": "HippoRAG neurobiological memory LLM",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "HippoRAG chunks, statements, spec section, and MemOS cross-reference"
+    },
+    {
+      "query": "GLiNER named entity recognition",
+      "precision_at_5": 0.8,
+      "relevant_count": 4,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 0],
+      "notes": "#5 'entity linking' concept node is related but not GLiNER-specific"
+    },
+    {
+      "query": "petgraph graph sidecar Rust",
+      "precision_at_5": 0.8,
+      "relevant_count": 4,
+      "result_count": 4,
+      "judgments": [1, 1, 1, 1],
+      "notes": "Only 4 results. Code chunk, spec section, and spec statements"
+    },
+    {
+      "query": "search abstention unanswerable queries",
+      "precision_at_5": 0.6,
+      "relevant_count": 3,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 0, 0],
+      "notes": "Weak tail: #4 bare 'alternative queries' concept, #5 market analysis tangent"
+    },
+    {
+      "query": "adaptive RAG question complexity routing",
+      "precision_at_5": 0.6,
+      "relevant_count": 3,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 0, 0],
+      "notes": "Weak tail: #4 general Covalence article, #5 DAT technology (alpha tuning, not routing)"
+    },
+    {
+      "query": "memory operating system AI agents",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "All from MemOS paper - MemLoader, core infra, paradigm shift, statements"
+    },
+    {
+      "query": "causal inference Pearl causal hierarchy",
+      "precision_at_5": 0.8,
+      "relevant_count": 4,
+      "result_count": 4,
+      "judgments": [1, 1, 1, 1],
+      "notes": "Only 4 results. Spec statements about Pearl's hierarchy and Book of Why sections"
+    },
+    {
+      "query": "site reliability engineering operations",
+      "precision_at_5": 0.8,
+      "relevant_count": 4,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 0],
+      "notes": "#5 'hosting' bare concept node is too generic"
+    },
+    {
+      "query": "late chunking contextual embeddings",
+      "precision_at_5": 1.0,
+      "relevant_count": 5,
+      "result_count": 5,
+      "judgments": [1, 1, 1, 1, 1],
+      "notes": "Spec sections, late chunking paper chunks, and pipeline statement"
+    }
+  ]
+}

@@ -145,13 +145,22 @@ pub async fn search(
     // --- Post-granularity quality filter ---
     // Granularity promotion can replace paragraph content with its
     // parent section content (e.g., a bibliography section). Re-check
-    // quality after promotion to catch these.
+    // quality after promotion to catch these.  Only apply to chunk-type
+    // results — sections, statements, and nodes have different content
+    // characteristics and are already quality-filtered during ingestion.
     {
         use covalence_core::services::chunk_quality::{
             is_author_block, is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
             is_reference_section, is_title_only,
         };
         results.retain(|r| {
+            let is_chunk = r
+                .result_type
+                .as_deref()
+                .is_none_or(|rt| rt == "chunk");
+            if !is_chunk {
+                return true;
+            }
             let content = match r.content.as_deref() {
                 Some(c) => c,
                 None => return true,
