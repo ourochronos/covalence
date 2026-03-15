@@ -75,9 +75,20 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         }
     }
 
-    // Paper titles: concept entities with >55 chars are almost always
+    // Paper titles: concept entities with >50 chars are almost always
     // paper titles (real concepts are shorter).
-    if entity_type == "concept" && trimmed.len() > 55 {
+    if entity_type == "concept" && trimmed.len() > 50 {
+        return true;
+    }
+    // Subtitle-style titles: "Topic: A Detailed Guide for YYYY".
+    if entity_type == "concept"
+        && trimmed.contains(": ")
+        && trimmed.len() > 30
+        && trimmed
+            .as_bytes()
+            .windows(4)
+            .any(|w| w.iter().all(|b| b.is_ascii_digit()))
+    {
         return true;
     }
 
@@ -183,6 +194,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "alias",
         "article",
         "association",
+        "assumptions",
         "auditable",
         "biology",
         "brand",
@@ -196,11 +208,17 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "court",
         "covariates",
         "debate",
+        "developers",
+        "dimensions",
+        "disturbances",
         "diversify",
         "drugs",
         "edges",
+        "false",
+        "federated",
         "generation",
         "hobbies",
+        "hosting",
         "infrastructure",
         "likes",
         "minima",
@@ -219,26 +237,47 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "response",
         "reversible",
         "reward",
+        "skipped",
         "sources",
         "spiciness",
         "structural",
         "timeliness",
+        "timestamp",
+        "true",
         "warnings",
     ];
     if entity_type == "concept" && !lower.contains(' ') && GENERIC_WORDS.contains(&lower.as_str()) {
+        return true;
+    }
+    // "true" and "false" as `other` type are also noise.
+    if (lower == "true" || lower == "false") && entity_type == "other" {
         return true;
     }
 
     // Multi-word generic phrases that shouldn't be entities.
     const GENERIC_PHRASES: &[&str] = &[
         "ai use",
+        "choice success",
+        "code constants",
+        "color attributes",
         "embedding operations",
+        "end users",
         "entropy term",
+        "explanatory power",
+        "full extraction",
+        "functionality implementation",
+        "generative quality",
+        "global operations",
+        "model upgrade",
         "node record",
         "node records",
+        "overall quality",
         "predictive model",
         "predictive models",
+        "retrieve token",
+        "unordered lists",
         "vector space",
+        "web processes",
     ];
     if entity_type == "concept" && GENERIC_PHRASES.contains(&lower.as_str()) {
         return true;
@@ -248,6 +287,87 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     // "Appendix D.1", "Claim_New: ...".
     if is_document_artifact(trimmed) {
         return true;
+    }
+
+    // Questions extracted as entities: "what currency needed in
+    // scotland", "how does X work". Check concept entities starting
+    // with question words.
+    if entity_type == "concept" {
+        const QUESTION_WORDS: &[&str] = &[
+            "what ", "how ", "why ", "when ", "where ", "who ", "which ",
+            "is ", "does ", "can ", "should ", "could ", "would ",
+        ];
+        if QUESTION_WORDS.iter().any(|q| lower.starts_with(q)) {
+            return true;
+        }
+    }
+
+    // "Key: value" metadata patterns: "Key: version", "Source: url".
+    if entity_type == "concept" && trimmed.contains(": ") && trimmed.len() < 30 {
+        let colon_pos = trimmed.find(": ").unwrap();
+        let key = &trimmed[..colon_pos];
+        // Only flag if the key part is a single capitalized word
+        if !key.contains(' ') && key.starts_with(|c: char| c.is_uppercase()) {
+            return true;
+        }
+    }
+
+    // Generic reference placeholders: "Source A", "Source B",
+    // "Entity X", "Node 1".
+    if entity_type == "other" || entity_type == "concept" {
+        const REF_PREFIXES: &[&str] = &["source ", "entity ", "node "];
+        if REF_PREFIXES.iter().any(|p| lower.starts_with(p))
+            && trimmed.len() < 15
+            && trimmed
+                .split_whitespace()
+                .last()
+                .is_some_and(|w| w.len() <= 2)
+        {
+            return true;
+        }
+    }
+
+    // ArXiv category labels: "physics.data-an", "cs.CL", "math.AG".
+    // Pattern: lowercase.lowercase-with-optional-dash, max ~20 chars.
+    if entity_type == "concept"
+        && trimmed.len() < 25
+        && trimmed.contains('.')
+        && !trimmed.contains(' ')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && trimmed
+            .split('.')
+            .all(|p| p.starts_with(|c: char| c.is_ascii_lowercase()))
+    {
+        return true;
+    }
+
+    // Math equations with equals sign: "Γ_2(θ_2) = X ⊗ W β".
+    if trimmed.contains(" = ") && trimmed.len() < 40 {
+        let alpha_count = trimmed.chars().filter(|c| c.is_alphabetic()).count();
+        let total_count = trimmed.chars().filter(|c| !c.is_whitespace()).count();
+        if alpha_count < total_count / 2 {
+            return true;
+        }
+    }
+
+    // Ordinal date fragments: "1st April", "2nd March".
+    if entity_type == "event"
+        && trimmed.len() < 20
+        && trimmed.split_whitespace().count() == 2
+    {
+        let first = trimmed.split_whitespace().next().unwrap_or("");
+        if first.ends_with("st")
+            || first.ends_with("nd")
+            || first.ends_with("rd")
+            || first.ends_with("th")
+        {
+            let num_part = first.trim_end_matches(|c: char| c.is_alphabetic());
+            if num_part.chars().all(|c| c.is_ascii_digit()) && !num_part.is_empty() {
+                return true;
+            }
+        }
     }
 
     // "X insight" pattern: LLM extracts "RAPTOR insight" or "STAR-RAG insight"
@@ -716,5 +836,126 @@ mod tests {
         // filter now catches these.
         assert!(is_noise_entity("\"web_page\"", "concept"));
         assert!(is_noise_entity("\"tool_output\"", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_expanded_generic_words() {
+        assert!(is_noise_entity("dimensions", "concept"));
+        assert!(is_noise_entity("developers", "concept"));
+        assert!(is_noise_entity("timestamp", "concept"));
+        assert!(is_noise_entity("disturbances", "concept"));
+        assert!(is_noise_entity("skipped", "concept"));
+        assert!(is_noise_entity("federated", "concept"));
+        assert!(is_noise_entity("hosting", "concept"));
+        assert!(is_noise_entity("true", "concept"));
+        assert!(is_noise_entity("false", "concept"));
+        assert!(is_noise_entity("true", "other"));
+        // "federated learning" is NOT generic (multi-word, specific).
+        assert!(!is_noise_entity("federated learning", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_expanded_generic_phrases() {
+        assert!(is_noise_entity("color attributes", "concept"));
+        assert!(is_noise_entity("global operations", "concept"));
+        assert!(is_noise_entity("Overall quality", "concept"));
+        assert!(is_noise_entity("generative quality", "concept"));
+        assert!(is_noise_entity("full extraction", "concept"));
+        assert!(is_noise_entity("end users", "concept"));
+        assert!(is_noise_entity("code constants", "concept"));
+        assert!(is_noise_entity("web processes", "concept"));
+        assert!(is_noise_entity("retrieve token", "concept"));
+        assert!(is_noise_entity("model upgrade", "concept"));
+        assert!(is_noise_entity("choice success", "concept"));
+        assert!(is_noise_entity("functionality implementation", "concept"));
+        assert!(is_noise_entity("unordered lists", "concept"));
+        assert!(is_noise_entity("explanatory power", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_questions() {
+        assert!(is_noise_entity(
+            "what currency needed in scotland",
+            "concept"
+        ));
+        assert!(is_noise_entity("how does chunking work", "concept"));
+        assert!(is_noise_entity("is this relevant", "concept"));
+        // But real entities starting with these words should not match.
+        assert!(!is_noise_entity("WHO", "organization"));
+    }
+
+    #[test]
+    fn noise_entity_key_value_metadata() {
+        assert!(is_noise_entity("Key: version", "concept"));
+        assert!(is_noise_entity("Source: url", "concept"));
+        // But real concepts with colons are fine.
+        assert!(!is_noise_entity(
+            "Matryoshka Representation Learning",
+            "concept"
+        ));
+    }
+
+    #[test]
+    fn noise_entity_generic_references() {
+        assert!(is_noise_entity("Source A", "other"));
+        assert!(is_noise_entity("Source B", "concept"));
+        assert!(is_noise_entity("Entity X", "concept"));
+        // But specific sources are fine.
+        assert!(!is_noise_entity("Source Code Analysis", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_arxiv_categories() {
+        assert!(is_noise_entity("physics.data-an", "concept"));
+        assert!(is_noise_entity("cs.cl", "concept"));
+        assert!(is_noise_entity("math.ag", "concept"));
+        // But real entities with dots are fine.
+        assert!(!is_noise_entity("Node2Vec", "technology"));
+    }
+
+    #[test]
+    fn noise_entity_math_equations() {
+        assert!(is_noise_entity(
+            "\u{0393}_2(\u{03B8}_2) = X \u{2297} W \u{03B2}",
+            "concept"
+        ));
+        // Short enough and has equals sign with mostly non-alpha chars.
+    }
+
+    #[test]
+    fn noise_entity_ordinal_dates() {
+        assert!(is_noise_entity("1st April", "event"));
+        assert!(is_noise_entity("2nd March", "event"));
+        assert!(is_noise_entity("25th December", "event"));
+        // But real events should not match.
+        assert!(!is_noise_entity("NeurIPS 2024", "event"));
+    }
+
+    #[test]
+    fn noise_entity_subtitle_titles() {
+        assert!(is_noise_entity(
+            "Roi Align: A Comprehensive Guide for 2025",
+            "concept"
+        ));
+        assert!(is_noise_entity(
+            "Health Service Research Methodology: A Focus on AIDS",
+            "concept"
+        ));
+        // Short or without year is fine.
+        assert!(!is_noise_entity("Rate Limiting", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_lowered_title_threshold() {
+        // 55 chars was too generous; now 50.
+        assert!(is_noise_entity(
+            "Roi Align: A Comprehensive Guide for the Year 2025!",
+            "concept"
+        ));
+        // Real concepts under 50 chars are fine.
+        assert!(!is_noise_entity(
+            "Reciprocal Rank Fusion",
+            "concept"
+        ));
     }
 }
