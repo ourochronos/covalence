@@ -103,6 +103,9 @@ const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
     ("src/ingestion/landscape", "Ingestion Pipeline"),
     ("src/ingestion/projection", "Ingestion Pipeline"),
     ("src/ingestion/parser", "Ingestion Pipeline"),
+    ("src/ingestion/accept", "Ingestion Pipeline"),
+    ("src/ingestion/pii", "Ingestion Pipeline"),
+    ("src/ingestion/takedown", "Ingestion Pipeline"),
     ("ingestion_helpers", "Ingestion Pipeline"),
     ("chunk_quality", "Ingestion Pipeline"),
     // Statement Pipeline
@@ -123,6 +126,7 @@ const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
     // Consolidation
     ("src/consolidation", "Consolidation"),
     ("src/services/consolidation", "Consolidation"),
+    ("src/services/article", "Consolidation"),
     // API Layer
     ("src/routes", "API Layer"),
     ("src/handlers", "API Layer"),
@@ -453,9 +457,9 @@ impl AnalysisService {
             "class",
         ];
 
-        // Fetch code nodes joined with their source URI via provenance.
-        // If a node has file_path in properties, use that; otherwise
-        // fall back to the source URI via extractions → chunks → sources.
+        // Fetch code nodes from actual code sources. We require provenance
+        // linking to a source with source_type='code' to avoid counting
+        // function/struct entities mentioned in research papers or specs.
         let code_nodes: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             "SELECT DISTINCT n.id, n.canonical_name, \
                     COALESCE( \
@@ -463,10 +467,21 @@ impl AnalysisService {
                       (SELECT s.uri FROM extractions ex \
                        JOIN chunks c ON ex.chunk_id = c.id \
                        JOIN sources s ON c.source_id = s.id \
-                       WHERE ex.entity_id = n.id LIMIT 1), \
+                       WHERE ex.entity_id = n.id \
+                       ORDER BY CASE WHEN s.source_type = 'code' \
+                                     THEN 0 ELSE 1 END \
+                       LIMIT 1), \
                       '' \
                     ) AS path \
-             FROM nodes n WHERE n.node_type = ANY($1)",
+             FROM nodes n \
+             WHERE n.node_type = ANY($1) \
+               AND EXISTS ( \
+                 SELECT 1 FROM extractions ex \
+                 JOIN chunks c ON ex.chunk_id = c.id \
+                 JOIN sources s ON c.source_id = s.id \
+                 WHERE ex.entity_id = n.id \
+                   AND s.source_type = 'code' \
+               )",
         )
         .bind(&code_types[..])
         .fetch_all(self.repo.pool())
@@ -487,10 +502,18 @@ impl AnalysisService {
         let mut skipped = 0u64;
 
         for (code_id, _code_name, file_path) in &code_nodes {
+            // Normalize covalence:// URIs so "covalence://engine/services/search.rs"
+            // matches patterns like "src/services/search".
+            let normalized = if file_path.starts_with("covalence://engine/") {
+                file_path.replacen("covalence://engine/", "src/", 1)
+            } else {
+                file_path.clone()
+            };
+
             // Find the best matching component by module path prefix.
             let component_name = MODULE_PATH_MAPPINGS
                 .iter()
-                .find(|(prefix, _)| file_path.contains(prefix))
+                .find(|(prefix, _)| normalized.contains(prefix))
                 .map(|(_, comp)| *comp);
 
             let Some(comp_name) = component_name else {
@@ -740,12 +763,21 @@ impl AnalysisService {
             "class",
         ];
 
-        // Orphan code: code nodes with no PART_OF_COMPONENT edge.
+        // Orphan code: code nodes from code sources with no PART_OF_COMPONENT edge.
+        // Require provenance to a code source to exclude function/struct names
+        // that appear in research papers or specs.
         let orphan_rows: Vec<(uuid::Uuid, String, String, String)> = sqlx::query_as(
             "SELECT n.id, n.canonical_name, n.node_type, \
                     COALESCE(n.properties->>'file_path', '') \
              FROM nodes n \
              WHERE n.node_type = ANY($1) \
+               AND EXISTS ( \
+                 SELECT 1 FROM extractions ex \
+                 JOIN chunks c ON ex.chunk_id = c.id \
+                 JOIN sources s ON c.source_id = s.id \
+                 WHERE ex.entity_id = n.id \
+                   AND s.source_type = 'code' \
+               ) \
                AND NOT EXISTS ( \
                  SELECT 1 FROM edges e \
                  WHERE e.source_node_id = n.id \
