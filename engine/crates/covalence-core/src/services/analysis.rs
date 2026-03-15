@@ -962,6 +962,7 @@ impl AnalysisService {
         .await?;
 
         // BFS through the graph sidecar.
+        use petgraph::Direction;
         let graph = self.graph.read().await;
         let mut affected: Vec<BlastRadiusHop> = Vec::new();
         let mut visited = std::collections::HashSet::new();
@@ -997,7 +998,6 @@ impl AnalysisService {
                     }
 
                     // Incoming edges (callers, etc.).
-                    use petgraph::Direction;
                     for edge_ref in graph.graph().edges_directed(idx, Direction::Incoming) {
                         let neighbor = edge_ref.source();
                         if visited.insert(neighbor) {
@@ -1078,6 +1078,9 @@ impl AnalysisService {
                AND COALESCE(s.uri, '') NOT LIKE '%VISION%' \
                AND COALESCE(s.uri, '') NOT LIKE '%CLAUDE%' \
                AND COALESCE(s.uri, '') NOT LIKE '%MILESTONES%' \
+               AND ($3::text IS NULL \
+                    OR LOWER(s.title) LIKE '%' || LOWER($3::text) || '%' \
+                    OR LOWER(COALESCE(s.uri, '')) LIKE '%' || LOWER($3::text) || '%') \
              GROUP BY s.id, s.title, s.uri \
              HAVING COUNT(DISTINCT n.id) >= $1 \
              ORDER BY COUNT(DISTINCT n.id) DESC \
@@ -1085,6 +1088,7 @@ impl AnalysisService {
         )
         .bind(min_cluster_size as i64)
         .bind(Self::MAX_WHITESPACE_GAPS as i64)
+        .bind(domain_filter)
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -1093,16 +1097,8 @@ impl AnalysisService {
         let mut total_unbridged = 0u64;
 
         for (source_id, title, uri, node_count, bridged_count) in &rows {
-            // Apply domain filter first so both counts reflect the same set.
-            if let Some(filter) = domain_filter {
-                let lower = filter.to_lowercase();
-                let matches = title.to_lowercase().contains(&lower)
-                    || uri.as_deref().unwrap_or("").to_lowercase().contains(&lower);
-                if !matches {
-                    continue;
-                }
-            }
-
+            // Domain filter is now applied in SQL ($3 parameter), so
+            // all rows here already match the filter.
             total_research += 1;
 
             if *bridged_count > 0 {
@@ -1143,6 +1139,25 @@ impl AnalysisService {
             .fetch_all(self.repo.pool())
             .await?;
 
+            // Find Component nodes connected via THEORETICAL_BASIS
+            // to any entity extracted from this source.
+            let comp_connected: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT comp.canonical_name \
+                 FROM nodes comp \
+                 JOIN edges e ON e.source_node_id = comp.id \
+                 WHERE e.rel_type = 'THEORETICAL_BASIS' \
+                   AND comp.node_type = 'component' \
+                   AND e.target_node_id IN ( \
+                     SELECT n.id FROM nodes n \
+                     JOIN extractions ex ON ex.entity_id = n.id \
+                     JOIN chunks c ON c.id = ex.chunk_id \
+                     WHERE c.source_id = $1 \
+                   )",
+            )
+            .bind(source_id)
+            .fetch_all(self.repo.pool())
+            .await?;
+
             gaps.push(WhitespaceGap {
                 source_id: *source_id,
                 title: title.clone(),
@@ -1155,7 +1170,7 @@ impl AnalysisService {
                         node_type: ntype,
                     })
                     .collect(),
-                connected_components: Vec::new(),
+                connected_components: comp_connected.into_iter().map(|(name,)| name).collect(),
                 connected_spec_topics: spec_connected.into_iter().map(|(name,)| name).collect(),
                 assessment: if *node_count > 10 {
                     format!(
