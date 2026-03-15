@@ -52,7 +52,7 @@ pub async fn link_domains(
     Json(req): Json<LinkDomainsRequest>,
 ) -> Result<Json<LinkDomainsResponse>, ApiError> {
     let min_sim = req.min_similarity.unwrap_or(0.5);
-    let max_edges = req.max_edges_per_component.unwrap_or(5);
+    let max_edges = req.max_edges_per_component.unwrap_or(100);
     let result = state
         .analysis_service
         .link_domains(min_sim, max_edges)

@@ -995,7 +995,7 @@ pub struct BootstrapResponse {
 pub struct LinkDomainsRequest {
     /// Minimum cosine similarity for semantic bridges (default 0.5).
     pub min_similarity: Option<f64>,
-    /// Maximum bridge edges per component (default 5).
+    /// Maximum bridge edges per component (default 100).
     pub max_edges_per_component: Option<i64>,
 }
 
