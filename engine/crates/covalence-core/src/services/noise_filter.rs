@@ -127,6 +127,25 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     if unquoted.starts_with('/') {
         return true;
     }
+    // HTTP method + path (e.g. "GET /graph/stats", "POST /search").
+    if unquoted.starts_with("GET ")
+        || unquoted.starts_with("POST ")
+        || unquoted.starts_with("PUT ")
+        || unquoted.starts_with("DELETE ")
+        || unquoted.starts_with("PATCH ")
+    {
+        return true;
+    }
+    // URL schemes (e.g. "postgres://...", "http://...", "file://...").
+    // The `file://` prefix is handled separately below but this catches
+    // all other scheme-based URIs.
+    if unquoted.contains("://") {
+        return true;
+    }
+    // Email addresses (e.g. "user@example.com").
+    if unquoted.contains('@') && unquoted.contains('.') && !unquoted.contains(' ') {
+        return true;
+    }
     // Snake_case identifiers that look like code (at least two underscored
     // segments, e.g. "batch_futures", "active_resolver"). We exempt
     // well-known multi-word technical terms by requiring no spaces.
@@ -135,6 +154,18 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         && unquoted.contains('_')
         && unquoted.matches('_').count() >= 1
         && unquoted.chars().all(|c| c.is_alphanumeric() || c == '_')
+    {
+        return true;
+    }
+    // Lowercase dot-separated code paths with underscores
+    // (e.g. "config.extract_url", "data.total_memories").
+    if entity_type == "concept"
+        && !unquoted.contains(' ')
+        && unquoted.contains('.')
+        && unquoted.contains('_')
+        && unquoted
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
     {
         return true;
     }
@@ -205,6 +236,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "charge",
         "checklist",
         "children",
+        "clear",
         "clicking",
         "collaboration",
         "compounds",
@@ -222,6 +254,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "federated",
         "generation",
         "hobbies",
+        "home",
         "hosting",
         "infrastructure",
         "likes",
@@ -273,6 +306,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         "generative quality",
         "global operations",
         "model upgrade",
+        "new system",
         "node record",
         "node records",
         "overall quality",
@@ -295,14 +329,26 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
 
     // Questions extracted as entities: "what currency needed in
     // scotland", "how does X work". Check concept entities starting
-    // with question words.
+    // with question words.  Skip title-case names like "What You
+    // See Is All There Is" (WYSIATI) — those are named concepts.
     if entity_type == "concept" {
         const QUESTION_WORDS: &[&str] = &[
             "what ", "how ", "why ", "when ", "where ", "who ", "which ", "is ", "does ", "can ",
             "should ", "could ", "would ",
         ];
         if QUESTION_WORDS.iter().any(|q| lower.starts_with(q)) {
-            return true;
+            // Title-case with 5+ words: likely a named concept like
+            // "What You See Is All There Is" (WYSIATI), not a question.
+            // Short title-case phrases ("Who Can See It") are still
+            // filtered — they're typically headings, not concepts.
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let is_named_concept = words.len() >= 5
+                && words
+                    .iter()
+                    .all(|w| w.starts_with(|c: char| c.is_uppercase()));
+            if !is_named_concept {
+                return true;
+            }
         }
     }
 
@@ -883,6 +929,9 @@ mod tests {
         assert!(is_noise_entity("is this relevant", "concept"));
         // But real entities starting with these words should not match.
         assert!(!is_noise_entity("WHO", "organization"));
+        // Title-case names starting with question words are kept
+        // (e.g. cognitive bias "What You See Is All There Is").
+        assert!(!is_noise_entity("What You See Is All There Is", "concept"));
     }
 
     #[test]
@@ -965,5 +1014,37 @@ mod tests {
             "concept"
         ));
         assert!(!is_noise_entity("Reciprocal Rank Fusion", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_email_addresses() {
+        assert!(is_noise_entity("qmei@umich.edu", "other"));
+        assert!(is_noise_entity("admin@example.com", "concept"));
+        // Ampersand refs without dots are caught elsewhere.
+        assert!(is_noise_entity("&self", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_url_schemes() {
+        assert!(is_noise_entity(
+            "postgres://test:test@localhost/test",
+            "other"
+        ));
+        assert!(is_noise_entity("http://example.com", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_http_methods() {
+        assert!(is_noise_entity("GET /graph/stats", "concept"));
+        assert!(is_noise_entity("POST /search", "concept"));
+        assert!(is_noise_entity("DELETE /admin/source", "concept"));
+    }
+
+    #[test]
+    fn noise_entity_dot_underscore_code_paths() {
+        assert!(is_noise_entity("config.extract_url", "concept"));
+        assert!(is_noise_entity("data.total_memories", "concept"));
+        // But real tech names with dots (no underscores) are fine.
+        assert!(!is_noise_entity("GraphBLAS", "technology"));
     }
 }
