@@ -6,8 +6,12 @@ use axum::extract::State;
 use crate::error::ApiError;
 use crate::handlers::dto::{
     AffectedNodeResponse, BlastRadiusHopResponse, BlastRadiusRequest, BlastRadiusResponse,
-    BootstrapResponse, CoverageItemResponse, CoverageResponse, DivergentNodeResponse,
-    ErosionItemResponse, ErosionRequest, ErosionResponse, LinkDomainsRequest, LinkDomainsResponse,
+    BootstrapResponse, CounterArgumentResponse, CoverageItemResponse, CoverageResponse,
+    CritiqueEvidenceResponse, CritiqueRequest, CritiqueResponse, CritiqueSynthesisResponse,
+    DivergentNodeResponse, ErosionItemResponse, ErosionRequest, ErosionResponse,
+    LinkDomainsRequest, LinkDomainsResponse, SupportingArgumentResponse, VerificationMatchResponse,
+    VerifyRequest, VerifyResponse, WhitespaceGapResponse, WhitespaceNodeResponse,
+    WhitespaceRequest, WhitespaceResponse,
 };
 use crate::state::AppState;
 
@@ -187,5 +191,151 @@ pub async fn blast_radius(
             })
             .collect(),
         total_affected: result.total_affected,
+    }))
+}
+
+/// Detect research areas with no corresponding implementation.
+#[utoipa::path(
+    post,
+    path = "/analysis/whitespace",
+    request_body = WhitespaceRequest,
+    responses(
+        (status = 200, description = "Whitespace roadmap results",
+         body = WhitespaceResponse),
+    ),
+    tag = "analysis"
+)]
+pub async fn whitespace_roadmap(
+    State(state): State<AppState>,
+    Json(req): Json<WhitespaceRequest>,
+) -> Result<Json<WhitespaceResponse>, ApiError> {
+    let min_cluster = req.min_cluster_size.unwrap_or(3);
+    let result = state
+        .analysis_service
+        .whitespace_roadmap(min_cluster, req.domain.as_deref())
+        .await?;
+    Ok(Json(WhitespaceResponse {
+        gaps: result
+            .gaps
+            .into_iter()
+            .map(|g| WhitespaceGapResponse {
+                source_id: g.source_id,
+                title: g.title,
+                uri: g.uri,
+                node_count: g.node_count,
+                representative_nodes: g
+                    .representative_nodes
+                    .into_iter()
+                    .map(|n| WhitespaceNodeResponse {
+                        name: n.name,
+                        node_type: n.node_type,
+                    })
+                    .collect(),
+                connected_components: g.connected_components,
+                connected_spec_topics: g.connected_spec_topics,
+                assessment: g.assessment,
+            })
+            .collect(),
+        total_research_sources: result.total_research_sources,
+        unbridged_sources: result.unbridged_sources,
+        whitespace_score: result.whitespace_score,
+    }))
+}
+
+/// Verify research-to-execution alignment through the Component bridge.
+#[utoipa::path(
+    post,
+    path = "/analysis/verify",
+    request_body = VerifyRequest,
+    responses(
+        (status = 200, description = "Verification results",
+         body = VerifyResponse),
+    ),
+    tag = "analysis"
+)]
+pub async fn verify_implementation(
+    State(state): State<AppState>,
+    Json(req): Json<VerifyRequest>,
+) -> Result<Json<VerifyResponse>, ApiError> {
+    let result = state
+        .analysis_service
+        .verify_implementation(&req.research_query, req.component.as_deref())
+        .await?;
+
+    let to_match =
+        |m: covalence_core::services::analysis::VerificationMatch| VerificationMatchResponse {
+            node_id: m.node_id,
+            name: m.name,
+            node_type: m.node_type,
+            summary: m.summary,
+            distance: m.distance,
+            domain: m.domain,
+        };
+
+    Ok(Json(VerifyResponse {
+        research_query: result.research_query,
+        research_matches: result.research_matches.into_iter().map(to_match).collect(),
+        code_matches: result.code_matches.into_iter().map(to_match).collect(),
+        alignment_score: result.alignment_score,
+        component: result.component,
+    }))
+}
+
+/// Generate a dialectical critique of a design proposal.
+#[utoipa::path(
+    post,
+    path = "/analysis/critique",
+    request_body = CritiqueRequest,
+    responses(
+        (status = 200, description = "Dialectical critique results",
+         body = CritiqueResponse),
+    ),
+    tag = "analysis"
+)]
+pub async fn critique(
+    State(state): State<AppState>,
+    Json(req): Json<CritiqueRequest>,
+) -> Result<Json<CritiqueResponse>, ApiError> {
+    let result = state.analysis_service.critique(&req.proposal).await?;
+
+    let to_evidence =
+        |e: covalence_core::services::analysis::CritiqueEvidence| CritiqueEvidenceResponse {
+            node_id: e.node_id,
+            name: e.name,
+            node_type: e.node_type,
+            description: e.description,
+            distance: e.distance,
+            domain: e.domain,
+        };
+
+    Ok(Json(CritiqueResponse {
+        proposal: result.proposal,
+        research_evidence: result
+            .research_evidence
+            .into_iter()
+            .map(to_evidence)
+            .collect(),
+        spec_evidence: result.spec_evidence.into_iter().map(to_evidence).collect(),
+        code_evidence: result.code_evidence.into_iter().map(to_evidence).collect(),
+        synthesis: result.synthesis.map(|s| CritiqueSynthesisResponse {
+            counter_arguments: s
+                .counter_arguments
+                .into_iter()
+                .map(|a| CounterArgumentResponse {
+                    claim: a.claim,
+                    evidence: a.evidence,
+                    strength: a.strength,
+                })
+                .collect(),
+            supporting_arguments: s
+                .supporting_arguments
+                .into_iter()
+                .map(|a| SupportingArgumentResponse {
+                    claim: a.claim,
+                    evidence: a.evidence,
+                })
+                .collect(),
+            recommendation: s.recommendation,
+        }),
     }))
 }

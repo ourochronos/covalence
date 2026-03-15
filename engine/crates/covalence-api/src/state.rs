@@ -440,6 +440,7 @@ impl AppState {
         let analysis_service = Arc::new(
             AnalysisService::new(Arc::clone(&repo), Arc::clone(&graph))
                 .with_embedder(embedder.clone())
+                .with_chat_backend(chat_backend.clone())
                 .with_node_embed_dim(config.embedding.table_dims.node),
         );
 

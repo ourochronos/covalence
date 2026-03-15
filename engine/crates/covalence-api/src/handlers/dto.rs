@@ -1133,6 +1133,188 @@ pub struct BlastRadiusResponse {
     pub total_affected: usize,
 }
 
+// ------------------------------------------------------------------
+// Whitespace roadmap
+// ------------------------------------------------------------------
+
+/// Request body for whitespace roadmap analysis.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct WhitespaceRequest {
+    /// Minimum entities per source to count as a gap (default 3).
+    pub min_cluster_size: Option<usize>,
+    /// Optional domain filter (matches source title/URI).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
+/// A representative node in a whitespace gap.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WhitespaceNodeResponse {
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+}
+
+/// A research cluster with no implementation bridges.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WhitespaceGapResponse {
+    /// Source UUID.
+    pub source_id: Uuid,
+    /// Source title.
+    pub title: String,
+    /// Source URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    /// Number of entities in this cluster.
+    pub node_count: u64,
+    /// Representative entities.
+    pub representative_nodes: Vec<WhitespaceNodeResponse>,
+    /// Connected Components (via bridge edges).
+    pub connected_components: Vec<String>,
+    /// Connected spec topics.
+    pub connected_spec_topics: Vec<String>,
+    /// Human-readable assessment.
+    pub assessment: String,
+}
+
+/// Response for whitespace roadmap analysis.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WhitespaceResponse {
+    /// Research gaps with no bridge edges.
+    pub gaps: Vec<WhitespaceGapResponse>,
+    /// Total research sources analyzed.
+    pub total_research_sources: u64,
+    /// Sources with zero bridge edges.
+    pub unbridged_sources: u64,
+    /// Fraction of research sources that are unbridged.
+    pub whitespace_score: f64,
+}
+
+// ------------------------------------------------------------------
+// Research-to-execution verification
+// ------------------------------------------------------------------
+
+/// Request body for research-to-execution verification.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct VerifyRequest {
+    /// Research topic to verify implementation of.
+    pub research_query: String,
+    /// Optional Component name filter.
+    pub component: Option<String>,
+}
+
+/// A matched node in verification results.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VerificationMatchResponse {
+    /// Node UUID.
+    pub node_id: Uuid,
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+    /// Semantic summary or description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Cosine distance from the query.
+    pub distance: f64,
+    /// Domain: "research" or "code".
+    pub domain: String,
+}
+
+/// Response for research-to-execution verification.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VerifyResponse {
+    /// The research query searched for.
+    pub research_query: String,
+    /// Matched research-domain nodes.
+    pub research_matches: Vec<VerificationMatchResponse>,
+    /// Matched code-domain nodes.
+    pub code_matches: Vec<VerificationMatchResponse>,
+    /// Alignment score (mean cosine similarity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alignment_score: Option<f64>,
+    /// Bridging Component (if found).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+}
+
+// ------------------------------------------------------------------
+// Dialectical critique
+// ------------------------------------------------------------------
+
+/// Request body for dialectical critique.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CritiqueRequest {
+    /// Design proposal to critique.
+    pub proposal: String,
+}
+
+/// A piece of evidence from the knowledge graph.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CritiqueEvidenceResponse {
+    /// Node UUID.
+    pub node_id: Uuid,
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+    /// Description or summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Cosine distance from the proposal embedding.
+    pub distance: f64,
+    /// Domain: "research", "spec", or "code".
+    pub domain: String,
+}
+
+/// A counter-argument in the critique.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CounterArgumentResponse {
+    /// The claim being made against the proposal.
+    pub claim: String,
+    /// Evidence supporting the counter-argument.
+    pub evidence: Vec<String>,
+    /// Strength: "strong", "moderate", or "weak".
+    pub strength: String,
+}
+
+/// A supporting argument in the critique.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SupportingArgumentResponse {
+    /// The claim supporting the proposal.
+    pub claim: String,
+    /// Evidence supporting this argument.
+    pub evidence: Vec<String>,
+}
+
+/// LLM-synthesized dialectical critique.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CritiqueSynthesisResponse {
+    /// Arguments against the proposal.
+    pub counter_arguments: Vec<CounterArgumentResponse>,
+    /// Arguments supporting the proposal.
+    pub supporting_arguments: Vec<SupportingArgumentResponse>,
+    /// Overall recommendation.
+    pub recommendation: String,
+}
+
+/// Response for dialectical critique analysis.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CritiqueResponse {
+    /// The original proposal text.
+    pub proposal: String,
+    /// Research-domain evidence.
+    pub research_evidence: Vec<CritiqueEvidenceResponse>,
+    /// Spec/design evidence.
+    pub spec_evidence: Vec<CritiqueEvidenceResponse>,
+    /// Code evidence.
+    pub code_evidence: Vec<CritiqueEvidenceResponse>,
+    /// LLM-synthesized critique (null if no chat backend available).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synthesis: Option<CritiqueSynthesisResponse>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

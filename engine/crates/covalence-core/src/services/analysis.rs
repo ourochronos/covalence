@@ -11,6 +11,7 @@ use petgraph::visit::EdgeRef;
 use crate::error::{Error, Result};
 use crate::graph::SharedGraph;
 use crate::graph::sync::full_reload;
+use crate::ingestion::ChatBackend;
 use crate::ingestion::Embedder;
 use crate::ingestion::embedder::truncate_and_validate;
 use crate::models::audit::{AuditAction, AuditLog};
@@ -218,6 +219,7 @@ pub struct AnalysisService {
     repo: Arc<PgRepo>,
     graph: SharedGraph,
     embedder: Option<Arc<dyn Embedder>>,
+    chat_backend: Option<Arc<dyn ChatBackend>>,
     node_embed_dim: usize,
 }
 
@@ -228,6 +230,7 @@ impl AnalysisService {
             repo,
             graph,
             embedder: None,
+            chat_backend: None,
             node_embed_dim: 256,
         }
     }
@@ -235,6 +238,12 @@ impl AnalysisService {
     /// Set the embedder for component description embedding.
     pub fn with_embedder(mut self, embedder: Option<Arc<dyn Embedder>>) -> Self {
         self.embedder = embedder;
+        self
+    }
+
+    /// Set the chat backend for LLM-driven analysis.
+    pub fn with_chat_backend(mut self, backend: Option<Arc<dyn ChatBackend>>) -> Self {
+        self.chat_backend = backend;
         self
     }
 
@@ -1028,6 +1037,565 @@ impl AnalysisService {
             total_affected,
         })
     }
+
+    // ------------------------------------------------------------------
+    // Capability 3: Whitespace Roadmap (Gap Analysis)
+    // ------------------------------------------------------------------
+
+    /// Maximum research gaps to return.
+    const MAX_WHITESPACE_GAPS: usize = 50;
+
+    /// Detect research areas with no corresponding implementation.
+    ///
+    /// Groups research-domain nodes by their source article and checks
+    /// whether any node in each group is connected to a Component via
+    /// THEORETICAL_BASIS edges. Sources with zero bridges are "whitespace"
+    /// — theory we've studied but haven't acted on.
+    pub async fn whitespace_roadmap(
+        &self,
+        min_cluster_size: usize,
+        domain_filter: Option<&str>,
+    ) -> Result<WhitespaceResult> {
+        // Find research sources: document-type sources that are NOT spec/ADR/vision.
+        // Group their extracted nodes and check for bridge edges.
+        let rows: Vec<(uuid::Uuid, String, Option<String>, i64, i64)> = sqlx::query_as(
+            "SELECT s.id, s.title, s.uri, \
+                    COUNT(DISTINCT n.id) AS node_count, \
+                    COUNT(DISTINCT CASE WHEN e.id IS NOT NULL THEN n.id END) AS bridged \
+             FROM sources s \
+             JOIN chunks c ON c.source_id = s.id \
+             JOIN extractions ex ON ex.chunk_id = c.id \
+             JOIN nodes n ON n.id = ex.entity_id \
+             LEFT JOIN edges e ON e.target_node_id = n.id \
+                               AND e.rel_type = 'THEORETICAL_BASIS' \
+             WHERE s.source_type = 'document' \
+               AND COALESCE(s.uri, '') NOT LIKE '%spec/%' \
+               AND COALESCE(s.uri, '') NOT LIKE '%docs/adr/%' \
+               AND COALESCE(s.uri, '') NOT LIKE '%VISION%' \
+               AND COALESCE(s.uri, '') NOT LIKE '%CLAUDE%' \
+               AND COALESCE(s.uri, '') NOT LIKE '%MILESTONES%' \
+             GROUP BY s.id, s.title, s.uri \
+             HAVING COUNT(DISTINCT n.id) >= $1 \
+             ORDER BY COUNT(DISTINCT n.id) DESC \
+             LIMIT $2",
+        )
+        .bind(min_cluster_size as i64)
+        .bind(Self::MAX_WHITESPACE_GAPS as i64)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let mut gaps = Vec::new();
+        let mut total_research = 0u64;
+        let mut total_unbridged = 0u64;
+
+        for (source_id, title, uri, node_count, bridged_count) in &rows {
+            total_research += 1;
+            if *bridged_count > 0 {
+                continue; // This source has at least one bridge edge.
+            }
+
+            // Apply domain filter if specified (matches against title/URI).
+            if let Some(filter) = domain_filter {
+                let lower = filter.to_lowercase();
+                let matches = title.to_lowercase().contains(&lower)
+                    || uri.as_deref().unwrap_or("").to_lowercase().contains(&lower);
+                if !matches {
+                    continue;
+                }
+            }
+
+            total_unbridged += 1;
+
+            // Fetch representative node names for this source.
+            let node_names: Vec<(String, String)> = sqlx::query_as(
+                "SELECT DISTINCT n.canonical_name, n.node_type \
+                 FROM nodes n \
+                 JOIN extractions ex ON ex.entity_id = n.id \
+                 JOIN chunks c ON c.id = ex.chunk_id \
+                 WHERE c.source_id = $1 \
+                 ORDER BY n.canonical_name \
+                 LIMIT 10",
+            )
+            .bind(source_id)
+            .fetch_all(self.repo.pool())
+            .await?;
+
+            // Check for IMPLEMENTS_INTENT connections (spec coverage).
+            let spec_connected: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT comp.canonical_name \
+                 FROM nodes comp \
+                 JOIN edges e ON e.source_node_id = comp.id \
+                 WHERE e.rel_type = 'IMPLEMENTS_INTENT' \
+                   AND comp.node_type = 'component' \
+                   AND e.target_node_id IN ( \
+                     SELECT n.id FROM nodes n \
+                     JOIN extractions ex ON ex.entity_id = n.id \
+                     JOIN chunks c ON c.id = ex.chunk_id \
+                     WHERE c.source_id = $1 \
+                   )",
+            )
+            .bind(source_id)
+            .fetch_all(self.repo.pool())
+            .await?;
+
+            gaps.push(WhitespaceGap {
+                source_id: *source_id,
+                title: title.clone(),
+                uri: uri.clone(),
+                node_count: *node_count as u64,
+                representative_nodes: node_names
+                    .into_iter()
+                    .map(|(name, ntype)| WhitespaceNode {
+                        name,
+                        node_type: ntype,
+                    })
+                    .collect(),
+                connected_components: Vec::new(),
+                connected_spec_topics: spec_connected.into_iter().map(|(name,)| name).collect(),
+                assessment: if *node_count > 10 {
+                    format!(
+                        "Dense research cluster ({} entities) with zero THEORETICAL_BASIS \
+                         bridge edges to any component.",
+                        node_count
+                    )
+                } else {
+                    format!(
+                        "{} entities with no bridge edges to any component.",
+                        node_count
+                    )
+                },
+            });
+        }
+
+        // Sort by node count descending (densest unbridged clusters first).
+        gaps.sort_by(|a, b| b.node_count.cmp(&a.node_count));
+
+        let whitespace_score = if total_research > 0 {
+            total_unbridged as f64 / total_research as f64
+        } else {
+            0.0
+        };
+
+        tracing::info!(
+            total_research,
+            total_unbridged,
+            whitespace_score = format!("{:.1}%", whitespace_score * 100.0),
+            gaps = gaps.len(),
+            "whitespace roadmap analysis complete"
+        );
+
+        Ok(WhitespaceResult {
+            gaps,
+            total_research_sources: total_research,
+            unbridged_sources: total_unbridged,
+            whitespace_score,
+        })
+    }
+
+    // ------------------------------------------------------------------
+    // Capability 1: Research-to-Execution Verification
+    // ------------------------------------------------------------------
+
+    /// Maximum code nodes to compare per component.
+    const MAX_VERIFY_CODE_NODES: i64 = 20;
+
+    /// Verify whether code implementation aligns with research claims.
+    ///
+    /// Finds research nodes matching the query, traces through
+    /// THEORETICAL_BASIS edges to Components, then through
+    /// PART_OF_COMPONENT edges to code nodes. Compares research
+    /// statement embeddings with code semantic summary embeddings
+    /// to find alignment and divergence.
+    pub async fn verify_implementation(
+        &self,
+        research_query: &str,
+        component_filter: Option<&str>,
+    ) -> Result<VerificationResult> {
+        let embedder = self
+            .embedder
+            .as_ref()
+            .ok_or_else(|| Error::Config("no embedder configured".into()))?;
+
+        // Embed the research query.
+        let query_embeddings = embedder.embed(&[research_query.to_string()]).await?;
+        let query_vec = query_embeddings
+            .first()
+            .ok_or_else(|| Error::Config("embedder returned empty result".into()))?;
+        let query_truncated = truncate_and_validate(query_vec, self.node_embed_dim, "node")?;
+
+        // Find research-domain nodes closest to the query.
+        let research_nodes: Vec<(uuid::Uuid, String, String, Option<String>, f64)> =
+            sqlx::query_as(
+                "SELECT n.id, n.canonical_name, n.node_type, \
+                        n.properties->>'semantic_summary', \
+                        (n.embedding <=> $1::vector) AS dist \
+                 FROM nodes n \
+                 WHERE n.embedding IS NOT NULL \
+                   AND n.node_type != 'component' \
+                   AND EXISTS ( \
+                     SELECT 1 FROM extractions ex \
+                     JOIN chunks c ON c.id = ex.chunk_id \
+                     JOIN sources s ON s.id = c.source_id \
+                     WHERE ex.entity_id = n.id \
+                       AND s.source_type = 'document' \
+                       AND COALESCE(s.uri, '') NOT LIKE '%spec/%' \
+                       AND COALESCE(s.uri, '') NOT LIKE '%docs/adr/%' \
+                   ) \
+                 ORDER BY dist ASC \
+                 LIMIT 10",
+            )
+            .bind(&query_truncated)
+            .fetch_all(self.repo.pool())
+            .await?;
+
+        if research_nodes.is_empty() {
+            return Ok(VerificationResult {
+                research_query: research_query.to_string(),
+                research_matches: Vec::new(),
+                code_matches: Vec::new(),
+                alignment_score: None,
+                component: None,
+            });
+        }
+
+        // Find which Components these research nodes connect to via
+        // THEORETICAL_BASIS.
+        let research_ids: Vec<uuid::Uuid> = research_nodes.iter().map(|(id, ..)| *id).collect();
+        let components: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+            "SELECT DISTINCT comp.id, comp.canonical_name \
+             FROM nodes comp \
+             JOIN edges e ON e.source_node_id = comp.id \
+             WHERE comp.node_type = 'component' \
+               AND e.rel_type = 'THEORETICAL_BASIS' \
+               AND e.target_node_id = ANY($1)",
+        )
+        .bind(&research_ids)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        // Apply component filter if specified.
+        let filtered_components: Vec<(uuid::Uuid, String)> = if let Some(filter) = component_filter
+        {
+            let lower = filter.to_lowercase();
+            components
+                .into_iter()
+                .filter(|(_, name)| name.to_lowercase().contains(&lower))
+                .collect()
+        } else {
+            components
+        };
+
+        let component_name = filtered_components.first().map(|(_, n)| n.clone());
+
+        // Find code nodes linked to these components via PART_OF_COMPONENT.
+        let comp_ids: Vec<uuid::Uuid> = filtered_components.iter().map(|(id, _)| *id).collect();
+        let code_nodes: Vec<(uuid::Uuid, String, String, Option<String>, f64)> =
+            if comp_ids.is_empty() {
+                Vec::new()
+            } else {
+                sqlx::query_as(
+                    "SELECT n.id, n.canonical_name, n.node_type, \
+                        n.properties->>'semantic_summary', \
+                        (n.embedding <=> $1::vector) AS dist \
+                 FROM nodes n \
+                 JOIN edges e ON e.source_node_id = n.id \
+                 WHERE e.rel_type = 'PART_OF_COMPONENT' \
+                   AND e.target_node_id = ANY($2) \
+                   AND n.embedding IS NOT NULL \
+                 ORDER BY dist ASC \
+                 LIMIT $3",
+                )
+                .bind(&query_truncated)
+                .bind(&comp_ids)
+                .bind(Self::MAX_VERIFY_CODE_NODES)
+                .fetch_all(self.repo.pool())
+                .await?
+            };
+
+        // Compute alignment score: mean cosine similarity between
+        // research nodes and code nodes (via the query vector as proxy).
+        let alignment_score = if !research_nodes.is_empty() && !code_nodes.is_empty() {
+            let research_mean: f64 = research_nodes.iter().map(|(.., d)| 1.0 - d).sum::<f64>()
+                / research_nodes.len() as f64;
+            let code_mean: f64 =
+                code_nodes.iter().map(|(.., d)| 1.0 - d).sum::<f64>() / code_nodes.len() as f64;
+            Some((research_mean + code_mean) / 2.0)
+        } else {
+            None
+        };
+
+        let research_matches: Vec<VerificationMatch> = research_nodes
+            .into_iter()
+            .map(|(id, name, ntype, summary, dist)| VerificationMatch {
+                node_id: id,
+                name,
+                node_type: ntype,
+                summary,
+                distance: dist,
+                domain: "research".to_string(),
+            })
+            .collect();
+
+        let code_matches: Vec<VerificationMatch> = code_nodes
+            .into_iter()
+            .map(|(id, name, ntype, summary, dist)| VerificationMatch {
+                node_id: id,
+                name,
+                node_type: ntype,
+                summary,
+                distance: dist,
+                domain: "code".to_string(),
+            })
+            .collect();
+
+        tracing::info!(
+            query = %research_query,
+            research = research_matches.len(),
+            code = code_matches.len(),
+            alignment = ?alignment_score,
+            component = ?component_name,
+            "research-to-execution verification complete"
+        );
+
+        Ok(VerificationResult {
+            research_query: research_query.to_string(),
+            research_matches,
+            code_matches,
+            alignment_score,
+            component: component_name,
+        })
+    }
+
+    // ------------------------------------------------------------------
+    // Capability 5: Dialectical Design Partner
+    // ------------------------------------------------------------------
+
+    /// Maximum evidence nodes per search direction.
+    const MAX_CRITIQUE_EVIDENCE: i64 = 15;
+
+    /// Generate a dialectical critique of a design proposal.
+    ///
+    /// Embeds the proposal text and searches the graph for semantically
+    /// related evidence across all three domains (research, spec, code).
+    /// When a chat backend is available, uses LLM synthesis to generate
+    /// structured counter-arguments and supporting arguments.
+    pub async fn critique(&self, proposal: &str) -> Result<CritiqueResult> {
+        let embedder = self
+            .embedder
+            .as_ref()
+            .ok_or_else(|| Error::Config("no embedder configured".into()))?;
+
+        // Embed the proposal text.
+        let proposal_embeddings = embedder.embed(&[proposal.to_string()]).await?;
+        let proposal_vec = proposal_embeddings
+            .first()
+            .ok_or_else(|| Error::Config("embedder returned empty result".into()))?;
+        let proposal_truncated = truncate_and_validate(proposal_vec, self.node_embed_dim, "node")?;
+
+        // Search for related evidence across all domains.
+        // Research evidence (non-spec, non-code documents).
+        let research_evidence: Vec<(uuid::Uuid, String, String, Option<String>, f64)> =
+            sqlx::query_as(
+                "SELECT n.id, n.canonical_name, n.node_type, \
+                        n.description, \
+                        (n.embedding <=> $1::vector) AS dist \
+                 FROM nodes n \
+                 WHERE n.embedding IS NOT NULL \
+                   AND n.node_type NOT IN ('component') \
+                   AND EXISTS ( \
+                     SELECT 1 FROM extractions ex \
+                     JOIN chunks c ON c.id = ex.chunk_id \
+                     JOIN sources s ON s.id = c.source_id \
+                     WHERE ex.entity_id = n.id \
+                       AND s.source_type = 'document' \
+                       AND COALESCE(s.uri, '') NOT LIKE '%spec/%' \
+                       AND COALESCE(s.uri, '') NOT LIKE '%docs/adr/%' \
+                   ) \
+                 ORDER BY dist ASC \
+                 LIMIT $2",
+            )
+            .bind(&proposal_truncated)
+            .bind(Self::MAX_CRITIQUE_EVIDENCE)
+            .fetch_all(self.repo.pool())
+            .await?;
+
+        // Spec/design evidence.
+        let spec_evidence: Vec<(uuid::Uuid, String, String, Option<String>, f64)> = sqlx::query_as(
+            "SELECT n.id, n.canonical_name, n.node_type, \
+                        n.description, \
+                        (n.embedding <=> $1::vector) AS dist \
+                 FROM nodes n \
+                 WHERE n.embedding IS NOT NULL \
+                   AND n.node_type NOT IN ('component') \
+                   AND EXISTS ( \
+                     SELECT 1 FROM extractions ex \
+                     JOIN chunks c ON c.id = ex.chunk_id \
+                     JOIN sources s ON s.id = c.source_id \
+                     WHERE ex.entity_id = n.id \
+                       AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%') \
+                   ) \
+                 ORDER BY dist ASC \
+                 LIMIT $2",
+        )
+        .bind(&proposal_truncated)
+        .bind(Self::MAX_CRITIQUE_EVIDENCE)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        // Code evidence (code-type sources).
+        let code_evidence: Vec<(uuid::Uuid, String, String, Option<String>, f64)> = sqlx::query_as(
+            "SELECT n.id, n.canonical_name, n.node_type, \
+                        COALESCE(n.properties->>'semantic_summary', \
+                                 n.description), \
+                        (n.embedding <=> $1::vector) AS dist \
+                 FROM nodes n \
+                 WHERE n.embedding IS NOT NULL \
+                   AND n.node_type NOT IN ('component') \
+                   AND EXISTS ( \
+                     SELECT 1 FROM extractions ex \
+                     JOIN chunks c ON c.id = ex.chunk_id \
+                     JOIN sources s ON s.id = c.source_id \
+                     WHERE ex.entity_id = n.id \
+                       AND s.source_type = 'code' \
+                   ) \
+                 ORDER BY dist ASC \
+                 LIMIT $2",
+        )
+        .bind(&proposal_truncated)
+        .bind(Self::MAX_CRITIQUE_EVIDENCE)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let to_evidence = |rows: Vec<(uuid::Uuid, String, String, Option<String>, f64)>,
+                           domain: &str|
+         -> Vec<CritiqueEvidence> {
+            rows.into_iter()
+                .map(|(id, name, ntype, desc, dist)| CritiqueEvidence {
+                    node_id: id,
+                    name,
+                    node_type: ntype,
+                    description: desc,
+                    distance: dist,
+                    domain: domain.to_string(),
+                })
+                .collect()
+        };
+
+        let all_research = to_evidence(research_evidence, "research");
+        let all_spec = to_evidence(spec_evidence, "spec");
+        let all_code = to_evidence(code_evidence, "code");
+
+        // If a chat backend is available, ask the LLM to synthesize
+        // a dialectical critique from the evidence.
+        let synthesis = if let Some(ref backend) = self.chat_backend {
+            self.synthesize_critique(backend, proposal, &all_research, &all_spec, &all_code)
+                .await
+                .ok() // Non-fatal: return evidence without synthesis on LLM failure.
+        } else {
+            None
+        };
+
+        tracing::info!(
+            research = all_research.len(),
+            spec = all_spec.len(),
+            code = all_code.len(),
+            has_synthesis = synthesis.is_some(),
+            "dialectical critique complete"
+        );
+
+        Ok(CritiqueResult {
+            proposal: proposal.to_string(),
+            research_evidence: all_research,
+            spec_evidence: all_spec,
+            code_evidence: all_code,
+            synthesis,
+        })
+    }
+
+    /// Use the chat backend to synthesize a structured critique.
+    async fn synthesize_critique(
+        &self,
+        backend: &Arc<dyn ChatBackend>,
+        proposal: &str,
+        research: &[CritiqueEvidence],
+        spec: &[CritiqueEvidence],
+        code: &[CritiqueEvidence],
+    ) -> Result<CritiqueSynthesis> {
+        let evidence_summary = |items: &[CritiqueEvidence], label: &str| -> String {
+            if items.is_empty() {
+                return format!("No {label} evidence found.");
+            }
+            let mut s = format!("**{label} evidence:**\n");
+            for (i, e) in items.iter().take(5).enumerate() {
+                s.push_str(&format!(
+                    "{}. {} ({}, dist={:.3}){}\n",
+                    i + 1,
+                    e.name,
+                    e.node_type,
+                    e.distance,
+                    e.description
+                        .as_deref()
+                        .map(|d| format!(": {}", &d[..d.len().min(120)]))
+                        .unwrap_or_default()
+                ));
+            }
+            s
+        };
+
+        let system = "You are a critical design reviewer for a knowledge engine called \
+                       Covalence. Given a design proposal and evidence from the system's \
+                       research papers, spec documents, and codebase, generate a structured \
+                       dialectical critique. Be specific, cite evidence by name, and \
+                       identify both counter-arguments and supporting arguments.";
+
+        let user = format!(
+            "## Design Proposal\n{proposal}\n\n\
+             ## Evidence from the Knowledge Graph\n\
+             {}\n{}\n{}\n\n\
+             Respond with a JSON object:\n\
+             {{\n\
+               \"counter_arguments\": [\n\
+                 {{\"claim\": \"...\", \"evidence\": [\"...\"], \"strength\": \"strong|moderate|weak\"}}\n\
+               ],\n\
+               \"supporting_arguments\": [\n\
+                 {{\"claim\": \"...\", \"evidence\": [\"...\"]}}\n\
+               ],\n\
+               \"recommendation\": \"...\"\n\
+             }}",
+            evidence_summary(research, "Research"),
+            evidence_summary(spec, "Spec/Design"),
+            evidence_summary(code, "Code"),
+        );
+
+        let response = backend.chat(system, &user, true, 0.3).await?;
+
+        // Parse the LLM response as JSON.
+        let synthesis: CritiqueSynthesis = serde_json::from_str(&response)
+            .or_else(|_| {
+                // Try to extract JSON from markdown code block.
+                let trimmed = response.trim();
+                let json_str = if let Some(start) = trimmed.find('{') {
+                    if let Some(end) = trimmed.rfind('}') {
+                        &trimmed[start..=end]
+                    } else {
+                        trimmed
+                    }
+                } else {
+                    trimmed
+                };
+                serde_json::from_str(json_str)
+            })
+            .map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    response_preview = &response[..response.len().min(200)],
+                    "failed to parse critique synthesis"
+                );
+                Error::Ingestion(format!("failed to parse LLM critique: {e}"))
+            })?;
+
+        Ok(synthesis)
+    }
 }
 
 /// Target node info for blast radius.
@@ -1074,6 +1642,156 @@ pub struct BlastRadiusResult {
     pub affected_by_hop: Vec<BlastRadiusHop>,
     /// Total number of affected nodes.
     pub total_affected: usize,
+}
+
+// ------------------------------------------------------------------
+// Whitespace roadmap types
+// ------------------------------------------------------------------
+
+/// A node representative in a whitespace gap.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WhitespaceNode {
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+}
+
+/// A research cluster with no bridge edges to any Component.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WhitespaceGap {
+    /// Source UUID.
+    pub source_id: uuid::Uuid,
+    /// Source title.
+    pub title: String,
+    /// Source URI.
+    pub uri: Option<String>,
+    /// Number of entities extracted from this source.
+    pub node_count: u64,
+    /// Representative entity names from the source.
+    pub representative_nodes: Vec<WhitespaceNode>,
+    /// Components connected via any bridge edge.
+    pub connected_components: Vec<String>,
+    /// Spec topics connected via IMPLEMENTS_INTENT.
+    pub connected_spec_topics: Vec<String>,
+    /// Human-readable gap assessment.
+    pub assessment: String,
+}
+
+/// Result of whitespace roadmap analysis.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WhitespaceResult {
+    /// Research clusters with no bridge edges.
+    pub gaps: Vec<WhitespaceGap>,
+    /// Total research sources analyzed.
+    pub total_research_sources: u64,
+    /// Sources with zero bridge edges.
+    pub unbridged_sources: u64,
+    /// Fraction of research sources that are unbridged.
+    pub whitespace_score: f64,
+}
+
+// ------------------------------------------------------------------
+// Research-to-execution verification types
+// ------------------------------------------------------------------
+
+/// A matched node in verification analysis.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VerificationMatch {
+    /// Node UUID.
+    pub node_id: uuid::Uuid,
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+    /// Semantic summary or description.
+    pub summary: Option<String>,
+    /// Cosine distance from the query.
+    pub distance: f64,
+    /// Domain: "research" or "code".
+    pub domain: String,
+}
+
+/// Result of research-to-execution verification.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VerificationResult {
+    /// The research query searched for.
+    pub research_query: String,
+    /// Matched research-domain nodes.
+    pub research_matches: Vec<VerificationMatch>,
+    /// Matched code-domain nodes via Component bridges.
+    pub code_matches: Vec<VerificationMatch>,
+    /// Alignment score (mean cosine similarity across domains).
+    pub alignment_score: Option<f64>,
+    /// Component that bridges the domains (if found).
+    pub component: Option<String>,
+}
+
+// ------------------------------------------------------------------
+// Dialectical critique types
+// ------------------------------------------------------------------
+
+/// A piece of evidence from the knowledge graph.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CritiqueEvidence {
+    /// Node UUID.
+    pub node_id: uuid::Uuid,
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+    /// Node description or summary.
+    pub description: Option<String>,
+    /// Cosine distance from the proposal embedding.
+    pub distance: f64,
+    /// Domain: "research", "spec", or "code".
+    pub domain: String,
+}
+
+/// A counter-argument in the critique.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CounterArgument {
+    /// The claim being made against the proposal.
+    pub claim: String,
+    /// Evidence supporting the counter-argument.
+    pub evidence: Vec<String>,
+    /// Strength of the argument: "strong", "moderate", or "weak".
+    pub strength: String,
+}
+
+/// A supporting argument in the critique.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SupportingArgument {
+    /// The claim supporting the proposal.
+    pub claim: String,
+    /// Evidence supporting this argument.
+    pub evidence: Vec<String>,
+}
+
+/// LLM-synthesized dialectical critique.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CritiqueSynthesis {
+    /// Arguments against the proposal.
+    pub counter_arguments: Vec<CounterArgument>,
+    /// Arguments supporting the proposal.
+    pub supporting_arguments: Vec<SupportingArgument>,
+    /// Overall recommendation.
+    pub recommendation: String,
+}
+
+/// Result of dialectical critique analysis.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CritiqueResult {
+    /// The original proposal text.
+    pub proposal: String,
+    /// Research-domain evidence related to the proposal.
+    pub research_evidence: Vec<CritiqueEvidence>,
+    /// Spec/design evidence related to the proposal.
+    pub spec_evidence: Vec<CritiqueEvidence>,
+    /// Code evidence related to the proposal.
+    pub code_evidence: Vec<CritiqueEvidence>,
+    /// LLM-synthesized critique (None if no chat backend available).
+    pub synthesis: Option<CritiqueSynthesis>,
 }
 
 #[cfg(test)]
@@ -1181,5 +1899,89 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("run_pipeline"));
         assert!(json.contains("embed_batch"));
+    }
+
+    #[test]
+    fn whitespace_gap_serializes() {
+        let gap = WhitespaceGap {
+            source_id: uuid::Uuid::new_v4(),
+            title: "HDBSCAN Paper".into(),
+            uri: Some("https://arxiv.org/abs/hdbscan".into()),
+            node_count: 12,
+            representative_nodes: vec![WhitespaceNode {
+                name: "HDBSCAN".into(),
+                node_type: "algorithm".into(),
+            }],
+            connected_components: Vec::new(),
+            connected_spec_topics: Vec::new(),
+            assessment: "Dense research cluster".into(),
+        };
+        let json = serde_json::to_string(&gap).unwrap();
+        assert!(json.contains("HDBSCAN Paper"));
+        assert!(json.contains("hdbscan"));
+    }
+
+    #[test]
+    fn verification_result_serializes() {
+        let result = VerificationResult {
+            research_query: "HDBSCAN clustering".into(),
+            research_matches: vec![VerificationMatch {
+                node_id: uuid::Uuid::new_v4(),
+                name: "HDBSCAN".into(),
+                node_type: "algorithm".into(),
+                summary: Some("Hierarchical density-based clustering".into()),
+                distance: 0.15,
+                domain: "research".into(),
+            }],
+            code_matches: vec![VerificationMatch {
+                node_id: uuid::Uuid::new_v4(),
+                name: "run_hdbscan".into(),
+                node_type: "function".into(),
+                summary: Some("Runs HDBSCAN batch clustering".into()),
+                distance: 0.25,
+                domain: "code".into(),
+            }],
+            alignment_score: Some(0.82),
+            component: Some("Entity Resolution".into()),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("HDBSCAN clustering"));
+        assert!(json.contains("0.82"));
+    }
+
+    #[test]
+    fn critique_synthesis_roundtrips() {
+        let synthesis = CritiqueSynthesis {
+            counter_arguments: vec![CounterArgument {
+                claim: "Redundant with statement extraction".into(),
+                evidence: vec!["ADR-0015 statement 14".into()],
+                strength: "strong".into(),
+            }],
+            supporting_arguments: vec![SupportingArgument {
+                claim: "Improves chunk quality".into(),
+                evidence: vec!["LlamaIndex eval".into()],
+            }],
+            recommendation: "Consider only if maintaining dual pipeline".into(),
+        };
+        let json = serde_json::to_string(&synthesis).unwrap();
+        let parsed: CritiqueSynthesis = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.counter_arguments.len(), 1);
+        assert_eq!(parsed.supporting_arguments.len(), 1);
+        assert_eq!(parsed.recommendation, synthesis.recommendation);
+    }
+
+    #[test]
+    fn critique_evidence_serializes() {
+        let evidence = CritiqueEvidence {
+            node_id: uuid::Uuid::new_v4(),
+            name: "RRF".into(),
+            node_type: "concept".into(),
+            description: Some("Reciprocal Rank Fusion".into()),
+            distance: 0.2,
+            domain: "research".into(),
+        };
+        let json = serde_json::to_string(&evidence).unwrap();
+        assert!(json.contains("RRF"));
+        assert!(json.contains("research"));
     }
 }

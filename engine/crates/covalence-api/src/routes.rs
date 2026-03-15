@@ -88,7 +88,10 @@ pub fn router(state: AppState) -> Router {
         .route("/analysis/link", post(analysis::link_domains))
         .route("/analysis/coverage", post(analysis::coverage_analysis))
         .route("/analysis/erosion", post(analysis::detect_erosion))
-        .route("/analysis/blast-radius", post(analysis::blast_radius));
+        .route("/analysis/blast-radius", post(analysis::blast_radius))
+        .route("/analysis/whitespace", post(analysis::whitespace_roadmap))
+        .route("/analysis/verify", post(analysis::verify_implementation))
+        .route("/analysis/critique", post(analysis::critique));
 
     // Resolve the dashboard directory relative to the working
     // directory. The binary is typically run from the repo root,
