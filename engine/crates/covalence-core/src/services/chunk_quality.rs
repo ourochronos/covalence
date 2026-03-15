@@ -516,6 +516,55 @@ pub fn is_title_only(text: &str) -> bool {
     false
 }
 
+/// Returns `true` for code chunks too short to carry semantic value.
+///
+/// Very short code chunks (single-line module declarations, `mod tests {`,
+/// `package cmd`, `#[cfg(test)]`) appear in search results as noise.
+/// They score on lexical/vector dimensions because they contain domain
+/// keywords, but carry no informational content for the user.
+pub fn is_trivial_code_chunk(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    // Strip markdown code fences if present.
+    let inner = if trimmed.starts_with("```") {
+        let without_open = trimmed
+            .strip_prefix("```rust")
+            .or_else(|| trimmed.strip_prefix("```go"))
+            .or_else(|| trimmed.strip_prefix("```"))
+            .unwrap_or(trimmed);
+        without_open
+            .strip_suffix("```")
+            .unwrap_or(without_open)
+            .trim()
+    } else {
+        trimmed
+    };
+
+    if inner.is_empty() {
+        return true;
+    }
+
+    // Single-line or very short content is trivial.
+    let lines: Vec<&str> = inner
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() <= 1 && inner.len() < 40 {
+        return true;
+    }
+
+    // Multi-line but total content is still very short.
+    if inner.len() < 25 {
+        return true;
+    }
+
+    false
+}
+
 /// Returns `true` if any heading in the chunk's path matches a known
 /// web-scraping artifact heading.
 pub fn has_artifact_heading(heading_path: &[String]) -> bool {
@@ -1181,5 +1230,61 @@ mod tests {
     fn title_only_empty_handled() {
         // Empty text is handled by is_metadata_only, not is_title_only
         assert!(!is_title_only(""));
+    }
+
+    // --- is_trivial_code_chunk tests ---
+
+    #[test]
+    fn trivial_mod_tests() {
+        assert!(is_trivial_code_chunk("mod tests {"));
+    }
+
+    #[test]
+    fn trivial_package_cmd() {
+        assert!(is_trivial_code_chunk("package cmd"));
+    }
+
+    #[test]
+    fn trivial_cfg_test() {
+        assert!(is_trivial_code_chunk("```rust\n#[cfg(test)]\n```"));
+    }
+
+    #[test]
+    fn trivial_single_mod_decl() {
+        assert!(is_trivial_code_chunk("```rust\nmod state;\n```"));
+    }
+
+    #[test]
+    fn trivial_empty() {
+        assert!(is_trivial_code_chunk(""));
+        assert!(is_trivial_code_chunk("   \n  "));
+    }
+
+    #[test]
+    fn trivial_bare_fences() {
+        assert!(is_trivial_code_chunk("```rust\n```"));
+    }
+
+    #[test]
+    fn trivial_if_regressed() {
+        assert!(is_trivial_code_chunk("if regressed {"));
+    }
+
+    #[test]
+    fn not_trivial_real_function() {
+        let code = "fn main() {\n    let x = compute_score();\n    println!(\"{x}\");\n}";
+        assert!(!is_trivial_code_chunk(code));
+    }
+
+    #[test]
+    fn not_trivial_struct_def() {
+        let code = "pub struct SearchFilters {\n    pub min_confidence: Option<f64>,\n    pub node_types: Option<Vec<String>>,\n}";
+        assert!(!is_trivial_code_chunk(code));
+    }
+
+    #[test]
+    fn not_trivial_multi_line_code() {
+        let code = "```rust\nuse crate::models::node::Node;\nuse crate::storage::traits::NodeRepo;\n\nimpl NodeService {\n    pub async fn get(&self, id: Uuid) -> Result<Node> {\n        NodeRepo::get(&*self.repo, id).await\n    }\n}\n```";
+        assert!(!is_trivial_code_chunk(code));
     }
 }

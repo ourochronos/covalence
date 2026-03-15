@@ -1064,7 +1064,7 @@ impl SearchService {
         {
             use super::chunk_quality::{
                 is_author_block, is_bibliography_entry, is_boilerplate_heavy, is_metadata_only,
-                is_reference_section, is_title_only,
+                is_reference_section, is_title_only, is_trivial_code_chunk,
             };
 
             let pre = fused.len();
@@ -1081,7 +1081,8 @@ impl SearchService {
                     || is_boilerplate_heavy(content)
                     || is_metadata_only(content)
                     || is_title_only(content)
-                    || is_author_block(content))
+                    || is_author_block(content)
+                    || is_trivial_code_chunk(content))
             });
             let removed = pre - fused.len();
             if removed > 0 {
