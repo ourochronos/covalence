@@ -395,6 +395,33 @@ Execute the uncompromising `design/v2-migration-plan.md`:
 
 **Note:** Blue/green re-ingestion tracked separately in #109. All pipeline code is complete.
 
+## Wave 9 — Cross-Domain Analysis (#133)
+
+### Component Model Bootstrap
+- [x] 9 Component nodes: Ingestion Pipeline, Statement Pipeline, Search Fusion, Entity Resolution, Graph Sidecar, Epistemic Model, Consolidation, API Layer, CLI
+- [x] Component descriptions embedded via Voyage voyage-3-large
+- [x] Bootstrap endpoint: `POST /api/v1/analysis/bootstrap`
+
+### Cross-Domain Linking
+- [x] PART_OF_COMPONENT edges via source URI module-path matching (219 edges)
+- [x] IMPLEMENTS_INTENT edges via embedding similarity to spec concepts (14 edges)
+- [x] THEORETICAL_BASIS edges via embedding similarity to research concepts (31 edges)
+- [x] Provenance-based source URI fallback when code nodes lack file_path
+- [x] Linking endpoint: `POST /api/v1/analysis/link`
+
+### Analysis Capabilities (spec/13)
+- [x] Coverage analysis: orphan code + unimplemented specs + coverage score
+- [x] Architecture erosion detection: drift metrics per component
+- [x] Blast-radius simulation: BFS graph traversal from any node
+- [ ] Whitespace roadmap: research cluster gap detection
+- [ ] Research-to-execution verification: cross-domain traversal + comparison
+- [ ] Dialectical design partner: adversarial argument synthesis
+
+### Quality
+- [x] 7 new unit tests (1,235 total)
+- [x] Zero clippy warnings, fmt clean
+- [x] All endpoints live on prod (:8441)
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)
