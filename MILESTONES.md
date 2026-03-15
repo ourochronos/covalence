@@ -413,12 +413,12 @@ Execute the uncompromising `design/v2-migration-plan.md`:
 - [x] Coverage analysis: orphan code + unimplemented specs + coverage score
 - [x] Architecture erosion detection: drift metrics per component
 - [x] Blast-radius simulation: BFS graph traversal from any node
-- [ ] Whitespace roadmap: research cluster gap detection
-- [ ] Research-to-execution verification: cross-domain traversal + comparison
-- [ ] Dialectical design partner: adversarial argument synthesis
+- [x] Whitespace roadmap: research cluster gap detection
+- [x] Research-to-execution verification: cross-domain traversal + comparison
+- [x] Dialectical design partner: adversarial argument synthesis via chat backend
 
 ### Quality
-- [x] 7 new unit tests (1,235 total)
+- [x] 11 new unit tests (1,239 total)
 - [x] Zero clippy warnings, fmt clean
 - [x] All endpoints live on prod (:8441)
 
