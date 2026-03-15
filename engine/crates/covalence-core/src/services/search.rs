@@ -994,17 +994,23 @@ impl SearchService {
         }
 
         // --- Step 9: Reranking ---
-        // Build documents for the reranker. Prefer snippet, then
-        // name, then truncated content. Vector-only chunk results
-        // have no snippet or name — without content fallback they
-        // would be reranked against empty strings and always lose.
+        // Build documents for the reranker. Prefer full content over
+        // snippets — snippets are search-term-highlighted excerpts
+        // optimized for display, not semantic evaluation. Sending
+        // snippets biases the reranker toward keyword matches over
+        // actual topical relevance (e.g., a chunk from a coreference
+        // paper about human smuggling gets boosted because the snippet
+        // highlights "coreference"). Full content lets the reranker
+        // judge what the text is *about*, not just which terms appear.
+        // For nodes (which have no content), use the name.
         let documents: Vec<String> = fused
             .iter()
             .map(|r| {
-                r.snippet
-                    .clone()
+                r.content
+                    .as_ref()
+                    .map(|c| truncate_with_ellipsis(c, 1000))
                     .or_else(|| r.name.clone())
-                    .or_else(|| r.content.as_ref().map(|c| truncate_with_ellipsis(c, 500)))
+                    .or_else(|| r.snippet.clone())
                     .unwrap_or_default()
             })
             .collect();
