@@ -977,6 +977,158 @@ pub struct AuditLogResponse {
     pub created_at: String,
 }
 
+// --- Cross-Domain Analysis ---
+
+/// Response for component bootstrapping.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BootstrapResponse {
+    /// Components created as new nodes.
+    pub components_created: u64,
+    /// Components that already existed.
+    pub components_existing: u64,
+    /// Components that were embedded.
+    pub components_embedded: u64,
+}
+
+/// Request body for cross-domain linking.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LinkDomainsRequest {
+    /// Minimum cosine similarity for semantic bridges (default 0.5).
+    pub min_similarity: Option<f64>,
+    /// Maximum bridge edges per component (default 5).
+    pub max_edges_per_component: Option<i64>,
+}
+
+/// Response for cross-domain linking.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LinkDomainsResponse {
+    /// PART_OF_COMPONENT edges created.
+    pub part_of_edges: u64,
+    /// IMPLEMENTS_INTENT edges created.
+    pub intent_edges: u64,
+    /// THEORETICAL_BASIS edges created.
+    pub basis_edges: u64,
+    /// Edges skipped (already exist).
+    pub skipped_existing: u64,
+}
+
+/// A single coverage item in the response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CoverageItemResponse {
+    /// Node UUID.
+    pub node_id: Uuid,
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+    /// File path (for code nodes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// Why this item is flagged.
+    pub reason: String,
+}
+
+/// Response for coverage analysis.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CoverageResponse {
+    /// Code nodes with no Component parent.
+    pub orphan_code: Vec<CoverageItemResponse>,
+    /// Spec concepts with no implementation edge.
+    pub unimplemented_specs: Vec<CoverageItemResponse>,
+    /// Fraction of spec topics with implementation coverage.
+    pub coverage_score: f64,
+}
+
+/// Request body for erosion detection.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ErosionRequest {
+    /// Drift threshold — report components above this (default 0.3).
+    pub threshold: Option<f64>,
+}
+
+/// A divergent code node in the erosion response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DivergentNodeResponse {
+    /// Code node UUID.
+    pub node_id: Uuid,
+    /// Code node name.
+    pub name: String,
+    /// Semantic summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Cosine distance from component embedding.
+    pub distance: f64,
+}
+
+/// A single eroded component.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ErosionItemResponse {
+    /// Component UUID.
+    pub component_id: Uuid,
+    /// Component name.
+    pub component_name: String,
+    /// Design intent description.
+    pub spec_intent: String,
+    /// Drift score.
+    pub drift_score: f64,
+    /// Most divergent code nodes.
+    pub divergent_nodes: Vec<DivergentNodeResponse>,
+}
+
+/// Response for erosion detection.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ErosionResponse {
+    /// Components with drift above the threshold.
+    pub eroded_components: Vec<ErosionItemResponse>,
+    /// Total components analyzed.
+    pub total_components: u64,
+}
+
+/// Request body for blast-radius simulation.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BlastRadiusRequest {
+    /// Target node name or UUID.
+    pub target: String,
+    /// Maximum hops to traverse (default 2).
+    pub max_hops: Option<usize>,
+}
+
+/// An affected node in the blast radius.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AffectedNodeResponse {
+    /// Node UUID.
+    pub node_id: Uuid,
+    /// Node name.
+    pub name: String,
+    /// Node type.
+    pub node_type: String,
+    /// Relationship connecting to blast origin.
+    pub relationship: String,
+}
+
+/// Nodes at a specific hop distance.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlastRadiusHopResponse {
+    /// Hop distance from target.
+    pub hop_distance: usize,
+    /// Nodes at this hop.
+    pub nodes: Vec<AffectedNodeResponse>,
+}
+
+/// Response for blast-radius simulation.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlastRadiusResponse {
+    /// The target node.
+    pub target_name: String,
+    /// Target's component (if assigned).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+    /// Affected nodes by hop distance.
+    pub affected_by_hop: Vec<BlastRadiusHopResponse>,
+    /// Total affected nodes.
+    pub total_affected: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

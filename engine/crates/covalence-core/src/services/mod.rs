@@ -1,6 +1,7 @@
 //! Service layer — business logic orchestrating storage and graph operations.
 
 pub mod admin;
+pub mod analysis;
 pub mod article;
 pub mod chunk_quality;
 pub mod consolidation;
@@ -17,6 +18,7 @@ pub mod source;
 pub(crate) mod statement_pipeline;
 
 pub use admin::{AdminService, CooccurrenceResult, GcResult};
+pub use analysis::AnalysisService;
 pub use article::ArticleService;
 pub use consolidation::GraphDeepConsolidator;
 pub use edge::EdgeService;

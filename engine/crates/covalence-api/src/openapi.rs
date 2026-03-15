@@ -2,7 +2,7 @@
 
 use utoipa::OpenApi;
 
-use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
+use crate::handlers::{admin, analysis, dto, edges, mcp, nodes, search, sources};
 
 /// OpenAPI documentation for the Covalence API.
 #[derive(OpenApi)]
@@ -70,6 +70,12 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         admin::seed_opinions,
         admin::summarize_code_nodes,
         admin::bridge_code_to_concepts,
+        // Analysis
+        analysis::bootstrap_components,
+        analysis::link_domains,
+        analysis::coverage_analysis,
+        analysis::detect_erosion,
+        analysis::blast_radius,
     ),
     components(schemas(
         dto::CreateSourceRequest,
@@ -140,6 +146,19 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         dto::CodeSummaryResponse,
         dto::BridgeRequest,
         dto::BridgeResponse,
+        dto::BootstrapResponse,
+        dto::LinkDomainsRequest,
+        dto::LinkDomainsResponse,
+        dto::CoverageItemResponse,
+        dto::CoverageResponse,
+        dto::ErosionRequest,
+        dto::DivergentNodeResponse,
+        dto::ErosionItemResponse,
+        dto::ErosionResponse,
+        dto::BlastRadiusRequest,
+        dto::AffectedNodeResponse,
+        dto::BlastRadiusHopResponse,
+        dto::BlastRadiusResponse,
         mcp::McpTool,
         mcp::McpToolCall,
         mcp::McpToolResult,
@@ -153,6 +172,7 @@ use crate::handlers::{admin, dto, edges, mcp, nodes, search, sources};
         (name = "graph", description = "Graph analysis endpoints"),
         (name = "mcp", description = "Model Context Protocol tool interface"),
         (name = "admin", description = "Administrative operations"),
+        (name = "analysis", description = "Cross-domain analysis"),
     )
 )]
 pub struct ApiDoc;

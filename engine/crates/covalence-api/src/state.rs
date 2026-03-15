@@ -19,7 +19,8 @@ use covalence_core::ingestion::{
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
-    AdminService, ArticleService, EdgeService, NodeService, SearchService, SourceService,
+    AdminService, AnalysisService, ArticleService, EdgeService, NodeService, SearchService,
+    SourceService,
 };
 use covalence_core::storage::postgres::PgRepo;
 
@@ -47,6 +48,8 @@ pub struct AppState {
     pub article_service: Arc<ArticleService>,
     /// Administrative operations.
     pub admin_service: Arc<AdminService>,
+    /// Cross-domain analysis.
+    pub analysis_service: Arc<AnalysisService>,
 }
 
 impl AppState {
@@ -434,6 +437,12 @@ impl AppState {
         let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
         let article_service = Arc::new(ArticleService::new(Arc::clone(&repo)));
+        let analysis_service = Arc::new(
+            AnalysisService::new(Arc::clone(&repo), Arc::clone(&graph))
+                .with_embedder(embedder.clone())
+                .with_node_embed_dim(config.embedding.table_dims.node),
+        );
+
         let admin_service = Arc::new(
             AdminService::new(Arc::clone(&repo), Arc::clone(&graph))
                 .with_embedder(embedder)
@@ -451,6 +460,7 @@ impl AppState {
             edge_service,
             article_service,
             admin_service,
+            analysis_service,
         })
     }
 }

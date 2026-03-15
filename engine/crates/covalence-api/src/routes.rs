@@ -6,7 +6,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 
-use crate::handlers::{admin, edges, mcp, memory, nodes, search, sources};
+use crate::handlers::{admin, analysis, edges, mcp, memory, nodes, search, sources};
 use crate::middleware::require_api_key;
 use crate::openapi::ApiDoc;
 use crate::state::AppState;
@@ -82,7 +82,13 @@ pub fn router(state: AppState) -> Router {
             "/admin/nodes/summarize-code",
             post(admin::summarize_code_nodes),
         )
-        .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts));
+        .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts))
+        // Analysis
+        .route("/analysis/bootstrap", post(analysis::bootstrap_components))
+        .route("/analysis/link", post(analysis::link_domains))
+        .route("/analysis/coverage", post(analysis::coverage_analysis))
+        .route("/analysis/erosion", post(analysis::detect_erosion))
+        .route("/analysis/blast-radius", post(analysis::blast_radius));
 
     // Resolve the dashboard directory relative to the working
     // directory. The binary is typically run from the repo root,

@@ -1,6 +1,7 @@
 //! Request handlers — thin wrappers that delegate to services.
 
 pub mod admin;
+pub mod analysis;
 pub mod dto;
 pub mod edges;
 pub mod mcp;
