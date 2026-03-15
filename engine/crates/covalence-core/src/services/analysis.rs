@@ -102,7 +102,6 @@ const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
     ("src/services/search", "Search Fusion"),
     // Entity Resolution
     ("src/ingestion/resolver", "Entity Resolution"),
-    ("src/consolidation", "Consolidation"),
     // Graph Sidecar
     ("src/graph", "Graph Sidecar"),
     // Epistemic Model
@@ -528,14 +527,11 @@ impl AnalysisService {
         let mut basis_created = 0u64;
         let mut skipped = 0u64;
 
-        // Spec/design nodes: concepts from spec/ and docs/adr/ sources.
-        // Research nodes: concepts from papers and books.
-        // We distinguish by checking the source URI via provenance or
-        // just using node_type + properties.
+        // Run two separate queries per component so each domain
+        // (spec vs research) gets its own budget of `max_edges`.
         for (comp_id, comp_name, _desc) in &components {
-            // IMPLEMENTS_INTENT: find nearest concept nodes that come from
-            // spec/design sources (non-code, non-component).
-            let intent_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
+            // --- IMPLEMENTS_INTENT: spec/design concepts ---
+            let spec_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
                 "SELECT n.id, n.canonical_name, \
                         (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
                  FROM nodes n \
@@ -543,6 +539,14 @@ impl AnalysisService {
                        'impl_block','constant','macro','module','class','component') \
                    AND n.embedding IS NOT NULL \
                    AND n.id != $1 \
+                   AND EXISTS ( \
+                     SELECT 1 FROM extractions ex \
+                     JOIN chunks c ON ex.chunk_id = c.id \
+                     JOIN sources s ON c.source_id = s.id \
+                     WHERE ex.entity_id = n.id \
+                       AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%' \
+                            OR s.uri LIKE '%VISION%' OR s.uri LIKE '%CLAUDE%') \
+                   ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
             )
@@ -551,77 +555,56 @@ impl AnalysisService {
             .fetch_all(self.repo.pool())
             .await?;
 
-            for (target_id, target_name, dist) in &intent_matches {
-                if *dist > threshold {
-                    break;
-                }
-
-                // Determine edge type: check if the target node is linked
-                // to sources from spec/ or docs/adr/ (intent) vs research papers.
-                let is_spec: bool = sqlx::query_scalar(
-                    "SELECT EXISTS( \
-                       SELECT 1 FROM extractions ex \
-                       JOIN chunks c ON ex.chunk_id = c.id \
-                       JOIN sources s ON c.source_id = s.id \
-                       WHERE ex.entity_id = $1 \
-                         AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%' \
-                              OR s.uri LIKE '%VISION%' OR s.uri LIKE '%CLAUDE%') \
-                     )",
+            let (i, s) = self
+                .create_bridge_edges(
+                    *comp_id,
+                    comp_name,
+                    &spec_matches,
+                    threshold,
+                    "IMPLEMENTS_INTENT",
+                    "spec_to_component",
                 )
-                .bind(target_id)
-                .fetch_one(self.repo.pool())
-                .await
-                .unwrap_or(false);
-
-                let (rel_type, bridge_type) = if is_spec {
-                    ("IMPLEMENTS_INTENT", "spec_to_component")
-                } else {
-                    ("THEORETICAL_BASIS", "research_to_component")
-                };
-
-                // Check if edge already exists.
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM edges \
-                     WHERE source_node_id = $1 AND target_node_id = $2 \
-                       AND rel_type = $3)",
-                )
-                .bind(comp_id)
-                .bind(target_id)
-                .bind(rel_type)
-                .fetch_one(self.repo.pool())
                 .await?;
+            intent_created += i;
+            skipped += s;
 
-                if exists {
-                    skipped += 1;
-                    continue;
-                }
+            // --- THEORETICAL_BASIS: research/theory concepts ---
+            let research_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
+                "SELECT n.id, n.canonical_name, \
+                        (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
+                 FROM nodes n \
+                 WHERE n.node_type NOT IN ('struct','function','trait','enum', \
+                       'impl_block','constant','macro','module','class','component') \
+                   AND n.embedding IS NOT NULL \
+                   AND n.id != $1 \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM extractions ex \
+                     JOIN chunks c ON ex.chunk_id = c.id \
+                     JOIN sources s ON c.source_id = s.id \
+                     WHERE ex.entity_id = n.id \
+                       AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%' \
+                            OR s.uri LIKE '%VISION%' OR s.uri LIKE '%CLAUDE%') \
+                   ) \
+                 ORDER BY dist ASC \
+                 LIMIT $2",
+            )
+            .bind(comp_id)
+            .bind(max_edges)
+            .fetch_all(self.repo.pool())
+            .await?;
 
-                let similarity = 1.0 - dist;
-                let comp_nid = NodeId::from_uuid(*comp_id);
-                let target_nid = NodeId::from_uuid(*target_id);
-                let mut edge = Edge::new(comp_nid, target_nid, rel_type.to_string());
-                edge.confidence = similarity;
-                edge.properties = serde_json::json!({
-                    "bridge_type": bridge_type,
-                    "cosine_similarity": similarity,
-                });
-
-                EdgeRepo::create(&*self.repo, &edge).await?;
-
-                if is_spec {
-                    intent_created += 1;
-                } else {
-                    basis_created += 1;
-                }
-
-                tracing::debug!(
-                    component = %comp_name,
-                    target = %target_name,
-                    rel_type,
-                    similarity,
-                    "bridge edge created"
-                );
-            }
+            let (b, s) = self
+                .create_bridge_edges(
+                    *comp_id,
+                    comp_name,
+                    &research_matches,
+                    threshold,
+                    "THEORETICAL_BASIS",
+                    "research_to_component",
+                )
+                .await?;
+            basis_created += b;
+            skipped += s;
         }
 
         tracing::info!(
@@ -631,6 +614,65 @@ impl AnalysisService {
             "semantic bridge linking complete"
         );
         Ok((intent_created, basis_created, skipped))
+    }
+
+    /// Create bridge edges from ANN match results, skipping duplicates.
+    async fn create_bridge_edges(
+        &self,
+        comp_id: uuid::Uuid,
+        comp_name: &str,
+        matches: &[(uuid::Uuid, String, f64)],
+        threshold: f64,
+        rel_type: &str,
+        bridge_type: &str,
+    ) -> Result<(u64, u64)> {
+        let mut created = 0u64;
+        let mut skipped = 0u64;
+
+        for (target_id, target_name, dist) in matches {
+            if *dist > threshold {
+                break;
+            }
+
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM edges \
+                 WHERE source_node_id = $1 AND target_node_id = $2 \
+                   AND rel_type = $3)",
+            )
+            .bind(comp_id)
+            .bind(target_id)
+            .bind(rel_type)
+            .fetch_one(self.repo.pool())
+            .await?;
+
+            if exists {
+                skipped += 1;
+                continue;
+            }
+
+            let similarity = 1.0 - dist;
+            let comp_nid = NodeId::from_uuid(comp_id);
+            let target_nid = NodeId::from_uuid(*target_id);
+            let mut edge = Edge::new(comp_nid, target_nid, rel_type.to_string());
+            edge.confidence = similarity;
+            edge.properties = serde_json::json!({
+                "bridge_type": bridge_type,
+                "cosine_similarity": similarity,
+            });
+
+            EdgeRepo::create(&*self.repo, &edge).await?;
+            created += 1;
+
+            tracing::debug!(
+                component = %comp_name,
+                target = %target_name,
+                rel_type,
+                similarity,
+                "bridge edge created"
+            );
+        }
+
+        Ok((created, skipped))
     }
 
     // ------------------------------------------------------------------
@@ -794,7 +836,8 @@ impl AnalysisService {
             // Find all code nodes linked to this component via
             // PART_OF_COMPONENT that have embeddings.
             let code_nodes: Vec<(uuid::Uuid, String, Option<String>, f64)> = sqlx::query_as(
-                "SELECT n.id, n.canonical_name, n.description, \
+                "SELECT n.id, n.canonical_name, \
+                        n.properties->>'semantic_summary', \
                         (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
                  FROM nodes n \
                  JOIN edges e ON e.source_node_id = n.id \
@@ -863,10 +906,14 @@ impl AnalysisService {
     // Capability 4: Blast-Radius Simulation
     // ------------------------------------------------------------------
 
+    /// Maximum affected nodes to collect before stopping BFS early.
+    const BLAST_RADIUS_NODE_CAP: usize = 500;
+
     /// Estimate the blast radius of changing a given node.
     ///
     /// Traverses the graph sidecar outward from the target node up to
     /// `max_hops` hops, collecting affected nodes grouped by hop distance.
+    /// Stops early if `BLAST_RADIUS_NODE_CAP` nodes are collected.
     pub async fn blast_radius(
         &self,
         target_name: &str,
@@ -910,7 +957,12 @@ impl AnalysisService {
             visited.insert(start_idx);
             let mut frontier = vec![start_idx];
 
+            let mut total_collected = 0usize;
+
             for hop in 1..=max_hops {
+                if total_collected >= Self::BLAST_RADIUS_NODE_CAP {
+                    break;
+                }
                 let mut next_frontier = Vec::new();
                 let mut hop_nodes = Vec::new();
 
@@ -952,6 +1004,7 @@ impl AnalysisService {
                     }
                 }
 
+                total_collected += hop_nodes.len();
                 if !hop_nodes.is_empty() {
                     affected.push(BlastRadiusHop {
                         hop_distance: hop,
