@@ -86,13 +86,25 @@ const COMPONENT_DEFS: &[(&str, &str)] = &[
 /// Code nodes whose source URI contains one of these path segments
 /// are linked to the corresponding Component.
 const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
-    // Ingestion Pipeline
+    // Ingestion Pipeline — specific submodules first, then catch-all
     ("src/ingestion/pipeline", "Ingestion Pipeline"),
     ("src/ingestion/embedder", "Ingestion Pipeline"),
     ("src/ingestion/converter", "Ingestion Pipeline"),
     ("src/ingestion/chunker", "Ingestion Pipeline"),
+    ("src/ingestion/code_chunker", "Ingestion Pipeline"),
     ("src/ingestion/normalize", "Ingestion Pipeline"),
     ("src/ingestion/source_profile", "Ingestion Pipeline"),
+    ("src/ingestion/extractor", "Ingestion Pipeline"),
+    ("src/ingestion/ast_extractor", "Ingestion Pipeline"),
+    ("src/ingestion/sidecar_extractor", "Ingestion Pipeline"),
+    ("src/ingestion/gliner_extractor", "Ingestion Pipeline"),
+    ("src/ingestion/openai_embedder", "Ingestion Pipeline"),
+    ("src/ingestion/voyage", "Ingestion Pipeline"),
+    ("src/ingestion/landscape", "Ingestion Pipeline"),
+    ("src/ingestion/projection", "Ingestion Pipeline"),
+    ("src/ingestion/parser", "Ingestion Pipeline"),
+    ("ingestion_helpers", "Ingestion Pipeline"),
+    ("chunk_quality", "Ingestion Pipeline"),
     // Statement Pipeline
     ("src/ingestion/statement", "Statement Pipeline"),
     ("src/ingestion/chat_backend", "Statement Pipeline"),
@@ -107,6 +119,7 @@ const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
     ("src/graph", "Graph Sidecar"),
     // Epistemic Model
     ("src/epistemic", "Epistemic Model"),
+    ("types/opinion", "Epistemic Model"),
     // Consolidation
     ("src/consolidation", "Consolidation"),
     ("src/services/consolidation", "Consolidation"),
@@ -116,6 +129,7 @@ const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
     ("src/middleware", "API Layer"),
     ("src/state", "API Layer"),
     ("src/openapi", "API Layer"),
+    ("covalence-api", "API Layer"),
     // CLI
     ("cmd/", "CLI"),
     ("internal/", "CLI"),
@@ -125,6 +139,19 @@ const MODULE_PATH_MAPPINGS: &[(&str, &str)] = &[
     ("src/services/node", "Graph Sidecar"),
     ("src/services/edge", "Graph Sidecar"),
     ("src/services/noise_filter", "Ingestion Pipeline"),
+    ("src/services/analysis", "Graph Sidecar"),
+    ("src/services/memory", "API Layer"),
+    // Core domain models & types — part of Graph Sidecar (data model)
+    ("src/models/", "Graph Sidecar"),
+    ("src/types/", "Graph Sidecar"),
+    ("src/error", "Graph Sidecar"),
+    ("src/config", "API Layer"),
+    // Storage layer
+    ("src/storage/", "Graph Sidecar"),
+    // Eval harness
+    ("covalence-eval", "Ingestion Pipeline"),
+    // Migrations
+    ("covalence-migrations", "API Layer"),
 ];
 
 /// Result of Component bootstrapping.
