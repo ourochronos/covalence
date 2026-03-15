@@ -378,7 +378,8 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
     }
 
     // ArXiv category labels: "physics.data-an", "cs.CL", "math.AG".
-    // Pattern: lowercase.lowercase-with-optional-dash, max ~20 chars.
+    // Pattern: alpha.alpha-with-optional-dash, max ~20 chars.
+    // Uses `lower` for segment check since ArXiv uses mixed-case.
     if entity_type == "concept"
         && trimmed.len() < 25
         && trimmed.contains('.')
@@ -386,7 +387,7 @@ pub(crate) fn is_noise_entity(name: &str, entity_type: &str) -> bool {
         && trimmed
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        && trimmed
+        && lower
             .split('.')
             .all(|p| p.starts_with(|c: char| c.is_ascii_lowercase()))
     {
@@ -959,6 +960,9 @@ mod tests {
         assert!(is_noise_entity("physics.data-an", "concept"));
         assert!(is_noise_entity("cs.cl", "concept"));
         assert!(is_noise_entity("math.ag", "concept"));
+        // Mixed-case canonical forms (cs.CL, math.AG).
+        assert!(is_noise_entity("cs.CL", "concept"));
+        assert!(is_noise_entity("math.AG", "concept"));
         // But real entities with dots are fine.
         assert!(!is_noise_entity("Node2Vec", "technology"));
     }
