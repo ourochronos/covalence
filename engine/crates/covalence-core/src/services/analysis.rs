@@ -605,6 +605,9 @@ impl AnalysisService {
             skipped += s;
 
             // --- THEORETICAL_BASIS: research/theory concepts ---
+            // Include entities that appear in at least one non-spec source.
+            // An entity merged across spec+research should be eligible for
+            // THEORETICAL_BASIS edges (the research provenance is real).
             let research_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
                 "SELECT n.id, n.canonical_name, \
                         (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
@@ -613,13 +616,16 @@ impl AnalysisService {
                        'impl_block','constant','macro','module','class','component') \
                    AND n.embedding IS NOT NULL \
                    AND n.id != $1 \
-                   AND NOT EXISTS ( \
+                   AND EXISTS ( \
                      SELECT 1 FROM extractions ex \
                      JOIN chunks c ON ex.chunk_id = c.id \
                      JOIN sources s ON c.source_id = s.id \
                      WHERE ex.entity_id = n.id \
-                       AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%' \
-                            OR s.uri LIKE '%VISION%' OR s.uri LIKE '%CLAUDE%') \
+                       AND s.uri NOT LIKE '%spec/%' \
+                       AND s.uri NOT LIKE '%docs/adr/%' \
+                       AND s.uri NOT LIKE '%VISION%' \
+                       AND s.uri NOT LIKE '%CLAUDE%' \
+                       AND s.source_type != 'code' \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
