@@ -85,11 +85,28 @@ impl JobQueueRepo for PgRepo {
         &self,
         id: JobId,
         error: &str,
-        base_backoff_secs: u64,
-        max_backoff_secs: u64,
+        backoff_secs: u64,
+        force_dead: bool,
     ) -> Result<JobStatus> {
-        // Fetch current attempt and max_attempts to decide
-        // whether to move to dead or back to pending.
+        if force_dead {
+            // Permanent failure — go straight to dead-letter.
+            sqlx::query(
+                "UPDATE retry_jobs
+                 SET status = 'dead'::job_status,
+                     last_error = $2,
+                     dead_reason = $3,
+                     updated_at = now()
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(error)
+            .bind(format!("permanent failure: {error}"))
+            .execute(&self.pool)
+            .await?;
+            return Ok(JobStatus::Dead);
+        }
+
+        // Check if attempts are exhausted.
         let row = sqlx::query("SELECT attempt, max_attempts FROM retry_jobs WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -101,7 +118,7 @@ impl JobQueueRepo for PgRepo {
         let max_attempts: i32 = row.get("max_attempts");
 
         if attempt >= max_attempts {
-            // Move to dead.
+            // Exhausted retries — dead-letter.
             sqlx::query(
                 "UPDATE retry_jobs
                  SET status = 'dead'::job_status,
@@ -119,14 +136,7 @@ impl JobQueueRepo for PgRepo {
             .await?;
             Ok(JobStatus::Dead)
         } else {
-            // Exponential backoff: base * 2^(attempt-1), capped.
-            let backoff = base_backoff_secs
-                .saturating_mul(
-                    1u64.checked_shl(attempt.saturating_sub(1) as u32)
-                        .unwrap_or(u64::MAX),
-                )
-                .min(max_backoff_secs);
-
+            // Reschedule with backoff.
             sqlx::query(
                 "UPDATE retry_jobs
                  SET status = 'pending'::job_status,
@@ -137,7 +147,7 @@ impl JobQueueRepo for PgRepo {
             )
             .bind(id)
             .bind(error)
-            .bind(backoff.to_string())
+            .bind(backoff_secs.to_string())
             .execute(&self.pool)
             .await?;
             Ok(JobStatus::Pending)

@@ -589,12 +589,18 @@ pub trait JobQueueRepo: Send + Sync {
     /// If the attempt count has reached `max_attempts`, the job is
     /// moved to `Dead` instead of back to `Pending`. Returns the
     /// resulting [`JobStatus`].
+    /// Mark a job as failed.
+    ///
+    /// If `force_dead` is true, the job goes directly to dead-letter
+    /// regardless of attempt count (for permanent errors). Otherwise,
+    /// the job is rescheduled with `backoff_secs` delay, or moved to
+    /// dead if `attempt >= max_attempts`.
     fn mark_failed(
         &self,
         id: JobId,
         error: &str,
-        base_backoff_secs: u64,
-        max_backoff_secs: u64,
+        backoff_secs: u64,
+        force_dead: bool,
     ) -> impl Future<Output = Result<JobStatus>> + Send;
 
     /// Move all failed jobs (optionally filtered by kind) back to
