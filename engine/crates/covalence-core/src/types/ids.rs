@@ -136,6 +136,11 @@ define_id!(
     SectionId
 );
 
+define_id!(
+    /// Unique identifier for a retry queue job.
+    JobId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

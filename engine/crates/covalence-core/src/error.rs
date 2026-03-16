@@ -58,6 +58,10 @@ pub enum Error {
     /// Authentication or authorization error.
     #[error("auth error: {0}")]
     Auth(String),
+
+    /// Retry queue operation failed.
+    #[error("queue error: {0}")]
+    Queue(String),
 }
 
 /// Result type alias using the Covalence error.

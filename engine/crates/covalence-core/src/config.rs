@@ -150,6 +150,9 @@ pub struct Config {
     /// against existing node embeddings. A match is accepted when
     /// similarity exceeds this threshold.
     pub resolve_vector_threshold: f32,
+
+    /// Persistent retry queue configuration.
+    pub queue: RetryQueueConfig,
 }
 
 /// Configuration for the embedding subsystem.
@@ -408,6 +411,36 @@ impl Default for SearchConfig {
     }
 }
 
+/// Configuration for the persistent retry queue.
+#[derive(Debug, Clone)]
+pub struct RetryQueueConfig {
+    /// How often to poll for pending jobs, in seconds.
+    pub poll_interval_secs: u64,
+    /// Base backoff delay for failed jobs, in seconds.
+    pub base_backoff_secs: u64,
+    /// Maximum backoff delay, in seconds.
+    pub max_backoff_secs: u64,
+    /// Default max retry attempts per job.
+    pub max_attempts: i32,
+    /// Max concurrent reprocess_source jobs.
+    pub reprocess_concurrency: usize,
+    /// Max concurrent edge synthesis jobs.
+    pub edge_concurrency: usize,
+}
+
+impl Default for RetryQueueConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 5,
+            base_backoff_secs: 30,
+            max_backoff_secs: 3600,
+            max_attempts: 5,
+            reprocess_concurrency: 2,
+            edge_concurrency: 1,
+        }
+    }
+}
+
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
@@ -441,6 +474,7 @@ impl std::fmt::Debug for Config {
             .field("pipeline", &self.pipeline)
             .field("resolve_trigram_threshold", &self.resolve_trigram_threshold)
             .field("resolve_vector_threshold", &self.resolve_vector_threshold)
+            .field("queue", &self.queue)
             .finish()
     }
 }
@@ -547,6 +581,14 @@ impl Config {
                 0.0,
                 1.0,
             )?,
+            queue: RetryQueueConfig {
+                poll_interval_secs: env_parse("COVALENCE_QUEUE_POLL_INTERVAL", 5)?,
+                base_backoff_secs: env_parse("COVALENCE_QUEUE_BASE_BACKOFF", 30)?,
+                max_backoff_secs: env_parse("COVALENCE_QUEUE_MAX_BACKOFF", 3600)?,
+                max_attempts: env_parse("COVALENCE_QUEUE_MAX_ATTEMPTS", 5)?,
+                reprocess_concurrency: env_parse("COVALENCE_QUEUE_REPROCESS_CONCURRENCY", 2)?,
+                edge_concurrency: env_parse("COVALENCE_QUEUE_EDGE_CONCURRENCY", 1)?,
+            },
         })
     }
 }
@@ -808,6 +850,7 @@ mod tests {
                 readerlm_url: None,
                 resolve_trigram_threshold: 0.4,
                 resolve_vector_threshold: 0.85,
+                queue: RetryQueueConfig::default(),
             }
         );
         assert!(debug_out.contains("[REDACTED]"));

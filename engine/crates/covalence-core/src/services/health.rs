@@ -259,7 +259,8 @@ pub async fn run_config_audit(config: &Config) -> ConfigAudit {
 mod tests {
     use super::*;
     use crate::config::{
-        Config, ConsolidationConfig, EmbeddingConfig, PipelineConfig, SearchConfig,
+        Config, ConsolidationConfig, EmbeddingConfig, PipelineConfig, RetryQueueConfig,
+        SearchConfig,
     };
 
     /// Build a minimal Config for testing without touching env vars.
@@ -297,6 +298,7 @@ mod tests {
             readerlm_url: None,
             resolve_trigram_threshold: 0.4,
             resolve_vector_threshold: 0.85,
+            queue: RetryQueueConfig::default(),
         }
     }
 

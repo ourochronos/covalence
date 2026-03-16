@@ -12,6 +12,7 @@ mod ledger;
 mod node;
 mod node_alias;
 mod node_landmark;
+mod pg_job_queue;
 mod section;
 mod source;
 mod statement;

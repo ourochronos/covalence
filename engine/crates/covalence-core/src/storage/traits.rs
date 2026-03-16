@@ -11,14 +11,15 @@ use crate::models::edge::Edge;
 use crate::models::extraction::Extraction;
 use crate::models::node::Node;
 use crate::models::node_alias::NodeAlias;
+use crate::models::retry_job::{JobKind, JobStatus, QueueStatusRow, RetryJob};
 use crate::models::section::Section;
 use crate::models::source::Source;
 use crate::models::statement::Statement;
 use crate::models::trace::{SearchFeedback, SearchTrace};
 use crate::models::unresolved_entity::UnresolvedEntity;
 use crate::types::ids::{
-    AliasId, ArticleId, AuditLogId, ChunkId, EdgeId, ExtractionId, NodeId, SectionId, SourceId,
-    StatementId,
+    AliasId, ArticleId, AuditLogId, ChunkId, EdgeId, ExtractionId, JobId, NodeId, SectionId,
+    SourceId, StatementId,
 };
 
 /// Repository for [`Source`] entities.
@@ -558,4 +559,55 @@ pub trait LedgerRepo: Send + Sync {
 
     /// Delete all ledger entries for a source (e.g. on re-ingestion).
     fn delete_by_source(&self, source_id: SourceId) -> impl Future<Output = Result<u64>> + Send;
+}
+
+/// Repository for [`RetryJob`] entities (persistent retry queue).
+pub trait JobQueueRepo: Send + Sync {
+    /// Enqueue a new job. Returns `None` if deduped via idempotency key.
+    fn enqueue(
+        &self,
+        kind: JobKind,
+        payload: serde_json::Value,
+        max_attempts: i32,
+        idempotency_key: Option<&str>,
+    ) -> impl Future<Output = Result<Option<RetryJob>>> + Send;
+
+    /// Claim the next pending job of the given kinds.
+    ///
+    /// Uses `SELECT FOR UPDATE SKIP LOCKED` so that concurrent
+    /// workers never claim the same row.
+    fn claim_next(
+        &self,
+        kinds: &[JobKind],
+    ) -> impl Future<Output = Result<Option<RetryJob>>> + Send;
+
+    /// Mark a job as succeeded.
+    fn mark_succeeded(&self, id: JobId) -> impl Future<Output = Result<()>> + Send;
+
+    /// Mark a job as failed with an error message.
+    ///
+    /// If the attempt count has reached `max_attempts`, the job is
+    /// moved to `Dead` instead of back to `Pending`. Returns the
+    /// resulting [`JobStatus`].
+    fn mark_failed(
+        &self,
+        id: JobId,
+        error: &str,
+        base_backoff_secs: u64,
+        max_backoff_secs: u64,
+    ) -> impl Future<Output = Result<JobStatus>> + Send;
+
+    /// Move all failed jobs (optionally filtered by kind) back to
+    /// pending. Returns the number of jobs retried.
+    fn retry_failed(&self, kind: Option<JobKind>) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Get a summary of queue contents grouped by kind and status.
+    fn queue_status(&self) -> impl Future<Output = Result<Vec<QueueStatusRow>>> + Send;
+
+    /// Delete all dead jobs, optionally filtered by kind.
+    /// Returns the number of jobs deleted.
+    fn clear_dead(&self, kind: Option<JobKind>) -> impl Future<Output = Result<u64>> + Send;
+
+    /// List dead jobs, most recently updated first.
+    fn list_dead(&self, limit: i64) -> impl Future<Output = Result<Vec<RetryJob>>> + Send;
 }
