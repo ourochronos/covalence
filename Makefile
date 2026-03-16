@@ -1,6 +1,6 @@
 .PHONY: build test fmt lint clippy check run watch \
        dev-db test-db prod-db migrate migrate-prod reset-db reset-prod-db \
-       run-dev run-prod promote \
+       run-dev run-prod deploy promote \
        spec spec-fetch \
        cli-build cli-install \
        docker-up docker-down \
@@ -125,13 +125,7 @@ reset-prod-db:
 	@cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5437/covalence_prod cargo run -p covalence-migrations
 	@echo "Prod database reset complete."
 
-# === Promote: test in dev, then apply to prod ===
-
-promote: check
-	@echo "=== Dev checks passed. Promoting migrations to prod... ==="
-	@$(MAKE) prod-db
-	@$(MAKE) migrate-prod
-	@echo "=== Promotion complete. Prod is up to date. ==="
+# (promote target is below, after deploy)
 
 # === Run ===
 
@@ -141,8 +135,27 @@ run-dev:
 	cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5435/covalence_dev BIND_ADDR=0.0.0.0:8431 cargo run -p covalence-api
 
 run-prod:
-	@echo "Prod runs on derptop (covalence-wsl:8441). Use 'make run-dev' for local development."
-	@echo "To run prod locally: cd engine && DATABASE_URL=postgres://covalence:covalence@covalence-wsl:5432/covalence_prod BIND_ADDR=0.0.0.0:8441 cargo run -p covalence-api"
+	@echo "Prod runs on derptop (covalence-wsl:8441). Use 'make deploy' to push changes."
+
+# === Deploy to prod (derptop) ===
+
+PROD_HOST ?= covalence@covalence-wsl
+PROD_DIR  ?= /home/covalence/covalence
+
+deploy:
+	@echo "=== Deploying to $(PROD_HOST) ==="
+	ssh $(PROD_HOST) 'cd $(PROD_DIR) && git pull'
+	@echo "=== Building release ==="
+	ssh $(PROD_HOST) 'source $$HOME/.cargo/env && cd $(PROD_DIR)/engine && cargo build --release 2>&1 | tail -3'
+	@echo "=== Running migrations ==="
+	ssh $(PROD_HOST) 'source $$HOME/.cargo/env && cd $(PROD_DIR)/engine && DATABASE_URL=postgres://covalence:covalence@localhost:5432/covalence_prod cargo run -p covalence-migrations 2>&1 | tail -3'
+	@echo "=== Restarting engine ==="
+	ssh $(PROD_HOST) 'sudo systemctl restart covalence-engine && sleep 2 && curl -sf http://localhost:8441/api/v1/admin/health'
+	@echo "=== Deploy complete ==="
+
+# Promote: check locally, migrate prod, deploy
+promote: check migrate-prod deploy
+	@echo "=== Promotion complete ==="
 
 watch:
 	cd engine && cargo watch -x 'run -p covalence-api'
