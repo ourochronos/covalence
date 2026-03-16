@@ -67,16 +67,39 @@ docs/adr/                           Architecture Decision Records (17 ADRs)
 | futures | Concurrent extraction via join_all |
 | cobra (Go) | CLI framework |
 
-## Ports & Coexistence
+## Ports & Deployment
 
-| Resource | Dev | Prod | Existing Covalence |
-|----------|-----|------|-------------------|
-| PG port | **5435** | **5437** | 5434 |
-| Engine port | **8431** | **8441** | 8430 |
-| Test PG | **5436** | — | — |
-| CLI binary | **`cove`** | **`cove --api-url`** | `cov` |
+| Resource | Dev (Mac mini) | Prod (derptop / covalence-wsl) |
+|----------|---------------|-------------------------------|
+| PG port | **5435** (Docker) | **5432** (native PG 17) |
+| Engine port | **8431** | **8441** |
+| Test PG | **5436** (Docker) | — |
+| Host | localhost | covalence-wsl (Tailscale) |
+| CLI | `cove --api-url http://localhost:8431` | `cove --api-url http://covalence-wsl:8441` |
 
-These must not conflict. The existing Covalence instance runs separately.
+Prod runs on derptop: Ryzen 9 7945HX, 96GB RAM, WSL2 Ubuntu 24.04.
+Engine managed by systemd (`covalence-engine.service`).
+
+### Development & Deployment Workflow
+
+```
+Mac mini (dev)                         Derptop (prod)
+──────────────                         ──────────────
+1. Edit code
+2. make check (test + clippy + fmt)
+3. git commit && git push ──────────→  make deploy:
+                                         git pull
+                                         cargo build --release
+                                         migrate
+                                         systemctl restart
+4. make eval-search ────────────────→  (runs against covalence-wsl:8441)
+```
+
+Key commands:
+- `make check` — local test + clippy + fmt
+- `make deploy` — SSH to derptop, pull, build, migrate, restart
+- `make promote` — check + migrate-prod + deploy (full pipeline)
+- `make eval-search` — search regression against prod
 
 ## Environments: Dev vs Prod
 
@@ -84,38 +107,39 @@ Covalence runs two independent environments. **Dev** is for testing schema chang
 
 ### Environment Summary
 
-| | Dev | Prod |
+| | Dev (Mac mini) | Prod (derptop) |
 |---|-----|------|
-| DB | `covalence_dev` on port 5435 | `covalence_prod` on port 5437 |
-| Engine | port 8431 | port 8441 |
-| Config | `.env` (default) | `.env.prod` (env overrides) |
-| Docker profile | default | `--profile prod` |
+| Host | localhost | covalence-wsl |
+| DB | `covalence_dev` on localhost:5435 | `covalence_prod` on covalence-wsl:5432 |
+| Engine | localhost:8431 | covalence-wsl:8441 |
+| Config | `.env` (default) | `.env.wsl` on derptop |
+| PG | Docker container | Native PG 17 (16GB shared_buffers) |
+| Engine mgmt | `cargo run` | systemd (`covalence-engine.service`) |
 | Data policy | Ephemeral — reset freely | Persistent — protect data |
 
-### Workflow: Testing in Dev, Promoting to Prod
+### Workflow: Testing in Dev, Deploying to Prod
 
-1. **Develop and test in dev first.** All schema changes, new migrations, pipeline changes, and features are tested against the dev database.
+1. **Develop and test in dev first.** All schema changes, new migrations, pipeline changes, and features are tested against the local dev database.
 2. **Run `make check`** to verify tests, clippy, and formatting pass.
-3. **Run `make promote`** to apply verified migrations to prod. This runs `make check` first, then starts prod-pg and runs migrations.
-4. **Never run `make reset-prod-db` without explicit user approval.** Prod data is not ephemeral.
+3. **Commit and push** to GitHub.
+4. **Run `make deploy`** to pull, build, migrate, and restart on derptop.
+5. **Run `make promote`** for the full pipeline: check + migrate-prod + deploy.
+6. **Never modify prod data** without explicit user approval. Prod data is not ephemeral.
 
 ### Make Targets
 
 ```bash
-# Dev (default)
+# Dev (Mac mini, default)
 make dev-db          # Start dev PG (5435)
 make migrate         # Run migrations on dev
 make reset-db        # Drop + recreate dev DB (safe to do freely)
 make run-dev         # Start engine on :8431 (reads .env)
 
-# Prod
-make prod-db         # Start prod PG (5437)
-make migrate-prod    # Run migrations on prod
-make run-prod        # Start engine on :8441 (overrides DATABASE_URL + BIND_ADDR)
-make reset-prod-db   # DANGEROUS: drop + recreate prod DB (5s safety delay)
-
-# Promotion
-make promote         # check + prod-db + migrate-prod
+# Prod (derptop / covalence-wsl)
+make deploy          # git pull + build + migrate + restart on derptop
+make migrate-prod    # Run migrations on prod (covalence-wsl:5432)
+make promote         # check + migrate-prod + deploy (full pipeline)
+make eval-search     # Search regression against prod
 
 # Ingestion (requires prod engine running on :8441)
 make ingest-codebase # Ingest all .rs and .go files
@@ -130,7 +154,10 @@ When working on Covalence:
 - **Use dev for all development work.** `make run-dev` or `make run` (alias).
 - **Never modify prod data** without explicit user approval.
 - **After adding migrations**, run `make migrate` (dev) first, verify, then `make promote` for prod.
-- **To query prod**, use `cove --api-url http://localhost:8441 search "query"` or `curl -X POST http://localhost:8441/api/v1/search`.
+- **Deploy with `make deploy`** — this SSHes to derptop, pulls, builds, migrates, and restarts.
+- **To query prod**, use `cove --api-url http://covalence-wsl:8441 search "query"` or `curl -X POST http://covalence-wsl:8441/api/v1/search`.
+- **SSH to prod**: `ssh covalence@covalence-wsl` (key auth, NOPASSWD sudo).
+- **Prod engine logs**: `ssh covalence@covalence-wsl 'journalctl -u covalence-engine -f'` or `~/covalence/logs/engine.log`.
 
 ## The Meta Loop
 
