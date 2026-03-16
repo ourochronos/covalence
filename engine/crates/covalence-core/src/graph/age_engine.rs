@@ -83,9 +83,32 @@ impl AgeEngine {
         cypher: &str,
         conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
     ) -> Result<Vec<PgRow>> {
+        self.cypher_multi(cypher, &["result"], conn).await
+    }
+
+    /// Execute a Cypher query with named columns, casting all
+    /// `agtype` results to `text` so sqlx can decode them as
+    /// `String`.
+    async fn cypher_multi(
+        &self,
+        cypher: &str,
+        columns: &[&str],
+        conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
+    ) -> Result<Vec<PgRow>> {
+        let col_defs = columns
+            .iter()
+            .map(|c| format!("{c} ag_catalog.agtype"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let col_casts = columns
+            .iter()
+            .map(|c| format!("{c}::text"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let sql = format!(
-            "SELECT * FROM ag_catalog.cypher('{}', $$ {} $$) \
-             AS (result ag_catalog.agtype)",
+            "SELECT {col_casts} FROM \
+             (SELECT * FROM ag_catalog.cypher('{}', $$ {} $$) \
+              AS ({col_defs})) sub",
             self.graph_name, cypher
         );
         let rows = sqlx::query(&sql).fetch_all(&mut **conn).await?;
@@ -114,16 +137,15 @@ impl AgeEngine {
         let mut sidecar = GraphSidecar::new();
 
         // Fetch all nodes
-        let node_sql = format!(
-            "SELECT * FROM ag_catalog.cypher('{}', $$ \
-             MATCH (n:Node) \
-             RETURN n.uuid, n.name, n.node_type, \
-                    n.clearance_level \
-             $$) AS (uuid ag_catalog.agtype, name ag_catalog.agtype, \
-                     ntype ag_catalog.agtype, cl ag_catalog.agtype)",
-            self.graph_name
-        );
-        let node_rows = sqlx::query(&node_sql).fetch_all(&mut *conn).await?;
+        let node_rows = self
+            .cypher_multi(
+                "MATCH (n:Node) \
+                 RETURN n.uuid, n.name, n.node_type, \
+                        n.clearance_level",
+                &["uuid", "name", "ntype", "cl"],
+                &mut conn,
+            )
+            .await?;
 
         for row in &node_rows {
             let uuid_str: String = row.try_get("uuid")?;
@@ -141,18 +163,15 @@ impl AgeEngine {
         }
 
         // Fetch all edges
-        let edge_sql = format!(
-            "SELECT * FROM ag_catalog.cypher('{}', $$ \
-             MATCH (a:Node)-[e:E]->(b:Node) \
-             RETURN e.uuid, a.uuid, b.uuid, e.rel_type, \
-                    e.weight, e.confidence, e.is_synthetic \
-             $$) AS (euuid ag_catalog.agtype, auuid ag_catalog.agtype, \
-                     buuid ag_catalog.agtype, rel ag_catalog.agtype, \
-                     w ag_catalog.agtype, conf ag_catalog.agtype, \
-                     synth ag_catalog.agtype)",
-            self.graph_name
-        );
-        let edge_rows = sqlx::query(&edge_sql).fetch_all(&mut *conn).await?;
+        let edge_rows = self
+            .cypher_multi(
+                "MATCH (a:Node)-[e:E]->(b:Node) \
+                 RETURN e.uuid, a.uuid, b.uuid, e.rel_type, \
+                        e.weight, e.confidence, e.is_synthetic",
+                &["euuid", "auuid", "buuid", "rel", "w", "conf", "synth"],
+                &mut conn,
+            )
+            .await?;
 
         for row in &edge_rows {
             let euuid_str: String = row.try_get("euuid")?;
@@ -250,13 +269,9 @@ impl GraphEngine for AgeEngine {
              RETURN n.uuid, n.name, n.node_type, n.clearance_level",
             id
         );
-        let sql = format!(
-            "SELECT * FROM ag_catalog.cypher('{}', $$ {} $$) \
-             AS (uuid ag_catalog.agtype, name ag_catalog.agtype, \
-                 ntype ag_catalog.agtype, cl ag_catalog.agtype)",
-            self.graph_name, cypher
-        );
-        let rows = sqlx::query(&sql).fetch_all(&mut *conn).await?;
+        let rows = self
+            .cypher_multi(&cypher, &["uuid", "name", "ntype", "cl"], &mut conn)
+            .await?;
 
         if let Some(row) = rows.first() {
             let uuid_str: String = row.try_get("uuid")?;
@@ -284,15 +299,13 @@ impl GraphEngine for AgeEngine {
                     e.rel_type, e.is_synthetic, e.confidence, e.weight",
             id
         );
-        let sql = format!(
-            "SELECT * FROM ag_catalog.cypher('{}', $$ {} $$) \
-             AS (uuid ag_catalog.agtype, name ag_catalog.agtype, \
-                 ntype ag_catalog.agtype, rel ag_catalog.agtype, \
-                 synth ag_catalog.agtype, conf ag_catalog.agtype, \
-                 w ag_catalog.agtype)",
-            self.graph_name, cypher
-        );
-        let rows = sqlx::query(&sql).fetch_all(&mut *conn).await?;
+        let rows = self
+            .cypher_multi(
+                &cypher,
+                &["uuid", "name", "ntype", "rel", "synth", "conf", "w"],
+                &mut conn,
+            )
+            .await?;
 
         let mut neighbors = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -327,15 +340,13 @@ impl GraphEngine for AgeEngine {
                     e.rel_type, e.is_synthetic, e.confidence, e.weight",
             id
         );
-        let sql = format!(
-            "SELECT * FROM ag_catalog.cypher('{}', $$ {} $$) \
-             AS (uuid ag_catalog.agtype, name ag_catalog.agtype, \
-                 ntype ag_catalog.agtype, rel ag_catalog.agtype, \
-                 synth ag_catalog.agtype, conf ag_catalog.agtype, \
-                 w ag_catalog.agtype)",
-            self.graph_name, cypher
-        );
-        let rows = sqlx::query(&sql).fetch_all(&mut *conn).await?;
+        let rows = self
+            .cypher_multi(
+                &cypher,
+                &["uuid", "name", "ntype", "rel", "synth", "conf", "w"],
+                &mut conn,
+            )
+            .await?;
 
         let mut neighbors = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -649,12 +660,7 @@ impl GraphEngine for AgeEngine {
                 .collect();
 
             let cypher = format!("CREATE {}", creates.join(", "));
-            let sql = format!(
-                "SELECT * FROM ag_catalog.cypher('{}', $$ {} $$) \
-                 AS (v ag_catalog.agtype)",
-                self.graph_name, cypher
-            );
-            sqlx::query(&sql).execute(&mut *conn).await?;
+            let _ = self.cypher_multi(&cypher, &["v"], &mut conn).await?;
             node_count += chunk.len();
         }
 
@@ -694,12 +700,7 @@ impl GraphEngine for AgeEngine {
                 confidence,
                 is_synthetic
             );
-            let sql = format!(
-                "SELECT * FROM ag_catalog.cypher('{}', $$ {} $$) \
-                 AS (e ag_catalog.agtype)",
-                self.graph_name, cypher
-            );
-            match sqlx::query(&sql).execute(&mut *conn).await {
+            match self.cypher_multi(&cypher, &["e"], &mut conn).await {
                 Ok(_) => edge_count += 1,
                 Err(e) => {
                     tracing::warn!(
