@@ -471,7 +471,7 @@ async function fetchAnalysis() {
       if (e.eroded_components.length > 0) {
         container.innerHTML = e.eroded_components
           .sort((a, b) => b.drift_score - a.drift_score)
-          .map(c => `<div class="list-item"><strong>${esc(c.component_name)}</strong> <span class="dim">drift: ${c.drift_score.toFixed(3)}, divergent: ${c.divergent_nodes.length}</span></div>`)
+          .map(c => `<div class="list-item"><strong>${escapeHtml(c.component_name)}</strong> <span class="dim">drift: ${c.drift_score.toFixed(3)}, divergent: ${c.divergent_nodes.length}</span></div>`)
           .join("");
       } else {
         container.innerHTML = '<div class="list-item dim">No erosion detected</div>';
