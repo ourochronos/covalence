@@ -1,6 +1,6 @@
 .PHONY: build test fmt lint clippy check run watch \
        dev-db test-db prod-db migrate migrate-prod reset-db reset-prod-db \
-       run-dev run-prod deploy promote \
+       run-dev run-prod deploy promote ingest-changes \
        spec spec-fetch \
        cli-build cli-install \
        docker-up docker-down \
@@ -151,6 +151,8 @@ deploy:
 	ssh $(PROD_HOST) 'source $$HOME/.cargo/env && cd $(PROD_DIR)/engine && DATABASE_URL=postgres://covalence:covalence@localhost:5432/covalence_prod cargo run -p covalence-migrations 2>&1 | tail -3'
 	@echo "=== Restarting engine ==="
 	ssh $(PROD_HOST) 'sudo systemctl restart covalence-engine && sleep 2 && curl -sf http://localhost:8441/api/v1/admin/health'
+	@echo "=== Ingesting changes ==="
+	@$(MAKE) ingest-changes || echo "  (ingestion skipped or failed — non-fatal)"
 	@echo "=== Deploy complete ==="
 
 # Promote: check locally, migrate prod, deploy
@@ -226,6 +228,55 @@ ingest-adrs:
 
 ingest-prod: ingest-codebase ingest-specs ingest-adrs
 	@echo "=== All ingestion complete ==="
+
+# Ingest only files changed since last ingestion marker.
+# Uses .last-ingest-commit to track what was previously ingested.
+INGEST_MARKER ?= .last-ingest-commit
+
+ingest-changes:
+	@if [ ! -f $(INGEST_MARKER) ]; then \
+		echo "No ingestion marker found. Run 'make ingest-prod' for initial ingestion."; \
+		git rev-parse HEAD > $(INGEST_MARKER); \
+		exit 0; \
+	fi; \
+	LAST=$$(cat $(INGEST_MARKER)); \
+	HEAD=$$(git rev-parse HEAD); \
+	if [ "$$LAST" = "$$HEAD" ]; then \
+		echo "No changes since last ingestion ($$LAST)."; \
+		exit 0; \
+	fi; \
+	echo "Ingesting changes: $$LAST..$$HEAD"; \
+	changed=0; \
+	git diff --name-only "$$LAST..$$HEAD" -- '*.rs' '*.go' | grep -v '/target/' | while read f; do \
+		if [ -f "$$f" ]; then \
+			echo "  [code] $$f"; \
+			b64=$$(base64 < "$$f"); \
+			stype="code"; \
+			curl -sf -X POST $(INGEST_API)/api/v1/sources \
+				-H 'Content-Type: application/json' \
+				-d "{\"content\": \"$$b64\", \"source_type\": \"$$stype\", \"uri\": \"file://$$f\"}" \
+				> /dev/null 2>&1 || echo "    FAILED: $$f"; \
+			changed=$$((changed+1)); \
+		fi; \
+	done; \
+	git diff --name-only "$$LAST..$$HEAD" -- 'spec/*.md' 'docs/adr/*.md' 'CLAUDE.md' 'VISION.md' 'MILESTONES.md' | while read f; do \
+		if [ -f "$$f" ]; then \
+			echo "  [doc] $$f"; \
+			b64=$$(base64 < "$$f"); \
+			curl -sf -X POST $(INGEST_API)/api/v1/sources \
+				-H 'Content-Type: application/json' \
+				-d "{\"content\": \"$$b64\", \"source_type\": \"document\", \"uri\": \"file://$$f\"}" \
+				> /dev/null 2>&1 || echo "    FAILED: $$f"; \
+			changed=$$((changed+1)); \
+		fi; \
+	done; \
+	echo "Ingestion complete. Running edge synthesis..."; \
+	curl -sf -X POST $(INGEST_API)/api/v1/admin/edges/synthesize \
+		-H 'Content-Type: application/json' -d '{"min_cooccurrences": 1}' > /dev/null 2>&1 || true; \
+	curl -sf -X POST $(INGEST_API)/api/v1/admin/graph/reload > /dev/null 2>&1 || true; \
+	curl -sf -X POST $(INGEST_API)/api/v1/admin/cache/clear > /dev/null 2>&1 || true; \
+	echo "$$HEAD" > $(INGEST_MARKER); \
+	echo "Marker updated to $$HEAD"
 
 REPROCESS_BATCH ?= 5
 

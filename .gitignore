@@ -58,4 +58,4 @@ tarpaulin-report.html
 # Local Dev / Testing
 logs/
 .playwright-mcp/
-.test-fixtures/
+.test-fixtures/.last-ingest-commit
