@@ -16,7 +16,7 @@ use crate::consolidation::ontology::{
 use crate::consolidation::{BatchConsolidator, BatchStatus};
 use crate::error::{Error, Result};
 use crate::graph::SharedGraph;
-use crate::graph::sync::full_reload;
+use crate::graph::engine::GraphEngine;
 use crate::ingestion::Embedder;
 use crate::ingestion::chat_backend::ChatBackend;
 use crate::models::audit::{AuditAction, AuditLog};
@@ -100,6 +100,7 @@ pub struct GcResult {
 /// which `StableDiGraph` does not implement (indices may be sparse after
 /// removals). This BFS-based implementation works with any graph that
 /// supports `node_indices()` and directed edge iteration.
+#[allow(dead_code)]
 fn count_weak_components(
     graph: &petgraph::stable_graph::StableDiGraph<
         crate::graph::sidecar::NodeMeta,
@@ -245,6 +246,7 @@ pub struct BridgeResult {
 /// labels at least `min_label_length` characters and not in
 /// `exclude_types`. Results are sorted by gap score descending and
 /// truncated to `limit`.
+#[cfg(test)]
 pub(crate) fn compute_gap_candidates(
     graph: &petgraph::stable_graph::StableDiGraph<
         crate::graph::sidecar::NodeMeta,
@@ -298,7 +300,9 @@ pub(crate) fn compute_gap_candidates(
 /// Service for administrative operations.
 pub struct AdminService {
     repo: Arc<PgRepo>,
-    graph: SharedGraph,
+    graph: Arc<dyn GraphEngine>,
+    /// Raw shared graph for write-path operations (consolidation, edge synthesis).
+    shared_graph: SharedGraph,
     embedder: Option<Arc<dyn Embedder>>,
     chat_backend: Option<Arc<dyn ChatBackend>>,
     config: Option<crate::config::Config>,
@@ -306,10 +310,11 @@ pub struct AdminService {
 
 impl AdminService {
     /// Create a new admin service.
-    pub fn new(repo: Arc<PgRepo>, graph: SharedGraph) -> Self {
+    pub fn new(repo: Arc<PgRepo>, graph: Arc<dyn GraphEngine>, shared_graph: SharedGraph) -> Self {
         Self {
             repo,
             graph,
+            shared_graph,
             embedder: None,
             chat_backend: None,
             config: None,
@@ -349,33 +354,32 @@ impl AdminService {
 
     /// Get graph statistics from the sidecar.
     pub async fn graph_stats(&self) -> GraphStats {
-        let g = self.graph.read().await;
-        let n = g.node_count();
-        let e = g.edge_count();
-        let density = if n > 1 {
-            e as f64 / (n as f64 * (n as f64 - 1.0))
-        } else {
-            0.0
-        };
-        let component_count = count_weak_components(g.graph());
-
-        // Count synthetic vs semantic edges
-        let synthetic_edge_count = g.graph().edge_weights().filter(|e| e.is_synthetic).count();
-        let semantic_edge_count = e - synthetic_edge_count;
-
-        GraphStats {
-            node_count: n,
-            edge_count: e,
-            semantic_edge_count,
-            synthetic_edge_count,
-            density,
-            component_count,
+        match self.graph.stats().await {
+            Ok(engine_stats) => GraphStats {
+                node_count: engine_stats.node_count,
+                edge_count: engine_stats.edge_count,
+                semantic_edge_count: engine_stats.semantic_edge_count,
+                synthetic_edge_count: engine_stats.synthetic_edge_count,
+                density: engine_stats.density,
+                component_count: engine_stats.component_count,
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to get graph stats");
+                GraphStats {
+                    node_count: 0,
+                    edge_count: 0,
+                    semantic_edge_count: 0,
+                    synthetic_edge_count: 0,
+                    density: 0.0,
+                    component_count: 0,
+                }
+            }
         }
     }
 
     /// Reload the graph sidecar from PG.
     pub async fn reload_graph(&self) -> Result<GraphStats> {
-        full_reload(self.repo.pool(), self.graph.clone()).await?;
+        self.graph.reload(self.repo.pool()).await?;
         Ok(self.graph_stats().await)
     }
 
@@ -386,11 +390,12 @@ impl AdminService {
             .await
             .is_ok();
 
-        let g = self.graph.read().await;
+        let sidecar_node_count = self.graph.node_count().await.unwrap_or(0);
+        let sidecar_edge_count = self.graph.edge_count().await.unwrap_or(0);
         HealthStatus {
             pg_healthy,
-            sidecar_node_count: g.node_count(),
-            sidecar_edge_count: g.edge_count(),
+            sidecar_node_count,
+            sidecar_edge_count,
         }
     }
 
@@ -429,7 +434,7 @@ impl AdminService {
             });
         let mut consolidator = GraphBatchConsolidator::new(
             Arc::clone(&self.repo),
-            Arc::clone(&self.graph),
+            Arc::clone(&self.shared_graph),
             compiler,
             self.embedder.clone(),
         );
@@ -602,7 +607,7 @@ impl AdminService {
                 total = combined.clusters.len(),
                 "ontology clusters applied, reloading graph"
             );
-            full_reload(self.repo.pool(), self.graph.clone()).await?;
+            self.graph.reload(self.repo.pool()).await?;
         }
 
         Ok(combined)
@@ -621,16 +626,16 @@ impl AdminService {
         exclude_types: &[String],
         limit: usize,
     ) -> Result<Vec<KnowledgeGap>> {
-        // Phase 1: compute in/out degree from graph sidecar.
-        let g = self.graph.read().await;
-        let candidates = compute_gap_candidates(
-            g.graph(),
-            min_in_degree,
-            min_label_length,
-            exclude_types,
-            limit,
-        );
-        drop(g);
+        // Phase 1: compute in/out degree via the graph engine trait.
+        let exclude_refs: Vec<&str> = exclude_types.iter().map(|s| s.as_str()).collect();
+        let engine_gaps = self
+            .graph
+            .knowledge_gaps(min_in_degree, min_label_length, &exclude_refs, limit)
+            .await?;
+        let candidates: Vec<(uuid::Uuid, String, String, usize, usize)> = engine_gaps
+            .into_iter()
+            .map(|g| (g.id, g.name, g.node_type, g.in_degree, g.out_degree))
+            .collect();
 
         if candidates.is_empty() {
             return Ok(Vec::new());
@@ -811,7 +816,7 @@ impl AdminService {
                 max_degree,
                 "co-occurrence edge synthesis complete, reloading graph"
             );
-            full_reload(self.repo.pool(), self.graph.clone()).await?;
+            self.graph.reload(self.repo.pool()).await?;
         } else {
             tracing::info!("co-occurrence synthesis: no new edges to create");
         }
@@ -1021,7 +1026,7 @@ impl AdminService {
 
         // Reload graph sidecar to reflect deletions.
         if nodes_deleted > 0 {
-            full_reload(self.repo.pool(), self.graph.clone()).await?;
+            self.graph.reload(self.repo.pool()).await?;
         }
 
         // Audit log.
@@ -1534,7 +1539,7 @@ impl AdminService {
 
         // Reload graph sidecar so new edges are visible to graph-dimension searches.
         if edges_created > 0 {
-            full_reload(self.repo.pool(), self.graph.clone()).await?;
+            self.graph.reload(self.repo.pool()).await?;
         }
 
         let audit = AuditLog::new(

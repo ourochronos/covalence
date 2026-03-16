@@ -304,8 +304,11 @@ async fn dispatch_resolve_entity(
 }
 
 async fn dispatch_list_communities(state: &AppState) -> Result<serde_json::Value, String> {
-    let graph = state.graph.read().await;
-    let communities = covalence_core::graph::community::detect_communities(graph.graph());
+    let communities = state
+        .graph_engine
+        .communities(2)
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(json!(
         communities
@@ -324,8 +327,11 @@ async fn dispatch_get_contradictions(
     state: &AppState,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let graph = state.graph.read().await;
-    let contentions = covalence_core::consolidation::contention::detect_contentions(graph.graph());
+    let contentions = state
+        .graph_engine
+        .contentions()
+        .await
+        .map_err(|e| e.to_string())?;
 
     let node_filter = match args.get("node_id").and_then(|v| v.as_str()) {
         Some(s) => Some(
@@ -338,18 +344,20 @@ async fn dispatch_get_contradictions(
     let filtered: Vec<_> = match node_filter {
         Some(nid) => contentions
             .into_iter()
-            .filter(|c| c.node_a == nid || c.node_b == nid)
+            .filter(|c| c.source_id == nid || c.targets.iter().any(|(id, _)| *id == nid))
             .collect(),
         None => contentions,
     };
 
     Ok(json!({
         "contradictions": filtered.iter().map(|c| json!({
-            "node_a": c.node_a,
-            "node_b": c.node_b,
-            "edge_id": c.edge_id,
+            "source_id": c.source_id,
+            "source_name": c.source_name,
             "rel_type": c.rel_type,
-            "confidence": c.confidence,
+            "targets": c.targets.iter().map(|(id, name)| json!({
+                "id": id,
+                "name": name,
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>()
     }))
 }

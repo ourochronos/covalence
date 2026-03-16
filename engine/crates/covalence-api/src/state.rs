@@ -6,8 +6,9 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use covalence_core::config::Config;
+use covalence_core::graph::engine::GraphEngine;
 use covalence_core::graph::sync::full_reload;
-use covalence_core::graph::{GraphSidecar, SharedGraph};
+use covalence_core::graph::{GraphSidecar, PetgraphEngine, SharedGraph};
 use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
@@ -33,8 +34,11 @@ pub struct AppState {
     /// Shared database repository.
     #[allow(dead_code)]
     pub repo: Arc<PgRepo>,
-    /// Shared graph sidecar.
-    pub graph: SharedGraph,
+    /// Graph engine trait object for read-path operations.
+    pub graph_engine: Arc<dyn GraphEngine>,
+    /// Raw shared graph for write-path services (sync, node, source).
+    #[allow(dead_code)]
+    pub shared_graph: SharedGraph,
     /// Source ingestion and management.
     pub source_service: Arc<SourceService>,
     /// Multi-dimensional fused search.
@@ -75,6 +79,9 @@ impl AppState {
                 tracing::warn!(error = %e, "failed to load graph sidecar on startup");
             }
         }
+
+        // Create the graph engine trait object wrapping the shared graph.
+        let graph_engine: Arc<dyn GraphEngine> = Arc::new(PetgraphEngine::new(Arc::clone(&graph)));
 
         // Determine the embedding provider. Voyage is used when
         // explicitly configured or when a Voyage API key is present.
@@ -440,17 +447,21 @@ impl AppState {
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
         let article_service = Arc::new(ArticleService::new(Arc::clone(&repo)));
         let analysis_service = Arc::new(
-            AnalysisService::new(Arc::clone(&repo), Arc::clone(&graph))
+            AnalysisService::new(Arc::clone(&repo), Arc::clone(&graph_engine))
                 .with_embedder(embedder.clone())
                 .with_chat_backend(chat_backend.clone())
                 .with_node_embed_dim(config.embedding.table_dims.node),
         );
 
         let admin_service = Arc::new(
-            AdminService::new(Arc::clone(&repo), Arc::clone(&graph))
-                .with_embedder(embedder)
-                .with_chat_backend(chat_backend)
-                .with_config(config.clone()),
+            AdminService::new(
+                Arc::clone(&repo),
+                Arc::clone(&graph_engine),
+                Arc::clone(&graph),
+            )
+            .with_embedder(embedder)
+            .with_chat_backend(chat_backend)
+            .with_config(config.clone()),
         );
 
         // Persistent retry queue: create, wire source service, spawn
@@ -470,7 +481,8 @@ impl AppState {
         Ok(Self {
             config,
             repo,
-            graph,
+            graph_engine,
+            shared_graph: graph,
             source_service,
             search_service,
             node_service,

@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use crate::error::Result;
-use crate::graph::sync::full_reload;
 use crate::ingestion::embedder::truncate_and_validate;
 use crate::models::audit::{AuditAction, AuditLog};
 use crate::models::edge::Edge;
@@ -84,7 +83,7 @@ impl AnalysisService {
 
         // Reload graph so new component nodes are visible.
         if created > 0 {
-            full_reload(self.repo.pool(), self.graph.clone()).await?;
+            self.graph.reload(self.repo.pool()).await?;
         }
 
         let audit = AuditLog::new(
@@ -139,7 +138,7 @@ impl AnalysisService {
 
         // Reload graph sidecar.
         if part_of + intent + basis > 0 {
-            full_reload(self.repo.pool(), self.graph.clone()).await?;
+            self.graph.reload(self.repo.pool()).await?;
         }
 
         let audit = AuditLog::new(

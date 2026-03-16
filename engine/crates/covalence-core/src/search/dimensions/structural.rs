@@ -5,12 +5,13 @@
 //! are ranked highest. When no query text is provided, falls back
 //! to pure PageRank ordering.
 
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use super::{DimensionKind, SearchDimension, SearchQuery, extract_query_terms};
 use crate::error::Result;
-use crate::graph::SharedGraph;
-use crate::graph::algorithms::pagerank;
+use crate::graph::engine::GraphEngine;
 use crate::search::SearchResult;
 
 /// Structural importance search using PageRank with query relevance.
@@ -21,7 +22,7 @@ use crate::search::SearchResult;
 /// penalized (but not removed) so that structurally important
 /// query-relevant nodes float to the top.
 pub struct StructuralDimension {
-    graph: SharedGraph,
+    graph: Arc<dyn GraphEngine>,
 }
 
 /// Default PageRank damping factor.
@@ -38,7 +39,7 @@ const NON_MATCH_PENALTY: f64 = 0.1;
 
 impl StructuralDimension {
     /// Create a new structural search dimension.
-    pub fn new(graph: SharedGraph) -> Self {
+    pub fn new(graph: Arc<dyn GraphEngine>) -> Self {
         Self { graph }
     }
 }
@@ -60,13 +61,12 @@ fn name_matches_query(name: &str, terms: &[String]) -> bool {
 
 impl SearchDimension for StructuralDimension {
     async fn search(&self, query: &SearchQuery) -> Result<Vec<SearchResult>> {
-        let sidecar = self.graph.read().await;
-
-        if sidecar.node_count() == 0 {
+        let node_count = self.graph.node_count().await.unwrap_or(0);
+        if node_count == 0 {
             return Ok(Vec::new());
         }
 
-        let scores = pagerank(sidecar.graph(), DAMPING, ITERATIONS);
+        let scores = self.graph.pagerank(DAMPING, ITERATIONS).await?;
 
         // Normalize to [0, 1].
         let max_score = scores.values().copied().fold(0.0_f64, f64::max);
@@ -80,25 +80,28 @@ impl SearchDimension for StructuralDimension {
         let terms = extract_query_terms(&query.text);
         let has_query = !terms.is_empty();
 
-        let mut scored: Vec<(Uuid, f64)> = scores
-            .into_iter()
-            .map(|(id, s)| {
-                let normalized = s / max_score;
-                if !has_query {
-                    return (id, normalized);
-                }
-                // Look up canonical name from the sidecar.
-                let matches = sidecar
-                    .get_node(id)
-                    .is_some_and(|meta| name_matches_query(&meta.canonical_name, &terms));
-                let boosted = if matches {
-                    normalized * RELEVANCE_BOOST
-                } else {
-                    normalized * NON_MATCH_PENALTY
-                };
-                (id, boosted)
-            })
-            .collect();
+        let mut scored: Vec<(Uuid, f64)> = Vec::with_capacity(scores.len());
+        for (id, s) in scores {
+            let normalized = s / max_score;
+            if !has_query {
+                scored.push((id, normalized));
+                continue;
+            }
+            // Look up canonical name from the graph engine.
+            let matches = self
+                .graph
+                .get_node(id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|meta| name_matches_query(&meta.canonical_name, &terms));
+            let boosted = if matches {
+                normalized * RELEVANCE_BOOST
+            } else {
+                normalized * NON_MATCH_PENALTY
+            };
+            scored.push((id, boosted));
+        }
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(query.limit);
@@ -127,11 +130,11 @@ impl SearchDimension for StructuralDimension {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::sidecar::{EdgeMeta, GraphSidecar, NodeMeta};
-    use std::sync::Arc;
+    use crate::graph::PetgraphEngine;
+    use crate::graph::sidecar::{EdgeMeta, GraphSidecar, NodeMeta, SharedGraph};
     use tokio::sync::RwLock;
 
-    fn make_star_graph() -> (SharedGraph, Uuid, Vec<Uuid>) {
+    fn make_star_graph() -> (Arc<dyn GraphEngine>, Uuid, Vec<Uuid>) {
         let mut g = GraphSidecar::new();
         let center = Uuid::new_v4();
         g.add_node(NodeMeta {
@@ -183,7 +186,12 @@ mod tests {
             leaves.push(leaf);
         }
 
-        (Arc::new(RwLock::new(g)), center, leaves)
+        let shared: SharedGraph = Arc::new(RwLock::new(g));
+        (
+            Arc::new(PetgraphEngine::new(shared)) as Arc<dyn GraphEngine>,
+            center,
+            leaves,
+        )
     }
 
     #[tokio::test]
@@ -251,7 +259,8 @@ mod tests {
     #[tokio::test]
     async fn structural_dimension_empty_graph() {
         let g = GraphSidecar::new();
-        let graph = Arc::new(RwLock::new(g));
+        let shared: SharedGraph = Arc::new(RwLock::new(g));
+        let graph: Arc<dyn GraphEngine> = Arc::new(PetgraphEngine::new(shared));
         let dim = StructuralDimension::new(graph);
         let query = SearchQuery::default();
         let results = dim.search(&query).await.unwrap();

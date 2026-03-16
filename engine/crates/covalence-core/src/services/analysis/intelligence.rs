@@ -3,10 +3,8 @@
 
 use std::sync::Arc;
 
-use petgraph::Direction;
-use petgraph::visit::EdgeRef;
-
 use crate::error::{Error, Result};
+use crate::graph::engine::BfsOptions;
 use crate::ingestion::ChatBackend;
 use crate::ingestion::embedder::truncate_and_validate;
 
@@ -200,69 +198,39 @@ impl AnalysisService {
         .fetch_optional(self.repo.pool())
         .await?;
 
-        // BFS through the graph sidecar.
-        let graph = self.graph.read().await;
+        // BFS through the graph engine trait.
+        let bfs_opts = BfsOptions {
+            max_hops,
+            skip_synthetic: false,
+            deny_rel_types: Vec::new(),
+        };
+        let bfs_nodes = self.graph.bfs_neighborhood(target_id, bfs_opts).await?;
+
+        // Group BFS results by hop distance for the blast radius response,
+        // capping total collected at BLAST_RADIUS_NODE_CAP.
         let mut affected: Vec<BlastRadiusHop> = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-
-        if let Some(start_idx) = graph.node_index(target_id) {
-            visited.insert(start_idx);
-            let mut frontier = vec![start_idx];
-
-            let mut total_collected = 0usize;
-
-            for hop in 1..=max_hops {
-                if total_collected >= Self::BLAST_RADIUS_NODE_CAP {
-                    break;
-                }
-                let mut next_frontier = Vec::new();
-                let mut hop_nodes = Vec::new();
-
-                for &idx in &frontier {
-                    // Outgoing edges.
-                    for edge_ref in graph.graph().edges(idx) {
-                        let neighbor = edge_ref.target();
-                        if visited.insert(neighbor) {
-                            if let Some(meta) = graph.graph().node_weight(neighbor) {
-                                hop_nodes.push(AffectedNode {
-                                    node_id: meta.id,
-                                    name: meta.canonical_name.clone(),
-                                    node_type: meta.node_type.clone(),
-                                    relationship: edge_ref.weight().rel_type.clone(),
-                                });
-                            }
-                            next_frontier.push(neighbor);
-                        }
-                    }
-
-                    // Incoming edges (callers, etc.).
-                    for edge_ref in graph.graph().edges_directed(idx, Direction::Incoming) {
-                        let neighbor = edge_ref.source();
-                        if visited.insert(neighbor) {
-                            if let Some(meta) = graph.graph().node_weight(neighbor) {
-                                hop_nodes.push(AffectedNode {
-                                    node_id: meta.id,
-                                    name: meta.canonical_name.clone(),
-                                    node_type: meta.node_type.clone(),
-                                    relationship: format!(
-                                        "{} (incoming)",
-                                        edge_ref.weight().rel_type
-                                    ),
-                                });
-                            }
-                            next_frontier.push(neighbor);
-                        }
-                    }
-                }
-
-                total_collected += hop_nodes.len();
-                if !hop_nodes.is_empty() {
-                    affected.push(BlastRadiusHop {
-                        hop_distance: hop,
-                        nodes: hop_nodes,
-                    });
-                }
-                frontier = next_frontier;
+        let mut total_collected = 0usize;
+        for hop in 1..=max_hops {
+            if total_collected >= Self::BLAST_RADIUS_NODE_CAP {
+                break;
+            }
+            let hop_nodes: Vec<AffectedNode> = bfs_nodes
+                .iter()
+                .filter(|n| n.hops == hop)
+                .take(Self::BLAST_RADIUS_NODE_CAP - total_collected)
+                .map(|n| AffectedNode {
+                    node_id: n.id,
+                    name: n.name.clone(),
+                    node_type: n.node_type.clone(),
+                    relationship: String::new(),
+                })
+                .collect();
+            total_collected += hop_nodes.len();
+            if !hop_nodes.is_empty() {
+                affected.push(BlastRadiusHop {
+                    hop_distance: hop,
+                    nodes: hop_nodes,
+                });
             }
         }
 

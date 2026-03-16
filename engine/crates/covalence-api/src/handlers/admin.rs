@@ -56,10 +56,11 @@ pub async fn graph_communities(
     Query(params): Query<CommunityParams>,
 ) -> Json<Vec<CommunityResponse>> {
     let min_size = params.min_size.unwrap_or(2);
-    let graph = state.graph.read().await;
-    let mut communities =
-        covalence_core::graph::community::detect_communities_with_min_size(graph.graph(), min_size);
-    covalence_core::graph::community::label_communities(graph.graph(), &mut communities);
+    let communities = state
+        .graph_engine
+        .communities(min_size)
+        .await
+        .unwrap_or_default();
     Json(
         communities
             .into_iter()
@@ -85,8 +86,14 @@ pub async fn graph_communities(
     tag = "graph"
 )]
 pub async fn graph_topology(State(state): State<AppState>) -> Json<TopologyResponse> {
-    let graph = state.graph.read().await;
-    let topo = covalence_core::graph::topology::build_topology(graph.graph());
+    let topo = state.graph_engine.topology().await.unwrap_or_else(|_| {
+        covalence_core::graph::TopologyMap {
+            domains: Vec::new(),
+            links: Vec::new(),
+            total_nodes: 0,
+            total_edges: 0,
+        }
+    });
     Json(TopologyResponse {
         domains: topo
             .domains

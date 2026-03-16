@@ -7,11 +7,10 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use petgraph::visit::EdgeRef;
-
 use crate::config::TableDimensions;
 use crate::error::Result;
 use crate::graph::SharedGraph;
+use crate::graph::engine::GraphEngine;
 use crate::ingestion::embedder::Embedder;
 use crate::search::abstention::{AbstentionConfig, check_abstention};
 use crate::search::cache::{CacheConfig, QueryCache};
@@ -86,6 +85,9 @@ pub fn source_layer_from_uri(uri: &str) -> Option<&'static str> {
 pub struct SearchService {
     repo: Arc<PgRepo>,
     embedder: Option<Arc<dyn Embedder>>,
+    /// Graph engine trait for graph context enrichment.
+    graph_engine: Arc<dyn GraphEngine>,
+    /// Raw shared graph for search dimensions and query expansion.
     graph: SharedGraph,
     vector: VectorDimension,
     lexical: LexicalDimension,
@@ -126,7 +128,8 @@ impl SearchService {
         table_dims: TableDimensions,
     ) -> Self {
         let pool = repo.pool().clone();
-        let graph_clone = Arc::clone(&graph);
+        let graph_engine: Arc<dyn GraphEngine> =
+            Arc::new(crate::graph::PetgraphEngine::new(Arc::clone(&graph)));
         Self {
             repo,
             embedder,
@@ -134,9 +137,10 @@ impl SearchService {
             lexical: LexicalDimension::new(pool.clone()),
             temporal: TemporalDimension::new(pool.clone()),
             graph_dim: GraphDimension::new(Arc::clone(&graph)),
-            structural: StructuralDimension::new(Arc::clone(&graph)),
+            structural: StructuralDimension::new(Arc::clone(&graph_engine)),
             global: GlobalDimension::new(pool.clone(), table_dims),
-            graph: graph_clone,
+            graph_engine,
+            graph: Arc::clone(&graph),
             reranker: Arc::new(NoopReranker),
             cache: None,
             abstention_config: AbstentionConfig::default(),
@@ -853,55 +857,48 @@ impl SearchService {
 
         // --- Step 8a: Graph context enrichment ---
         // For node-type results, attach 1-hop graph neighbors to
-        // provide relationship context. Uses the in-memory sidecar
+        // provide relationship context. Uses the graph engine trait
         // (no DB queries) so this is fast.
         {
             const MAX_NEIGHBORS: usize = 10;
-            let graph = self.graph.read().await;
             for result in &mut fused {
                 if result.entity_type.as_deref().is_none_or(|t| {
                     matches!(t, "chunk" | "article" | "source" | "statement" | "section")
                 }) {
                     continue;
                 }
-                let Some(idx) = graph.node_index(result.id) else {
-                    continue;
-                };
                 let mut related = Vec::new();
-                // Outgoing edges
-                for edge in graph.graph().edges(idx) {
-                    let target = &graph.graph()[edge.target()];
-                    let meta = edge.weight();
-                    if meta.is_synthetic {
-                        continue;
-                    }
-                    related.push(RelatedEntity {
-                        name: target.canonical_name.clone(),
-                        rel_type: meta.rel_type.clone(),
-                        direction: "outgoing".to_string(),
-                    });
-                    if related.len() >= MAX_NEIGHBORS {
-                        break;
-                    }
-                }
-                // Incoming edges (if room)
-                if related.len() < MAX_NEIGHBORS {
-                    for edge in graph
-                        .graph()
-                        .edges_directed(idx, petgraph::Direction::Incoming)
-                    {
-                        let source = &graph.graph()[edge.source()];
-                        let meta = edge.weight();
-                        if meta.is_synthetic {
+                // Outgoing neighbors
+                if let Ok(out_neighbors) = self.graph_engine.neighbors_out(result.id).await {
+                    for n in out_neighbors {
+                        if n.is_synthetic {
                             continue;
                         }
                         related.push(RelatedEntity {
-                            name: source.canonical_name.clone(),
-                            rel_type: meta.rel_type.clone(),
-                            direction: "incoming".to_string(),
+                            name: n.name,
+                            rel_type: n.rel_type,
+                            direction: "outgoing".to_string(),
                         });
                         if related.len() >= MAX_NEIGHBORS {
                             break;
+                        }
+                    }
+                }
+                // Incoming neighbors (if room)
+                if related.len() < MAX_NEIGHBORS {
+                    if let Ok(in_neighbors) = self.graph_engine.neighbors_in(result.id).await {
+                        for n in in_neighbors {
+                            if n.is_synthetic {
+                                continue;
+                            }
+                            related.push(RelatedEntity {
+                                name: n.name,
+                                rel_type: n.rel_type,
+                                direction: "incoming".to_string(),
+                            });
+                            if related.len() >= MAX_NEIGHBORS {
+                                break;
+                            }
                         }
                     }
                 }

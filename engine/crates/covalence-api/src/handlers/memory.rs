@@ -139,11 +139,14 @@ pub async fn memory_status(
 ) -> Result<Json<MemoryStatus>, StatusCode> {
     let total_memories = state.source_service.count().await.unwrap_or(0) as u64;
 
-    let graph = state.graph.read().await;
-    let total_entities = graph.node_count() as u64;
-    let total_relationships = graph.edge_count() as u64;
-    let communities =
-        covalence_core::graph::community::detect_communities(graph.graph()).len() as u64;
+    let total_entities = state.graph_engine.node_count().await.unwrap_or(0) as u64;
+    let total_relationships = state.graph_engine.edge_count().await.unwrap_or(0) as u64;
+    let communities = state
+        .graph_engine
+        .communities(2)
+        .await
+        .map(|c| c.len() as u64)
+        .unwrap_or(0);
 
     Ok(Json(MemoryStatus {
         total_memories,

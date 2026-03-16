@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::graph::SharedGraph;
+use crate::graph::GraphEngine;
 use crate::ingestion::ChatBackend;
 use crate::ingestion::Embedder;
 use crate::storage::postgres::PgRepo;
@@ -54,7 +54,7 @@ pub struct LinkingResult {
 /// Cross-domain analysis service.
 pub struct AnalysisService {
     repo: Arc<PgRepo>,
-    graph: SharedGraph,
+    graph: Arc<dyn GraphEngine>,
     embedder: Option<Arc<dyn Embedder>>,
     chat_backend: Option<Arc<dyn ChatBackend>>,
     node_embed_dim: usize,
@@ -62,7 +62,7 @@ pub struct AnalysisService {
 
 impl AnalysisService {
     /// Create a new analysis service.
-    pub fn new(repo: Arc<PgRepo>, graph: SharedGraph) -> Self {
+    pub fn new(repo: Arc<PgRepo>, graph: Arc<dyn GraphEngine>) -> Self {
         Self {
             repo,
             graph,
