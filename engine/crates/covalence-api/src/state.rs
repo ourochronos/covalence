@@ -19,8 +19,8 @@ use covalence_core::ingestion::{
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
-    AdminService, AnalysisService, ArticleService, EdgeService, NodeService, SearchService,
-    SourceService,
+    AdminService, AnalysisService, ArticleService, EdgeService, NodeService, RetryQueueService,
+    SearchService, SourceService,
 };
 use covalence_core::storage::postgres::PgRepo;
 
@@ -50,6 +50,8 @@ pub struct AppState {
     pub admin_service: Arc<AdminService>,
     /// Cross-domain analysis.
     pub analysis_service: Arc<AnalysisService>,
+    /// Persistent retry queue.
+    pub queue_service: Arc<RetryQueueService>,
 }
 
 impl AppState {
@@ -451,6 +453,20 @@ impl AppState {
                 .with_config(config.clone()),
         );
 
+        // Persistent retry queue: create, wire source service, spawn
+        // the background worker.
+        let queue_service = Arc::new(RetryQueueService::new(
+            Arc::clone(&repo),
+            config.queue.clone(),
+        ));
+        queue_service.set_source_service(Arc::clone(&source_service));
+        {
+            let qs = Arc::clone(&queue_service);
+            tokio::spawn(async move {
+                qs.run_worker().await;
+            });
+        }
+
         Ok(Self {
             config,
             repo,
@@ -462,6 +478,7 @@ impl AppState {
             article_service,
             admin_service,
             analysis_service,
+            queue_service,
         })
     }
 }

@@ -6,15 +6,17 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::handlers::dto::{
-    AuditLogResponse, BackfillResponse, BridgeRequest, BridgeResponse, CodeSummaryResponse,
-    CommunityParams, CommunityResponse, ConfigAuditResponse, ConsolidateResponse,
-    CooccurrenceRequest, CooccurrenceResponse, DomainLinkResponse, DomainResponse, GcResponse,
-    GraphStatsResponse, HealthResponse, KnowledgeGapItem, KnowledgeGapParams,
-    KnowledgeGapsResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse,
-    NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse,
-    PaginationParams, PublishResponse, RaptorResponse, ReloadResponse, SearchTraceResponse,
-    SeedOpinionsResponse, SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
-    TopologyResponse, TraceReplayResponse,
+    AuditLogResponse, BackfillResponse, BridgeRequest, BridgeResponse, ClearDeadRequest,
+    ClearDeadResponse, CodeSummaryResponse, CommunityParams, CommunityResponse,
+    ConfigAuditResponse, ConsolidateResponse, CooccurrenceRequest, CooccurrenceResponse,
+    DeadJobResponse, DomainLinkResponse, DomainResponse, GcResponse, GraphStatsResponse,
+    HealthResponse, KnowledgeGapItem, KnowledgeGapParams, KnowledgeGapsResponse, ListDeadParams,
+    ListDeadResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem,
+    OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse, PaginationParams,
+    PublishResponse, QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
+    RetryFailedRequest, RetryFailedResponse, SearchTraceResponse, SeedOpinionsResponse,
+    SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse,
+    TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -761,4 +763,115 @@ pub async fn bridge_code_to_concepts(
         edges_created: result.edges_created,
         skipped_existing: result.skipped_existing,
     }))
+}
+
+// ------------------------------------------------------------------
+// Retry queue
+// ------------------------------------------------------------------
+
+/// Get queue status summary.
+#[utoipa::path(
+    get,
+    path = "/admin/queue/status",
+    responses(
+        (status = 200, description = "Queue status summary",
+         body = QueueStatusResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn queue_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<QueueStatusResponse>, ApiError> {
+    let rows = state.queue_service.queue_status().await?;
+    Ok(Json(QueueStatusResponse {
+        rows: rows
+            .into_iter()
+            .map(|r| QueueStatusRowResponse {
+                kind: r.kind,
+                status: r.status,
+                count: r.count,
+            })
+            .collect(),
+    }))
+}
+
+/// Retry all failed/dead jobs, optionally filtered by kind.
+#[utoipa::path(
+    post,
+    path = "/admin/queue/retry",
+    request_body = RetryFailedRequest,
+    responses(
+        (status = 200, description = "Jobs retried",
+         body = RetryFailedResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn retry_failed_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RetryFailedRequest>,
+) -> Result<Json<RetryFailedResponse>, ApiError> {
+    let kind = req
+        .kind
+        .as_deref()
+        .and_then(covalence_core::models::retry_job::JobKind::from_pg_str);
+    let retried = state.queue_service.retry_failed(kind).await?;
+    Ok(Json(RetryFailedResponse { retried }))
+}
+
+/// List dead-letter jobs.
+#[utoipa::path(
+    get,
+    path = "/admin/queue/dead",
+    params(ListDeadParams),
+    responses(
+        (status = 200, description = "Dead-letter jobs",
+         body = ListDeadResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn list_dead_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ListDeadParams>,
+) -> Result<Json<ListDeadResponse>, ApiError> {
+    let limit = params.limit.unwrap_or(20).clamp(1, 1000);
+    let jobs = state.queue_service.list_dead(limit).await?;
+    Ok(Json(ListDeadResponse {
+        jobs: jobs
+            .into_iter()
+            .map(|j| DeadJobResponse {
+                id: j.id.into_uuid(),
+                kind: j.kind.as_pg_str().to_string(),
+                attempt: j.attempt,
+                max_attempts: j.max_attempts,
+                last_error: j.last_error,
+                dead_reason: j.dead_reason,
+                payload: j.payload,
+                created_at: j.created_at.to_rfc3339(),
+                updated_at: j.updated_at.to_rfc3339(),
+            })
+            .collect(),
+    }))
+}
+
+/// Clear the dead-letter queue.
+#[utoipa::path(
+    post,
+    path = "/admin/queue/dead/clear",
+    request_body = ClearDeadRequest,
+    responses(
+        (status = 200, description = "Dead jobs cleared",
+         body = ClearDeadResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn clear_dead_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ClearDeadRequest>,
+) -> Result<Json<ClearDeadResponse>, ApiError> {
+    let kind = req
+        .kind
+        .as_deref()
+        .and_then(covalence_core::models::retry_job::JobKind::from_pg_str);
+    let deleted = state.queue_service.clear_dead(kind).await?;
+    Ok(Json(ClearDeadResponse { deleted }))
 }

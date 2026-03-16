@@ -24,6 +24,10 @@ pub fn router(state: AppState) -> Router {
         .route("/sources/{id}", get(sources::get_source))
         .route("/sources/{id}", delete(sources::delete_source))
         .route("/sources/{id}/reprocess", post(sources::reprocess_source))
+        .route(
+            "/sources/{id}/queue-reprocess",
+            post(sources::queue_reprocess_source),
+        )
         .route("/sources/{id}/chunks", get(sources::get_source_chunks))
         // Search
         .route("/search", post(search::search))
@@ -83,6 +87,11 @@ pub fn router(state: AppState) -> Router {
             post(admin::summarize_code_nodes),
         )
         .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts))
+        // Queue
+        .route("/admin/queue/status", get(admin::queue_status_handler))
+        .route("/admin/queue/retry", post(admin::retry_failed_handler))
+        .route("/admin/queue/dead", get(admin::list_dead_handler))
+        .route("/admin/queue/dead/clear", post(admin::clear_dead_handler))
         // Analysis
         .route("/analysis/bootstrap", post(analysis::bootstrap_components))
         .route("/analysis/link", post(analysis::link_domains))

@@ -1315,6 +1315,105 @@ pub struct CritiqueResponse {
     pub synthesis: Option<CritiqueSynthesisResponse>,
 }
 
+// ------------------------------------------------------------------
+// Retry queue
+// ------------------------------------------------------------------
+
+/// A single row in the queue status summary.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct QueueStatusRowResponse {
+    /// Job kind (e.g. "reprocess_source").
+    pub kind: String,
+    /// Job status (e.g. "pending", "running", "dead").
+    pub status: String,
+    /// Count of jobs with this kind+status.
+    pub count: i64,
+}
+
+/// Response for queue status.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct QueueStatusResponse {
+    /// Status summary grouped by kind and status.
+    pub rows: Vec<QueueStatusRowResponse>,
+}
+
+/// Request body for retrying failed jobs.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RetryFailedRequest {
+    /// Optional job kind filter. When null, retries all failed jobs.
+    pub kind: Option<String>,
+}
+
+/// Response for retry-failed operation.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RetryFailedResponse {
+    /// Number of jobs moved back to pending.
+    pub retried: u64,
+}
+
+/// Query parameters for listing dead-letter jobs.
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct ListDeadParams {
+    /// Maximum number of dead jobs to return (default 20).
+    pub limit: Option<i64>,
+}
+
+/// A dead-letter job in the response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeadJobResponse {
+    /// Job UUID.
+    pub id: Uuid,
+    /// Job kind.
+    pub kind: String,
+    /// Number of attempts made.
+    pub attempt: i32,
+    /// Maximum attempts allowed.
+    pub max_attempts: i32,
+    /// Error message from the last attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Reason the job was moved to dead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dead_reason: Option<String>,
+    /// Job payload.
+    pub payload: serde_json::Value,
+    /// When the job was created.
+    pub created_at: String,
+    /// When the job was last updated.
+    pub updated_at: String,
+}
+
+/// Response for listing dead-letter jobs.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListDeadResponse {
+    /// Dead-letter jobs.
+    pub jobs: Vec<DeadJobResponse>,
+}
+
+/// Request body for clearing dead-letter jobs.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ClearDeadRequest {
+    /// Optional job kind filter. When null, clears all dead jobs.
+    pub kind: Option<String>,
+}
+
+/// Response for clearing dead-letter jobs.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClearDeadResponse {
+    /// Number of dead jobs deleted.
+    pub deleted: u64,
+}
+
+/// Response for enqueuing a source reprocess.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EnqueueReprocessResponse {
+    /// Whether a new job was created (false if already queued).
+    pub enqueued: bool,
+    /// The job ID (present when enqueued is true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<Uuid>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

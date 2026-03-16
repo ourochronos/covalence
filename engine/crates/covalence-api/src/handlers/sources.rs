@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::handlers::dto::{
     ChunkResponse, CreateSourceRequest, CreateSourceResponse, DeleteSourceResponse,
-    PaginationParams, ReprocessSourceResponse, SourceResponse,
+    EnqueueReprocessResponse, PaginationParams, ReprocessSourceResponse, SourceResponse,
 };
 use crate::state::AppState;
 
@@ -233,6 +233,42 @@ pub async fn reprocess_source(
         chunks_deleted: result.chunks_deleted,
         chunks_created: result.chunks_created,
         content_version: result.content_version,
+    }))
+}
+
+/// Enqueue a source for reprocessing via the retry queue.
+///
+/// Unlike `/sources/{id}/reprocess` which runs synchronously, this
+/// endpoint enqueues the job and returns immediately. The background
+/// worker will process it with automatic retries on failure.
+#[utoipa::path(
+    post,
+    path = "/sources/{id}/queue-reprocess",
+    params(("id" = Uuid, Path, description = "Source ID")),
+    responses(
+        (status = 200, description = "Source enqueued for reprocessing",
+         body = EnqueueReprocessResponse),
+        (status = 404, description = "Source not found"),
+    ),
+    tag = "sources"
+)]
+pub async fn queue_reprocess_source(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<EnqueueReprocessResponse>, ApiError> {
+    // Verify the source exists before enqueuing.
+    let _source = state.source_service.get(id.into()).await?.ok_or(
+        covalence_core::error::Error::NotFound {
+            entity_type: "source",
+            id: id.to_string(),
+        },
+    )?;
+
+    let source_id = covalence_core::types::ids::SourceId::from_uuid(id);
+    let job_id = state.queue_service.enqueue_reprocess(source_id).await?;
+    Ok(Json(EnqueueReprocessResponse {
+        enqueued: job_id.is_some(),
+        job_id: job_id.map(|j| j.into_uuid()),
     }))
 }
 
