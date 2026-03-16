@@ -273,6 +273,7 @@ mod tests {
             openai_base_url: None,
             voyage_api_key: None,
             voyage_base_url: None,
+            graph_engine: "petgraph".to_string(),
             embed_provider: "openai".to_string(),
             embed_model: "text-embedding-3-large".to_string(),
             chat_model: "gpt-4o".to_string(),

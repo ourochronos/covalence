@@ -28,6 +28,11 @@ pub struct Config {
 
     /// Embedding provider: `"openai"` (default) or `"voyage"`.
     ///
+    /// Graph engine backend: "petgraph" (in-memory sidecar) or "age"
+    /// (Apache AGE in PostgreSQL).
+    /// Env: `COVALENCE_GRAPH_ENGINE`. Default: `"petgraph"`.
+    pub graph_engine: String,
+
     /// When set to `"voyage"` or when `VOYAGE_API_KEY` is present,
     /// the Voyage AI embedder is used instead of OpenAI.
     /// Env: `COVALENCE_EMBED_PROVIDER`.
@@ -457,6 +462,7 @@ impl std::fmt::Debug for Config {
                 &self.voyage_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .field("voyage_base_url", &self.voyage_base_url)
+            .field("graph_engine", &self.graph_engine)
             .field("embed_provider", &self.embed_provider)
             .field("embed_model", &self.embed_model)
             .field("chat_model", &self.chat_model)
@@ -484,6 +490,7 @@ impl Config {
     ///
     /// Call `dotenvy::dotenv().ok()` before this to load `.env` files.
     pub fn from_env() -> Result<Self> {
+        let graph_engine = env_or("COVALENCE_GRAPH_ENGINE", "petgraph");
         let embed_provider = env_or("COVALENCE_EMBED_PROVIDER", "openai");
         let embed_model = env_or("COVALENCE_EMBED_MODEL", "text-embedding-3-large");
 
@@ -495,6 +502,7 @@ impl Config {
             openai_base_url: optional_env("OPENAI_BASE_URL"),
             voyage_api_key: optional_env("VOYAGE_API_KEY"),
             voyage_base_url: optional_env("VOYAGE_BASE_URL"),
+            graph_engine,
             embed_provider,
             embed_model: embed_model.clone(),
             chat_model: env_or("COVALENCE_CHAT_MODEL", "gpt-4o"),
@@ -825,6 +833,7 @@ mod tests {
                 openai_base_url: None,
                 voyage_api_key: Some("vk-secret".into()),
                 voyage_base_url: None,
+                graph_engine: "petgraph".into(),
                 embed_provider: "openai".into(),
                 embed_model: "test-model".into(),
                 chat_model: "gpt-4o".into(),

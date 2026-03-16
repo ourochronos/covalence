@@ -80,8 +80,31 @@ impl AppState {
             }
         }
 
-        // Create the graph engine trait object wrapping the shared graph.
-        let graph_engine: Arc<dyn GraphEngine> = Arc::new(PetgraphEngine::new(Arc::clone(&graph)));
+        // Create the graph engine based on configuration.
+        let graph_engine: Arc<dyn GraphEngine> = if config.graph_engine == "age" {
+            tracing::info!("using Apache AGE graph engine");
+            let age = covalence_core::graph::AgeEngine::new(
+                repo.pool().clone(),
+                "covalence_graph".to_string(),
+            );
+            // Load the AGE graph from PG tables on startup.
+            match age.reload(repo.pool()).await {
+                Ok(result) => {
+                    tracing::info!(
+                        nodes = result.node_count,
+                        edges = result.edge_count,
+                        "AGE graph loaded from PG"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load AGE graph on startup");
+                }
+            }
+            Arc::new(age)
+        } else {
+            tracing::info!("using petgraph in-memory graph engine");
+            Arc::new(PetgraphEngine::new(Arc::clone(&graph)))
+        };
 
         // Determine the embedding provider. Voyage is used when
         // explicitly configured or when a Voyage API key is present.
