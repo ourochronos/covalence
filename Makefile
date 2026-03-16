@@ -37,7 +37,7 @@ check: fmt-check clippy test-unit
 
 # === Search Regression ===
 
-EVAL_API ?= http://localhost:8441
+EVAL_API ?= http://covalence-wsl:8441
 
 eval-search:
 	cd engine && cargo run -p covalence-eval -- \
@@ -94,7 +94,7 @@ migrate:
 	cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5435/covalence_dev cargo run -p covalence-migrations
 
 migrate-prod:
-	cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5437/covalence_prod cargo run -p covalence-migrations
+	cd engine && DATABASE_URL=postgres://covalence:covalence@covalence-wsl:5432/covalence_prod cargo run -p covalence-migrations
 
 reset-db:
 	@echo "Dropping and recreating covalence_dev..."
@@ -141,10 +141,8 @@ run-dev:
 	cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5435/covalence_dev BIND_ADDR=0.0.0.0:8431 cargo run -p covalence-api
 
 run-prod:
-	cd engine && \
-		DATABASE_URL=postgres://covalence:covalence@localhost:5437/covalence_prod \
-		BIND_ADDR=0.0.0.0:8441 \
-		cargo run -p covalence-api
+	@echo "Prod runs on derptop (covalence-wsl:8441). Use 'make run-dev' for local development."
+	@echo "To run prod locally: cd engine && DATABASE_URL=postgres://covalence:covalence@covalence-wsl:5432/covalence_prod BIND_ADDR=0.0.0.0:8441 cargo run -p covalence-api"
 
 watch:
 	cd engine && cargo watch -x 'run -p covalence-api'
@@ -153,7 +151,7 @@ watch:
 # These targets ingest content into an engine instance.
 # Default: prod on :8441. Override with INGEST_API=http://localhost:8431 for dev.
 
-INGEST_API ?= http://localhost:8441
+INGEST_API ?= http://covalence-wsl:8441
 
 ingest-codebase:
 	@echo "Ingesting Rust source files..."
