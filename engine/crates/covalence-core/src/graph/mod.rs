@@ -3,6 +3,7 @@
 //! The [`GraphEngine`] trait abstracts graph operations so callers
 //! don't depend on a specific backend (petgraph, Apache AGE, etc.).
 
+pub mod age_engine;
 pub mod algorithms;
 pub mod bridges;
 pub mod community;
@@ -14,6 +15,7 @@ pub mod sync;
 pub mod topology;
 pub mod traversal;
 
+pub use age_engine::AgeEngine;
 pub use bridges::Bridge;
 pub use community::Community;
 pub use engine::{
