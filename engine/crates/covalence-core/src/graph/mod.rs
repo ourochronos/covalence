@@ -8,6 +8,7 @@ pub mod bridges;
 pub mod community;
 pub mod engine;
 pub mod filtered;
+pub mod petgraph_engine;
 pub mod sidecar;
 pub mod sync;
 pub mod topology;
@@ -18,6 +19,7 @@ pub use community::Community;
 pub use engine::{
     BfsNode, BfsOptions, Contention, GapCandidate, GraphEngine, GraphStats, Neighbor, ReloadResult,
 };
+pub use petgraph_engine::PetgraphEngine;
 pub use sidecar::{EdgeMeta, GraphSidecar, NodeMeta, SharedGraph};
 pub use sync::OutboxEvent;
 pub use topology::{Domain, DomainLink, TopologyMap};
