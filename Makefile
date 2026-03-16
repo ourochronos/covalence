@@ -74,19 +74,16 @@ test-db-stop:
 	@docker compose --profile test stop test-pg
 	@docker compose --profile test rm -f test-pg
 
-# === Database: Prod (port 5437) ===
+# === Database: Prod (covalence-wsl) ===
 
 prod-db:
-	@docker compose --profile prod up -d prod-pg
-	@echo "Waiting for prod PG to be ready..."
-	@until docker exec covalence-prod-pg pg_isready -U covalence -d covalence_prod 2>/dev/null; do sleep 1; done
-	@docker exec covalence-prod-pg psql -U covalence -d covalence_prod \
-		-c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS ltree;" \
-		2>/dev/null || true
-	@echo "Prod database ready on port 5437"
+	@echo "Prod PG runs on derptop (covalence-wsl:5432). Checking connectivity..."
+	@ssh $(PROD_HOST) 'pg_isready -U covalence -d covalence_prod' || \
+		(echo "ERROR: Prod PG not reachable on covalence-wsl" && exit 1)
+	@echo "Prod database ready on covalence-wsl:5432"
 
 prod-db-stop:
-	@docker compose --profile prod stop prod-pg
+	@echo "Prod PG runs on derptop. Use: ssh $(PROD_HOST) 'sudo systemctl stop postgresql'"
 
 # === Migrations ===
 
@@ -110,19 +107,24 @@ reset-db:
 	@echo "Dev database reset complete."
 
 reset-prod-db:
-	@echo "WARNING: This will destroy all prod data!"
+	@echo "WARNING: This will destroy all prod data on covalence-wsl!"
 	@echo "Press Ctrl+C to abort, or wait 5 seconds..."
 	@sleep 5
+	@echo "Stopping engine..."
+	@ssh $(PROD_HOST) 'sudo systemctl stop covalence-engine' || true
 	@echo "Dropping and recreating covalence_prod..."
-	@docker exec covalence-prod-pg psql -U covalence -d postgres \
+	@ssh $(PROD_HOST) 'psql postgres://covalence:covalence@localhost:5432/postgres \
 		-c "DROP DATABASE IF EXISTS covalence_prod;" \
-		-c "CREATE DATABASE covalence_prod OWNER covalence;"
-	@docker exec covalence-prod-pg psql -U covalence -d covalence_prod \
+		-c "CREATE DATABASE covalence_prod OWNER covalence;"'
+	@ssh $(PROD_HOST) 'psql postgres://covalence:covalence@localhost:5432/covalence_prod \
 		-c "CREATE EXTENSION IF NOT EXISTS vector;" \
 		-c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" \
-		-c "CREATE EXTENSION IF NOT EXISTS ltree;"
+		-c "CREATE EXTENSION IF NOT EXISTS ltree;" \
+		-c "CREATE EXTENSION IF NOT EXISTS age;"'
 	@echo "Running migrations on prod..."
-	@cd engine && DATABASE_URL=postgres://covalence:covalence@localhost:5437/covalence_prod cargo run -p covalence-migrations
+	@$(MAKE) migrate-prod
+	@echo "Restarting engine..."
+	@ssh $(PROD_HOST) 'sudo systemctl start covalence-engine'
 	@echo "Prod database reset complete."
 
 # (promote target is below, after deploy)
@@ -282,24 +284,17 @@ REPROCESS_BATCH ?= 5
 
 reprocess-statements:
 	@echo "Finding document sources without statements..."
-	@docker exec covalence-prod-pg psql -U covalence -d covalence_prod -t -c \
-		"SELECT s.id FROM sources s WHERE s.source_type = 'document' AND s.id NOT IN (SELECT DISTINCT source_id FROM statements) ORDER BY s.ingested_at DESC" \
+	@ssh $(PROD_HOST) 'psql postgres://covalence:covalence@localhost:5432/covalence_prod -t -c \
+		"SELECT s.id FROM sources s WHERE s.source_type = '\''document'\'' \
+		 AND NOT EXISTS (SELECT 1 FROM statements st WHERE st.source_id = s.id) \
+		 ORDER BY s.created_date"' \
 		| tr -d ' ' | grep -v '^$$' > /tmp/cov-reprocess-ids.txt; \
 	total=$$(wc -l < /tmp/cov-reprocess-ids.txt | tr -d ' '); \
-	echo "Found $$total unprocessed document sources (batch size: $(REPROCESS_BATCH))"; \
-	i=0; batch=0; \
+	echo "Found $$total unprocessed document sources"; \
 	while IFS= read -r id; do \
-		i=$$((i+1)); batch=$$((batch+1)); \
-		echo "  [$$i/$$total] reprocessing $$id..."; \
-		curl -sf -X POST $(INGEST_API)/api/v1/sources/$$id/reprocess > /dev/null 2>&1 & \
-		if [ $$batch -ge $(REPROCESS_BATCH) ]; then \
-			wait; batch=0; \
-			echo "  --- batch complete, synthesizing edges ---"; \
-			curl -sf -X POST $(INGEST_API)/api/v1/admin/edges/synthesize \
-				-H 'Content-Type: application/json' -d '{"min_cooccurrences": 1}' > /dev/null 2>&1 || true; \
-		fi; \
+		echo "  enqueuing $$id..."; \
+		curl -sf -X POST $(INGEST_API)/api/v1/sources/$$id/queue-reprocess > /dev/null 2>&1 || echo "    FAILED"; \
 	done < /tmp/cov-reprocess-ids.txt; \
-	wait; \
 	rm -f /tmp/cov-reprocess-ids.txt
 	@echo "Final edge synthesis..."
 	@curl -sf -X POST $(INGEST_API)/api/v1/admin/edges/synthesize \

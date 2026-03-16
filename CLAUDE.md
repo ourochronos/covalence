@@ -193,21 +193,21 @@ Use the `cove` CLI as the primary interface to Covalence. This dogfoods the CLI 
 
 ```bash
 # Search (against prod)
-cove --api-url http://localhost:8441 search "subjective logic confidence propagation"
-cove --api-url http://localhost:8441 search "entity resolution" --strategy precise
-cove --api-url http://localhost:8441 search "chunking strategies" --mode context
+cove --api-url http://covalence-wsl:8441 search "subjective logic confidence propagation"
+cove --api-url http://covalence-wsl:8441 search "entity resolution" --strategy precise
+cove --api-url http://covalence-wsl:8441 search "chunking strategies" --mode context
 
 # Inspect sources and graph
-cove --api-url http://localhost:8441 source list
-cove --api-url http://localhost:8441 node list --type concept --limit 20
-cove --api-url http://localhost:8441 graph stats
+cove --api-url http://covalence-wsl:8441 source list
+cove --api-url http://covalence-wsl:8441 node list --type concept --limit 20
+cove --api-url http://covalence-wsl:8441 graph stats
 
 # Ingest a local file
-cove --api-url http://localhost:8441 source add /path/to/paper.md
+cove --api-url http://covalence-wsl:8441 source add /path/to/paper.md
 
 # Admin
-cove --api-url http://localhost:8441 admin health
-cove --api-url http://localhost:8441 admin metrics
+cove --api-url http://covalence-wsl:8441 admin health
+cove --api-url http://covalence-wsl:8441 admin metrics
 ```
 
 If the CLI is missing a feature you need (e.g., URL-based ingestion, bulk operations), add it. That's the loop working.
@@ -382,11 +382,11 @@ make migrate                                                       # Run migrati
 psql postgres://covalence:covalence@localhost:5435/covalence_dev   # Connect
 
 # Prod database
-make prod-db                                                       # Start container
-make migrate-prod                                                  # Run migrations
-psql postgres://covalence:covalence@localhost:5437/covalence_prod  # Connect
+make prod-db                                                               # Check prod PG connectivity
+make migrate-prod                                                          # Run migrations on prod
+ssh covalence@covalence-wsl 'psql postgres://covalence:covalence@localhost:5432/covalence_prod'  # Connect
 
-# Promotion (test in dev → apply to prod)
+# Deployment and promotion
 make promote
 ```
 
