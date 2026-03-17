@@ -11,6 +11,7 @@ import (
 var (
 	askMaxContext int
 	askStrategy   string
+	askModel      string
 )
 
 var askCmd = &cobra.Command{
@@ -32,6 +33,9 @@ grounded synthesis. Returns a structured answer with citations.`,
 		}
 		if askStrategy != "auto" {
 			body["strategy"] = askStrategy
+		}
+		if askModel != "" {
+			body["model"] = askModel
 		}
 
 		var result map[string]interface{}
@@ -80,5 +84,7 @@ func init() {
 		"Maximum search results to include as context")
 	askCmd.Flags().StringVar(&askStrategy, "strategy", "auto",
 		"Search strategy (auto, balanced, precise, exploratory, recent, graph_first, global)")
+	askCmd.Flags().StringVar(&askModel, "model", "",
+		"LLM model override (haiku, sonnet, opus, gemini, copilot)")
 	rootCmd.AddCommand(askCmd)
 }

@@ -43,6 +43,7 @@ pub async fn ask(
     let options = covalence_core::services::ask::AskOptions {
         max_context: req.max_context.unwrap_or(15),
         strategy: req.strategy.clone(),
+        model: req.model.clone(),
     };
 
     let response = ask_service.ask(&req.question, options).await?;

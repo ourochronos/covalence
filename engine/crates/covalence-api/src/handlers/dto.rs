@@ -327,6 +327,8 @@ pub struct AskApiRequest {
     pub max_context: Option<usize>,
     /// Search strategy (auto, balanced, precise, etc.).
     pub strategy: Option<String>,
+    /// LLM model override: haiku, sonnet, opus, gemini, copilot.
+    pub model: Option<String>,
 }
 
 /// A citation backing the synthesized answer.

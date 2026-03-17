@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::ingestion::ChatBackend;
+use crate::ingestion::chat_backend::CliChatBackend;
 use crate::search::fusion::FusedResult;
 use crate::search::strategy::SearchStrategy;
 use crate::services::SearchService;
@@ -23,6 +24,10 @@ pub struct AskOptions {
     pub max_context: usize,
     /// Search strategy. Default: auto.
     pub strategy: Option<String>,
+    /// Override the LLM model for this request.
+    /// Format: "haiku", "sonnet", "opus", "gemini", "copilot".
+    /// If None, uses the default configured backend.
+    pub model: Option<String>,
 }
 
 impl Default for AskOptions {
@@ -30,6 +35,7 @@ impl Default for AskOptions {
         Self {
             max_context: 15,
             strategy: None,
+            model: None,
         }
     }
 }
@@ -101,9 +107,13 @@ impl AskService {
         let system_prompt = build_system_prompt();
         let user_prompt = build_user_prompt(question, &context_blocks);
 
-        // 4. Call LLM.
-        let answer = self
-            .chat
+        // 4. Call LLM (use per-request model override if specified).
+        let backend: Arc<dyn ChatBackend> = if let Some(ref model) = options.model {
+            Arc::new(resolve_model_backend(model))
+        } else {
+            Arc::clone(&self.chat)
+        };
+        let answer = backend
             .chat(&system_prompt, &user_prompt, false, 0.3)
             .await?;
 
@@ -201,6 +211,17 @@ struct SourceInfo {
 }
 
 /// Parse a strategy string to a `SearchStrategy`.
+/// Resolve a model name to a CLI chat backend.
+fn resolve_model_backend(model: &str) -> CliChatBackend {
+    match model {
+        "haiku" | "sonnet" | "opus" => CliChatBackend::new("claude".to_string(), model.to_string()),
+        "gemini" => CliChatBackend::new("gemini".to_string(), "gemini-2.5-flash".to_string()),
+        "copilot" => CliChatBackend::new("copilot".to_string(), "claude-haiku-4.5".to_string()),
+        // Default: treat as a claude model name.
+        other => CliChatBackend::new("claude".to_string(), other.to_string()),
+    }
+}
+
 fn parse_strategy(s: Option<&str>) -> SearchStrategy {
     match s {
         Some("balanced") => SearchStrategy::Balanced,
