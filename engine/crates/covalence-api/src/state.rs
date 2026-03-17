@@ -454,6 +454,11 @@ impl AppState {
             }
         }
 
+        // Wire chat backend for semantic code summaries (Spec 12, Stage 2)
+        if let Some(ref backend) = chat_backend {
+            source_svc = source_svc.with_chat_backend(Arc::clone(backend));
+        }
+
         let source_service = Arc::new(source_svc);
         let abstention_config = covalence_core::search::abstention::AbstentionConfig {
             min_relevance_score: config.search.abstention_threshold,
