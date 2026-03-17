@@ -248,30 +248,27 @@ ingest-changes:
 		exit 0; \
 	fi; \
 	echo "Ingesting changes: $$LAST..$$HEAD"; \
-	changed=0; \
-	git diff --name-only "$$LAST..$$HEAD" -- '*.rs' '*.go' | grep -v '/target/' | while read f; do \
-		if [ -f "$$f" ]; then \
-			echo "  [code] $$f"; \
-			b64=$$(base64 < "$$f"); \
-			stype="code"; \
-			curl -sf -X POST $(INGEST_API)/api/v1/sources \
-				-H 'Content-Type: application/json' \
-				-d "{\"content\": \"$$b64\", \"source_type\": \"$$stype\", \"uri\": \"file://$$f\"}" \
-				> /dev/null 2>&1 || echo "    FAILED: $$f"; \
-			changed=$$((changed+1)); \
-		fi; \
-	done; \
-	git diff --name-only "$$LAST..$$HEAD" -- 'spec/*.md' 'docs/adr/*.md' 'CLAUDE.md' 'VISION.md' 'MILESTONES.md' | while read f; do \
-		if [ -f "$$f" ]; then \
-			echo "  [doc] $$f"; \
-			b64=$$(base64 < "$$f"); \
-			curl -sf -X POST $(INGEST_API)/api/v1/sources \
-				-H 'Content-Type: application/json' \
-				-d "{\"content\": \"$$b64\", \"source_type\": \"document\", \"uri\": \"file://$$f\"}" \
-				> /dev/null 2>&1 || echo "    FAILED: $$f"; \
-			changed=$$((changed+1)); \
-		fi; \
-	done; \
+	git diff --name-only "$$LAST..$$HEAD" -- '*.rs' '*.go' | grep -v '/target/' > /tmp/cov-ingest-code.txt || true; \
+	git diff --name-only "$$LAST..$$HEAD" -- 'spec/*.md' 'docs/adr/*.md' 'CLAUDE.md' 'VISION.md' 'MILESTONES.md' > /tmp/cov-ingest-docs.txt || true; \
+	while IFS= read -r f; do \
+		[ -f "$$f" ] || continue; \
+		echo "  [code] $$f"; \
+		b64=$$(base64 < "$$f"); \
+		curl -sf -X POST $(INGEST_API)/api/v1/sources \
+			-H 'Content-Type: application/json' \
+			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"uri\": \"file://$$f\"}" \
+			> /dev/null 2>&1 || echo "    FAILED: $$f"; \
+	done < /tmp/cov-ingest-code.txt; \
+	while IFS= read -r f; do \
+		[ -f "$$f" ] || continue; \
+		echo "  [doc] $$f"; \
+		b64=$$(base64 < "$$f"); \
+		curl -sf -X POST $(INGEST_API)/api/v1/sources \
+			-H 'Content-Type: application/json' \
+			-d "{\"content\": \"$$b64\", \"source_type\": \"document\", \"uri\": \"file://$$f\"}" \
+			> /dev/null 2>&1 || echo "    FAILED: $$f"; \
+	done < /tmp/cov-ingest-docs.txt; \
+	rm -f /tmp/cov-ingest-code.txt /tmp/cov-ingest-docs.txt; \
 	echo "Ingestion complete. Running edge synthesis..."; \
 	curl -sf -X POST $(INGEST_API)/api/v1/admin/edges/synthesize \
 		-H 'Content-Type: application/json' -d '{"min_cooccurrences": 1}' > /dev/null 2>&1 || true; \
