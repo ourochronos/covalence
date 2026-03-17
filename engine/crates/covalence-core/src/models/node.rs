@@ -122,6 +122,11 @@ pub struct Node {
     pub last_seen: DateTime<Utc>,
     /// Number of times this entity has been mentioned across extractions.
     pub mention_count: i32,
+    /// Shannon entropy of domain distribution across extraction provenance.
+    /// Low = internal concept (one domain), high = cross-cutting (many domains).
+    pub domain_entropy: Option<f32>,
+    /// The domain where this entity is most frequently mentioned.
+    pub primary_domain: Option<String>,
 }
 
 impl Node {
@@ -141,6 +146,8 @@ impl Node {
             first_seen: now,
             last_seen: now,
             mention_count: 1,
+            domain_entropy: None,
+            primary_domain: None,
         }
     }
 

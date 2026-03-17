@@ -52,7 +52,7 @@ impl NodeRepo for PgRepo {
                     description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
-                    mention_count
+                    mention_count, domain_entropy, primary_domain
              FROM nodes WHERE id = $1",
         )
         .bind(id)
@@ -68,7 +68,7 @@ impl NodeRepo for PgRepo {
                     description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
-                    mention_count
+                    mention_count, domain_entropy, primary_domain
              FROM nodes
              WHERE LOWER(canonical_name) = LOWER($1)",
         )
@@ -166,7 +166,7 @@ impl NodeRepo for PgRepo {
                     description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
-                    mention_count
+                    mention_count, domain_entropy, primary_domain
              FROM nodes
              WHERE node_type = $1
              ORDER BY canonical_name ASC
@@ -191,7 +191,7 @@ impl NodeRepo for PgRepo {
                     description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
-                    mention_count
+                    mention_count, domain_entropy, primary_domain
              FROM nodes WHERE id = ANY($1)",
         )
         .bind(&uuids)
@@ -242,5 +242,7 @@ fn node_from_row(row: &sqlx::postgres::PgRow) -> Node {
         first_seen: row.get("first_seen"),
         last_seen: row.get("last_seen"),
         mention_count: row.get("mention_count"),
+        domain_entropy: row.get("domain_entropy"),
+        primary_domain: row.get("primary_domain"),
     }
 }
