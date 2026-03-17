@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod analysis;
 pub mod article;
+pub mod ask;
 pub mod chunk_quality;
 pub mod consolidation;
 pub mod edge;
@@ -21,6 +22,7 @@ pub(crate) mod statement_pipeline;
 pub use admin::{AdminService, CooccurrenceResult, GcResult};
 pub use analysis::AnalysisService;
 pub use article::ArticleService;
+pub use ask::{AskResponse, AskService, Citation};
 pub use consolidation::GraphDeepConsolidator;
 pub use edge::EdgeService;
 pub use health::{ConfigAudit, SidecarHealth};

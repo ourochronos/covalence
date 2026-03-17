@@ -2,7 +2,7 @@
 
 use utoipa::OpenApi;
 
-use crate::handlers::{admin, analysis, dto, edges, mcp, nodes, search, sources};
+use crate::handlers::{admin, analysis, ask, dto, edges, mcp, nodes, search, sources};
 
 /// OpenAPI documentation for the Covalence API.
 #[derive(OpenApi)]
@@ -26,6 +26,8 @@ use crate::handlers::{admin, analysis, dto, edges, mcp, nodes, search, sources};
         // Search
         search::search,
         search::search_feedback,
+        // Ask
+        ask::ask,
         // Nodes
         nodes::get_node,
         nodes::get_neighborhood,
@@ -101,6 +103,9 @@ use crate::handlers::{admin, analysis, dto, edges, mcp, nodes, search, sources};
         dto::ContextItemResponse,
         dto::ContextResponse,
         dto::SearchApiResponse,
+        dto::AskApiRequest,
+        dto::AskApiResponse,
+        dto::CitationResponse,
         dto::NodeResponse,
         dto::GetNodeParams,
         dto::NodeExplanation,

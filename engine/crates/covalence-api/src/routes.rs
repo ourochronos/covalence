@@ -6,7 +6,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 
-use crate::handlers::{admin, analysis, edges, mcp, memory, nodes, search, sources};
+use crate::handlers::{admin, analysis, ask, edges, mcp, memory, nodes, search, sources};
 use crate::middleware::require_api_key;
 use crate::openapi::ApiDoc;
 use crate::state::AppState;
@@ -32,6 +32,8 @@ pub fn router(state: AppState) -> Router {
         // Search
         .route("/search", post(search::search))
         .route("/search/feedback", post(search::search_feedback))
+        // Ask (LLM synthesis)
+        .route("/ask", post(ask::ask))
         // Nodes
         .route("/nodes/resolve", post(nodes::resolve_node))
         .route("/nodes/merge", post(nodes::merge_nodes))

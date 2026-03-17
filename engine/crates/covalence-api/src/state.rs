@@ -20,8 +20,8 @@ use covalence_core::ingestion::{
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
-    AdminService, AnalysisService, ArticleService, EdgeService, NodeService, RetryQueueService,
-    SearchService, SourceService,
+    AdminService, AnalysisService, ArticleService, AskService, EdgeService, NodeService,
+    RetryQueueService, SearchService, SourceService,
 };
 use covalence_core::storage::postgres::PgRepo;
 
@@ -54,6 +54,8 @@ pub struct AppState {
     pub admin_service: Arc<AdminService>,
     /// Cross-domain analysis.
     pub analysis_service: Arc<AnalysisService>,
+    /// LLM-powered knowledge synthesis.
+    pub ask_service: Option<Arc<AskService>>,
     /// Persistent retry queue.
     pub queue_service: Arc<RetryQueueService>,
 }
@@ -476,6 +478,15 @@ impl AppState {
                 .with_node_embed_dim(config.embedding.table_dims.node),
         );
 
+        // Build the ask service when a chat backend is available.
+        let ask_service = chat_backend.as_ref().map(|cb| {
+            Arc::new(AskService::new(
+                Arc::clone(&search_service),
+                Arc::clone(cb),
+                Arc::clone(&repo),
+            ))
+        });
+
         let admin_service = Arc::new(
             AdminService::new(
                 Arc::clone(&repo),
@@ -513,6 +524,7 @@ impl AppState {
             article_service,
             admin_service,
             analysis_service,
+            ask_service,
             queue_service,
         })
     }
