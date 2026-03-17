@@ -1028,9 +1028,27 @@ impl SearchService {
                 .map(|r| r.fused_score)
                 .fold(0.0_f64, f64::max);
 
+            // Secondary signal: code-class entities in top results
+            // indicate implementation-focused queries even without
+            // source domain (nodes don't have a single source).
+            let code_entity_signal = fused
+                .iter()
+                .take(10)
+                .filter(|r| {
+                    r.entity_type.as_deref().is_some_and(|t| {
+                        matches!(
+                            crate::models::node::derive_entity_class(t),
+                            crate::models::node::EntityClass::Code
+                        )
+                    })
+                })
+                .count();
+
             if max_external > 1e-9 {
                 let ratio = max_internal / max_external;
-                if ratio >= BOOST_THRESHOLD {
+                // Boost when: internal content scores >= 70% of
+                // external, OR 3+ top-10 results are code entities.
+                if ratio >= BOOST_THRESHOLD || code_entity_signal >= 3 {
                     let mut boosted = 0usize;
                     for result in &mut fused {
                         if result
@@ -1045,6 +1063,7 @@ impl SearchService {
                     if boosted > 0 {
                         tracing::info!(
                             ratio = format!("{ratio:.2}"),
+                            code_entity_signal,
                             boosted,
                             "DDSS: self-referential boost applied"
                         );
