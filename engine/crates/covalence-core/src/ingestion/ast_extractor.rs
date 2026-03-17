@@ -367,8 +367,10 @@ fn extract_rust_impl(
         });
     }
 
-    // Extract methods inside the impl block → `contains`
-    // relationships.
+    // Extract methods inside the impl block as individual function
+    // entities with `contains` edges from the impl block. Each method
+    // gets its own entity so it can receive a semantic summary and
+    // embedding in the same vector space as prose concepts.
     let body = node.child_by_field_name("body");
     if let Some(body_node) = body {
         for i in 0..body_node.child_count() as u32 {
@@ -377,6 +379,18 @@ fn extract_rust_impl(
             };
             if child.kind() == "function_item" {
                 if let Some(fn_name) = child_text_by_field(source, &child, "name") {
+                    // Create a function entity for the method.
+                    let method_text = node_text(source, &child);
+                    let method_sig = extract_signature_before_brace(method_text);
+                    entities.push(ExtractedEntity {
+                        name: fn_name.clone(),
+                        entity_type: "function".to_string(),
+                        description: Some(method_sig),
+                        confidence: 1.0,
+                        metadata: ast_metadata(source, &child),
+                    });
+
+                    // Relationship: impl → method
                     relationships.push(ExtractedRelationship {
                         source_name: impl_name.clone(),
                         target_name: fn_name,
@@ -576,6 +590,37 @@ fn extract_python_class(
             description: None,
             confidence: 1.0,
         });
+    }
+
+    // Extract methods inside the class as individual function entities
+    // with `contains` edges from the class.
+    if let Some(body_node) = node.child_by_field_name("body") {
+        for i in 0..body_node.child_count() as u32 {
+            let Some(child) = body_node.child(i) else {
+                continue;
+            };
+            if child.kind() == "function_definition" {
+                if let Some(fn_name) = child_text_by_field(source, &child, "name") {
+                    let method_text = node_text(source, &child);
+                    let method_sig = extract_signature_before_brace(method_text);
+                    entities.push(ExtractedEntity {
+                        name: fn_name.clone(),
+                        entity_type: "function".to_string(),
+                        description: Some(method_sig),
+                        confidence: 1.0,
+                        metadata: ast_metadata(source, &child),
+                    });
+
+                    relationships.push(ExtractedRelationship {
+                        source_name: name.clone(),
+                        target_name: fn_name,
+                        rel_type: "contains".to_string(),
+                        description: None,
+                        confidence: 1.0,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -1452,12 +1497,22 @@ class MyService:
         let ctx = make_context("service.py");
         let result = extractor.extract(source, &ctx).await.unwrap();
 
-        assert_eq!(result.entities.len(), 1);
-        let entity = &result.entities[0];
-        assert_eq!(entity.name, "MyService");
-        assert_eq!(entity.entity_type, "class");
-        assert_eq!(entity.confidence, 1.0);
-        assert!(entity.description.as_deref().unwrap().contains("3 methods"));
+        // 1 class + 3 methods extracted individually
+        assert_eq!(result.entities.len(), 4);
+        let class = &result.entities[0];
+        assert_eq!(class.name, "MyService");
+        assert_eq!(class.entity_type, "class");
+        assert_eq!(class.confidence, 1.0);
+        assert!(class.description.as_deref().unwrap().contains("3 methods"));
+
+        // Methods extracted as individual function entities
+        let method_names: Vec<&str> = result.entities[1..]
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(method_names.contains(&"__init__"));
+        assert!(method_names.contains(&"process"));
+        assert!(method_names.contains(&"cleanup"));
     }
 
     #[tokio::test]
@@ -1500,7 +1555,8 @@ class Dog(Animal):
         let ctx = make_context("animals.py");
         let result = extractor.extract(source, &ctx).await.unwrap();
 
-        assert_eq!(result.entities.len(), 2);
+        // 2 classes + 2 methods (one speak() each)
+        assert_eq!(result.entities.len(), 4);
 
         // Dog should have an `extends` relationship to Animal.
         let extends: Vec<_> = result

@@ -94,6 +94,9 @@ struct CodeItem {
     label: String,
     /// The full source text of this item.
     text: String,
+    /// Methods inside compound items (impl blocks, classes).
+    /// When non-empty, each method gets its own sub-section chunk.
+    methods: Vec<CodeItem>,
 }
 
 /// Convert source code to Markdown structured by AST items.
@@ -138,9 +141,11 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
 
         if top_level_kinds.contains(&kind) {
             let label = extract_label(source, &node, lang);
+            let methods = extract_methods(source, &node, lang);
             items.push(CodeItem {
                 label,
                 text: text.to_string(),
+                methods,
             });
         } else if kind != "line_comment"
             && kind != "block_comment"
@@ -168,10 +173,22 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
         }
     }
 
-    // One section per top-level item.
+    // One section per top-level item. For compound items (impl blocks,
+    // classes), also emit sub-sections for each method so they get
+    // their own chunks and semantic summaries.
     for item in &items {
         md.push_str(&format!("# {}\n\n", item.label));
-        md.push_str(&format!("```{fence}\n{}\n```\n\n", item.text));
+        if item.methods.is_empty() {
+            md.push_str(&format!("```{fence}\n{}\n```\n\n", item.text));
+        } else {
+            // Emit the impl/class header as a brief code block, then
+            // each method as a sub-section.
+            md.push_str(&format!("```{fence}\n{}\n```\n\n", item.label));
+            for method in &item.methods {
+                md.push_str(&format!("## {}\n\n", method.label));
+                md.push_str(&format!("```{fence}\n{}\n```\n\n", method.text));
+            }
+        }
     }
 
     if md.is_empty() {
@@ -182,6 +199,46 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
     }
 
     Ok(md)
+}
+
+/// Extract methods from compound AST nodes (impl blocks, classes).
+///
+/// For Rust impl_item nodes and Python class_definition nodes,
+/// walks the body to find function definitions and extracts each
+/// as a CodeItem with its own label and source text.
+fn extract_methods(source: &str, node: &tree_sitter::Node, lang: CodeLanguage) -> Vec<CodeItem> {
+    let (container_kind, method_kind) = match lang {
+        CodeLanguage::Rust => ("impl_item", "function_item"),
+        CodeLanguage::Python => ("class_definition", "function_definition"),
+        // Go methods are top-level, not nested.
+        CodeLanguage::Go => return Vec::new(),
+    };
+
+    if node.kind() != container_kind {
+        return Vec::new();
+    }
+
+    let body_node = match node.child_by_field_name("body") {
+        Some(b) => b,
+        None => return Vec::new(),
+    };
+
+    let mut methods = Vec::new();
+    for i in 0..body_node.child_count() as u32 {
+        let Some(child) = body_node.child(i) else {
+            continue;
+        };
+        if child.kind() == method_kind {
+            let label = extract_label(source, &child, lang);
+            let text = source[child.start_byte()..child.end_byte()].to_string();
+            methods.push(CodeItem {
+                label,
+                text,
+                methods: Vec::new(),
+            });
+        }
+    }
+    methods
 }
 
 /// Extract a human-readable label for a top-level AST node.
