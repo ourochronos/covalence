@@ -41,6 +41,9 @@ pub struct QueryTrace {
     /// Per-result-type counts in the final result set.
     #[serde(default)]
     pub result_type_counts: HashMap<String, usize>,
+    /// Whether the self-referential domain boost (DDSS) was applied.
+    #[serde(default)]
+    pub self_referential_boost: bool,
 }
 
 impl QueryTrace {
@@ -68,6 +71,7 @@ impl QueryTrace {
             entities_demoted: 0,
             chunks_quality_demoted: 0,
             result_type_counts: HashMap::new(),
+            self_referential_boost: false,
         }
     }
 

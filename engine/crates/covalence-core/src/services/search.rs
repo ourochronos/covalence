@@ -654,6 +654,7 @@ impl SearchService {
                             source_uri: None,
                             source_title: None,
                             source_type: None,
+                            source_domain: None,
                             result_type: None,
                             created_at: None,
                             dimension_scores: HashMap::new(),
@@ -716,6 +717,7 @@ impl SearchService {
                         result.source_uri = source.uri;
                         result.source_title = source.title;
                         result.source_type = Some(source.source_type.clone());
+                        result.source_domain = source.domain.clone();
                         result.created_at = Some(source.ingested_at.to_rfc3339());
                         // Use truncated raw content for snippet.
                         if let Some(ref raw) = source.raw_content {
@@ -737,6 +739,7 @@ impl SearchService {
                             result.source_uri = source.uri;
                             result.source_title = source.title.clone();
                             result.source_type = Some(source.source_type.clone());
+                            result.source_domain = source.domain.clone();
                         }
                         // Use the statement content as name (truncated).
                         result.name = Some(truncate_with_ellipsis(&stmt.content, 80));
@@ -760,6 +763,7 @@ impl SearchService {
                             result.source_uri = source.uri;
                             result.source_title = source.title.clone();
                             result.source_type = Some(source.source_type.clone());
+                            result.source_domain = source.domain.clone();
                         }
                         // Content-based snippet fallback.
                         if result.snippet.is_none() {
@@ -784,6 +788,7 @@ impl SearchService {
                             result.source_uri = source.uri;
                             result.source_title = source.title.clone();
                             result.source_type = Some(source.source_type.clone());
+                            result.source_domain = source.domain.clone();
                             result.created_at = Some(source.ingested_at.to_rfc3339());
                             source.title
                         } else {
@@ -834,6 +839,7 @@ impl SearchService {
                             result.source_uri = source.uri;
                             result.source_title = source.title;
                             result.source_type = Some(source.source_type.clone());
+                            result.source_domain = source.domain.clone();
                             result.created_at = Some(source.ingested_at.to_rfc3339());
                             if let Some(ref raw) = source.raw_content {
                                 result.content = Some(truncate_with_ellipsis(raw, 500));
@@ -989,6 +995,67 @@ impl SearchService {
                         .partial_cmp(&a.fused_score)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
+            }
+        }
+
+        // --- Step 8d: Self-referential domain boost (DDSS) ---
+        // Detects when the query is about the system itself by comparing
+        // max scores from internal domains (spec/design/code) vs external
+        // (research/external). If internal content scores well relative
+        // to external, boost all internal results to surface them.
+        {
+            const INTERNAL_DOMAINS: &[&str] = &["spec", "design", "code"];
+            const BOOST_THRESHOLD: f64 = 0.7; // ratio above which we boost
+            const BOOST_FACTOR: f64 = 1.5; // multiplier for internal results
+
+            let max_internal = fused
+                .iter()
+                .filter(|r| {
+                    r.source_domain
+                        .as_deref()
+                        .is_some_and(|d| INTERNAL_DOMAINS.contains(&d))
+                })
+                .map(|r| r.fused_score)
+                .fold(0.0_f64, f64::max);
+
+            let max_external = fused
+                .iter()
+                .filter(|r| {
+                    r.source_domain
+                        .as_deref()
+                        .is_some_and(|d| !INTERNAL_DOMAINS.contains(&d))
+                })
+                .map(|r| r.fused_score)
+                .fold(0.0_f64, f64::max);
+
+            if max_external > 1e-9 {
+                let ratio = max_internal / max_external;
+                if ratio >= BOOST_THRESHOLD {
+                    let mut boosted = 0usize;
+                    for result in &mut fused {
+                        if result
+                            .source_domain
+                            .as_deref()
+                            .is_some_and(|d| INTERNAL_DOMAINS.contains(&d))
+                        {
+                            result.fused_score *= BOOST_FACTOR;
+                            boosted += 1;
+                        }
+                    }
+                    if boosted > 0 {
+                        tracing::info!(
+                            ratio = format!("{ratio:.2}"),
+                            boosted,
+                            "DDSS: self-referential boost applied"
+                        );
+                        fused.sort_by(|a, b| {
+                            b.fused_score
+                                .partial_cmp(&a.fused_score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        trace.self_referential_boost = true;
+                    }
+                }
             }
         }
 
