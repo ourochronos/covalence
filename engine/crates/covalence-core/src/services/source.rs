@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{PipelineConfig, TableDimensions};
 use crate::error::{Error, Result};
+use crate::ingestion::ChatBackend;
 use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::FastcorefClient;
 use crate::ingestion::embedder::Embedder;
@@ -141,6 +142,8 @@ pub struct SourceService {
     pub(crate) statement_extractor: Option<Arc<dyn StatementExtractor>>,
     pub(crate) section_compiler: Option<Arc<dyn SectionCompiler>>,
     pub(crate) source_summary_compiler: Option<Arc<dyn SourceSummaryCompiler>>,
+    /// Chat backend for generating semantic summaries of code entities.
+    pub(crate) chat_backend: Option<Arc<dyn ChatBackend>>,
 }
 
 impl SourceService {
@@ -179,6 +182,7 @@ impl SourceService {
             fingerprint_config: None,
             statement_extractor: None,
             section_compiler: None,
+            chat_backend: None,
             source_summary_compiler: None,
         }
     }
@@ -208,6 +212,7 @@ impl SourceService {
             fingerprint_config: None,
             statement_extractor: None,
             section_compiler: None,
+            chat_backend: None,
             source_summary_compiler: None,
         }
     }
@@ -239,6 +244,7 @@ impl SourceService {
             fingerprint_config: None,
             statement_extractor: None,
             section_compiler: None,
+            chat_backend: None,
             source_summary_compiler: None,
         }
     }
@@ -337,6 +343,13 @@ impl SourceService {
         compiler: Arc<dyn SourceSummaryCompiler>,
     ) -> Self {
         self.source_summary_compiler = Some(compiler);
+        self
+    }
+
+    /// Set the chat backend for generating semantic summaries of code
+    /// entities (Spec 12, Stage 2).
+    pub fn with_chat_backend(mut self, backend: Arc<dyn ChatBackend>) -> Self {
+        self.chat_backend = Some(backend);
         self
     }
 

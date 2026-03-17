@@ -705,6 +705,101 @@ impl SourceService {
                 }
             }
 
+            // --- Stage 7.25: Semantic summaries for code entities ---
+            // (Spec 12, Stage 2) For code entities, generate a natural
+            // language summary of what the code does and why, using the
+            // chat backend. This places code entities in the same vector
+            // space as prose concepts. Only runs for code sources.
+            if input.is_code {
+                if let Some(ref chat) = self.chat_backend {
+                    let code_node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
+                    let mut summarized = 0usize;
+                    for &nid in &code_node_ids {
+                        let node = match NodeRepo::get(&*self.repo, nid).await? {
+                            Some(n) => n,
+                            None => continue,
+                        };
+                        // Skip nodes that already have a semantic summary
+                        if node
+                            .properties
+                            .get("semantic_summary")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.is_empty())
+                        {
+                            continue;
+                        }
+                        // Get raw source from properties
+                        let raw = node
+                            .properties
+                            .get("raw_source")
+                            .and_then(|v| v.as_str())
+                            .or(node.description.as_deref())
+                            .unwrap_or(&node.canonical_name);
+
+                        let prompt = format!(
+                            "You are a code documentation engine. Read the following code \
+                             and output a concise (50-150 word) natural language summary of \
+                             its business logic, inputs, outputs, and error handling. Focus \
+                             on WHAT the code does and WHY, not HOW. Write as if explaining \
+                             to someone who understands the domain but hasn't read the code.\n\n\
+                             Context: {} in file {}\n\n```\n{}\n```",
+                            node.node_type,
+                            node.properties
+                                .get("file_path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown"),
+                            &raw[..raw.len().min(3000)],
+                        );
+
+                        match chat.chat("", &prompt, false, 0.2).await {
+                            Ok(summary) if !summary.trim().is_empty() => {
+                                let summary = summary.trim().to_string();
+                                // Store summary in properties and update
+                                // description for embedding.
+                                sqlx::query(
+                                    "UPDATE nodes SET \
+                                       properties = jsonb_set(\
+                                         COALESCE(properties, '{}'), \
+                                         '{semantic_summary}', \
+                                         $2::jsonb\
+                                       ), \
+                                       description = $3, \
+                                       embedding = NULL \
+                                     WHERE id = $1",
+                                )
+                                .bind(nid)
+                                .bind(serde_json::json!(summary))
+                                .bind(&summary)
+                                .execute(self.repo.pool())
+                                .await?;
+                                summarized += 1;
+                            }
+                            Ok(_) => {
+                                tracing::debug!(
+                                    node = %node.canonical_name,
+                                    "LLM returned empty summary, skipping"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    node = %node.canonical_name,
+                                    error = %e,
+                                    "semantic summary generation failed"
+                                );
+                                // Non-fatal: continue with syntactic description
+                            }
+                        }
+                    }
+                    if summarized > 0 {
+                        tracing::info!(
+                            summarized,
+                            total = code_node_ids.len(),
+                            "generated semantic summaries for code entities"
+                        );
+                    }
+                }
+            }
+
             // --- Stage 7.5: Embed node descriptions ---
             // Only embeds nodes that don't already have an embedding.
             if let Some(ref embedder) = self.embedder {
