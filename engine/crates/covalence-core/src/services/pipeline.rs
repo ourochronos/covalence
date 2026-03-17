@@ -734,19 +734,36 @@ impl SourceService {
                         // confidence — a function "search" should get the
                         // chunk containing "fn search", not an unrelated
                         // chunk from the same source.
+                        // Find the chunk that contains the *definition* of
+                        // this entity, not just a mention. For functions,
+                        // look for "fn name"; for structs, "struct name";
+                        // etc. This prevents getting a chunk that merely
+                        // references the entity name.
+                        let def_pattern = match node.node_type.as_str() {
+                            "function" => format!("fn {}", node.canonical_name),
+                            "struct" => format!("struct {}", node.canonical_name),
+                            "enum" => format!("enum {}", node.canonical_name),
+                            "trait" => format!("trait {}", node.canonical_name),
+                            "impl_block" => format!("impl {}", node.canonical_name),
+                            "module" => format!("mod {}", node.canonical_name),
+                            "constant" => format!("const {}", node.canonical_name),
+                            "macro" => format!("macro_rules! {}", node.canonical_name),
+                            _ => node.canonical_name.clone(),
+                        };
+
                         let chunk_content: Option<String> = sqlx::query_scalar(
                             "SELECT c.content FROM extractions ex \
                              JOIN chunks c ON c.id = ex.chunk_id \
                              WHERE ex.entity_id = $1 AND ex.entity_type = 'node' \
                                AND ex.chunk_id IS NOT NULL \
                              ORDER BY \
-                               CASE WHEN c.content ILIKE '%' || $2 || '%' \
+                               CASE WHEN c.content LIKE '%' || $2 || '%' \
                                     THEN 0 ELSE 1 END, \
                                ex.confidence DESC \
                              LIMIT 1",
                         )
                         .bind(nid)
-                        .bind(&node.canonical_name)
+                        .bind(&def_pattern)
                         .fetch_optional(self.repo.pool())
                         .await
                         .ok()
