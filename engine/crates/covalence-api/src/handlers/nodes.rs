@@ -283,11 +283,14 @@ fn node_to_response(node: covalence_core::models::node::Node) -> NodeResponse {
         id: node.id.into_uuid(),
         canonical_name: node.canonical_name,
         node_type: node.node_type,
+        entity_class: node.entity_class,
         description: node.description,
         properties: node.properties,
         clearance_level: node.clearance_level.as_i32(),
         first_seen: node.first_seen.to_rfc3339(),
         last_seen: node.last_seen.to_rfc3339(),
         mention_count: node.mention_count,
+        domain_entropy: node.domain_entropy,
+        primary_domain: node.primary_domain,
     }
 }

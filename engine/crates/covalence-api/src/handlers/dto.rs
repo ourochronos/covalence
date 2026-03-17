@@ -368,12 +368,21 @@ pub struct NodeResponse {
     pub id: Uuid,
     pub canonical_name: String,
     pub node_type: String,
+    /// Entity class: code, domain, actor, analysis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_class: Option<String>,
     pub description: Option<String>,
     pub properties: serde_json::Value,
     pub clearance_level: i32,
     pub first_seen: String,
     pub last_seen: String,
     pub mention_count: i32,
+    /// Shannon entropy of domain distribution (0 = single domain, higher = cross-cutting).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_entropy: Option<f32>,
+    /// The domain where this entity is most frequently mentioned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_domain: Option<String>,
 }
 
 /// Query parameters for `GET /nodes/:id`.
