@@ -118,33 +118,20 @@ impl AnalysisService {
     /// Detect orphaned code (no Component parent) and unimplemented specs
     /// (spec concepts with no IMPLEMENTS_INTENT edges).
     pub async fn coverage_analysis(&self) -> Result<CoverageResult> {
-        let code_types = [
-            "struct",
-            "function",
-            "trait",
-            "enum",
-            "impl_block",
-            "constant",
-            "macro",
-            "module",
-            "class",
-        ];
-
-        // Orphan code: code nodes from code sources with no
-        // PART_OF_COMPONENT edge. Require provenance to a code source to
-        // exclude function/struct names that appear in research papers or
-        // specs.
+        // Orphan code: code-class nodes from code-domain sources with no
+        // PART_OF_COMPONENT edge. Uses entity_class and domain fields
+        // instead of hardcoded type lists and source_type checks.
         let orphan_rows: Vec<(uuid::Uuid, String, String, String)> = sqlx::query_as(
             "SELECT n.id, n.canonical_name, n.node_type, \
                     COALESCE(n.properties->>'file_path', '') \
              FROM nodes n \
-             WHERE n.node_type = ANY($1) \
+             WHERE n.entity_class = 'code' \
                AND EXISTS ( \
                  SELECT 1 FROM extractions ex \
                  JOIN chunks c ON ex.chunk_id = c.id \
                  JOIN sources s ON c.source_id = s.id \
                  WHERE ex.entity_id = n.id \
-                   AND s.source_type = 'code' \
+                   AND s.domain = 'code' \
                ) \
                AND NOT EXISTS ( \
                  SELECT 1 FROM edges e \
@@ -154,7 +141,6 @@ impl AnalysisService {
              ORDER BY n.canonical_name \
              LIMIT 200",
         )
-        .bind(&code_types[..])
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -169,7 +155,7 @@ impl AnalysisService {
             })
             .collect();
 
-        // Unimplemented specs: concept/entity nodes from spec sources
+        // Unimplemented specs: domain-class nodes from spec/design sources
         // with no inbound IMPLEMENTS_INTENT edges.
         let unimpl_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             "SELECT DISTINCT n.id, n.canonical_name, n.node_type \
@@ -177,9 +163,8 @@ impl AnalysisService {
              JOIN extractions ex ON ex.entity_id = n.id \
              JOIN chunks c ON ex.chunk_id = c.id \
              JOIN sources s ON c.source_id = s.id \
-             WHERE n.node_type NOT IN ('struct','function','trait','enum', \
-                   'impl_block','constant','macro','module','class','component') \
-               AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%') \
+             WHERE n.entity_class = 'domain' \
+               AND s.domain IN ('spec', 'design') \
                AND NOT EXISTS ( \
                  SELECT 1 FROM edges e \
                  WHERE e.target_node_id = n.id \
@@ -210,9 +195,8 @@ impl AnalysisService {
              JOIN extractions ex ON ex.entity_id = n.id \
              JOIN chunks c ON ex.chunk_id = c.id \
              JOIN sources s ON c.source_id = s.id \
-             WHERE n.node_type NOT IN ('struct','function','trait','enum', \
-                   'impl_block','constant','macro','module','class','component') \
-               AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%')",
+             WHERE n.entity_class = 'domain' \
+               AND s.domain IN ('spec', 'design')",
         )
         .fetch_one(self.repo.pool())
         .await?;
@@ -223,9 +207,8 @@ impl AnalysisService {
              JOIN extractions ex ON ex.entity_id = n.id \
              JOIN chunks c ON ex.chunk_id = c.id \
              JOIN sources s ON c.source_id = s.id \
-             WHERE n.node_type NOT IN ('struct','function','trait','enum', \
-                   'impl_block','constant','macro','module','class','component') \
-               AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%') \
+             WHERE n.entity_class = 'domain' \
+               AND s.domain IN ('spec', 'design') \
                AND EXISTS ( \
                  SELECT 1 FROM edges e \
                  WHERE e.target_node_id = n.id \
@@ -368,9 +351,7 @@ impl AnalysisService {
         min_cluster_size: usize,
         domain_filter: Option<&str>,
     ) -> Result<WhitespaceResult> {
-        // Find research sources: document-type sources that are NOT
-        // spec/ADR/vision. Group their extracted nodes and check for
-        // bridge edges.
+        // Find research sources using the domain field instead of URI heuristics.
         let rows: Vec<(uuid::Uuid, String, Option<String>, i64, i64)> = sqlx::query_as(
             "SELECT s.id, s.title, s.uri, \
                     COUNT(DISTINCT n.id) AS node_count, \
@@ -381,12 +362,7 @@ impl AnalysisService {
              JOIN nodes n ON n.id = ex.entity_id \
              LEFT JOIN edges e ON e.target_node_id = n.id \
                                AND e.rel_type = 'THEORETICAL_BASIS' \
-             WHERE s.source_type = 'document' \
-               AND COALESCE(s.uri, '') NOT LIKE '%spec/%' \
-               AND COALESCE(s.uri, '') NOT LIKE '%docs/adr/%' \
-               AND COALESCE(s.uri, '') NOT LIKE '%VISION%' \
-               AND COALESCE(s.uri, '') NOT LIKE '%CLAUDE%' \
-               AND COALESCE(s.uri, '') NOT LIKE '%MILESTONES%' \
+             WHERE s.domain IN ('research', 'external') \
                AND ($3::text IS NULL \
                     OR LOWER(s.title) LIKE '%' || LOWER($3::text) || '%' \
                     OR LOWER(COALESCE(s.uri, '')) LIKE '%' || LOWER($3::text) || '%') \

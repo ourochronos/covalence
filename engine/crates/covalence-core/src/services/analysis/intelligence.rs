@@ -293,9 +293,7 @@ impl AnalysisService {
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.source_type = 'document' \
-                       AND COALESCE(s.uri, '') NOT LIKE '%spec/%' \
-                       AND COALESCE(s.uri, '') NOT LIKE '%docs/adr/%' \
+                       AND s.domain IN ('research', 'external') \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT 10",
@@ -321,7 +319,7 @@ impl AnalysisService {
             "SELECT DISTINCT comp.id, comp.canonical_name \
              FROM nodes comp \
              JOIN edges e ON e.source_node_id = comp.id \
-             WHERE comp.node_type = 'component' \
+             WHERE comp.entity_class = 'analysis' \
                AND e.rel_type = 'THEORETICAL_BASIS' \
                AND e.target_node_id = ANY($1)",
         )
@@ -464,9 +462,7 @@ impl AnalysisService {
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.source_type = 'document' \
-                       AND COALESCE(s.uri, '') NOT LIKE '%spec/%' \
-                       AND COALESCE(s.uri, '') NOT LIKE '%docs/adr/%' \
+                       AND s.domain IN ('research', 'external') \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
@@ -483,13 +479,13 @@ impl AnalysisService {
                         (n.embedding <=> $1::vector) AS dist \
                  FROM nodes n \
                  WHERE n.embedding IS NOT NULL \
-                   AND n.node_type NOT IN ('component') \
+                   AND n.entity_class = 'domain' \
                    AND EXISTS ( \
                      SELECT 1 FROM extractions ex \
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%') \
+                       AND s.domain IN ('spec', 'design') \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
@@ -499,7 +495,7 @@ impl AnalysisService {
         .fetch_all(self.repo.pool())
         .await?;
 
-        // Code evidence (code-type sources).
+        // Code evidence.
         let code_evidence: Vec<(uuid::Uuid, String, String, Option<String>, f64)> = sqlx::query_as(
             "SELECT n.id, n.canonical_name, n.node_type, \
                         COALESCE(n.properties->>'semantic_summary', \
@@ -507,13 +503,13 @@ impl AnalysisService {
                         (n.embedding <=> $1::vector) AS dist \
                  FROM nodes n \
                  WHERE n.embedding IS NOT NULL \
-                   AND n.node_type NOT IN ('component') \
+                   AND n.entity_class = 'code' \
                    AND EXISTS ( \
                      SELECT 1 FROM extractions ex \
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.source_type = 'code' \
+                       AND s.domain = 'code' \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
