@@ -126,6 +126,8 @@ impl AnalysisService {
                     COALESCE(n.properties->>'file_path', '') \
              FROM nodes n \
              WHERE n.entity_class = 'code' \
+               AND n.node_type != 'code_test' \
+               AND n.canonical_name NOT LIKE 'test_%' \
                AND EXISTS ( \
                  SELECT 1 FROM extractions ex \
                  JOIN chunks c ON ex.chunk_id = c.id \
@@ -157,6 +159,10 @@ impl AnalysisService {
 
         // Unimplemented specs: domain-class nodes from spec/design sources
         // with no inbound IMPLEMENTS_INTENT edges.
+        // Filters: mention_count >= 2 to exclude noise entities that were
+        // extracted once from a code example or field name in a spec doc.
+        // Also excludes very short names (< 3 chars) which are typically
+        // field names or abbreviations, not real spec concepts.
         let unimpl_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             "SELECT DISTINCT n.id, n.canonical_name, n.node_type \
              FROM nodes n \
@@ -165,6 +171,8 @@ impl AnalysisService {
              JOIN sources s ON c.source_id = s.id \
              WHERE n.entity_class = 'domain' \
                AND s.domain IN ('spec', 'design') \
+               AND n.mention_count >= 2 \
+               AND LENGTH(n.canonical_name) >= 3 \
                AND NOT EXISTS ( \
                  SELECT 1 FROM edges e \
                  WHERE e.target_node_id = n.id \
@@ -196,7 +204,9 @@ impl AnalysisService {
              JOIN chunks c ON ex.chunk_id = c.id \
              JOIN sources s ON c.source_id = s.id \
              WHERE n.entity_class = 'domain' \
-               AND s.domain IN ('spec', 'design')",
+               AND s.domain IN ('spec', 'design') \
+               AND n.mention_count >= 2 \
+               AND LENGTH(n.canonical_name) >= 3",
         )
         .fetch_one(self.repo.pool())
         .await?;
@@ -209,6 +219,8 @@ impl AnalysisService {
              JOIN sources s ON c.source_id = s.id \
              WHERE n.entity_class = 'domain' \
                AND s.domain IN ('spec', 'design') \
+               AND n.mention_count >= 2 \
+               AND LENGTH(n.canonical_name) >= 3 \
                AND EXISTS ( \
                  SELECT 1 FROM edges e \
                  WHERE e.target_node_id = n.id \

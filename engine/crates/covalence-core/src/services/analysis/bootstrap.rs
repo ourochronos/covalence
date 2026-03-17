@@ -193,6 +193,8 @@ impl AnalysisService {
                     ) AS path \
              FROM nodes n \
              WHERE n.entity_class = 'code' \
+               AND n.node_type != 'code_test' \
+               AND n.canonical_name NOT LIKE 'test_%' \
                AND EXISTS ( \
                  SELECT 1 FROM extractions ex \
                  JOIN chunks c ON ex.chunk_id = c.id \
