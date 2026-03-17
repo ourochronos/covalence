@@ -951,6 +951,103 @@ impl SourceService {
             }
         }
 
+        // --- Stage 7.75: Compose code source summary ---
+        // For code sources, compose a file-level summary from the
+        // individual entity summaries. Mirrors the prose pipeline's
+        // section→source summary composition (statement_pipeline.rs).
+        if input.is_code {
+            if let Some(ref summary_compiler) = self.source_summary_compiler {
+                // Collect entity summaries grouped by type
+                let summaries: Vec<(String, String, String)> = sqlx::query_as(
+                    "SELECT canonical_name, node_type, \
+                            COALESCE(properties->>'semantic_summary', \
+                                     description, canonical_name) \
+                     FROM nodes n \
+                     JOIN extractions ex ON ex.entity_id = n.id \
+                       AND ex.entity_type = 'node' \
+                     JOIN chunks c ON c.id = ex.chunk_id \
+                     WHERE c.source_id = $1 \
+                       AND n.entity_class = 'code' \
+                     GROUP BY n.id, canonical_name, node_type, \
+                              properties, description \
+                     ORDER BY n.node_type, n.canonical_name",
+                )
+                .bind(input.source_id)
+                .fetch_all(self.repo.pool())
+                .await
+                .unwrap_or_default();
+
+                if !summaries.is_empty() {
+                    use crate::ingestion::section_compiler::{
+                        SectionSummaryEntry, SourceSummaryInput,
+                    };
+
+                    let section_entries: Vec<SectionSummaryEntry> = summaries
+                        .iter()
+                        .map(|(name, ntype, summary)| SectionSummaryEntry {
+                            title: format!("{ntype}: {name}"),
+                            summary: summary.clone(),
+                        })
+                        .collect();
+
+                    let file_name = input
+                        .source_uri
+                        .as_deref()
+                        .and_then(|u| u.rsplit('/').next())
+                        .unwrap_or("unknown");
+
+                    match summary_compiler
+                        .compile_source_summary(&SourceSummaryInput {
+                            section_summaries: section_entries,
+                            source_title: Some(file_name.to_string()),
+                        })
+                        .await
+                    {
+                        Ok(summary) if !summary.trim().is_empty() => {
+                            let summary = summary.trim();
+                            SourceRepo::update_summary(&*self.repo, input.source_id, summary)
+                                .await?;
+
+                            // Re-embed from the composed summary.
+                            if let Some(ref embedder) = self.embedder {
+                                if let Ok(vecs) = embedder.embed(&[summary.to_string()]).await {
+                                    if let Some(emb) = vecs.first() {
+                                        if let Ok(t) =
+                                            crate::ingestion::embedder::truncate_and_validate(
+                                                emb,
+                                                self.table_dims.source,
+                                                "sources",
+                                            )
+                                        {
+                                            let _ = SourceRepo::update_embedding(
+                                                &*self.repo,
+                                                input.source_id,
+                                                &t,
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
+                            }
+                            tracing::info!(
+                                source_id = %input.source_id,
+                                entities = summaries.len(),
+                                "composed code source summary from entity summaries"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                source_id = %input.source_id,
+                                error = %e,
+                                "code source summary compilation failed (non-fatal)"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(PipelineOutput { chunks_created })
     }
 
