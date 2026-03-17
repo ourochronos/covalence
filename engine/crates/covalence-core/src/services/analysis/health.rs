@@ -157,20 +157,16 @@ impl AnalysisService {
             })
             .collect();
 
-        // Unimplemented specs: domain-class nodes from spec/design sources
-        // with no inbound IMPLEMENTS_INTENT edges.
-        // Filters: mention_count >= 2 to exclude noise entities that were
-        // extracted once from a code example or field name in a spec doc.
-        // Also excludes very short names (< 3 chars) which are typically
-        // field names or abbreviations, not real spec concepts.
+        // Unimplemented specs: domain-class nodes whose PRIMARY domain
+        // is spec or design, with no inbound IMPLEMENTS_INTENT edges.
+        // Uses primary_domain (from domain_entropy computation) to avoid
+        // counting cross-cutting concepts that happen to be mentioned in
+        // specs (e.g., "gpt-4o-mini", "MRL-E" are primarily research).
         let unimpl_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             "SELECT DISTINCT n.id, n.canonical_name, n.node_type \
              FROM nodes n \
-             JOIN extractions ex ON ex.entity_id = n.id \
-             JOIN chunks c ON ex.chunk_id = c.id \
-             JOIN sources s ON c.source_id = s.id \
              WHERE n.entity_class = 'domain' \
-               AND s.domain IN ('spec', 'design') \
+               AND n.primary_domain IN ('spec', 'design') \
                AND n.mention_count >= 2 \
                AND LENGTH(n.canonical_name) >= 3 \
                AND NOT EXISTS ( \
@@ -200,11 +196,8 @@ impl AnalysisService {
         let total_spec: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT n.id) \
              FROM nodes n \
-             JOIN extractions ex ON ex.entity_id = n.id \
-             JOIN chunks c ON ex.chunk_id = c.id \
-             JOIN sources s ON c.source_id = s.id \
              WHERE n.entity_class = 'domain' \
-               AND s.domain IN ('spec', 'design') \
+               AND n.primary_domain IN ('spec', 'design') \
                AND n.mention_count >= 2 \
                AND LENGTH(n.canonical_name) >= 3",
         )
@@ -214,11 +207,8 @@ impl AnalysisService {
         let implemented: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT n.id) \
              FROM nodes n \
-             JOIN extractions ex ON ex.entity_id = n.id \
-             JOIN chunks c ON ex.chunk_id = c.id \
-             JOIN sources s ON c.source_id = s.id \
              WHERE n.entity_class = 'domain' \
-               AND s.domain IN ('spec', 'design') \
+               AND n.primary_domain IN ('spec', 'design') \
                AND n.mention_count >= 2 \
                AND LENGTH(n.canonical_name) >= 3 \
                AND EXISTS ( \
