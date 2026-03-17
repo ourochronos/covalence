@@ -1229,6 +1229,36 @@ impl SearchService {
             }
         }
 
+        // --- Step 10c: Epistemic confidence boost ---
+        // Adjust fused scores based on epistemic confidence so
+        // high-confidence results (well-sourced, multi-extraction
+        // confirmed) rank above low-confidence ones.
+        //
+        // Formula: score *= 1 + γ * (confidence - 0.5)
+        //   confidence 1.0 → +15% boost
+        //   confidence 0.5 → neutral
+        //   confidence 0.0 → -15% penalty
+        //   no confidence  → neutral (no change)
+        {
+            const GAMMA: f64 = 0.3;
+            let mut boosted = 0usize;
+            for result in &mut fused {
+                if let Some(conf) = result.confidence {
+                    let factor = 1.0 + GAMMA * (conf - 0.5);
+                    result.fused_score *= factor;
+                    boosted += 1;
+                }
+            }
+            if boosted > 0 {
+                fused.sort_by(|a, b| {
+                    b.fused_score
+                        .partial_cmp(&a.fused_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                tracing::debug!(boosted, gamma = GAMMA, "epistemic confidence boost applied");
+            }
+        }
+
         // --- Step 11: Cache population ---
         // Store the full post-diversification result set BEFORE
         // truncation so that a later query with a larger limit
