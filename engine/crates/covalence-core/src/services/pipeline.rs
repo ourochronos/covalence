@@ -728,16 +728,25 @@ impl SourceService {
                         {
                             continue;
                         }
-                        // Get source code from the chunk that produced
-                        // this entity via extraction provenance.
+                        // Get source code from the chunk that best matches
+                        // this entity. Prefer chunks whose content contains
+                        // the entity name (exact match) over just highest
+                        // confidence — a function "search" should get the
+                        // chunk containing "fn search", not an unrelated
+                        // chunk from the same source.
                         let chunk_content: Option<String> = sqlx::query_scalar(
                             "SELECT c.content FROM extractions ex \
                              JOIN chunks c ON c.id = ex.chunk_id \
                              WHERE ex.entity_id = $1 AND ex.entity_type = 'node' \
                                AND ex.chunk_id IS NOT NULL \
-                             ORDER BY ex.confidence DESC LIMIT 1",
+                             ORDER BY \
+                               CASE WHEN c.content ILIKE '%' || $2 || '%' \
+                                    THEN 0 ELSE 1 END, \
+                               ex.confidence DESC \
+                             LIMIT 1",
                         )
                         .bind(nid)
+                        .bind(&node.canonical_name)
                         .fetch_optional(self.repo.pool())
                         .await
                         .ok()
@@ -754,19 +763,26 @@ impl SourceService {
                             continue;
                         }
 
+                        let file_path = node
+                            .properties
+                            .get("file_path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+
                         let prompt = format!(
-                            "You are a code documentation engine. Read the following code \
-                             and output a concise (50-150 word) natural language summary of \
-                             its business logic, inputs, outputs, and error handling. Focus \
-                             on WHAT the code does and WHY, not HOW. Write as if explaining \
-                             to someone who understands the domain but hasn't read the code.\n\n\
-                             Context: {} in file {}\n\n```\n{}\n```",
-                            node.node_type,
-                            node.properties
-                                .get("file_path")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown"),
-                            &raw[..raw.len().min(3000)],
+                            "You are a code documentation engine. \
+                             Summarize the `{name}` {ntype} from the code below.\n\n\
+                             Output a concise (50-150 word) natural language summary of \
+                             its purpose, inputs, outputs, and key behavior. Focus on \
+                             WHAT it does and WHY, not HOW. Write as if explaining to \
+                             someone who understands the domain but hasn't read the code.\n\n\
+                             IMPORTANT: Only describe `{name}`. Ignore other code in the \
+                             same block.\n\n\
+                             File: {file}\n\n```\n{code}\n```",
+                            name = node.canonical_name,
+                            ntype = node.node_type,
+                            file = file_path,
+                            code = &raw[..raw.len().min(3000)],
                         );
 
                         match chat.chat("", &prompt, false, 0.2).await {
