@@ -35,6 +35,8 @@ Source {
   uri: String?,             -- original location (URL, file path, etc.)
   title: String?,
   author: String?,
+  project: Text,            -- project namespace (default 'covalence'), NULL = global
+  domain: Text?,            -- 'code' | 'spec' | 'design' | 'research' | 'external'
   created_date: Timestamp?, -- when the source was originally created/published
   ingested_at: Timestamp,   -- when we ingested it
   content_hash: Bytes,      -- SHA-256 hash of raw content for dedup
@@ -89,6 +91,7 @@ Node {
   id: UUID,
   canonical_name: String,
   node_type: String,            -- dynamically assigned during extraction
+  entity_class: Text?,          -- 'code' | 'domain' | 'actor' | 'analysis' (derived from node_type)
   description: Text?,
   properties: JSONB,
   embedding: Vector?,           -- optional: derived from description or aggregated from chunks
@@ -302,6 +305,81 @@ The `semantic_summary` is the key bridge: it's a natural language description of
 
 `ast_hash` enables structural change detection without re-running the LLM: if the AST hash changes, the semantic summary needs regeneration.
 
+## Source Labels
+
+Sources carry metadata that classifies them by project and knowledge domain. These labels are set at ingestion time (not derived at query time) and propagate through extractions to entities.
+
+### Project
+
+```
+Source.project: TEXT NOT NULL DEFAULT 'covalence'
+```
+
+Identifies which project a source belongs to. Multi-project support enables Covalence to ingest multiple codebases without entity conflation. Entities extracted from a project-scoped source inherit the project label. Cross-project entities (e.g., "PostgreSQL", "Rust") are resolved to `project = NULL` (global) during entity resolution when two projects both reference the same concept.
+
+### Domain
+
+```
+Source.domain: TEXT  -- 'code' | 'spec' | 'design' | 'research' | 'external'
+```
+
+Classifies the source's role in the knowledge graph:
+
+| Domain | Description | Examples |
+|--------|-------------|----------|
+| `code` | Source code files | `file://engine/**/*.rs`, `file://cli/**/*.go` |
+| `spec` | Specification documents | `file://spec/*.md` |
+| `design` | Architecture decisions, design docs, project meta | `file://docs/adr/*.md`, `file://VISION.md`, `file://design/*.md`, `file://CLAUDE.md`, `file://MILESTONES.md` |
+| `research` | Academic papers, external knowledge | `https://arxiv.org/...`, `https://doi.org/...`, ingested papers |
+| `external` | Third-party documentation, API references | External docs not classifiable as research |
+
+**Domain assignment rules** (applied at ingestion time by `derive_domain()`):
+
+```
+source_type = code                                              → domain = code
+URI matches file://spec/                                        → domain = spec
+URI matches file://docs/adr/ | file://VISION.md | file://design/ | file://CLAUDE.md | file://MILESTONES.md
+                                                                → domain = design
+URI matches https://arxiv | https://doi                         → domain = research
+URI matches file://engine/ | file://cli/ | file://dashboard/    → domain = code
+URI matches http:// | https:// (other)                          → domain = research
+Otherwise document                                              → domain = external
+```
+
+## Entity Classification
+
+Nodes carry an `entity_class` that groups the 47+ ad-hoc `node_type` values into four controlled categories. This is stored (not derived at query time) for performance and indexing.
+
+```
+Node.entity_class: TEXT  -- 'code' | 'domain' | 'actor' | 'analysis'
+```
+
+| Entity Class | Node Types | Description |
+|-------------|------------|-------------|
+| `code` | function, struct, trait, enum, impl_block, constant, module, class, macro | Entities extracted from source code |
+| `domain` | concept, technology, algorithm, technique, framework, method, metric, dataset, benchmark, model | Domain concepts from any textual source |
+| `actor` | person, organization, location, role | People, organizations, places |
+| `analysis` | component | System-generated analysis entities |
+
+**Derivation:** `entity_class` is deterministically derived from `node_type` at entity creation time. The mapping is maintained as a function (`derive_entity_class()`) — if a new `node_type` appears from LLM extraction, it defaults to `domain`.
+
+**Interaction with `canonical_type`:** The ontology clustering system (Wave 8) produces `canonical_type` by merging noisy `node_type` variants. `entity_class` is orthogonal — it classifies the *kind* of entity regardless of how the type was normalized. Both fields coexist.
+
+## Traceability Edge Types
+
+In addition to the existing bridge edges (IMPLEMENTS_INTENT, PART_OF_COMPONENT, THEORETICAL_BASIS) which are bulk-generated via embedding similarity and module path matching, the following **traceability edges** provide precise provenance chains between knowledge domains:
+
+| Edge Type | From | To | Description |
+|-----------|------|----|-------------|
+| `SPECIFIES` | Node (domain, from spec) | Node (domain, from design) | A spec concept specifies a design decision |
+| `DECIDES` | Node (domain, from design) | Node (code) | A design decision leads to a code entity |
+| `INFORMS` | Node (domain, from research) | Node (domain, from spec) | Research informs a specification concept |
+| `VALIDATES` | Node (domain, from research) | Node (code) | Research validates a code behavior |
+
+These coexist with the Component bridge edges. Components provide automated bulk linking (MODULE_PATH_MAPPINGS → PART_OF_COMPONENT, embedding similarity → IMPLEMENTS_INTENT/THEORETICAL_BASIS). Traceability edges provide precise, curated provenance chains (this ADR DECIDES to use petgraph → this code file implements it).
+
+**Edge validation model:** Soft enforcement. When edges are created, the system validates that source/target entity_class pairs are compatible and logs warnings for violations. Edges are not rejected — this avoids data loss during the transition period and accommodates legitimate edge cases (e.g., a research paper mentioning a specific code entity by name).
+
 ## Edge Type Vocabulary (Extended)
 
 In addition to the dynamically-assigned edge types from LLM extraction (see [07-epistemic-model](07-epistemic-model.md#edge-type-vocabulary)), the following structured edge types are used:
@@ -325,6 +403,15 @@ In addition to the dynamically-assigned edge types from LLM extraction (see [07-
 | `THEORETICAL_BASIS` | Component/Node | Node (concept) | Links implementation to academic foundation |
 | `SUPERSEDES` | Source | Source | Version chain for mutating sources |
 | `CORRECTS` | Node (claim) | Node (claim) | Explicit retraction or correction |
+
+### Traceability Edges (Curated)
+
+| Edge Type | From (entity_class) | To (entity_class) | Description |
+|-----------|---------------------|-------------------|-------------|
+| `SPECIFIES` | domain (spec) | domain (design) | Spec concept specifies a design decision |
+| `DECIDES` | domain (design) | code | Design decision leads to code entity |
+| `INFORMS` | domain (research) | domain (spec) | Research informs a specification |
+| `VALIDATES` | domain (research) | code | Research validates code behavior |
 
 ### Analysis Edges (Computed)
 
@@ -362,6 +449,9 @@ Article ──1:N──→ Node (ORIGINATES / covers)
 - [x] Do we need a Community entity for storing detected communities? → Ephemeral. Recomputed during deep consolidation, cached in sidecar memory. No DB table for v1.
 - [x] How do we handle versioning when a source is re-ingested with updated content? → Four update classes defined in [05-ingestion](05-ingestion.md#source-update-classes)
 - [x] Should chunks store their embedding inline or in a separate embeddings table? → Inline, single embedding model for v1. Model migration via full re-embedding job.
+- [x] Should `entity_class` be stored or derived at query time? → Stored. Denormalized but enables direct SQL indexing and filtering without joining a mapping table. Derived deterministically from `node_type` at entity creation. See [ADR-0018](../docs/adr/0018-graph-type-system.md).
+- [x] Should edges have a `layer` field? → No. The source/target entity_class is sufficient to infer the layer relationship. Adding a layer field would be redundant and hard to keep in sync.
+- [x] Do SPECIFIES/DECIDES traceability edges coexist with Component bridge edges? → Yes. Component bridges are bulk-automated (embedding similarity + module paths). Traceability edges are precise curated links. Different tools for different questions.
 
 ## Privacy and PII Handling
 

@@ -319,6 +319,7 @@ mod tests {
         g.add_node(NodeMeta {
             id,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: name.into(),
             clearance_level: 0,
         })
@@ -561,6 +562,7 @@ mod tests {
         let idx = g.add_node(NodeMeta {
             id: Uuid::new_v4(),
             node_type: "concept".to_string(),
+            entity_class: None,
             canonical_name: "Solo".to_string(),
             clearance_level: 0,
         });

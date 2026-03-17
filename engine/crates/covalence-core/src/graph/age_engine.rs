@@ -157,6 +157,7 @@ impl AgeEngine {
             let _ = sidecar.add_node(NodeMeta {
                 id: uuid,
                 node_type: parse_agtype_string(&ntype),
+                entity_class: None,
                 canonical_name: parse_agtype_string(&name),
                 clearance_level: parse_agtype_int(&cl) as i32,
             });
@@ -282,6 +283,7 @@ impl GraphEngine for AgeEngine {
             Ok(Some(NodeMeta {
                 id: parse_agtype_uuid(&uuid_str)?,
                 node_type: parse_agtype_string(&ntype),
+                entity_class: None,
                 canonical_name: parse_agtype_string(&name),
                 clearance_level: parse_agtype_int(&cl) as i32,
             }))
@@ -927,6 +929,7 @@ mod tests {
         let _ = g.add_node(NodeMeta {
             id: Uuid::new_v4(),
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "Solo".into(),
             clearance_level: 0,
         });
@@ -941,6 +944,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: a,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "A".into(),
             clearance_level: 0,
         })
@@ -948,6 +952,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: b,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "B".into(),
             clearance_level: 0,
         })
@@ -975,12 +980,14 @@ mod tests {
         let _ = g.add_node(NodeMeta {
             id: Uuid::new_v4(),
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "A".into(),
             clearance_level: 0,
         });
         let _ = g.add_node(NodeMeta {
             id: Uuid::new_v4(),
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "B".into(),
             clearance_level: 0,
         });

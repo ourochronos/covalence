@@ -148,7 +148,14 @@ impl AskService {
                 result_type: result_type.to_string(),
                 confidence,
                 source_title: source_info.title,
-                source_uri: source_info.uri,
+                source_uri: source_info.uri.clone(),
+                source_domain: if source_info.domain.is_empty() {
+                    // Derive domain from URI as fallback
+                    crate::services::source::derive_domain("document", Some(&source_info.uri))
+                        .unwrap_or_default()
+                } else {
+                    source_info.domain
+                },
                 snippet,
                 fused_score: result.fused_score,
             });
@@ -162,9 +169,16 @@ impl AskService {
         let title = result.source_title.clone();
         let uri = result.source_uri.clone();
         if title.is_some() || uri.is_some() {
+            let uri_str = uri.unwrap_or_default();
+            let domain = crate::services::source::derive_domain(
+                result.source_type.as_deref().unwrap_or("document"),
+                Some(&uri_str),
+            )
+            .unwrap_or_default();
             return Some(SourceInfo {
                 title: title.unwrap_or_default(),
-                uri: uri.unwrap_or_default(),
+                uri: uri_str,
+                domain,
             });
         }
 
@@ -178,6 +192,7 @@ impl AskService {
                     .clone()
                     .unwrap_or_else(|| "knowledge graph node".to_string()),
                 uri: String::new(),
+                domain: String::new(),
             });
         }
 
@@ -197,6 +212,8 @@ struct ContextBlock {
     confidence: f64,
     source_title: String,
     source_uri: String,
+    /// Knowledge domain: code, spec, design, research, external.
+    source_domain: String,
     snippet: String,
     /// Retained for potential ranking/filtering use.
     #[allow(dead_code)]
@@ -208,6 +225,7 @@ struct ContextBlock {
 struct SourceInfo {
     title: String,
     uri: String,
+    domain: String,
 }
 
 /// Parse a strategy string to a `SearchStrategy`.
@@ -247,9 +265,11 @@ fn build_system_prompt() -> String {
        numbers.\n\
      - If the context is insufficient to fully answer the question, \
        say what you can answer and what's missing.\n\
-     - Distinguish between: code behavior (from code sources), \
-       design intent (from specs/ADRs), and research findings (from \
-       papers).\n\
+     - Each context fragment is labeled with its knowledge domain: \
+       code (source code), spec (specifications), design (ADRs, \
+       design docs), research (academic papers), or external \
+       (third-party docs). Use these labels to distinguish \
+       provenance when synthesizing.\n\
      - Be specific and technical. Include exact names, numbers, and \
        terminology from the sources.\n\
      - Keep the answer focused and concise. Don't pad with generic \
@@ -270,11 +290,18 @@ fn build_user_prompt(question: &str, blocks: &[ContextBlock]) -> String {
             format!("\"{}\" {}", block.source_title, block.source_uri)
         };
 
+        let domain_tag = if block.source_domain.is_empty() {
+            String::new()
+        } else {
+            format!(", domain: {}", block.source_domain)
+        };
+
         prompt.push_str(&format!(
-            "\n[{}] ({}, confidence: {:.2}, source: {})\n{}\n",
+            "\n[{}] ({}, confidence: {:.2}{}, source: {})\n{}\n",
             block.number,
             block.result_type,
             block.confidence,
+            domain_tag,
             source_label,
             truncate_context(&block.snippet, 2000),
         ));
@@ -435,6 +462,7 @@ mod tests {
                 confidence: 0.92,
                 source_title: "HippoRAG Paper".to_string(),
                 source_uri: "file://spec/05-ingestion.md".to_string(),
+                source_domain: "spec".to_string(),
                 snippet: "Entity resolution uses 5 tiers.".to_string(),
                 fused_score: 0.85,
             },
@@ -444,13 +472,14 @@ mod tests {
                 confidence: 0.0,
                 source_title: "Entity Resolution".to_string(),
                 source_uri: String::new(),
+                source_domain: String::new(),
                 snippet: "HDBSCAN clustering approach.".to_string(),
                 fused_score: 0.6,
             },
         ];
         let prompt = build_user_prompt("How does entity resolution work?", &blocks);
         assert!(prompt.contains("Question: How does entity resolution work?"));
-        assert!(prompt.contains("[1] (chunk, confidence: 0.92"));
+        assert!(prompt.contains("[1] (chunk, confidence: 0.92, domain: spec"));
         assert!(prompt.contains("HippoRAG Paper"));
         assert!(prompt.contains("[2] (node, confidence: 0.00"));
         assert!(prompt.contains("Entity Resolution"));
@@ -482,6 +511,7 @@ mod tests {
             confidence: 0.85,
             source_title: "My Source".to_string(),
             source_uri: "file://test.md".to_string(),
+            source_domain: "external".to_string(),
             snippet: "test content".to_string(),
             fused_score: 0.9,
         }];
@@ -517,6 +547,7 @@ mod tests {
             confidence: 0.0,
             source_title: String::new(),
             source_uri: String::new(),
+            source_domain: String::new(),
             snippet: String::new(),
             fused_score: 0.5,
         }];

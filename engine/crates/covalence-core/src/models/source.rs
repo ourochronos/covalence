@@ -6,6 +6,50 @@ use serde::{Deserialize, Serialize};
 use crate::types::clearance::ClearanceLevel;
 use crate::types::ids::SourceId;
 
+/// Knowledge domain classification for sources.
+///
+/// Classifies a source's role in the knowledge graph. Set at ingestion
+/// time via `derive_domain()` based on URI patterns and source type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceDomain {
+    /// Source code files (.rs, .go, etc.).
+    Code,
+    /// Specification documents (spec/*.md).
+    Spec,
+    /// Architecture decisions, design docs, project meta.
+    Design,
+    /// Academic papers, external knowledge.
+    Research,
+    /// Third-party documentation, API references.
+    External,
+}
+
+impl SourceDomain {
+    /// String representation for database storage.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Spec => "spec",
+            Self::Design => "design",
+            Self::Research => "research",
+            Self::External => "external",
+        }
+    }
+
+    /// Parse from database string.
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "code" => Some(Self::Code),
+            "spec" => Some(Self::Spec),
+            "design" => Some(Self::Design),
+            "research" => Some(Self::Research),
+            "external" => Some(Self::External),
+            _ => None,
+        }
+    }
+}
+
 /// Type classification for ingested sources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -139,6 +183,10 @@ pub struct Source {
     pub title: Option<String>,
     /// Author or creator.
     pub author: Option<String>,
+    /// Project namespace (default "covalence"). NULL = global.
+    pub project: String,
+    /// Knowledge domain: code, spec, design, research, external.
+    pub domain: Option<String>,
     /// When the source was originally created/published.
     pub created_date: Option<DateTime<Utc>>,
     /// When this system ingested the source.
@@ -187,6 +235,8 @@ impl Source {
             uri: None,
             title: None,
             author: None,
+            project: "covalence".to_string(),
+            domain: None,
             created_date: None,
             ingested_at: Utc::now(),
             content_hash,
@@ -215,6 +265,44 @@ impl Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_domain_roundtrip() {
+        let domains = [
+            SourceDomain::Code,
+            SourceDomain::Spec,
+            SourceDomain::Design,
+            SourceDomain::Research,
+            SourceDomain::External,
+        ];
+        for d in &domains {
+            let s = d.as_str();
+            let parsed = SourceDomain::from_str_opt(s);
+            assert_eq!(parsed, Some(d.clone()), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn source_domain_from_str_unknown() {
+        assert!(SourceDomain::from_str_opt("unknown").is_none());
+        assert!(SourceDomain::from_str_opt("").is_none());
+    }
+
+    #[test]
+    fn source_domain_serde_roundtrip() {
+        let d = SourceDomain::Research;
+        let json = serde_json::to_string(&d).unwrap();
+        assert_eq!(json, "\"research\"");
+        let parsed: SourceDomain = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, SourceDomain::Research);
+    }
+
+    #[test]
+    fn source_new_has_default_project() {
+        let source = Source::new(SourceType::Document, vec![0u8; 32]);
+        assert_eq!(source.project, "covalence");
+        assert!(source.domain.is_none());
+    }
 
     #[test]
     fn source_type_roundtrip() {

@@ -40,6 +40,7 @@ fn landmark_node_from_row(row: &sqlx::postgres::PgRow) -> Node {
         id: row.get::<NodeId, _>("id"),
         canonical_name: row.get("canonical_name"),
         node_type: row.get("node_type"),
+        entity_class: None,
         description: row.get("description"),
         properties: row.get("properties"),
         confidence_breakdown: confidence_json.as_ref().and_then(Opinion::from_json),

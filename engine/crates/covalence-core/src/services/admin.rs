@@ -1572,6 +1572,7 @@ mod tests {
         NodeMeta {
             id: uuid::Uuid::new_v4(),
             node_type: ntype.into(),
+            entity_class: None,
             canonical_name: name.into(),
             clearance_level: 0,
         }

@@ -175,21 +175,9 @@ impl AnalysisService {
     /// Since code nodes may not store `file_path` in their own properties,
     /// we trace back through extraction provenance to find the source URI.
     async fn link_part_of_component(&self) -> Result<(u64, u64)> {
-        let code_types = [
-            "struct",
-            "function",
-            "trait",
-            "enum",
-            "impl_block",
-            "constant",
-            "macro",
-            "module",
-            "class",
-        ];
-
-        // Fetch code nodes from actual code sources. We require provenance
-        // linking to a source with source_type='code' to avoid counting
-        // function/struct entities mentioned in research papers or specs.
+        // Fetch code nodes from actual code sources. Uses entity_class = 'code'
+        // (set at node creation by derive_entity_class) and domain = 'code'
+        // (set at ingestion by derive_domain) instead of hardcoded type lists.
         let code_nodes: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             "SELECT DISTINCT n.id, n.canonical_name, \
                     COALESCE( \
@@ -198,28 +186,27 @@ impl AnalysisService {
                        JOIN chunks c ON ex.chunk_id = c.id \
                        JOIN sources s ON c.source_id = s.id \
                        WHERE ex.entity_id = n.id \
-                       ORDER BY CASE WHEN s.source_type = 'code' \
+                       ORDER BY CASE WHEN s.domain = 'code' \
                                      THEN 0 ELSE 1 END \
                        LIMIT 1), \
                       '' \
                     ) AS path \
              FROM nodes n \
-             WHERE n.node_type = ANY($1) \
+             WHERE n.entity_class = 'code' \
                AND EXISTS ( \
                  SELECT 1 FROM extractions ex \
                  JOIN chunks c ON ex.chunk_id = c.id \
                  JOIN sources s ON c.source_id = s.id \
                  WHERE ex.entity_id = n.id \
-                   AND s.source_type = 'code' \
+                   AND s.domain = 'code' \
                )",
         )
-        .bind(&code_types[..])
         .fetch_all(self.repo.pool())
         .await?;
 
         // Fetch all component nodes.
         let components: Vec<(uuid::Uuid, String)> =
-            sqlx::query_as("SELECT id, canonical_name FROM nodes WHERE node_type = 'component'")
+            sqlx::query_as("SELECT id, canonical_name FROM nodes WHERE entity_class = 'analysis'")
                 .fetch_all(self.repo.pool())
                 .await?;
 
@@ -302,7 +289,7 @@ impl AnalysisService {
         let components: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             "SELECT id, canonical_name, COALESCE(description, '') \
              FROM nodes \
-             WHERE node_type = 'component' AND embedding IS NOT NULL",
+             WHERE entity_class = 'analysis' AND embedding IS NOT NULL",
         )
         .fetch_all(self.repo.pool())
         .await?;
@@ -321,12 +308,12 @@ impl AnalysisService {
         // (spec vs research) gets its own budget of `max_edges`.
         for (comp_id, comp_name, _desc) in &components {
             // --- IMPLEMENTS_INTENT: spec/design concepts ---
+            // Uses the domain field (set at ingestion) instead of URI heuristics.
             let spec_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
                 "SELECT n.id, n.canonical_name, \
                         (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
                  FROM nodes n \
-                 WHERE n.node_type NOT IN ('struct','function','trait','enum', \
-                       'impl_block','constant','macro','module','class','component') \
+                 WHERE n.entity_class = 'domain' \
                    AND n.embedding IS NOT NULL \
                    AND n.id != $1 \
                    AND EXISTS ( \
@@ -334,8 +321,7 @@ impl AnalysisService {
                      JOIN chunks c ON ex.chunk_id = c.id \
                      JOIN sources s ON c.source_id = s.id \
                      WHERE ex.entity_id = n.id \
-                       AND (s.uri LIKE '%spec/%' OR s.uri LIKE '%docs/adr/%' \
-                            OR s.uri LIKE '%VISION%' OR s.uri LIKE '%CLAUDE%') \
+                       AND s.domain IN ('spec', 'design') \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
@@ -359,15 +345,15 @@ impl AnalysisService {
             skipped += s;
 
             // --- THEORETICAL_BASIS: research/theory concepts ---
-            // Include entities that appear in at least one non-spec source.
+            // Include entities that appear in at least one research/external source.
             // An entity merged across spec+research should be eligible for
             // THEORETICAL_BASIS edges (the research provenance is real).
+            // Uses the domain field instead of URI NOT LIKE heuristics.
             let research_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
                 "SELECT n.id, n.canonical_name, \
                         (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
                  FROM nodes n \
-                 WHERE n.node_type NOT IN ('struct','function','trait','enum', \
-                       'impl_block','constant','macro','module','class','component') \
+                 WHERE n.entity_class = 'domain' \
                    AND n.embedding IS NOT NULL \
                    AND n.id != $1 \
                    AND EXISTS ( \
@@ -375,11 +361,7 @@ impl AnalysisService {
                      JOIN chunks c ON ex.chunk_id = c.id \
                      JOIN sources s ON c.source_id = s.id \
                      WHERE ex.entity_id = n.id \
-                       AND s.uri NOT LIKE '%spec/%' \
-                       AND s.uri NOT LIKE '%docs/adr/%' \
-                       AND s.uri NOT LIKE '%VISION%' \
-                       AND s.uri NOT LIKE '%CLAUDE%' \
-                       AND s.source_type != 'code' \
+                       AND s.domain IN ('research', 'external') \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",

@@ -429,6 +429,7 @@ async fn dispatch_memory_recall(
         Some(covalence_core::services::search::SearchFilters {
             min_confidence,
             node_types: None,
+            entity_classes: None,
             date_range: None,
             source_types: None,
             source_layers: None,

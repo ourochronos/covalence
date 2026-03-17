@@ -281,6 +281,7 @@ impl NodeService {
             if let Err(e) = g.add_node(NodeMeta {
                 id: target_id.into_uuid(),
                 node_type: target.node_type.clone(),
+                entity_class: target.entity_class.clone(),
                 canonical_name: target.canonical_name.clone(),
                 clearance_level: target.clearance_level.as_i32(),
             }) {
@@ -405,6 +406,7 @@ impl NodeService {
             if let Err(e) = g.add_node(NodeMeta {
                 id: id.into_uuid(),
                 node_type: node.node_type.clone(),
+                entity_class: node.entity_class.clone(),
                 canonical_name: node.canonical_name.clone(),
                 clearance_level: node.clearance_level.as_i32(),
             }) {
@@ -516,6 +518,7 @@ impl NodeService {
                 if let Err(e) = g.add_node(NodeMeta {
                     id: new_id.into_uuid(),
                     node_type: new_node.node_type.clone(),
+                    entity_class: new_node.entity_class.clone(),
                     canonical_name: new_node.canonical_name.clone(),
                     clearance_level: new_node.clearance_level.as_i32(),
                 }) {
