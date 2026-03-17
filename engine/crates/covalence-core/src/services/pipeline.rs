@@ -751,15 +751,15 @@ impl SourceService {
                             _ => node.canonical_name.clone(),
                         };
 
-                        let chunk_content: Option<String> = sqlx::query_scalar(
+                        // First try: extraction-linked chunks with
+                        // definition pattern match.
+                        let mut chunk_content: Option<String> = sqlx::query_scalar(
                             "SELECT c.content FROM extractions ex \
                              JOIN chunks c ON c.id = ex.chunk_id \
                              WHERE ex.entity_id = $1 AND ex.entity_type = 'node' \
                                AND ex.chunk_id IS NOT NULL \
-                             ORDER BY \
-                               CASE WHEN c.content LIKE '%' || $2 || '%' \
-                                    THEN 0 ELSE 1 END, \
-                               ex.confidence DESC \
+                               AND c.content LIKE '%' || $2 || '%' \
+                             ORDER BY ex.confidence DESC \
                              LIMIT 1",
                         )
                         .bind(nid)
@@ -768,6 +768,26 @@ impl SourceService {
                         .await
                         .ok()
                         .flatten();
+
+                        // Fallback: search ALL chunks from the same source
+                        // for the definition pattern. Handles cases where
+                        // the entity was resolved to an existing node but
+                        // the extraction points to a different chunk.
+                        if chunk_content.is_none() {
+                            chunk_content = sqlx::query_scalar(
+                                "SELECT c.content FROM chunks c \
+                                 WHERE c.source_id = $1 \
+                                   AND c.content LIKE '%' || $2 || '%' \
+                                 ORDER BY LENGTH(c.content) ASC \
+                                 LIMIT 1",
+                            )
+                            .bind(input.source_id)
+                            .bind(&def_pattern)
+                            .fetch_optional(self.repo.pool())
+                            .await
+                            .ok()
+                            .flatten();
+                        }
 
                         let raw = chunk_content
                             .as_deref()
