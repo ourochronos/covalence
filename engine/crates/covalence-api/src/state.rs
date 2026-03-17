@@ -13,7 +13,7 @@ use covalence_core::ingestion::embedder::Embedder;
 use covalence_core::ingestion::extractor::Extractor;
 use covalence_core::ingestion::resolver::EntityResolver;
 use covalence_core::ingestion::{
-    ChatBackend, ChatBackendExtractor, CliChatBackend, ConverterRegistry, FallbackChatBackend,
+    ChainChatBackend, ChatBackend, ChatBackendExtractor, CliChatBackend, ConverterRegistry,
     FastcorefClient, GlinerExtractor, HttpChatBackend, LlmExtractor, LlmSectionCompiler,
     LlmStatementExtractor, OpenAiEmbedder, PdfConverter, PgResolver, ReaderLmConverter,
     SidecarExtractor, TwoPassExtractor, VoyageConfig, VoyageEmbedder, fingerprint_config_from,
@@ -322,9 +322,8 @@ impl AppState {
 
         // Build the chat backend (shared by statement pipeline + admin endpoints).
         //
-        // When "cli" is selected and HTTP credentials exist, a
-        // FallbackChatBackend wraps CLI→HTTP so quota exhaustion
-        // is handled transparently.
+        // When "cli" is selected, a ChainChatBackend tries multiple
+        // providers in order: primary CLI → fallback CLIs → HTTP.
         let chat_backend: Option<Arc<dyn ChatBackend>> = {
             let chat_model = config
                 .pipeline
@@ -339,38 +338,51 @@ impl AppState {
                 .cloned();
 
             if config.chat_backend == "cli" {
-                let cli = Box::new(CliChatBackend::new(
-                    config.chat_cli_command.clone(),
-                    chat_model.clone(),
+                // Build a multi-provider chain: primary CLI → other CLIs → HTTP
+                let mut chain: Vec<(String, Box<dyn ChatBackend>)> = Vec::new();
+
+                // Primary: configured CLI command + model
+                chain.push((
+                    format!("{}({})", config.chat_cli_command, chat_model),
+                    Box::new(CliChatBackend::new(
+                        config.chat_cli_command.clone(),
+                        chat_model.clone(),
+                    )),
                 ));
 
-                if let Some(key) = http_key {
-                    tracing::info!(
-                        command = %config.chat_cli_command,
-                        cli_model = %chat_model,
-                        http_model = %config.chat_model,
-                        "using CLI chat backend with HTTP fallback"
-                    );
-                    // HTTP fallback uses config.chat_model (OpenRouter
-                    // format, e.g. "google/gemini-2.5-flash") rather
-                    // than the CLI-format statement_model.
-                    let http = Box::new(HttpChatBackend::new(
-                        config.chat_model.clone(),
-                        key,
-                        config.chat_base_url.clone(),
-                    ));
-                    Some(Arc::new(FallbackChatBackend::new(cli, http)) as Arc<dyn ChatBackend>)
-                } else {
-                    tracing::info!(
-                        command = %config.chat_cli_command,
-                        model = %chat_model,
-                        "using CLI chat backend (no HTTP fallback)"
-                    );
-                    Some(Arc::new(CliChatBackend::new(
-                        config.chat_cli_command.clone(),
-                        chat_model,
-                    )) as Arc<dyn ChatBackend>)
+                // Fallback CLIs: add the ones NOT already primary
+                let fallbacks: &[(&str, &str)] = &[
+                    ("claude", "haiku"),
+                    ("copilot", "claude-haiku-4.5"),
+                    ("gemini", "gemini-3-flash-preview"),
+                ];
+                for &(cmd, model) in fallbacks {
+                    if cmd != config.chat_cli_command {
+                        chain.push((
+                            format!("{cmd}({model})"),
+                            Box::new(CliChatBackend::new(cmd.to_string(), model.to_string())),
+                        ));
+                    }
                 }
+
+                // HTTP fallback (OpenRouter) if API key is available
+                if let Some(key) = http_key {
+                    chain.push((
+                        format!("http({})", config.chat_model),
+                        Box::new(HttpChatBackend::new(
+                            config.chat_model.clone(),
+                            key,
+                            config.chat_base_url.clone(),
+                        )),
+                    ));
+                }
+
+                let labels: Vec<&str> = chain.iter().map(|(l, _)| l.as_str()).collect();
+                tracing::info!(
+                    chain = ?labels,
+                    "using multi-provider chat backend chain"
+                );
+                Some(Arc::new(ChainChatBackend::new(chain)) as Arc<dyn ChatBackend>)
             } else {
                 http_key.map(|key| {
                     Arc::new(HttpChatBackend::new(

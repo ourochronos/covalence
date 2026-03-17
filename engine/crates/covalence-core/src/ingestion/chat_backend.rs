@@ -230,18 +230,12 @@ impl ChatBackend for CliChatBackend {
     }
 }
 
-// ── Fallback backend (CLI → HTTP) ───────────────────────────────
+// ── Fallback backend (CLI → HTTP, legacy two-layer) ─────────────
 
-/// Chat backend that tries the CLI first and falls back to HTTP
-/// on any error (quota exhaustion, command not found, etc.).
-///
-/// This is the recommended backend for production: it prefers
-/// the free Gemini CLI quota, but seamlessly degrades to the
-/// paid OpenRouter HTTP API when quota is exhausted.
+/// Chat backend that tries the primary first and falls back to a
+/// secondary on any error. Kept for backwards compatibility.
 pub struct FallbackChatBackend {
-    /// Primary backend (typically CLI).
     primary: Box<dyn ChatBackend>,
-    /// Fallback backend (typically HTTP).
     fallback: Box<dyn ChatBackend>,
 }
 
@@ -277,6 +271,66 @@ impl ChatBackend for FallbackChatBackend {
                     .await
             }
         }
+    }
+}
+
+// ── Chain backend (multi-provider failover) ─────────────────────
+
+/// Chat backend that tries multiple providers in order, falling
+/// back to the next on any error. Each provider is labelled for
+/// logging.
+pub struct ChainChatBackend {
+    /// Ordered list of (label, backend) pairs.
+    chain: Vec<(String, Box<dyn ChatBackend>)>,
+}
+
+impl ChainChatBackend {
+    /// Create a chain backend from an ordered list of providers.
+    /// The first provider is tried first; on failure, the next
+    /// is tried, and so on.
+    pub fn new(chain: Vec<(String, Box<dyn ChatBackend>)>) -> Self {
+        Self { chain }
+    }
+}
+
+#[async_trait::async_trait]
+impl ChatBackend for ChainChatBackend {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        json_mode: bool,
+        temperature: f64,
+    ) -> Result<String> {
+        let mut last_err = None;
+        for (i, (label, backend)) in self.chain.iter().enumerate() {
+            match backend
+                .chat(system_prompt, user_prompt, json_mode, temperature)
+                .await
+            {
+                Ok(response) => {
+                    if i > 0 {
+                        tracing::info!(
+                            provider = %label,
+                            attempt = i + 1,
+                            "chat succeeded on fallback provider"
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(e) => {
+                    let remaining = self.chain.len() - i - 1;
+                    tracing::warn!(
+                        provider = %label,
+                        error = %e,
+                        remaining_providers = remaining,
+                        "chat provider failed, trying next"
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| Error::Ingestion("no chat backends configured".to_string())))
     }
 }
 
