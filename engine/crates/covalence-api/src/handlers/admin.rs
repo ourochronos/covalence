@@ -533,6 +533,7 @@ pub async fn replay_trace(
                     source_uri: r.source_uri,
                     source_title: r.source_title,
                     source_type: r.source_type,
+                    source_domain: r.source_domain,
                     dimension_scores: r.dimension_scores,
                     dimension_ranks: r.dimension_ranks,
                     graph_context,

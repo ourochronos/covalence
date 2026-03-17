@@ -256,6 +256,9 @@ pub struct SearchResultResponse {
     /// Source type (e.g. "code", "document").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_type: Option<String>,
+    /// Source domain (code/spec/design/research/external).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_domain: Option<String>,
     /// Per-dimension scores.
     pub dimension_scores: std::collections::HashMap<String, f64>,
     /// Per-dimension ranks.
@@ -1524,6 +1527,7 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
+            source_domain: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: None,
@@ -1549,6 +1553,7 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
+            source_domain: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: None,
@@ -1570,6 +1575,7 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
+            source_domain: None,
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: Some(vec![
