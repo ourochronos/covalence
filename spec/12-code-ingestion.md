@@ -164,6 +164,12 @@ A bad semantic summary:
 - Lists every line of code
 - Uses implementation details as the description ("iterates over a Vec<Node> and calls .embedding()")
 
+## Entity Class Constraints
+
+All code entities created by this pipeline receive `entity_class = 'code'`. The `node_type` values (`code_function`, `code_struct`, `code_trait`, `code_module`, `code_impl`, `code_type`, `code_test`) all map to the `code` entity class via the `derive_entity_class()` function defined in [spec/02-data-model](02-data-model.md#entity-classification).
+
+Structural code edges (CALLS, USES_TYPE, IMPLEMENTS, CONTAINS, DEPENDS_ON) are constrained to `code` → `code` entity class pairs. Cross-domain edges (PART_OF_COMPONENT, IMPLEMENTS_INTENT, THEORETICAL_BASIS) bridge between entity classes and follow the constraints documented in [spec/02-data-model](02-data-model.md#traceability-edge-types).
+
 ## Stage 3: Structural Edge Extraction
 
 Tree-sitter provides structural relationships for free. These become typed edges in the graph:

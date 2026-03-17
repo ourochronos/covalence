@@ -227,6 +227,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: name.into(),
                 clearance_level: 0,
             })
@@ -278,6 +279,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: name.into(),
                 clearance_level: 0,
             })
@@ -415,6 +417,7 @@ mod tests {
         g.add_node(NodeMeta {
             id,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "Knowledge Graph".into(),
             clearance_level: 0,
         })
@@ -430,6 +433,7 @@ mod tests {
         g.add_node(NodeMeta {
             id,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "ML".into(),
             clearance_level: 0,
         })
@@ -443,6 +447,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: id2,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "NER".into(),
             clearance_level: 0,
         })
@@ -460,6 +465,7 @@ mod tests {
         g.add_node(NodeMeta {
             id,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "Information Retrieval".into(),
             clearance_level: 0,
         })
@@ -479,6 +485,7 @@ mod tests {
         g.add_node(NodeMeta {
             id,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "Mining Algorithm".into(),
             clearance_level: 0,
         })
@@ -498,6 +505,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: Uuid::new_v4(),
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: format!("node{i}"),
                 clearance_level: 0,
             })

@@ -111,6 +111,7 @@ pub async fn search(
 
     let filters = if req.min_confidence.is_some()
         || req.node_types.is_some()
+        || req.entity_classes.is_some()
         || req.source_types.is_some()
         || req.source_layers.is_some()
         || date_range.is_some()
@@ -118,6 +119,7 @@ pub async fn search(
         Some(covalence_core::services::SearchFilters {
             min_confidence: req.min_confidence,
             node_types: req.node_types,
+            entity_classes: req.entity_classes,
             date_range,
             source_types: req.source_types,
             source_layers: req.source_layers,

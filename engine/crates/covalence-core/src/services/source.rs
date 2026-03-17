@@ -32,6 +32,56 @@ use crate::types::ids::{EdgeId, NodeId, SourceId};
 use super::ingestion_helpers::{SupersedesInfo, detect_update_class};
 use super::pipeline::PipelineInput;
 
+/// Derive the knowledge domain from a source's type and URI.
+///
+/// Rules are applied in priority order:
+/// 1. Code sources → `code`
+/// 2. URI pattern matching for file:// paths
+/// 3. HTTP/HTTPS defaults to `research`
+/// 4. Remaining documents → `external`
+pub fn derive_domain(source_type: &str, uri: Option<&str>) -> Option<String> {
+    // Code source type takes priority
+    if source_type == "code" {
+        return Some("code".to_string());
+    }
+
+    let uri = uri?;
+
+    // File URI patterns
+    if uri.starts_with("file://spec/") {
+        return Some("spec".to_string());
+    }
+    if uri.starts_with("file://docs/adr/")
+        || uri.starts_with("file://VISION")
+        || uri.starts_with("file://CLAUDE")
+        || uri.starts_with("file://MILESTONES")
+        || uri.starts_with("file://design/")
+    {
+        return Some("design".to_string());
+    }
+    if uri.starts_with("file://engine/")
+        || uri.starts_with("file://cli/")
+        || uri.starts_with("file://dashboard/")
+    {
+        return Some("code".to_string());
+    }
+
+    // HTTP sources
+    if uri.starts_with("https://arxiv") || uri.starts_with("https://doi") {
+        return Some("research".to_string());
+    }
+    if uri.starts_with("http://") || uri.starts_with("https://") {
+        return Some("research".to_string());
+    }
+
+    // Remaining documents
+    if source_type == "document" {
+        return Some("external".to_string());
+    }
+
+    None
+}
+
 /// Result of a cascading delete operation.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeleteResult {
@@ -413,6 +463,7 @@ impl SourceService {
         // Build source record.
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
+        source.domain = derive_domain(source_type, uri);
 
         // Title priority: metadata > filename (code) > parsed > URI segment.
         let uri_filename = uri.and_then(|u| u.rsplit('/').next().map(|f| f.to_string()));
@@ -963,6 +1014,85 @@ mod tests {
     use crate::ingestion::code_chunker;
     use crate::models::extraction::Extraction;
     use crate::types::ids::ChunkId;
+
+    #[test]
+    fn derive_domain_code_source_type() {
+        assert_eq!(
+            derive_domain("code", Some("file://engine/src/main.rs")).as_deref(),
+            Some("code")
+        );
+        assert_eq!(derive_domain("code", None).as_deref(), Some("code"));
+    }
+
+    #[test]
+    fn derive_domain_spec_uri() {
+        assert_eq!(
+            derive_domain("document", Some("file://spec/02-data-model.md")).as_deref(),
+            Some("spec")
+        );
+    }
+
+    #[test]
+    fn derive_domain_design_uri() {
+        assert_eq!(
+            derive_domain("document", Some("file://docs/adr/0001-foo.md")).as_deref(),
+            Some("design")
+        );
+        assert_eq!(
+            derive_domain("document", Some("file://VISION.md")).as_deref(),
+            Some("design")
+        );
+        assert_eq!(
+            derive_domain("document", Some("file://CLAUDE.md")).as_deref(),
+            Some("design")
+        );
+        assert_eq!(
+            derive_domain("document", Some("file://design/graph-type-system.md")).as_deref(),
+            Some("design")
+        );
+    }
+
+    #[test]
+    fn derive_domain_code_uri() {
+        assert_eq!(
+            derive_domain("document", Some("file://engine/crates/core/src/lib.rs")).as_deref(),
+            Some("code")
+        );
+        assert_eq!(
+            derive_domain("document", Some("file://cli/cmd/root.go")).as_deref(),
+            Some("code")
+        );
+    }
+
+    #[test]
+    fn derive_domain_research_uri() {
+        assert_eq!(
+            derive_domain("document", Some("https://arxiv.org/abs/2403.14403")).as_deref(),
+            Some("research")
+        );
+        assert_eq!(
+            derive_domain("document", Some("https://doi.org/10.1234/foo")).as_deref(),
+            Some("research")
+        );
+        assert_eq!(
+            derive_domain("document", Some("https://example.com/paper")).as_deref(),
+            Some("research")
+        );
+    }
+
+    #[test]
+    fn derive_domain_external_fallback() {
+        assert_eq!(
+            derive_domain("document", Some("file://random/doc.md")).as_deref(),
+            Some("external")
+        );
+    }
+
+    #[test]
+    fn derive_domain_no_uri() {
+        // Non-code source with no URI returns None
+        assert_eq!(derive_domain("document", None).as_deref(), None);
+    }
 
     #[test]
     fn delete_result_serializes_all_fields() {

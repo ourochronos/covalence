@@ -18,7 +18,7 @@ Return a JSON object with this exact schema:
   "entities": [
     {
       "name": "entity name as it appears in text",
-      "entity_type": "person|organization|location|concept|event|technology|other",
+      "entity_type": "person|organization|location|concept|technology|algorithm|framework|dataset|metric|model|event|role",
       "description": "brief description or null",
       "confidence": 0.0-1.0
     }

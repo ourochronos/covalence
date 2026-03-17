@@ -81,6 +81,7 @@ pub async fn recall_memory(
         Some(covalence_core::services::search::SearchFilters {
             min_confidence: req.min_confidence,
             node_types: None,
+            entity_classes: None,
             date_range: None,
             source_types: None,
             source_layers: None,

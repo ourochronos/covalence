@@ -26,6 +26,8 @@ pub struct NodeMeta {
     pub id: Uuid,
     /// The type of this node (e.g. "entity", "concept").
     pub node_type: String,
+    /// Entity class: code, domain, actor, analysis.
+    pub entity_class: Option<String>,
     /// Human-readable canonical name.
     pub canonical_name: String,
     /// Clearance level controlling federation visibility.
@@ -321,18 +323,21 @@ impl GraphSidecar {
             .as_str()
             .unwrap_or("unknown")
             .to_string();
+        let entity_class = payload["entity_class"].as_str().map(|s| s.to_string());
         let canonical_name = payload["canonical_name"].as_str().unwrap_or("").to_string();
         let clearance_level = payload["clearance_level"].as_i64().unwrap_or(0) as i32;
 
         if let Some(&idx) = self.index.get(&entity_id) {
             let node = &mut self.graph[idx];
             node.node_type = node_type;
+            node.entity_class = entity_class;
             node.canonical_name = canonical_name;
             node.clearance_level = clearance_level;
         } else {
             self.add_node(NodeMeta {
                 id: entity_id,
                 node_type,
+                entity_class,
                 canonical_name,
                 clearance_level,
             })?;
@@ -412,6 +417,7 @@ mod tests {
         NodeMeta {
             id: Uuid::new_v4(),
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: name.into(),
             clearance_level: 0,
         }
@@ -569,6 +575,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: node_id,
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: "ToDelete".into(),
             clearance_level: 0,
         })
@@ -655,6 +662,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: a_id,
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: "A".into(),
             clearance_level: 0,
         })
@@ -662,6 +670,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: b_id,
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: "B".into(),
             clearance_level: 0,
         })
@@ -698,6 +707,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: a_id,
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: "A".into(),
             clearance_level: 0,
         })
@@ -705,6 +715,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: b_id,
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: "B".into(),
             clearance_level: 0,
         })
@@ -761,6 +772,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: a_id,
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: "A".into(),
             clearance_level: 0,
         })
@@ -768,6 +780,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: b_id,
             node_type: "entity".into(),
+            entity_class: Some("domain".into()),
             canonical_name: "B".into(),
             clearance_level: 0,
         })

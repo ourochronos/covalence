@@ -247,6 +247,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: Uuid::new_v4(),
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "Python".into(),
                 clearance_level: 0,
             })
@@ -274,6 +275,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: rust_id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "Rust".into(),
                 clearance_level: 0,
             })
@@ -281,6 +283,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: tokio_id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "Tokio".into(),
                 clearance_level: 0,
             })
@@ -321,6 +324,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: Uuid::new_v4(),
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "AI".into(),
                 clearance_level: 0,
             })
@@ -366,6 +370,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: a_id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "NodeA".into(),
                 clearance_level: 0,
             })
@@ -373,6 +378,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: b_id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "NodeB".into(),
                 clearance_level: 0,
             })
@@ -380,6 +386,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: c_id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "NodeC".into(),
                 clearance_level: 0,
             })
@@ -438,6 +445,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: a_id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "NodeA".into(),
                 clearance_level: 0,
             })
@@ -445,6 +453,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: b_id,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: "NodeB".into(),
                 clearance_level: 0,
             })

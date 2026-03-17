@@ -81,7 +81,7 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
     // Fetch all nodes
     let node_rows = sqlx::query(
         "SELECT id, COALESCE(canonical_type, node_type) AS node_type, \
-         canonical_name, clearance_level FROM nodes",
+         entity_class, canonical_name, clearance_level FROM nodes",
     )
     .fetch_all(pool)
     .await?;
@@ -108,6 +108,7 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
         if let Err(e) = g.add_node(NodeMeta {
             id: row.get("id"),
             node_type: row.get("node_type"),
+            entity_class: row.get("entity_class"),
             canonical_name: row.get("canonical_name"),
             clearance_level: row.get("clearance_level"),
         }) {

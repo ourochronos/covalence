@@ -453,6 +453,7 @@ mod tests {
         NodeMeta {
             id: Uuid::new_v4(),
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: name.into(),
             clearance_level: 0,
         }
@@ -749,6 +750,7 @@ mod tests {
         let hub = NodeMeta {
             id: Uuid::new_v4(),
             node_type: "person".into(),
+            entity_class: None,
             canonical_name: "SomePerson".into(),
             clearance_level: 0,
         };

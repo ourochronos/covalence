@@ -232,6 +232,7 @@ mod tests {
         g.add_node(NodeMeta {
             id,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: name.into(),
             clearance_level: 0,
         })

@@ -4,24 +4,37 @@
 
 When the system ingests its own spec, its own code, and its research foundations, three semantic domains exist in the same graph. Cross-domain analysis traverses the bridges between them to surface insights that no single domain can provide alone.
 
-## The Three Domains
+## The Five Domains
+
+With the introduction of the graph type system ([ADR-0018](../docs/adr/0018-graph-type-system.md)), sources carry a `domain` field and nodes carry an `entity_class` field. Cross-domain analysis now uses these intrinsic labels instead of URI heuristics.
 
 ```
-Research Domain                    Spec Domain                       Code Domain
-(academic papers,                  (design docs, specs,              (source code, AST,
- software eng. books)               ADRs, vision docs)                functions, modules)
+Research Domain        External Domain        Spec Domain            Design Domain          Code Domain
+(academic papers,      (third-party docs,     (spec/*.md)            (docs/adr/*.md,        (source code,
+ software eng. books)   API references)                               VISION.md,             AST, modules)
+                                                                      design/*.md)
 
-  concepts, algorithms,              design intent, goals,             execution, behavior,
-  theoretical foundations            requirements, constraints         implementation details
+  entity_class:          entity_class:          entity_class:          entity_class:          entity_class:
+  domain, actor          domain                 domain                 domain                 code
 
-            │                              │                              │
-            └──── THEORETICAL_BASIS ───────┤                              │
-                                           ├── IMPLEMENTS_INTENT ─────────┤
-                                           │                              │
-                                           └── PART_OF_COMPONENT ────────┘
+            │                 │                       │                      │                      │
+            ├── INFORMS ──────┼───────────────────────┤                      │                      │
+            ├── VALIDATES ────┼───────────────────────┼──────────────────────┼──────────────────────┤
+            └── THEORETICAL_BASIS ────────────────────┤                      │                      │
+                                                      ├── SPECIFIES ────────┤                      │
+                                                      │                      ├── DECIDES ──────────┤
+                                                      ├── IMPLEMENTS_INTENT ─┼──────────────────────┤
+                                                      │                      │                      │
+                                                      └──────────────────────┴── PART_OF_COMPONENT ─┘
 ```
 
-The Component node is the bridge. Without it, research papers and code functions exist in different semantic neighborhoods and never connect. With it, you can traverse from an academic algorithm to the function that implements it.
+Two edge families bridge domains:
+
+1. **Component bridge edges** (bulk-automated): `PART_OF_COMPONENT`, `IMPLEMENTS_INTENT`, `THEORETICAL_BASIS` — created via MODULE_PATH_MAPPINGS and embedding similarity. Good for broad coverage.
+
+2. **Traceability edges** (curated): `SPECIFIES`, `DECIDES`, `INFORMS`, `VALIDATES` — precise provenance chains between specific entities. Good for "why does this code exist?" queries.
+
+The Component node remains the bridge for automated bulk linking. Traceability edges provide precise, curated provenance that doesn't require a Component intermediary.
 
 ## Capability 1: Research-to-Execution Verification
 
@@ -273,10 +286,10 @@ Simple graph traversal reveals structural voids.
 ```
 SELECT n.canonical_name, n.properties->>'file_path'
 FROM nodes n
-WHERE n.node_type LIKE 'code_%'
+WHERE n.entity_class = 'code'
 AND NOT EXISTS (
   SELECT 1 FROM edges e
-  JOIN nodes comp ON e.target_node_id = comp.id AND comp.node_type = 'component'
+  JOIN nodes comp ON e.target_node_id = comp.id AND comp.entity_class = 'analysis'
   WHERE e.source_node_id = n.id AND e.rel_type = 'PART_OF_COMPONENT'
 )
 ```
@@ -285,8 +298,15 @@ AND NOT EXISTS (
 ```
 SELECT n.canonical_name
 FROM nodes n
-WHERE n.node_type = 'concept'
-AND n.properties->>'domain' = 'spec'
+JOIN extractions ex ON ex.entity_type = 'node' AND ex.entity_id = n.id
+JOIN sources s ON s.id = (
+  SELECT COALESCE(ex2.source_id, c.source_id)
+  FROM extractions ex2
+  LEFT JOIN chunks c ON c.id = ex2.chunk_id
+  WHERE ex2.entity_id = n.id LIMIT 1
+)
+WHERE n.entity_class = 'domain'
+AND s.domain = 'spec'
 AND NOT EXISTS (
   SELECT 1 FROM edges e
   WHERE e.target_node_id = n.id AND e.rel_type = 'IMPLEMENTS_INTENT'

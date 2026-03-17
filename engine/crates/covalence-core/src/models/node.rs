@@ -7,6 +7,67 @@ use crate::types::clearance::ClearanceLevel;
 use crate::types::ids::NodeId;
 use crate::types::opinion::Opinion;
 
+/// Entity class classification for nodes.
+///
+/// Groups the 47+ ad-hoc `node_type` values into four controlled
+/// categories. Stored on the node for indexing and filtering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityClass {
+    /// Entities extracted from source code (function, struct, trait, etc.).
+    Code,
+    /// Domain concepts from any textual source (concept, technology, etc.).
+    Domain,
+    /// People, organizations, locations.
+    Actor,
+    /// System-generated entities (component, community_summary).
+    Analysis,
+}
+
+impl EntityClass {
+    /// String representation for database storage.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Domain => "domain",
+            Self::Actor => "actor",
+            Self::Analysis => "analysis",
+        }
+    }
+
+    /// Parse from database string.
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "code" => Some(Self::Code),
+            "domain" => Some(Self::Domain),
+            "actor" => Some(Self::Actor),
+            "analysis" => Some(Self::Analysis),
+            _ => None,
+        }
+    }
+}
+
+/// Derive entity class from a node_type string.
+///
+/// This is the canonical mapping from the dynamic `node_type` values
+/// produced by LLM extraction to the controlled `entity_class`
+/// vocabulary. Must be kept in sync with the backfill SQL in
+/// migration 014.
+pub fn derive_entity_class(node_type: &str) -> EntityClass {
+    match node_type {
+        // Code entities
+        "function" | "struct" | "trait" | "enum" | "impl_block" | "constant" | "module"
+        | "class" | "macro" | "code_function" | "code_struct" | "code_trait" | "code_module"
+        | "code_impl" | "code_type" | "code_test" => EntityClass::Code,
+        // Actor entities
+        "person" | "organization" | "location" | "role" => EntityClass::Actor,
+        // Analysis entities
+        "component" => EntityClass::Analysis,
+        // Everything else is a domain concept
+        _ => EntityClass::Domain,
+    }
+}
+
 /// An entity extracted from one or more chunks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -16,6 +77,8 @@ pub struct Node {
     pub canonical_name: String,
     /// Dynamically assigned type (e.g. `"person"`, `"organization"`).
     pub node_type: String,
+    /// Entity class: code, domain, actor, analysis.
+    pub entity_class: Option<String>,
     /// Optional description text.
     pub description: Option<String>,
     /// Arbitrary JSONB properties.
@@ -36,10 +99,12 @@ impl Node {
     /// Create a new node with default timestamps and mention count.
     pub fn new(canonical_name: String, node_type: String) -> Self {
         let now = Utc::now();
+        let entity_class = Some(derive_entity_class(&node_type).as_str().to_string());
         Self {
             id: NodeId::new(),
             canonical_name,
             node_type,
+            entity_class,
             description: None,
             properties: serde_json::Value::Object(Default::default()),
             confidence_breakdown: None,
@@ -86,10 +151,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn entity_class_roundtrip() {
+        let classes = [
+            EntityClass::Code,
+            EntityClass::Domain,
+            EntityClass::Actor,
+            EntityClass::Analysis,
+        ];
+        for ec in &classes {
+            let s = ec.as_str();
+            let parsed = EntityClass::from_str_opt(s);
+            assert_eq!(parsed, Some(ec.clone()), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn entity_class_from_str_unknown() {
+        assert!(EntityClass::from_str_opt("unknown").is_none());
+        assert!(EntityClass::from_str_opt("").is_none());
+    }
+
+    #[test]
+    fn derive_entity_class_code_types() {
+        for t in &[
+            "function",
+            "struct",
+            "trait",
+            "enum",
+            "impl_block",
+            "constant",
+            "module",
+            "class",
+            "macro",
+            "code_function",
+            "code_struct",
+            "code_trait",
+        ] {
+            assert_eq!(
+                derive_entity_class(t),
+                EntityClass::Code,
+                "{t} should be code"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_entity_class_actor_types() {
+        for t in &["person", "organization", "location", "role"] {
+            assert_eq!(
+                derive_entity_class(t),
+                EntityClass::Actor,
+                "{t} should be actor"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_entity_class_analysis_types() {
+        assert_eq!(derive_entity_class("component"), EntityClass::Analysis);
+    }
+
+    #[test]
+    fn derive_entity_class_domain_fallback() {
+        for t in &[
+            "concept",
+            "technology",
+            "algorithm",
+            "dataset",
+            "event",
+            "unknown_type",
+        ] {
+            assert_eq!(
+                derive_entity_class(t),
+                EntityClass::Domain,
+                "{t} should be domain"
+            );
+        }
+    }
+
+    #[test]
     fn new_sets_defaults() {
         let node = Node::new("Alice".into(), "person".into());
         assert_eq!(node.canonical_name, "Alice");
         assert_eq!(node.node_type, "person");
+        assert_eq!(node.entity_class.as_deref(), Some("actor"));
         assert_eq!(node.mention_count, 1);
         assert!(node.description.is_none());
         assert!(node.confidence_breakdown.is_none());

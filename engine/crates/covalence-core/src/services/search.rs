@@ -43,13 +43,15 @@ pub struct SearchFilters {
     pub min_confidence: Option<f64>,
     /// Restrict to specific node types.
     pub node_types: Option<Vec<String>>,
+    /// Restrict to specific entity classes: code, domain, actor, analysis.
+    pub entity_classes: Option<Vec<String>>,
     /// Restrict to a temporal date range.
     pub date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     /// Restrict to specific source types (e.g. "document", "code").
     /// Applies only to chunk and source results.
     pub source_types: Option<Vec<String>>,
     /// Restrict to specific source layers derived from source URI.
-    /// Layers: "spec", "design", "code", "research".
+    /// Layers: "spec", "design", "code", "research", "external".
     /// Applies only to chunk and source results.
     pub source_layers: Option<Vec<String>>,
 }
@@ -1095,6 +1097,18 @@ impl SearchService {
             }
             if let Some(ref types) = f.node_types {
                 fused.retain(|r| r.entity_type.as_ref().is_some_and(|t| types.contains(t)));
+            }
+            if let Some(ref classes) = f.entity_classes {
+                fused.retain(|r| {
+                    // For node results, derive entity_class from entity_type
+                    if let Some(ref etype) = r.entity_type {
+                        let ec = crate::models::node::derive_entity_class(etype);
+                        classes.iter().any(|c| c == ec.as_str())
+                    } else {
+                        // Non-node results pass through (chunks, articles)
+                        true
+                    }
+                });
             }
             if let Some(ref types) = f.source_types {
                 fused.retain(|r| {

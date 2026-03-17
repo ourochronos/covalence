@@ -204,10 +204,12 @@ pub struct SearchRequest {
     pub min_confidence: Option<f64>,
     /// Restrict to specific node types.
     pub node_types: Option<Vec<String>>,
+    /// Restrict to specific entity classes: code, domain, actor, analysis.
+    pub entity_classes: Option<Vec<String>>,
     /// Restrict to specific source types (e.g. "document", "code").
     pub source_types: Option<Vec<String>>,
     /// Restrict to specific source layers derived from URI prefix.
-    /// Layers: "spec", "design", "code", "research".
+    /// Layers: "spec", "design", "code", "research", "external".
     pub source_layers: Option<Vec<String>>,
     /// Start of date range filter (ISO 8601).
     pub date_range_start: Option<String>,

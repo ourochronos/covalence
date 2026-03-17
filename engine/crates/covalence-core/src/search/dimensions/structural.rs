@@ -140,6 +140,7 @@ mod tests {
         g.add_node(NodeMeta {
             id: center,
             node_type: "entity".into(),
+            entity_class: None,
             canonical_name: "Center".into(),
             clearance_level: 0,
         })
@@ -151,6 +152,7 @@ mod tests {
             g.add_node(NodeMeta {
                 id: leaf,
                 node_type: "entity".into(),
+                entity_class: None,
                 canonical_name: format!("Leaf{i}"),
                 clearance_level: 0,
             })

@@ -17,20 +17,23 @@ impl NodeRepo for PgRepo {
 
         sqlx::query(
             "INSERT INTO nodes (
-                id, canonical_name, node_type, description,
+                id, canonical_name, node_type, entity_class,
+                description,
                 properties, confidence_breakdown,
                 clearance_level, first_seen, last_seen,
                 mention_count
             ) VALUES (
                 $1, $2, $3, $4,
-                $5, $6,
-                $7, $8, $9,
-                $10
+                $5,
+                $6, $7,
+                $8, $9, $10,
+                $11
             )",
         )
         .bind(node.id)
         .bind(&node.canonical_name)
         .bind(&node.node_type)
+        .bind(&node.entity_class)
         .bind(&node.description)
         .bind(&node.properties)
         .bind(&confidence_json)
@@ -45,7 +48,8 @@ impl NodeRepo for PgRepo {
 
     async fn get(&self, id: NodeId) -> Result<Option<Node>> {
         let row = sqlx::query(
-            "SELECT id, canonical_name, node_type, description,
+            "SELECT id, canonical_name, node_type, entity_class,
+                    description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
                     mention_count
@@ -60,7 +64,8 @@ impl NodeRepo for PgRepo {
 
     async fn find_by_name(&self, name: &str) -> Result<Option<Node>> {
         let row = sqlx::query(
-            "SELECT id, canonical_name, node_type, description,
+            "SELECT id, canonical_name, node_type, entity_class,
+                    description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
                     mention_count
@@ -80,15 +85,17 @@ impl NodeRepo for PgRepo {
         sqlx::query(
             "UPDATE nodes SET
                 canonical_name = $2, node_type = $3,
-                description = $4, properties = $5,
-                confidence_breakdown = $6, clearance_level = $7,
-                first_seen = $8, last_seen = $9,
-                mention_count = $10
+                entity_class = $4,
+                description = $5, properties = $6,
+                confidence_breakdown = $7, clearance_level = $8,
+                first_seen = $9, last_seen = $10,
+                mention_count = $11
              WHERE id = $1",
         )
         .bind(node.id)
         .bind(&node.canonical_name)
         .bind(&node.node_type)
+        .bind(&node.entity_class)
         .bind(&node.description)
         .bind(&node.properties)
         .bind(&confidence_json)
@@ -155,7 +162,8 @@ impl NodeRepo for PgRepo {
 
     async fn list_by_type(&self, node_type: &str, limit: i64, offset: i64) -> Result<Vec<Node>> {
         let rows = sqlx::query(
-            "SELECT id, canonical_name, node_type, description,
+            "SELECT id, canonical_name, node_type, entity_class,
+                    description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
                     mention_count
@@ -179,7 +187,8 @@ impl NodeRepo for PgRepo {
         }
         let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.into_uuid()).collect();
         let rows = sqlx::query(
-            "SELECT id, canonical_name, node_type, description,
+            "SELECT id, canonical_name, node_type, entity_class,
+                    description,
                     properties, confidence_breakdown,
                     clearance_level, first_seen, last_seen,
                     mention_count
@@ -225,6 +234,7 @@ fn node_from_row(row: &sqlx::postgres::PgRow) -> Node {
         id: row.get("id"),
         canonical_name: row.get("canonical_name"),
         node_type: row.get("node_type"),
+        entity_class: row.get("entity_class"),
         description: row.get("description"),
         properties: row.get("properties"),
         confidence_breakdown: confidence_json.as_ref().and_then(Opinion::from_json),
