@@ -175,13 +175,24 @@ impl ChatBackend for CliChatBackend {
             prompt.push_str("\n\nBe precise and deterministic in your response.");
         }
 
-        // Run from /tmp to prevent CLI agents (gemini, copilot) from
-        // picking up the repo cwd and entering agentic/tool-use mode.
-        let output = Command::new(&self.command)
-            .arg("-p")
-            .arg(&prompt)
-            .arg("--model")
-            .arg(&self.model)
+        // Build CLI arguments based on the command. Each CLI tool
+        // has different flags for non-interactive prompt mode:
+        //   gemini:  -p <prompt> --model <model>
+        //   copilot: -p <prompt> --model <model>
+        //   claude:  --print --model <model> <prompt>
+        let mut cmd = Command::new(&self.command);
+        if self.command == "claude" {
+            cmd.arg("--print")
+                .arg("--model")
+                .arg(&self.model)
+                .arg(&prompt);
+        } else {
+            cmd.arg("-p").arg(&prompt).arg("--model").arg(&self.model);
+        }
+
+        // Run from /tmp to prevent CLI agents from picking up the
+        // repo cwd and entering agentic/tool-use mode.
+        let output = cmd
             .current_dir("/tmp")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())

@@ -55,7 +55,8 @@ pub struct Config {
     /// (OpenAI-compatible API only).
     pub chat_backend: String,
 
-    /// CLI command for the "cli" chat backend (default: "gemini").
+    /// CLI command for the "cli" chat backend.
+    /// Supports: "claude", "gemini", "copilot". Default: "claude".
     pub chat_cli_command: String,
 
     /// Maximum chunk size in bytes before paragraph splitting.
