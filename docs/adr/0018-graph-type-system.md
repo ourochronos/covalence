@@ -77,3 +77,21 @@ Soft enforcement: warn on invalid entity_class pairs, don't reject. This avoids 
 4. **Store domain on nodes instead of sources**: Would enable per-entity domain classification for merged entities. Rejected because domain is a property of provenance (where the information came from), not of the entity itself. A "PostgreSQL" entity mentioned in both code and research should trace back to both domains via its extraction provenance.
 
 5. **Hard edge validation (reject invalid pairs)**: Rejected because it would cause data loss during the transition period and blocks legitimate edge cases (e.g., a research paper naming a specific code function).
+
+## Adversarial Review (Gemini 3.1 Pro, 2026-03-16)
+
+Seven findings from automated adversarial review. Disposition:
+
+1. **Source label fragility** (domain promotion): Low risk. `domain` is TEXT, updateable via SQL or re-ingestion. No code change needed.
+
+2. **Deterministic derivation should consider source context**: **Accepted and implemented.** Added `derive_entity_class_with_context(node_type, source_domain)` — code-typed entities (struct, function) from non-code sources are demoted to `Domain` class.
+
+3. **Edge semantic overlap** (traceability vs bridge): Acknowledged. Component bridges are bulk-automated, traceability edges are curated. Different tools for different questions. Documented in spec.
+
+4. **Soft enforcement is no enforcement**: Deliberate transition policy. Can tighten to strict after backfill is verified and data quality is stable.
+
+5. **Missing test/infra/ops domains**: Premature. Domain is an extensible TEXT field. When we ingest CI/CD or test fixtures as sources, we add new domain values without schema changes.
+
+6. **Denormalization of entity_class**: Already addressed in Alternatives. PostgreSQL property values with B-tree indexes are the correct approach for our dual-backend (petgraph + AGE) architecture.
+
+7. **Merged entity identity crisis**: Provenance chain already handles this. Extractions link each mention to its source (which has a domain). Cross-domain queries follow extraction provenance, not entity_class. The merged node's entity_class is a convenience label, not the authoritative domain signal.

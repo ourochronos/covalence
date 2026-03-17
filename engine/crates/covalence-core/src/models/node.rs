@@ -68,6 +68,35 @@ pub fn derive_entity_class(node_type: &str) -> EntityClass {
     }
 }
 
+/// Derive entity class considering the source domain context.
+///
+/// Code-typed entities (struct, function, etc.) extracted from
+/// non-code sources (research papers, specs) are classified as
+/// `Domain` rather than `Code`, since they're *mentions* of code
+/// concepts, not actual code entities. This prevents research
+/// papers that discuss "structs" from polluting the code entity
+/// class.
+///
+/// Falls back to [`derive_entity_class`] for code-domain sources
+/// or when source_domain is unknown.
+pub fn derive_entity_class_with_context(
+    node_type: &str,
+    source_domain: Option<&str>,
+) -> EntityClass {
+    let base = derive_entity_class(node_type);
+
+    // If the base class is Code but the source isn't a code source,
+    // demote to Domain — it's a mention, not an actual code entity.
+    if base == EntityClass::Code {
+        match source_domain {
+            Some("code") | None => base,
+            Some(_) => EntityClass::Domain,
+        }
+    } else {
+        base
+    }
+}
+
 /// An entity extracted from one or more chunks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -209,6 +238,53 @@ mod tests {
     #[test]
     fn derive_entity_class_analysis_types() {
         assert_eq!(derive_entity_class("component"), EntityClass::Analysis);
+    }
+
+    #[test]
+    fn derive_entity_class_with_context_code_from_code_source() {
+        assert_eq!(
+            derive_entity_class_with_context("struct", Some("code")),
+            EntityClass::Code
+        );
+        assert_eq!(
+            derive_entity_class_with_context("function", Some("code")),
+            EntityClass::Code
+        );
+    }
+
+    #[test]
+    fn derive_entity_class_with_context_code_from_research_demoted() {
+        // A "struct" mentioned in a research paper should be domain, not code
+        assert_eq!(
+            derive_entity_class_with_context("struct", Some("research")),
+            EntityClass::Domain
+        );
+        assert_eq!(
+            derive_entity_class_with_context("function", Some("spec")),
+            EntityClass::Domain
+        );
+    }
+
+    #[test]
+    fn derive_entity_class_with_context_none_source() {
+        // Unknown source defaults to base derivation
+        assert_eq!(
+            derive_entity_class_with_context("struct", None),
+            EntityClass::Code
+        );
+    }
+
+    #[test]
+    fn derive_entity_class_with_context_non_code_types_unaffected() {
+        // Non-code types are not affected by source domain
+        assert_eq!(
+            derive_entity_class_with_context("person", Some("research")),
+            EntityClass::Actor
+        );
+        assert_eq!(
+            derive_entity_class_with_context("concept", Some("code")),
+            EntityClass::Domain
+        );
     }
 
     #[test]

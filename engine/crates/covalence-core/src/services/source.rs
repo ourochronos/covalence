@@ -521,6 +521,7 @@ impl SourceService {
             source_type,
             source_uri: uri.map(|u| u.to_string()),
             source_title: source.title.clone(),
+            source_domain: source.domain.clone(),
             normalized: &prepared.normalized,
             is_code: prepared.is_code,
         })
@@ -581,7 +582,10 @@ impl SourceService {
                 {
                     Ok(_result) => {
                         // Extract entities from statements (Phase 4, ADR-0015).
-                        if let Err(e) = self.extract_entities_from_statements(source.id).await {
+                        if let Err(e) = self
+                            .extract_entities_from_statements(source.id, source.domain.as_deref())
+                            .await
+                        {
                             tracing::warn!(
                                 source_id = %source.id,
                                 error = %e,
@@ -731,6 +735,7 @@ impl SourceService {
                 source_type: &source.source_type,
                 source_uri: source.uri.clone(),
                 source_title: source.title.clone(),
+                source_domain: source.domain.clone(),
                 normalized: &prepared.normalized,
                 is_code: prepared.is_code,
             })
@@ -769,7 +774,10 @@ impl SourceService {
                             "statement re-extraction complete"
                         );
                         // Extract entities from statements (Phase 4, ADR-0015).
-                        if let Err(e) = self.extract_entities_from_statements(id).await {
+                        if let Err(e) = self
+                            .extract_entities_from_statements(id, source.domain.as_deref())
+                            .await
+                        {
                             tracing::warn!(
                                 source_id = %id,
                                 error = %e,

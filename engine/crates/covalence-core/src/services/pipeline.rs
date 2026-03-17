@@ -61,6 +61,8 @@ pub(crate) struct PipelineInput<'a> {
     pub source_uri: Option<String>,
     /// Optional title for extraction context.
     pub source_title: Option<String>,
+    /// Knowledge domain (code, spec, design, research, external).
+    pub source_domain: Option<String>,
     /// Normalized text to chunk and process.
     pub normalized: &'a str,
     /// Whether this is a code source (skips coref).
@@ -634,6 +636,7 @@ impl SourceService {
                             ExtractionProvenance::Chunk(chunk_id),
                             extraction_method,
                             input.source_id,
+                            input.source_domain.as_deref(),
                         )
                         .await?;
                     let Some(node_id) = node_id else {
@@ -798,6 +801,7 @@ impl SourceService {
         provenance: ExtractionProvenance,
         extraction_method: &str,
         source_id: SourceId,
+        source_domain: Option<&str>,
     ) -> Result<Option<NodeId>> {
         use crate::ingestion::resolver::MatchType;
         use sqlx::Row;
@@ -848,7 +852,9 @@ impl SourceService {
                     return Ok(None);
                 }
                 MatchType::New => {
-                    let node = self.create_node_in_tx(&mut tx, entity).await?;
+                    let node = self
+                        .create_node_in_tx(&mut tx, entity, source_domain)
+                        .await?;
                     (node.id, MatchType::New)
                 }
                 ref mt => {
@@ -857,7 +863,9 @@ impl SourceService {
                         Self::bump_mention_in_tx(&mut tx, nid).await?;
                         (nid, match_type)
                     } else {
-                        let node = self.create_node_in_tx(&mut tx, entity).await?;
+                        let node = self
+                            .create_node_in_tx(&mut tx, entity, source_domain)
+                            .await?;
                         (node.id, MatchType::New)
                     }
                 }
@@ -876,7 +884,9 @@ impl SourceService {
                 Self::bump_mention_in_tx(&mut tx, nid).await?;
                 (nid, MatchType::Exact)
             } else {
-                let node = self.create_node_in_tx(&mut tx, entity).await?;
+                let node = self
+                    .create_node_in_tx(&mut tx, entity, source_domain)
+                    .await?;
                 (node.id, MatchType::New)
             }
         };
@@ -999,8 +1009,18 @@ impl SourceService {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         entity: &crate::ingestion::extractor::ExtractedEntity,
+        source_domain: Option<&str>,
     ) -> Result<Node> {
+        use crate::models::node::derive_entity_class_with_context;
         let mut node = Node::new(entity.name.clone(), entity.entity_type.clone());
+        // Override entity_class with source-domain-aware derivation.
+        // This prevents code-typed entities (struct, function) extracted
+        // from non-code sources from being classified as Code.
+        node.entity_class = Some(
+            derive_entity_class_with_context(&entity.entity_type, source_domain)
+                .as_str()
+                .to_string(),
+        );
         node.description = entity.description.clone();
 
         // Merge entity metadata (e.g. ast_hash) into node properties.
@@ -1018,20 +1038,23 @@ impl SourceService {
 
         sqlx::query(
             "INSERT INTO nodes (
-                id, canonical_name, node_type, description,
+                id, canonical_name, node_type, entity_class,
+                description,
                 properties, confidence_breakdown,
                 clearance_level, first_seen, last_seen,
                 mention_count
             ) VALUES (
                 $1, $2, $3, $4,
-                $5, $6,
-                $7, $8, $9,
-                $10
+                $5,
+                $6, $7,
+                $8, $9, $10,
+                $11
             )",
         )
         .bind(node.id)
         .bind(&node.canonical_name)
         .bind(&node.node_type)
+        .bind(&node.entity_class)
         .bind(&node.description)
         .bind(&node.properties)
         .bind(&confidence_json)
@@ -1175,6 +1198,7 @@ impl SourceService {
     pub(crate) async fn extract_entities_from_statements(
         &self,
         source_id: SourceId,
+        source_domain: Option<&str>,
     ) -> Result<usize> {
         let extractor = match self.extractor.as_ref() {
             Some(e) => e,
@@ -1243,6 +1267,7 @@ impl SourceService {
                         ExtractionProvenance::Statement(stmt_id),
                         "llm_statement",
                         source_id,
+                        source_domain,
                     )
                     .await?;
                 let Some(node_id) = node_id else {
