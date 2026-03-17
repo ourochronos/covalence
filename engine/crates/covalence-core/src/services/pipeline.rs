@@ -728,13 +728,31 @@ impl SourceService {
                         {
                             continue;
                         }
-                        // Get raw source from properties
-                        let raw = node
-                            .properties
-                            .get("raw_source")
-                            .and_then(|v| v.as_str())
+                        // Get source code from the chunk that produced
+                        // this entity via extraction provenance.
+                        let chunk_content: Option<String> = sqlx::query_scalar(
+                            "SELECT c.content FROM extractions ex \
+                             JOIN chunks c ON c.id = ex.chunk_id \
+                             WHERE ex.entity_id = $1 AND ex.entity_type = 'node' \
+                               AND ex.chunk_id IS NOT NULL \
+                             ORDER BY ex.confidence DESC LIMIT 1",
+                        )
+                        .bind(nid)
+                        .fetch_optional(self.repo.pool())
+                        .await
+                        .ok()
+                        .flatten();
+
+                        let raw = chunk_content
+                            .as_deref()
                             .or(node.description.as_deref())
                             .unwrap_or(&node.canonical_name);
+
+                        // Skip very short code (bare signatures without
+                        // bodies aren't worth summarizing).
+                        if raw.len() < 50 {
+                            continue;
+                        }
 
                         let prompt = format!(
                             "You are a code documentation engine. Read the following code \
