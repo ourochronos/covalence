@@ -528,6 +528,8 @@ impl AppState {
                 qs.run_worker().await;
             });
         }
+        // Pipeline watchdog: detects stalled sources and re-triggers fan-in.
+        queue_service.spawn_watchdog();
 
         Ok(Self {
             config,
