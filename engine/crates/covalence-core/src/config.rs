@@ -432,6 +432,10 @@ pub struct RetryQueueConfig {
     pub reprocess_concurrency: usize,
     /// Max concurrent edge synthesis jobs.
     pub edge_concurrency: usize,
+    /// Maximum time a single job can run before being timed out, in
+    /// seconds. Prevents long-running jobs from holding semaphore
+    /// permits indefinitely.
+    pub job_timeout_secs: u64,
 }
 
 impl Default for RetryQueueConfig {
@@ -443,6 +447,7 @@ impl Default for RetryQueueConfig {
             max_attempts: 5,
             reprocess_concurrency: 2,
             edge_concurrency: 1,
+            job_timeout_secs: 600, // 10 minutes
         }
     }
 }
@@ -597,6 +602,7 @@ impl Config {
                 max_attempts: env_parse("COVALENCE_QUEUE_MAX_ATTEMPTS", 5)?,
                 reprocess_concurrency: env_parse("COVALENCE_QUEUE_REPROCESS_CONCURRENCY", 2)?,
                 edge_concurrency: env_parse("COVALENCE_QUEUE_EDGE_CONCURRENCY", 1)?,
+                job_timeout_secs: env_parse("COVALENCE_QUEUE_JOB_TIMEOUT", 600)?,
             },
         })
     }

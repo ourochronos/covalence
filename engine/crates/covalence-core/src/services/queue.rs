@@ -217,6 +217,7 @@ impl RetryQueueService {
         let source_service = self.source_service.get().cloned();
         let base_backoff = self.config.base_backoff_secs;
         let max_backoff = self.config.max_backoff_secs;
+        let job_timeout = std::time::Duration::from_secs(self.config.job_timeout_secs);
 
         tokio::spawn(async move {
             let job_id = job.id;
@@ -228,7 +229,16 @@ impl RetryQueueService {
                 "executing queue job"
             );
 
-            let result = execute_job(&job, source_service.as_ref()).await;
+            let result =
+                match tokio::time::timeout(job_timeout, execute_job(&job, source_service.as_ref()))
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(crate::error::Error::Ingestion(format!(
+                        "job timed out after {}s",
+                        job_timeout.as_secs()
+                    ))),
+                };
 
             match result {
                 Ok(()) => {
