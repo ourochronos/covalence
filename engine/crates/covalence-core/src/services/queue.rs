@@ -76,6 +76,51 @@ impl RetryQueueService {
         Ok(job.map(|j| j.id))
     }
 
+    /// Enqueue per-chunk extraction jobs for all chunks of a source.
+    ///
+    /// Use this after the monolithic reprocess has created chunks.
+    /// The extraction → summary → compose pipeline then runs via
+    /// the async job DAG with fan-in triggers.
+    pub async fn enqueue_extract_chunks(&self, source_id: SourceId) -> Result<u64> {
+        let chunks: Vec<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT id FROM chunks WHERE source_id = $1")
+                .bind(source_id)
+                .fetch_all(self.repo.pool())
+                .await?;
+
+        let mut enqueued = 0u64;
+        for (chunk_id,) in &chunks {
+            let payload = serde_json::json!({
+                "chunk_id": chunk_id.to_string(),
+                "source_id": source_id.into_uuid().to_string(),
+            });
+            let key = format!("extract_chunk:{chunk_id}");
+            match JobQueueRepo::enqueue(
+                &*self.repo,
+                JobKind::ExtractChunk,
+                payload,
+                self.config.max_attempts,
+                Some(&key),
+            )
+            .await
+            {
+                Ok(Some(_)) => enqueued += 1,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(chunk_id = %chunk_id, error = %e, "failed to enqueue extract job");
+                }
+            }
+        }
+
+        tracing::info!(
+            source_id = %source_id,
+            chunks = chunks.len(),
+            enqueued,
+            "enqueued extract_chunk jobs"
+        );
+        Ok(enqueued)
+    }
+
     /// Enqueue semantic summary jobs for all unsummarized code entities.
     ///
     /// Returns the number of jobs enqueued.
