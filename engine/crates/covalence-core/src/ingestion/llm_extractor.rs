@@ -11,68 +11,17 @@ use crate::ingestion::extractor::{
 };
 use crate::ingestion::utils::sanitize_latex_in_json;
 
-const SYSTEM_PROMPT: &str = r#"You are an entity and relationship extractor. Given a text passage, extract all notable entities and relationships.
-
-Return a JSON object with this exact schema:
-{
-  "entities": [
-    {
-      "name": "entity name as it appears in text",
-      "entity_type": "person|organization|location|concept|technology|algorithm|framework|dataset|metric|model|event|role",
-      "description": "brief description or null",
-      "confidence": 0.0-1.0
-    }
-  ],
-  "relationships": [
-    {
-      "source_name": "source entity name",
-      "target_name": "target entity name",
-      "rel_type": "relationship type (e.g. works_at, is_part_of, created, located_in)",
-      "description": "brief description or null",
-      "confidence": 0.0-1.0
-    }
-  ]
+/// Entity extraction system prompt — loaded from `engine/prompts/entity_extraction.md`
+/// at runtime, with compiled-in fallback.
+fn system_prompt() -> &'static str {
+    crate::services::prompts::entity_extraction_template()
 }
 
-Rules:
-- Only extract entities and relationships clearly supported by the text.
-- Use consistent entity names (match the text exactly).
-- Confidence should reflect how clearly the text supports the extraction.
-- Do NOT extract entities from illustrative examples, hypothetical scenarios, or placeholder text (e.g. "suppose Alice sends a message to Bob", "for example, John works at Google"). These are not real facts.
-- Do NOT extract bibliographic references, citations, or items from reference/bibliography sections. Specifically:
-  - Do NOT extract paper titles that appear in citation contexts (e.g. "Retrieval-augmented generation for knowledge-intensive NLP tasks").
-  - Do NOT extract author names that appear only in citation contexts (e.g. "Lewis et al. (2020)", "Smith and Jones").
-  - Do NOT extract journal or conference names from citations (e.g. "Proceedings of NeurIPS", "arXiv preprint").
-  - Do NOT extract dataset names that are only mentioned in passing citations without substantive discussion.
-  - If an entity is BOTH cited AND substantively discussed in the text (i.e., the text explains what it is, how it works, or why it matters), then extract it. A bare mention like "as shown in [Smith 2020]" is NOT substantive discussion.
-- Return valid JSON only, no markdown fences or extra text."#;
-
-/// System prompt for relationship-only extraction (used in two-pass mode).
-///
-/// Receives pre-identified entities from the first pass (e.g., GLiNER)
-/// and focuses the LLM on finding relationships between them only.
-const SYSTEM_PROMPT_RELATIONSHIPS: &str = r#"You are a relationship extractor. The following entities have been identified in the text below.
-
-Given the text, extract only the relationships between these entities. Do not add new entities.
-
-Return a JSON object with this exact schema:
-{
-  "relationships": [
-    {
-      "source_name": "source entity name (must match an entity above)",
-      "target_name": "target entity name (must match an entity above)",
-      "rel_type": "relationship type (e.g. works_at, is_part_of, created, located_in)",
-      "description": "brief description or null",
-      "confidence": 0.0-1.0
-    }
-  ]
+/// Relationship extraction system prompt — loaded from
+/// `engine/prompts/relationship_extraction.md`.
+fn system_prompt_relationships() -> &'static str {
+    crate::services::prompts::relationship_extraction_template()
 }
-
-Rules:
-- Only extract relationships clearly supported by the text.
-- source_name and target_name MUST match entity names from the provided list.
-- Confidence should reflect how clearly the text supports the relationship.
-- Return valid JSON only, no markdown fences or extra text."#;
 
 /// An extractor that calls an OpenAI-compatible chat completions endpoint.
 pub struct LlmExtractor {
@@ -127,7 +76,7 @@ impl LlmExtractor {
             messages: vec![
                 ChatMessage {
                     role: "system",
-                    content: SYSTEM_PROMPT_RELATIONSHIPS,
+                    content: system_prompt_relationships(),
                 },
                 ChatMessage {
                     role: "user",
@@ -439,7 +388,7 @@ impl Extractor for LlmExtractor {
             messages: vec![
                 ChatMessage {
                     role: "system",
-                    content: SYSTEM_PROMPT,
+                    content: system_prompt(),
                 },
                 ChatMessage {
                     role: "user",
@@ -594,7 +543,7 @@ impl Extractor for ChatBackendExtractor {
 
         let content = self
             .backend
-            .chat(SYSTEM_PROMPT, &user_msg, true, 0.0)
+            .chat(system_prompt(), &user_msg, true, 0.0)
             .await?;
 
         // Strip markdown fences (CLI backends often wrap JSON in ```).

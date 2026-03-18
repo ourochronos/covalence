@@ -72,30 +72,17 @@ pub trait SourceSummaryCompiler: Send + Sync {
 
 // ── LLM implementation ──────────────────────────────────────────
 
-const SECTION_SYSTEM_PROMPT: &str = r#"You are a knowledge synthesis assistant. Given a set of atomic knowledge claims (statements) that belong to a single topic cluster, produce a coherent section with a title and summary.
-
-Return a JSON object with this exact schema:
-{
-  "title": "A concise, descriptive title for this section (3-8 words)",
-  "summary": "A well-written paragraph that synthesizes all the statements into a coherent narrative. Preserve technical precision. Do not add information not present in the statements."
+/// Section compilation system prompt — loaded from
+/// `engine/prompts/section_compilation.md`.
+fn section_system_prompt() -> &'static str {
+    crate::services::prompts::section_compilation_template()
 }
 
-Rules:
-- The title should be specific and descriptive, not generic (e.g., "Gradient Descent Optimization" not "Methods").
-- The summary should be 2-6 sentences that flow naturally.
-- Preserve all specific numbers, names, and terminology from the statements.
-- Do NOT add information beyond what the statements contain.
-- Do NOT include meta-commentary about the statements themselves.
-- Return valid JSON only, no markdown fences or extra text."#;
-
-const SOURCE_SUMMARY_SYSTEM_PROMPT: &str = r#"You are a knowledge synthesis assistant. Given a set of section summaries from a single source document, produce a concise overall summary of the entire source.
-
-Rules:
-- Write 2-4 sentences that capture the key themes and contributions.
-- Preserve technical precision and specific terminology.
-- Do NOT list sections — synthesize across them.
-- Do NOT add information beyond what the sections contain.
-- Return the summary as plain text (not JSON)."#;
+/// Source summary system prompt — loaded from
+/// `engine/prompts/source_summary.md`.
+fn source_summary_system_prompt() -> &'static str {
+    crate::services::prompts::source_summary_template()
+}
 
 /// LLM-driven section compiler backed by [`ChatBackend`].
 pub struct LlmSectionCompiler {
@@ -143,7 +130,7 @@ impl SectionCompiler for LlmSectionCompiler {
 
         let content = self
             .backend
-            .chat(SECTION_SYSTEM_PROMPT, &user_content, true, 0.3)
+            .chat(section_system_prompt(), &user_content, true, 0.3)
             .await?;
 
         // Strip markdown code fences if the LLM wrapped the JSON.
@@ -199,7 +186,7 @@ impl SourceSummaryCompiler for LlmSectionCompiler {
 
         let content = self
             .backend
-            .chat(SOURCE_SUMMARY_SYSTEM_PROMPT, &user_content, false, 0.3)
+            .chat(source_summary_system_prompt(), &user_content, false, 0.3)
             .await?;
 
         Ok(content.trim().to_string())
