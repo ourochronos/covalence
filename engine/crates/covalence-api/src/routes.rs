@@ -94,6 +94,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/queue/retry", post(admin::retry_failed_handler))
         .route("/admin/queue/dead", get(admin::list_dead_handler))
         .route("/admin/queue/dead/clear", post(admin::clear_dead_handler))
+        .route(
+            "/admin/queue/summarize-all",
+            post(admin::enqueue_summarize_all),
+        )
         // Analysis
         .route("/analysis/bootstrap", post(analysis::bootstrap_components))
         .route("/analysis/link", post(analysis::link_domains))

@@ -76,6 +76,61 @@ impl RetryQueueService {
         Ok(job.map(|j| j.id))
     }
 
+    /// Enqueue semantic summary jobs for all unsummarized code entities.
+    ///
+    /// Returns the number of jobs enqueued.
+    pub async fn enqueue_summarize_all(&self) -> Result<u64> {
+        // Find code entities that need summaries.
+        let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+            "SELECT DISTINCT n.id, COALESCE( \
+               (SELECT c.source_id FROM extractions ex \
+                JOIN chunks c ON c.id = ex.chunk_id \
+                WHERE ex.entity_id = n.id AND ex.entity_type = 'node' \
+                LIMIT 1), \
+               '00000000-0000-0000-0000-000000000000'::uuid \
+             ) as source_id \
+             FROM nodes n \
+             WHERE n.entity_class = 'code' \
+               AND (n.properties->>'semantic_summary' IS NULL \
+                    OR n.properties->>'semantic_summary' = '') \
+               AND n.node_type != 'code_test' \
+               AND n.canonical_name NOT LIKE 'test_%'",
+        )
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let mut enqueued = 0u64;
+        for (node_id, source_id) in &rows {
+            let payload = serde_json::json!({
+                "node_id": node_id.to_string(),
+                "source_id": source_id.to_string(),
+            });
+            let key = format!("summarize:{node_id}");
+            match JobQueueRepo::enqueue(
+                &*self.repo,
+                JobKind::SummarizeEntity,
+                payload,
+                self.config.max_attempts,
+                Some(&key),
+            )
+            .await
+            {
+                Ok(Some(_)) => enqueued += 1,
+                Ok(None) => {} // already enqueued
+                Err(e) => {
+                    tracing::warn!(node_id = %node_id, error = %e, "failed to enqueue summary job");
+                }
+            }
+        }
+
+        tracing::info!(
+            enqueued,
+            total = rows.len(),
+            "enqueued summarize_entity jobs"
+        );
+        Ok(enqueued)
+    }
+
     /// Enqueue an edge synthesis job.
     ///
     /// Idempotent: returns `None` if a pending edge synthesis job

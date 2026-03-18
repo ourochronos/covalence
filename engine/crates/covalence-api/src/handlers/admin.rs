@@ -861,6 +861,23 @@ pub async fn list_dead_handler(
     }))
 }
 
+/// Enqueue semantic summary jobs for all unsummarized code entities.
+#[utoipa::path(
+    post,
+    path = "/admin/queue/summarize-all",
+    responses(
+        (status = 200, description = "Summary jobs enqueued",
+         body = serde_json::Value),
+    ),
+    tag = "admin"
+)]
+pub async fn enqueue_summarize_all(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let enqueued = state.queue_service.enqueue_summarize_all().await?;
+    Ok(Json(serde_json::json!({ "enqueued": enqueued })))
+}
+
 /// Clear the dead-letter queue.
 #[utoipa::path(
     post,
