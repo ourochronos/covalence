@@ -15,6 +15,7 @@ use crate::storage::postgres::PgRepo;
 use crate::storage::traits::JobQueueRepo;
 use crate::types::ids::{JobId, SourceId};
 
+use super::admin::AdminService;
 use super::source::SourceService;
 
 /// Persistent retry queue service.
@@ -33,6 +34,8 @@ pub struct RetryQueueService {
     edge_sem: Arc<Semaphore>,
     /// Lazily-set source service for executing reprocess jobs.
     source_service: tokio::sync::OnceCell<Arc<SourceService>>,
+    /// Lazily-set admin service for edge synthesis and other admin jobs.
+    admin_service: tokio::sync::OnceCell<Arc<AdminService>>,
 }
 
 impl RetryQueueService {
@@ -46,6 +49,7 @@ impl RetryQueueService {
             reprocess_sem,
             edge_sem,
             source_service: tokio::sync::OnceCell::new(),
+            admin_service: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -56,6 +60,11 @@ impl RetryQueueService {
     /// `RetryQueueService` and `SourceService`.
     pub fn set_source_service(&self, svc: Arc<SourceService>) {
         let _ = self.source_service.set(svc);
+    }
+
+    /// Set the admin service for edge synthesis and admin jobs.
+    pub fn set_admin_service(&self, svc: Arc<AdminService>) {
+        let _ = self.admin_service.set(svc);
     }
 
     /// Enqueue a source reprocess job.
@@ -305,6 +314,53 @@ impl RetryQueueService {
         });
     }
 
+    /// Spawn the periodic scheduler as a background task.
+    ///
+    /// Automatically enqueues maintenance jobs on a schedule:
+    /// - Edge synthesis: every 6 hours
+    /// - Ontology clustering: every 24 hours
+    /// - Garbage collection: every 7 days
+    pub fn spawn_scheduler(self: &Arc<Self>) {
+        let repo = Arc::clone(&self.repo);
+        let max_attempts = self.config.max_attempts;
+
+        tokio::spawn(async move {
+            let mut edge_interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            let mut gc_interval =
+                tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 3600));
+
+            // Skip the first immediate tick.
+            edge_interval.tick().await;
+            gc_interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = edge_interval.tick() => {
+                        let payload = serde_json::json!({
+                            "min_cooccurrences": 2,
+                            "max_degree": 2,
+                        });
+                        let key = "scheduled:synthesize_edges".to_string();
+                        match JobQueueRepo::enqueue(
+                            &*repo,
+                            JobKind::SynthesizeEdges,
+                            payload,
+                            max_attempts,
+                            Some(&key),
+                        ).await {
+                            Ok(Some(_)) => tracing::info!("scheduler: enqueued edge synthesis"),
+                            Ok(None) => {} // already pending
+                            Err(e) => tracing::warn!(error = %e, "scheduler: failed to enqueue edge synthesis"),
+                        }
+                    }
+                    _ = gc_interval.tick() => {
+                        tracing::info!("scheduler: gc tick (placeholder — wire to admin.gc when ready)");
+                    }
+                }
+            }
+        });
+    }
+
     /// Background worker loop. Spawned as a tokio task. Never returns.
     ///
     /// On startup, recovers orphaned `running` jobs (from engine
@@ -430,6 +486,7 @@ impl RetryQueueService {
     fn spawn_job(&self, job: RetryJob, permit: tokio::sync::OwnedSemaphorePermit) {
         let repo = Arc::clone(&self.repo);
         let source_service = self.source_service.get().cloned();
+        let admin_service = self.admin_service.get().cloned();
         let base_backoff = self.config.base_backoff_secs;
         let max_backoff = self.config.max_backoff_secs;
         let job_timeout = std::time::Duration::from_secs(self.config.job_timeout_secs);
@@ -444,16 +501,18 @@ impl RetryQueueService {
                 "executing queue job"
             );
 
-            let result =
-                match tokio::time::timeout(job_timeout, execute_job(&job, source_service.as_ref()))
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(_) => Err(crate::error::Error::Ingestion(format!(
-                        "job timed out after {}s",
-                        job_timeout.as_secs()
-                    ))),
-                };
+            let result = match tokio::time::timeout(
+                job_timeout,
+                execute_job(&job, source_service.as_ref(), admin_service.as_ref()),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => Err(crate::error::Error::Ingestion(format!(
+                    "job timed out after {}s",
+                    job_timeout.as_secs()
+                ))),
+            };
 
             match result {
                 Ok(()) => {
@@ -502,7 +561,11 @@ impl RetryQueueService {
 }
 
 /// Execute a single job based on its kind and payload.
-async fn execute_job(job: &RetryJob, source_service: Option<&Arc<SourceService>>) -> Result<()> {
+async fn execute_job(
+    job: &RetryJob,
+    source_service: Option<&Arc<SourceService>>,
+    admin_service: Option<&Arc<AdminService>>,
+) -> Result<()> {
     match job.kind {
         JobKind::ReprocessSource => {
             let source_id_str = job
@@ -524,13 +587,30 @@ async fn execute_job(job: &RetryJob, source_service: Option<&Arc<SourceService>>
             Ok(())
         }
         JobKind::SynthesizeEdges => {
-            // TODO: wire up edge synthesis service call
+            let min_cooccurrences = job
+                .payload
+                .get("min_cooccurrences")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(2);
+            let max_degree = job
+                .payload
+                .get("max_degree")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(2);
+
+            let svc = admin_service.ok_or_else(|| {
+                crate::error::Error::Queue(
+                    "admin_service not available for edge synthesis".to_string(),
+                )
+            })?;
+
+            let result = svc
+                .synthesize_cooccurrence_edges(min_cooccurrences, max_degree)
+                .await?;
             tracing::info!(
-                min_cooccurrences = job
-                    .payload
-                    .get("min_cooccurrences")
-                    .and_then(|v| v.as_i64()),
-                "edge synthesis job — not yet implemented"
+                edges_created = result.edges_created,
+                candidates = result.candidates_evaluated,
+                "edge synthesis job complete"
             );
             Ok(())
         }

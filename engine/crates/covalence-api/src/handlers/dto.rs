@@ -269,6 +269,36 @@ pub struct SearchResultResponse {
     pub graph_context: Option<Vec<RelatedEntityResponse>>,
 }
 
+impl From<covalence_core::search::fusion::FusedResult> for SearchResultResponse {
+    fn from(r: covalence_core::search::fusion::FusedResult) -> Self {
+        let graph_context = r.graph_context.map(|gc| {
+            gc.into_iter()
+                .map(|re| RelatedEntityResponse {
+                    name: re.name,
+                    rel_type: re.rel_type,
+                    direction: re.direction,
+                })
+                .collect()
+        });
+        Self {
+            id: r.id,
+            fused_score: r.fused_score,
+            confidence: r.confidence,
+            entity_type: r.entity_type,
+            name: r.name,
+            snippet: r.snippet,
+            content: r.content,
+            source_uri: r.source_uri,
+            source_title: r.source_title,
+            source_type: r.source_type,
+            source_domain: r.source_domain,
+            dimension_scores: r.dimension_scores,
+            dimension_ranks: r.dimension_ranks,
+            graph_context,
+        }
+    }
+}
+
 /// A related entity from the knowledge graph.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RelatedEntityResponse {
