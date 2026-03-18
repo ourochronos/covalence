@@ -131,6 +131,55 @@ impl RetryQueueService {
         Ok(enqueued)
     }
 
+    /// Enqueue source summary composition jobs for code sources that
+    /// have entity summaries but no file-level summary yet.
+    pub async fn enqueue_compose_all(&self) -> Result<u64> {
+        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT s.id \
+             FROM sources s \
+             WHERE s.domain = 'code' \
+               AND s.summary IS NULL \
+               AND EXISTS ( \
+                 SELECT 1 FROM nodes n \
+                 JOIN extractions ex ON ex.entity_id = n.id AND ex.entity_type = 'node' \
+                 JOIN chunks c ON c.id = ex.chunk_id \
+                 WHERE c.source_id = s.id \
+                   AND n.entity_class = 'code' \
+                   AND n.properties->>'semantic_summary' IS NOT NULL \
+               )",
+        )
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let mut enqueued = 0u64;
+        for (source_id,) in &rows {
+            let payload = serde_json::json!({ "source_id": source_id.to_string() });
+            let key = format!("compose:{source_id}");
+            match JobQueueRepo::enqueue(
+                &*self.repo,
+                JobKind::ComposeSourceSummary,
+                payload,
+                self.config.max_attempts,
+                Some(&key),
+            )
+            .await
+            {
+                Ok(Some(_)) => enqueued += 1,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(source_id = %source_id, error = %e, "failed to enqueue compose job");
+                }
+            }
+        }
+
+        tracing::info!(
+            enqueued,
+            total = rows.len(),
+            "enqueued compose_source_summary jobs"
+        );
+        Ok(enqueued)
+    }
+
     /// Enqueue an edge synthesis job.
     ///
     /// Idempotent: returns `None` if a pending edge synthesis job
@@ -388,12 +437,33 @@ async fn execute_job(job: &RetryJob, source_service: Option<&Arc<SourceService>>
             Ok(())
         }
         JobKind::ExtractChunk => {
-            // TODO: extract entities from a single chunk
-            tracing::info!(
-                chunk_id = job.payload.get("chunk_id").and_then(|v| v.as_str()),
-                "extract_chunk job — stub"
-            );
-            Ok(())
+            let chunk_id_str = job
+                .payload
+                .get("chunk_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    crate::error::Error::Queue("missing chunk_id in payload".to_string())
+                })?;
+            let source_id_str = job
+                .payload
+                .get("source_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    crate::error::Error::Queue("missing source_id in payload".to_string())
+                })?;
+            let chunk_uuid = uuid::Uuid::parse_str(chunk_id_str)
+                .map_err(|e| crate::error::Error::Queue(format!("invalid chunk_id: {e}")))?;
+            let source_uuid = uuid::Uuid::parse_str(source_id_str)
+                .map_err(|e| crate::error::Error::Queue(format!("invalid source_id: {e}")))?;
+            let source_id = SourceId::from_uuid(source_uuid);
+
+            let svc = source_service.ok_or_else(|| {
+                crate::error::Error::Queue(
+                    "source_service not available for extract_chunk".to_string(),
+                )
+            })?;
+
+            extract_single_chunk(svc, chunk_uuid, source_id, job).await
         }
         JobKind::SummarizeEntity => {
             let node_id_str = job
@@ -426,24 +496,49 @@ async fn execute_job(job: &RetryJob, source_service: Option<&Arc<SourceService>>
             summarize_single_entity(svc, node_id, source_id).await
         }
         JobKind::ComposeSourceSummary => {
-            // TODO: compose file-level summary from entity summaries
-            tracing::info!(
-                source_id = job.payload.get("source_id").and_then(|v| v.as_str()),
-                "compose_source_summary job — stub"
-            );
-            Ok(())
+            let source_id_str = job
+                .payload
+                .get("source_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    crate::error::Error::Queue("missing source_id in payload".to_string())
+                })?;
+            let source_uuid = uuid::Uuid::parse_str(source_id_str)
+                .map_err(|e| crate::error::Error::Queue(format!("invalid source_id: {e}")))?;
+            let source_id = SourceId::from_uuid(source_uuid);
+
+            let svc = source_service.ok_or_else(|| {
+                crate::error::Error::Queue(
+                    "source_service not available for compose_source_summary".to_string(),
+                )
+            })?;
+
+            compose_source_summary_job(svc, source_id).await
         }
         JobKind::EmbedBatch => {
-            // TODO: embed a batch of items
-            tracing::info!(
-                batch_size = job
-                    .payload
-                    .get("item_ids")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.len()),
-                "embed_batch job — stub"
-            );
-            Ok(())
+            let item_table = job
+                .payload
+                .get("item_table")
+                .and_then(|v| v.as_str())
+                .unwrap_or("nodes");
+            let item_ids: Vec<uuid::Uuid> = job
+                .payload
+                .get("item_ids")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().and_then(|s| uuid::Uuid::parse_str(s).ok()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let svc = source_service.ok_or_else(|| {
+                crate::error::Error::Queue(
+                    "source_service not available for embed_batch".to_string(),
+                )
+            })?;
+
+            embed_batch_job(svc, item_table, &item_ids).await
         }
     }
 }
@@ -692,6 +787,269 @@ async fn summarize_single_entity(
         ms = duration_ms,
         "semantic summary generated (async job)"
     );
+
+    Ok(())
+}
+
+/// Extract entities from a single chunk via the LLM extractor.
+async fn extract_single_chunk(
+    svc: &Arc<SourceService>,
+    chunk_id: uuid::Uuid,
+    source_id: SourceId,
+    job: &RetryJob,
+) -> Result<()> {
+    use crate::ingestion::extractor::ExtractionContext;
+    use crate::services::pipeline::ExtractionProvenance;
+    use crate::storage::traits::{ChunkRepo, SourceRepo};
+    use crate::types::ids::ChunkId;
+    use std::time::Instant;
+
+    let extractor = svc.extractor.as_ref().ok_or_else(|| {
+        crate::error::Error::Queue("no extractor available for extract_chunk".to_string())
+    })?;
+
+    let chunk_id_typed = ChunkId::from_uuid(chunk_id);
+    let chunk = ChunkRepo::get(&*svc.repo, chunk_id_typed)
+        .await?
+        .ok_or_else(|| crate::error::Error::NotFound {
+            entity_type: "chunk",
+            id: chunk_id.to_string(),
+        })?;
+
+    let source = SourceRepo::get(&*svc.repo, source_id).await?;
+    let context = ExtractionContext {
+        source_type: source.as_ref().map(|s| s.source_type.clone()),
+        source_uri: source.as_ref().and_then(|s| s.uri.clone()),
+        source_title: source.as_ref().and_then(|s| s.title.clone()),
+    };
+    let source_domain = source.as_ref().and_then(|s| s.domain.clone());
+
+    let start = Instant::now();
+    let result = extractor.extract(&chunk.content, &context).await?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
+    // Store entities and relationships.
+    let mut entity_count = 0usize;
+    for entity in &result.entities {
+        if super::noise_filter::is_noise_entity(&entity.name, &entity.entity_type) {
+            continue;
+        }
+        let node_id = svc
+            .resolve_and_store_entity(
+                entity,
+                ExtractionProvenance::Chunk(chunk_id_typed),
+                "llm",
+                source_id,
+                source_domain.as_deref(),
+            )
+            .await?;
+        if node_id.is_some() {
+            entity_count += 1;
+        }
+    }
+
+    // Mark chunk as processed.
+    let ingestion_id = job
+        .payload
+        .get("ingestion_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    sqlx::query(
+        "UPDATE chunks SET processing = jsonb_set(\
+           COALESCE(processing, '{}'), '{extraction}', $2::jsonb\
+         ) WHERE id = $1",
+    )
+    .bind(chunk_id)
+    .bind(serde_json::json!({
+        "model": "haiku",
+        "at": chrono::Utc::now().to_rfc3339(),
+        "ms": duration_ms,
+        "entities_found": entity_count,
+        "relationships_found": result.relationships.len(),
+        "ingestion_id": ingestion_id,
+    }))
+    .execute(svc.repo.pool())
+    .await?;
+
+    tracing::info!(
+        chunk_id = %chunk_id,
+        entities = entity_count,
+        ms = duration_ms,
+        "chunk extraction complete (async job)"
+    );
+
+    Ok(())
+}
+
+/// Compose a file-level summary from entity summaries for a code source.
+async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceId) -> Result<()> {
+    use crate::ingestion::embedder::truncate_and_validate;
+    use crate::ingestion::section_compiler::{SectionSummaryEntry, SourceSummaryInput};
+    use crate::storage::traits::SourceRepo;
+    use std::time::Instant;
+
+    let summary_compiler = svc.source_summary_compiler.as_ref().ok_or_else(|| {
+        crate::error::Error::Queue("no summary compiler for compose_source_summary".to_string())
+    })?;
+
+    // Collect entity summaries for this source.
+    let summaries: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT canonical_name, node_type, \
+                COALESCE(properties->>'semantic_summary', \
+                         description, canonical_name) \
+         FROM nodes n \
+         JOIN extractions ex ON ex.entity_id = n.id \
+           AND ex.entity_type = 'node' \
+         JOIN chunks c ON c.id = ex.chunk_id \
+         WHERE c.source_id = $1 \
+           AND n.entity_class = 'code' \
+         GROUP BY n.id, canonical_name, node_type, \
+                  properties, description \
+         ORDER BY n.node_type, n.canonical_name",
+    )
+    .bind(source_id)
+    .fetch_all(svc.repo.pool())
+    .await
+    .unwrap_or_default();
+
+    if summaries.is_empty() {
+        return Ok(());
+    }
+
+    let section_entries: Vec<SectionSummaryEntry> = summaries
+        .iter()
+        .map(|(name, ntype, summary)| SectionSummaryEntry {
+            title: format!("{ntype}: {name}"),
+            summary: summary.clone(),
+        })
+        .collect();
+
+    let source = SourceRepo::get(&*svc.repo, source_id).await?;
+    let file_name = source
+        .as_ref()
+        .and_then(|s| s.uri.as_deref())
+        .and_then(|u| u.rsplit('/').next())
+        .unwrap_or("unknown");
+
+    let start = Instant::now();
+    let summary = summary_compiler
+        .compile_source_summary(&SourceSummaryInput {
+            section_summaries: section_entries,
+            source_title: Some(file_name.to_string()),
+        })
+        .await?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return Ok(());
+    }
+
+    SourceRepo::update_summary(&*svc.repo, source_id, summary).await?;
+
+    // Re-embed from composed summary.
+    if let Some(ref embedder) = svc.embedder {
+        if let Ok(vecs) = embedder.embed(&[summary.to_string()]).await {
+            if let Some(emb) = vecs.first() {
+                if let Ok(t) = truncate_and_validate(emb, svc.table_dims.source, "sources") {
+                    let _ = SourceRepo::update_embedding(&*svc.repo, source_id, &t).await;
+                }
+            }
+        }
+    }
+
+    // Record processing metadata.
+    sqlx::query(
+        "UPDATE sources SET processing = jsonb_set(\
+           COALESCE(processing, '{}'), '{compose}', $2::jsonb\
+         ) WHERE id = $1",
+    )
+    .bind(source_id)
+    .bind(serde_json::json!({
+        "model": "haiku",
+        "at": chrono::Utc::now().to_rfc3339(),
+        "ms": duration_ms,
+        "entities_composed": summaries.len(),
+    }))
+    .execute(svc.repo.pool())
+    .await?;
+
+    tracing::info!(
+        source_id = %source_id,
+        entities = summaries.len(),
+        ms = duration_ms,
+        "source summary composed (async job)"
+    );
+
+    Ok(())
+}
+
+/// Embed a batch of items (nodes or chunks).
+async fn embed_batch_job(
+    svc: &Arc<SourceService>,
+    item_table: &str,
+    item_ids: &[uuid::Uuid],
+) -> Result<()> {
+    use crate::ingestion::embedder::truncate_and_validate;
+    use crate::storage::traits::NodeRepo;
+
+    let embedder = svc.embedder.as_ref().ok_or_else(|| {
+        crate::error::Error::Queue("no embedder available for embed_batch".to_string())
+    })?;
+
+    if item_ids.is_empty() {
+        return Ok(());
+    }
+
+    match item_table {
+        "nodes" => {
+            let mut texts = Vec::with_capacity(item_ids.len());
+            let mut valid_ids = Vec::with_capacity(item_ids.len());
+
+            for &id in item_ids {
+                let node_id = crate::types::ids::NodeId::from_uuid(id);
+                if let Ok(Some(node)) = NodeRepo::get(&*svc.repo, node_id).await {
+                    // Skip nodes that already have embeddings.
+                    let has_emb: bool =
+                        sqlx::query_scalar("SELECT embedding IS NOT NULL FROM nodes WHERE id = $1")
+                            .bind(id)
+                            .fetch_one(svc.repo.pool())
+                            .await
+                            .unwrap_or(true);
+
+                    if has_emb {
+                        continue;
+                    }
+
+                    let text = match &node.description {
+                        Some(desc) if !desc.is_empty() => {
+                            format!("{}: {}", node.canonical_name, desc)
+                        }
+                        _ => node.canonical_name.clone(),
+                    };
+                    texts.push(text);
+                    valid_ids.push(node_id);
+                }
+            }
+
+            if !texts.is_empty() {
+                let embeddings = embedder.embed(&texts).await?;
+                for (nid, emb) in valid_ids.iter().zip(embeddings.iter()) {
+                    if let Ok(t) = truncate_and_validate(emb, svc.table_dims.node, "nodes") {
+                        let _ = NodeRepo::update_embedding(&*svc.repo, *nid, &t).await;
+                    }
+                }
+                tracing::info!(
+                    embedded = valid_ids.len(),
+                    "batch node embedding complete (async job)"
+                );
+            }
+        }
+        _ => {
+            tracing::warn!(table = item_table, "embed_batch: unsupported item table");
+        }
+    }
 
     Ok(())
 }

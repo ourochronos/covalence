@@ -878,6 +878,23 @@ pub async fn enqueue_summarize_all(
     Ok(Json(serde_json::json!({ "enqueued": enqueued })))
 }
 
+/// Enqueue source summary composition for all code sources with entity summaries.
+#[utoipa::path(
+    post,
+    path = "/admin/queue/compose-all",
+    responses(
+        (status = 200, description = "Compose jobs enqueued",
+         body = serde_json::Value),
+    ),
+    tag = "admin"
+)]
+pub async fn enqueue_compose_all(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let enqueued = state.queue_service.enqueue_compose_all().await?;
+    Ok(Json(serde_json::json!({ "enqueued": enqueued })))
+}
+
 /// Clear the dead-letter queue.
 #[utoipa::path(
     post,

@@ -98,6 +98,7 @@ pub fn router(state: AppState) -> Router {
             "/admin/queue/summarize-all",
             post(admin::enqueue_summarize_all),
         )
+        .route("/admin/queue/compose-all", post(admin::enqueue_compose_all))
         // Analysis
         .route("/analysis/bootstrap", post(analysis::bootstrap_components))
         .route("/analysis/link", post(analysis::link_domains))
