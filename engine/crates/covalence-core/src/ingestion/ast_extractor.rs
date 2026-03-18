@@ -182,7 +182,7 @@ fn extract_rust_node(
         "enum_item" => extract_rust_enum(source, node, entities),
         "trait_item" => extract_rust_trait(source, node, entities),
         "function_item" => {
-            extract_rust_function(source, node, entities);
+            extract_rust_function_full(source, node, entities, relationships);
         }
         "impl_item" => {
             extract_rust_impl(source, node, entities, relationships);
@@ -297,11 +297,12 @@ fn extract_rust_trait(source: &str, node: &tree_sitter::Node, entities: &mut Vec
     });
 }
 
-/// Extract a Rust function entity with signature in description.
-fn extract_rust_function(
+/// Extract a Rust function with relationships (CALLS, USES_TYPE, entity).
+fn extract_rust_function_full(
     source: &str,
     node: &tree_sitter::Node,
     entities: &mut Vec<ExtractedEntity>,
+    relationships: &mut Vec<ExtractedRelationship>,
 ) {
     let name = match child_text_by_field(source, node, "name") {
         Some(n) => n,
@@ -312,12 +313,38 @@ fn extract_rust_function(
     let signature = extract_signature_before_brace(text);
 
     entities.push(ExtractedEntity {
-        name,
+        name: name.clone(),
         entity_type: "function".to_string(),
         description: Some(signature),
         confidence: 1.0,
         metadata: ast_metadata(source, node),
     });
+
+    // Extract CALLS relationships from function body.
+    if let Some(body) = node.child_by_field_name("body") {
+        let calls = extract_call_targets(source, &body);
+        for callee in &calls {
+            relationships.push(ExtractedRelationship {
+                source_name: name.clone(),
+                target_name: callee.clone(),
+                rel_type: "calls".to_string(),
+                description: None,
+                confidence: 1.0,
+            });
+        }
+    }
+
+    // Extract USES_TYPE relationships from parameters and return type.
+    let types = extract_type_references(source, node);
+    for type_name in &types {
+        relationships.push(ExtractedRelationship {
+            source_name: name.clone(),
+            target_name: type_name.clone(),
+            rel_type: "uses_type".to_string(),
+            description: None,
+            confidence: 1.0,
+        });
+    }
 }
 
 /// Extract a Rust impl block entity and its relationships.
@@ -379,18 +406,11 @@ fn extract_rust_impl(
             };
             if child.kind() == "function_item" {
                 if let Some(fn_name) = child_text_by_field(source, &child, "name") {
-                    // Create a function entity for the method.
-                    let method_text = node_text(source, &child);
-                    let method_sig = extract_signature_before_brace(method_text);
-                    entities.push(ExtractedEntity {
-                        name: fn_name.clone(),
-                        entity_type: "function".to_string(),
-                        description: Some(method_sig),
-                        confidence: 1.0,
-                        metadata: ast_metadata(source, &child),
-                    });
+                    // Extract method as full function entity with
+                    // CALLS + USES_TYPE relationships.
+                    extract_rust_function_full(source, &child, entities, relationships);
 
-                    // Relationship: impl → method
+                    // Relationship: impl → method (contains)
                     relationships.push(ExtractedRelationship {
                         source_name: impl_name.clone(),
                         target_name: fn_name,
@@ -949,6 +969,181 @@ fn extract_go_embedded_types(source: &str, node: &tree_sitter::Node) -> Vec<Stri
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
+
+// ── CALLS and USES_TYPE extraction ─────────────────────────────
+
+/// Recursively walk an AST subtree to find call targets.
+///
+/// Extracts function/method names from `call_expression` nodes.
+/// Returns deduplicated callee names.
+fn extract_call_targets(source: &str, node: &tree_sitter::Node) -> Vec<String> {
+    let mut calls = Vec::new();
+    collect_calls_recursive(source, node, &mut calls);
+    calls.sort();
+    calls.dedup();
+    calls
+}
+
+fn collect_calls_recursive(source: &str, node: &tree_sitter::Node, calls: &mut Vec<String>) {
+    if node.kind() == "call_expression" {
+        // Try to get the callee name.
+        if let Some(func_node) = node.child_by_field_name("function") {
+            let callee = match func_node.kind() {
+                // Direct call: foo()
+                "identifier" => Some(node_text(source, &func_node).to_string()),
+                // Method call: self.foo() or obj.foo()
+                "field_expression" => func_node
+                    .child_by_field_name("field")
+                    .map(|f| node_text(source, &f).to_string()),
+                // Scoped call: Module::foo()
+                "scoped_identifier" => func_node
+                    .child_by_field_name("name")
+                    .map(|n| node_text(source, &n).to_string()),
+                _ => None,
+            };
+            if let Some(name) = callee {
+                // Skip very common names that aren't useful as edges.
+                if !matches!(
+                    name.as_str(),
+                    "clone"
+                        | "to_string"
+                        | "into"
+                        | "from"
+                        | "unwrap"
+                        | "expect"
+                        | "ok"
+                        | "err"
+                        | "map"
+                        | "and_then"
+                        | "unwrap_or"
+                        | "unwrap_or_default"
+                        | "unwrap_or_else"
+                        | "is_some"
+                        | "is_none"
+                        | "is_ok"
+                        | "is_err"
+                        | "as_ref"
+                        | "as_str"
+                        | "as_deref"
+                        | "len"
+                        | "is_empty"
+                        | "push"
+                        | "insert"
+                        | "get"
+                        | "contains"
+                        | "iter"
+                        | "collect"
+                        | "filter"
+                        | "format"
+                        | "println"
+                        | "eprintln"
+                        | "write"
+                        | "debug"
+                        | "info"
+                        | "warn"
+                        | "error"
+                        | "bind"
+                        | "execute"
+                        | "fetch_one"
+                        | "fetch_all"
+                        | "fetch_optional"
+                        | "await"
+                ) {
+                    calls.push(name);
+                }
+            }
+        }
+    }
+
+    // Recurse into children.
+    for i in 0..node.child_count() as u32 {
+        if let Some(child) = node.child(i) {
+            collect_calls_recursive(source, &child, calls);
+        }
+    }
+}
+
+/// Extract type references from a function's parameters and return type.
+///
+/// Walks the `parameters` and `return_type` fields of a function_item
+/// to find type_identifier nodes. Returns deduplicated type names.
+fn extract_type_references(source: &str, node: &tree_sitter::Node) -> Vec<String> {
+    let mut types = Vec::new();
+
+    // Walk parameters.
+    if let Some(params) = node.child_by_field_name("parameters") {
+        collect_type_identifiers(source, &params, &mut types);
+    }
+
+    // Walk return type.
+    if let Some(ret) = node.child_by_field_name("return_type") {
+        collect_type_identifiers(source, &ret, &mut types);
+    }
+
+    types.sort();
+    types.dedup();
+
+    // Filter out primitives and very common types.
+    types.retain(|t| {
+        !matches!(
+            t.as_str(),
+            "bool"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "f32"
+                | "f64"
+                | "str"
+                | "String"
+                | "Vec"
+                | "Option"
+                | "Result"
+                | "Box"
+                | "Arc"
+                | "Rc"
+                | "HashMap"
+                | "HashSet"
+                | "BTreeMap"
+                | "BTreeSet"
+                | "Cow"
+                | "Pin"
+                | "Future"
+                | "Send"
+                | "Sync"
+                | "Clone"
+                | "Debug"
+                | "Display"
+                | "Default"
+                | "Iterator"
+                | "IntoIterator"
+                | "Serialize"
+                | "Deserialize"
+                | "Self"
+        )
+    });
+
+    types
+}
+
+fn collect_type_identifiers(source: &str, node: &tree_sitter::Node, types: &mut Vec<String>) {
+    if node.kind() == "type_identifier" {
+        types.push(node_text(source, node).to_string());
+    }
+    for i in 0..node.child_count() as u32 {
+        if let Some(child) = node.child(i) {
+            collect_type_identifiers(source, &child, types);
+        }
+    }
+}
 
 /// Get text of a named field child.
 fn child_text_by_field(source: &str, node: &tree_sitter::Node, field: &str) -> Option<String> {
