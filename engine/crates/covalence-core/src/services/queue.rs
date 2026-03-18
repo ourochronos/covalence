@@ -560,52 +560,45 @@ impl RetryQueueService {
     }
 }
 
-/// Execute a single job based on its kind and payload.
+/// Parse a typed payload from a job's JSON, producing a clear error on failure.
+fn parse_payload<T: serde::de::DeserializeOwned>(job: &RetryJob) -> Result<T> {
+    serde_json::from_value(job.payload.clone())
+        .map_err(|e| crate::error::Error::Queue(format!("invalid payload for {:?}: {e}", job.kind)))
+}
+
+/// Parse a UUID string, producing a clear queue error on failure.
+fn parse_uuid(s: &str, field: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(s)
+        .map_err(|e| crate::error::Error::Queue(format!("invalid {field} UUID: {e}")))
+}
+
+/// Require a service or return a queue error.
+fn require_svc<'a, T>(svc: Option<&'a Arc<T>>, name: &str) -> Result<&'a Arc<T>> {
+    svc.ok_or_else(|| crate::error::Error::Queue(format!("{name} not available")))
+}
+
+/// Execute a single job based on its kind and typed payload.
 async fn execute_job(
     job: &RetryJob,
     source_service: Option<&Arc<SourceService>>,
     admin_service: Option<&Arc<AdminService>>,
 ) -> Result<()> {
+    use crate::models::retry_job::*;
+
     match job.kind {
         JobKind::ReprocessSource => {
-            let source_id_str = job
-                .payload
-                .get("source_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    crate::error::Error::Queue("missing source_id in payload".to_string())
-                })?;
-            let uuid = uuid::Uuid::parse_str(source_id_str)
-                .map_err(|e| crate::error::Error::Queue(format!("invalid source_id UUID: {e}")))?;
-            let source_id = SourceId::from_uuid(uuid);
-
-            let svc = source_service.ok_or_else(|| {
-                crate::error::Error::Queue("source_service not available for reprocess".to_string())
-            })?;
-
-            svc.reprocess(source_id).await?;
+            let p: SourcePayload = parse_payload(job)?;
+            let source_id = SourceId::from_uuid(parse_uuid(&p.source_id, "source_id")?);
+            require_svc(source_service, "source_service")?
+                .reprocess(source_id)
+                .await?;
             Ok(())
         }
         JobKind::SynthesizeEdges => {
-            let min_cooccurrences = job
-                .payload
-                .get("min_cooccurrences")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(2);
-            let max_degree = job
-                .payload
-                .get("max_degree")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(2);
-
-            let svc = admin_service.ok_or_else(|| {
-                crate::error::Error::Queue(
-                    "admin_service not available for edge synthesis".to_string(),
-                )
-            })?;
-
+            let p: SynthesizePayload = parse_payload(job)?;
+            let svc = require_svc(admin_service, "admin_service")?;
             let result = svc
-                .synthesize_cooccurrence_edges(min_cooccurrences, max_degree)
+                .synthesize_cooccurrence_edges(p.min_cooccurrences, p.max_degree)
                 .await?;
             tracing::info!(
                 edges_created = result.edges_created,
@@ -615,8 +608,6 @@ async fn execute_job(
             Ok(())
         }
         JobKind::ExtractStatements | JobKind::ExtractEntities => {
-            // These kinds are claimed but not yet separately
-            // implemented — reprocess handles the full pipeline.
             tracing::warn!(
                 kind = ?job.kind,
                 "job kind not yet independently implemented, marking as succeeded"
@@ -624,108 +615,34 @@ async fn execute_job(
             Ok(())
         }
         JobKind::ExtractChunk => {
-            let chunk_id_str = job
-                .payload
-                .get("chunk_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    crate::error::Error::Queue("missing chunk_id in payload".to_string())
-                })?;
-            let source_id_str = job
-                .payload
-                .get("source_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    crate::error::Error::Queue("missing source_id in payload".to_string())
-                })?;
-            let chunk_uuid = uuid::Uuid::parse_str(chunk_id_str)
-                .map_err(|e| crate::error::Error::Queue(format!("invalid chunk_id: {e}")))?;
-            let source_uuid = uuid::Uuid::parse_str(source_id_str)
-                .map_err(|e| crate::error::Error::Queue(format!("invalid source_id: {e}")))?;
-            let source_id = SourceId::from_uuid(source_uuid);
-
-            let svc = source_service.ok_or_else(|| {
-                crate::error::Error::Queue(
-                    "source_service not available for extract_chunk".to_string(),
-                )
-            })?;
-
+            let p: ExtractChunkPayload = parse_payload(job)?;
+            let chunk_uuid = parse_uuid(&p.chunk_id, "chunk_id")?;
+            let source_id = SourceId::from_uuid(parse_uuid(&p.source_id, "source_id")?);
+            let svc = require_svc(source_service, "source_service")?;
             extract_single_chunk(svc, chunk_uuid, source_id, job).await
         }
         JobKind::SummarizeEntity => {
-            let node_id_str = job
-                .payload
-                .get("node_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    crate::error::Error::Queue("missing node_id in payload".to_string())
-                })?;
-            let source_id_str = job
-                .payload
-                .get("source_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    crate::error::Error::Queue("missing source_id in payload".to_string())
-                })?;
-            let node_uuid = uuid::Uuid::parse_str(node_id_str)
-                .map_err(|e| crate::error::Error::Queue(format!("invalid node_id: {e}")))?;
-            let source_uuid = uuid::Uuid::parse_str(source_id_str)
-                .map_err(|e| crate::error::Error::Queue(format!("invalid source_id: {e}")))?;
-            let node_id = crate::types::ids::NodeId::from_uuid(node_uuid);
-            let source_id = SourceId::from_uuid(source_uuid);
-
-            let svc = source_service.ok_or_else(|| {
-                crate::error::Error::Queue(
-                    "source_service not available for summarize_entity".to_string(),
-                )
-            })?;
-
+            let p: SummarizePayload = parse_payload(job)?;
+            let node_id = crate::types::ids::NodeId::from_uuid(parse_uuid(&p.node_id, "node_id")?);
+            let source_id = SourceId::from_uuid(parse_uuid(&p.source_id, "source_id")?);
+            let svc = require_svc(source_service, "source_service")?;
             summarize_single_entity(svc, node_id, source_id).await
         }
         JobKind::ComposeSourceSummary => {
-            let source_id_str = job
-                .payload
-                .get("source_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    crate::error::Error::Queue("missing source_id in payload".to_string())
-                })?;
-            let source_uuid = uuid::Uuid::parse_str(source_id_str)
-                .map_err(|e| crate::error::Error::Queue(format!("invalid source_id: {e}")))?;
-            let source_id = SourceId::from_uuid(source_uuid);
-
-            let svc = source_service.ok_or_else(|| {
-                crate::error::Error::Queue(
-                    "source_service not available for compose_source_summary".to_string(),
-                )
-            })?;
-
+            let p: SourcePayload = parse_payload(job)?;
+            let source_id = SourceId::from_uuid(parse_uuid(&p.source_id, "source_id")?);
+            let svc = require_svc(source_service, "source_service")?;
             compose_source_summary_job(svc, source_id).await
         }
         JobKind::EmbedBatch => {
-            let item_table = job
-                .payload
-                .get("item_table")
-                .and_then(|v| v.as_str())
-                .unwrap_or("nodes");
-            let item_ids: Vec<uuid::Uuid> = job
-                .payload
-                .get("item_ids")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().and_then(|s| uuid::Uuid::parse_str(s).ok()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let svc = source_service.ok_or_else(|| {
-                crate::error::Error::Queue(
-                    "source_service not available for embed_batch".to_string(),
-                )
-            })?;
-
-            embed_batch_job(svc, item_table, &item_ids).await
+            let p: EmbedBatchPayload = parse_payload(job)?;
+            let item_ids: Vec<uuid::Uuid> = p
+                .item_ids
+                .iter()
+                .filter_map(|s| uuid::Uuid::parse_str(s).ok())
+                .collect();
+            let svc = require_svc(source_service, "source_service")?;
+            embed_batch_job(svc, &p.item_table, &item_ids).await
         }
     }
 }
@@ -981,14 +898,21 @@ async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
     let sid = source_id.into_uuid();
     let lock_key = (sid.as_u128() & 0x7FFF_FFFF_FFFF_FFFF) as i64;
 
-    // Acquire advisory lock.
-    if sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(lock_key)
-        .execute(pool)
-        .await
-        .is_err()
-    {
+    // Use a transaction-scoped advisory lock. Unlike session-level locks,
+    // these auto-release on commit/rollback/disconnect — no leak risk if
+    // the async Future is dropped.
+    let Ok(mut tx) = pool.begin().await else {
         return;
+    };
+
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(lock_key)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or(false);
+
+    if !acquired {
+        return; // Another worker is handling this fan-in.
     }
 
     // Check: any pending/running summarize_entity jobs for this source?
@@ -999,21 +923,19 @@ async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
            AND payload->>'source_id' = $1",
     )
     .bind(sid.to_string())
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
-    .unwrap_or(1); // default to 1 (don't trigger) on error
+    .unwrap_or(1);
 
     if remaining == 0 {
-        // Check if source already has a summary (skip if so).
         let has_summary: bool =
             sqlx::query_scalar("SELECT summary IS NOT NULL FROM sources WHERE id = $1")
                 .bind(sid)
-                .fetch_one(pool)
+                .fetch_one(&mut *tx)
                 .await
                 .unwrap_or(true);
 
         if !has_summary {
-            // Enqueue ComposeSourceSummary.
             let payload = serde_json::json!({ "source_id": sid.to_string() });
             let key = format!("compose:{sid}");
             let _ = sqlx::query(
@@ -1023,7 +945,7 @@ async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
             )
             .bind(payload)
             .bind(&key)
-            .execute(pool)
+            .execute(&mut *tx)
             .await;
 
             tracing::info!(
@@ -1033,11 +955,8 @@ async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
         }
     }
 
-    // Release advisory lock.
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(lock_key)
-        .execute(pool)
-        .await;
+    // Lock auto-releases on commit.
+    let _ = tx.commit().await;
 }
 
 /// Extract entities from a single chunk via the LLM extractor.
@@ -1141,16 +1060,20 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
     let sid = source_id.into_uuid();
     let lock_key = ((sid.as_u128() >> 1) & 0x7FFF_FFFF_FFFF_FFFF) as i64;
 
-    if sqlx::query("SELECT pg_advisory_lock($1)")
+    let Ok(mut tx) = pool.begin().await else {
+        return;
+    };
+
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
         .bind(lock_key)
-        .execute(pool)
+        .fetch_one(&mut *tx)
         .await
-        .is_err()
-    {
+        .unwrap_or(false);
+
+    if !acquired {
         return;
     }
 
-    // Check: any pending/running extract_chunk jobs for this source?
     let remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retry_jobs \
          WHERE kind = 'extract_chunk' \
@@ -1158,12 +1081,11 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
            AND payload->>'source_id' = $1",
     )
     .bind(sid.to_string())
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
     .unwrap_or(1);
 
     if remaining == 0 {
-        // Find code entities for this source that need summaries.
         let entities: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT DISTINCT n.id \
              FROM nodes n \
@@ -1177,7 +1099,7 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
                AND n.canonical_name NOT LIKE 'test_%'",
         )
         .bind(sid)
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await
         .unwrap_or_default();
 
@@ -1195,7 +1117,7 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
             )
             .bind(&payload)
             .bind(&key)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .is_ok()
             {
@@ -1212,10 +1134,7 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
         }
     }
 
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(lock_key)
-        .execute(pool)
-        .await;
+    let _ = tx.commit().await;
 }
 
 /// Compose a file-level summary from entity summaries for a code source.

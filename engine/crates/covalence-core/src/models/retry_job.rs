@@ -87,6 +87,58 @@ impl JobKind {
     }
 }
 
+// ── Typed job payloads ─────────────────────────────────────────
+
+/// Payload for ReprocessSource and ComposeSourceSummary jobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourcePayload {
+    pub source_id: String,
+}
+
+/// Payload for SummarizeEntity jobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizePayload {
+    pub node_id: String,
+    pub source_id: String,
+}
+
+/// Payload for ExtractChunk jobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractChunkPayload {
+    pub chunk_id: String,
+    pub source_id: String,
+    #[serde(default)]
+    pub ingestion_id: Option<String>,
+}
+
+/// Payload for SynthesizeEdges jobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesizePayload {
+    #[serde(default = "default_min_cooccurrences")]
+    pub min_cooccurrences: i64,
+    #[serde(default = "default_max_degree")]
+    pub max_degree: i64,
+}
+
+fn default_min_cooccurrences() -> i64 {
+    2
+}
+fn default_max_degree() -> i64 {
+    2
+}
+
+/// Payload for EmbedBatch jobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedBatchPayload {
+    #[serde(default = "default_item_table")]
+    pub item_table: String,
+    pub item_ids: Vec<String>,
+}
+
+fn default_item_table() -> String {
+    "nodes".to_string()
+}
+
 /// Status of a retry job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
