@@ -341,12 +341,34 @@ async fn execute_job(job: &RetryJob, source_service: Option<&Arc<SourceService>>
             Ok(())
         }
         JobKind::SummarizeEntity => {
-            // TODO: generate semantic summary for a single entity
-            tracing::info!(
-                node_id = job.payload.get("node_id").and_then(|v| v.as_str()),
-                "summarize_entity job — stub"
-            );
-            Ok(())
+            let node_id_str = job
+                .payload
+                .get("node_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    crate::error::Error::Queue("missing node_id in payload".to_string())
+                })?;
+            let source_id_str = job
+                .payload
+                .get("source_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    crate::error::Error::Queue("missing source_id in payload".to_string())
+                })?;
+            let node_uuid = uuid::Uuid::parse_str(node_id_str)
+                .map_err(|e| crate::error::Error::Queue(format!("invalid node_id: {e}")))?;
+            let source_uuid = uuid::Uuid::parse_str(source_id_str)
+                .map_err(|e| crate::error::Error::Queue(format!("invalid source_id: {e}")))?;
+            let node_id = crate::types::ids::NodeId::from_uuid(node_uuid);
+            let source_id = SourceId::from_uuid(source_uuid);
+
+            let svc = source_service.ok_or_else(|| {
+                crate::error::Error::Queue(
+                    "source_service not available for summarize_entity".to_string(),
+                )
+            })?;
+
+            summarize_single_entity(svc, node_id, source_id).await
         }
         JobKind::ComposeSourceSummary => {
             // TODO: compose file-level summary from entity summaries
@@ -454,6 +476,169 @@ pub fn compute_backoff(base_secs: u64, attempt: i32, max_secs: u64) -> u64 {
     base_secs
         .saturating_mul(1u64.checked_shl(exp).unwrap_or(u64::MAX))
         .min(max_secs)
+}
+
+/// Generate a semantic summary for a single code entity.
+///
+/// This is the async-pipeline equivalent of the sequential summary
+/// loop in pipeline.rs Stage 7.25. Each entity gets its own job
+/// with independent retry.
+async fn summarize_single_entity(
+    svc: &Arc<SourceService>,
+    node_id: crate::types::ids::NodeId,
+    source_id: SourceId,
+) -> Result<()> {
+    use crate::storage::traits::NodeRepo;
+    use std::time::Instant;
+
+    let chat = svc
+        .chat_backend
+        .as_ref()
+        .ok_or_else(|| crate::error::Error::Queue("no chat backend for summaries".to_string()))?;
+
+    let node =
+        NodeRepo::get(&*svc.repo, node_id)
+            .await?
+            .ok_or_else(|| crate::error::Error::NotFound {
+                entity_type: "node",
+                id: node_id.into_uuid().to_string(),
+            })?;
+
+    // Skip if already summarized.
+    if node
+        .properties
+        .get("semantic_summary")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Ok(());
+    }
+
+    // Build definition pattern for chunk lookup.
+    let def_pattern = match node.node_type.as_str() {
+        "function" => format!("fn {}", node.canonical_name),
+        "struct" => format!("struct {}", node.canonical_name),
+        "enum" => format!("enum {}", node.canonical_name),
+        "trait" => format!("trait {}", node.canonical_name),
+        "impl_block" => format!("impl {}", node.canonical_name),
+        "module" => format!("mod {}", node.canonical_name),
+        "constant" => format!("const {}", node.canonical_name),
+        "macro" => format!("macro_rules! {}", node.canonical_name),
+        _ => node.canonical_name.clone(),
+    };
+
+    // Find the chunk containing this entity's definition.
+    let mut chunk_content: Option<String> = sqlx::query_scalar(
+        "SELECT c.content FROM extractions ex \
+         JOIN chunks c ON c.id = ex.chunk_id \
+         WHERE ex.entity_id = $1 AND ex.entity_type = 'node' \
+           AND ex.chunk_id IS NOT NULL \
+           AND c.content LIKE '%' || $2 || '%' \
+         ORDER BY ex.confidence DESC \
+         LIMIT 1",
+    )
+    .bind(node_id)
+    .bind(&def_pattern)
+    .fetch_optional(svc.repo.pool())
+    .await
+    .ok()
+    .flatten();
+
+    // Fallback: search all chunks from the same source.
+    if chunk_content.is_none() {
+        chunk_content = sqlx::query_scalar(
+            "SELECT c.content FROM chunks c \
+             WHERE c.source_id = $1 \
+               AND c.content LIKE '%' || $2 || '%' \
+             ORDER BY LENGTH(c.content) ASC \
+             LIMIT 1",
+        )
+        .bind(source_id)
+        .bind(&def_pattern)
+        .fetch_optional(svc.repo.pool())
+        .await
+        .ok()
+        .flatten();
+    }
+
+    let raw = chunk_content
+        .as_deref()
+        .or(node.description.as_deref())
+        .unwrap_or(&node.canonical_name);
+
+    if raw.len() < 50 {
+        return Ok(()); // Too short to summarize.
+    }
+
+    let file_path = node
+        .properties
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let prompt = format!(
+        "You are a code documentation engine. \
+         Summarize the `{name}` {ntype} from the code below.\n\n\
+         Output a concise (50-150 word) natural language summary of \
+         its purpose, inputs, outputs, and key behavior. Focus on \
+         WHAT it does and WHY, not HOW. Write as if explaining to \
+         someone who understands the domain but hasn't read the code.\n\n\
+         IMPORTANT: Only describe `{name}`. Ignore other code in the \
+         same block.\n\n\
+         File: {file}\n\n```\n{code}\n```",
+        name = node.canonical_name,
+        ntype = node.node_type,
+        file = file_path,
+        code = &raw[..raw.len().min(3000)],
+    );
+
+    let start = Instant::now();
+    let summary = chat.chat("", &prompt, false, 0.2).await?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return Ok(());
+    }
+
+    // Store summary + processing metadata on the node.
+    sqlx::query(
+        "UPDATE nodes SET \
+           properties = jsonb_set(\
+             COALESCE(properties, '{}'), \
+             '{semantic_summary}', \
+             $2::jsonb\
+           ), \
+           description = $3, \
+           embedding = NULL, \
+           processing = jsonb_set(\
+             COALESCE(processing, '{}'), \
+             '{summary}', \
+             $4::jsonb\
+           ) \
+         WHERE id = $1",
+    )
+    .bind(node_id)
+    .bind(serde_json::json!(summary))
+    .bind(summary)
+    .bind(serde_json::json!({
+        "model": "haiku",
+        "at": chrono::Utc::now().to_rfc3339(),
+        "ms": duration_ms,
+        "prompt_version": 2,
+        "input_chars": raw.len().min(3000),
+        "output_chars": summary.len(),
+    }))
+    .execute(svc.repo.pool())
+    .await?;
+
+    tracing::info!(
+        node = %node.canonical_name,
+        ms = duration_ms,
+        "semantic summary generated (async job)"
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
