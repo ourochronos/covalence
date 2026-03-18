@@ -861,6 +861,113 @@ pub async fn list_dead_handler(
     }))
 }
 
+/// Comprehensive health report for the meta loop.
+///
+/// Aggregates metrics, coverage, erosion, pipeline progress, and
+/// queue status into a single response. Designed to be the first
+/// call in every meta loop iteration.
+#[utoipa::path(
+    get,
+    path = "/admin/health-report",
+    responses(
+        (status = 200, description = "Meta loop health report",
+         body = serde_json::Value),
+    ),
+    tag = "admin"
+)]
+pub async fn health_report(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Metrics
+    let graph = state.graph_engine.stats().await.ok();
+    let source_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sources")
+        .fetch_one(state.repo.pool())
+        .await
+        .unwrap_or(0);
+
+    // Domain distribution
+    let domain_dist: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT COALESCE(domain, 'unknown'), COUNT(*) FROM sources GROUP BY 1 ORDER BY 2 DESC",
+    )
+    .fetch_all(state.repo.pool())
+    .await
+    .unwrap_or_default();
+
+    // Entity class distribution
+    let class_dist: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT COALESCE(entity_class, 'unknown'), COUNT(*) FROM nodes GROUP BY 1 ORDER BY 2 DESC",
+    )
+    .fetch_all(state.repo.pool())
+    .await
+    .unwrap_or_default();
+
+    // Pipeline progress
+    let entity_summaries: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM nodes WHERE properties->>'semantic_summary' IS NOT NULL AND entity_class = 'code'",
+    )
+    .fetch_one(state.repo.pool())
+    .await
+    .unwrap_or(0);
+
+    let total_code_entities: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE entity_class = 'code'")
+            .fetch_one(state.repo.pool())
+            .await
+            .unwrap_or(0);
+
+    let file_summaries: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sources WHERE domain = 'code' AND summary IS NOT NULL",
+    )
+    .fetch_one(state.repo.pool())
+    .await
+    .unwrap_or(0);
+
+    let total_code_files: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sources WHERE domain = 'code'")
+            .fetch_one(state.repo.pool())
+            .await
+            .unwrap_or(0);
+
+    // Queue status
+    let queue_rows: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT kind::text, status::text, COUNT(*) FROM retry_jobs GROUP BY 1, 2 ORDER BY 1, 2",
+    )
+    .fetch_all(state.repo.pool())
+    .await
+    .unwrap_or_default();
+
+    Ok(Json(serde_json::json!({
+        "graph": {
+            "nodes": graph.as_ref().map(|g| g.node_count).unwrap_or(0),
+            "edges": graph.as_ref().map(|g| g.edge_count).unwrap_or(0),
+            "components": graph.as_ref().map(|g| g.component_count).unwrap_or(0),
+        },
+        "sources": {
+            "total": source_count,
+            "domains": domain_dist.into_iter().collect::<std::collections::HashMap<_, _>>(),
+        },
+        "entities": {
+            "total": class_dist.iter().map(|(_, c)| c).sum::<i64>(),
+            "classes": class_dist.into_iter().collect::<std::collections::HashMap<_, _>>(),
+        },
+        "pipeline": {
+            "entity_summaries": entity_summaries,
+            "total_code_entities": total_code_entities,
+            "entity_summary_pct": if total_code_entities > 0 {
+                (entity_summaries as f64 / total_code_entities as f64 * 100.0).round()
+            } else { 0.0 },
+            "file_summaries": file_summaries,
+            "total_code_files": total_code_files,
+            "file_summary_pct": if total_code_files > 0 {
+                (file_summaries as f64 / total_code_files as f64 * 100.0).round()
+            } else { 0.0 },
+        },
+        "queue": queue_rows.iter().map(|(k, s, c)| {
+            serde_json::json!({"kind": k, "status": s, "count": c})
+        }).collect::<Vec<_>>(),
+    })))
+}
+
 /// Enqueue semantic summary jobs for all unsummarized code entities.
 #[utoipa::path(
     post,

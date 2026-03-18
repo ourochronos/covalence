@@ -90,6 +90,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts))
         // Queue
+        .route("/admin/health-report", get(admin::health_report))
         .route("/admin/queue/status", get(admin::queue_status_handler))
         .route("/admin/queue/retry", post(admin::retry_failed_handler))
         .route("/admin/queue/dead", get(admin::list_dead_handler))
