@@ -704,7 +704,7 @@ fn extract_go_node(
     let kind = node.kind();
     match kind {
         "function_declaration" => {
-            extract_go_function(source, node, entities);
+            extract_go_function(source, node, entities, relationships);
         }
         "method_declaration" => {
             extract_go_method(source, node, entities, relationships);
@@ -719,11 +719,12 @@ fn extract_go_node(
     }
 }
 
-/// Extract a Go function entity.
+/// Extract a Go function entity with CALLS and USES_TYPE.
 fn extract_go_function(
     source: &str,
     node: &tree_sitter::Node,
     entities: &mut Vec<ExtractedEntity>,
+    relationships: &mut Vec<ExtractedRelationship>,
 ) {
     let name = match child_text_by_field(source, node, "name") {
         Some(n) => n,
@@ -734,12 +735,36 @@ fn extract_go_function(
     let signature = extract_signature_before_brace(text);
 
     entities.push(ExtractedEntity {
-        name,
+        name: name.clone(),
         entity_type: "function".to_string(),
         description: Some(signature),
         confidence: 1.0,
         metadata: ast_metadata(source, node),
     });
+
+    // CALLS from function body.
+    if let Some(body) = node.child_by_field_name("body") {
+        for callee in &extract_call_targets(source, &body) {
+            relationships.push(ExtractedRelationship {
+                source_name: name.clone(),
+                target_name: callee.clone(),
+                rel_type: "calls".to_string(),
+                description: None,
+                confidence: 1.0,
+            });
+        }
+    }
+
+    // USES_TYPE from parameters and return type.
+    for type_name in &extract_type_references(source, node) {
+        relationships.push(ExtractedRelationship {
+            source_name: name.clone(),
+            target_name: type_name.clone(),
+            rel_type: "uses_type".to_string(),
+            description: None,
+            confidence: 1.0,
+        });
+    }
 }
 
 /// Extract a Go method entity and its receiver relationship.
@@ -780,8 +805,32 @@ fn extract_go_method(
     if let Some(recv) = receiver_type {
         relationships.push(ExtractedRelationship {
             source_name: recv,
-            target_name: method_name,
+            target_name: method_name.clone(),
             rel_type: "contains".to_string(),
+            description: None,
+            confidence: 1.0,
+        });
+    }
+
+    // CALLS from method body.
+    if let Some(body) = node.child_by_field_name("body") {
+        for callee in &extract_call_targets(source, &body) {
+            relationships.push(ExtractedRelationship {
+                source_name: method_name.clone(),
+                target_name: callee.clone(),
+                rel_type: "calls".to_string(),
+                description: None,
+                confidence: 1.0,
+            });
+        }
+    }
+
+    // USES_TYPE from parameters and return type.
+    for type_name in &extract_type_references(source, node) {
+        relationships.push(ExtractedRelationship {
+            source_name: method_name.clone(),
+            target_name: type_name.clone(),
+            rel_type: "uses_type".to_string(),
             description: None,
             confidence: 1.0,
         });

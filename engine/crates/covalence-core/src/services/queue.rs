@@ -873,7 +873,7 @@ async fn summarize_single_entity(
         "model": "haiku",
         "at": chrono::Utc::now().to_rfc3339(),
         "ms": duration_ms,
-        "prompt_version": 2,
+        "prompt_version": super::prompts::SUMMARY_PROMPT_VERSION,
         "input_chars": raw.len().min(3000),
         "output_chars": summary.len(),
     }))

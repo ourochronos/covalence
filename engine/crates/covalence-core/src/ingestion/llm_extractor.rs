@@ -381,7 +381,7 @@ impl Extractor for LlmExtractor {
         if !user_msg.is_empty() {
             user_msg.push_str("\n---\n\n");
         }
-        user_msg.push_str(text);
+        user_msg.push_str(&crate::services::prompts::wrap_document(text));
 
         let body = ChatRequest {
             model: &self.model,
@@ -539,7 +539,7 @@ impl Extractor for ChatBackendExtractor {
         if !user_msg.is_empty() {
             user_msg.push_str("\n---\n\n");
         }
-        user_msg.push_str(text);
+        user_msg.push_str(&crate::services::prompts::wrap_document(text));
 
         let content = self
             .backend
@@ -777,13 +777,14 @@ mod tests {
         if !user_msg.is_empty() {
             user_msg.push_str("\n---\n\n");
         }
-        user_msg.push_str(text);
+        user_msg.push_str(&crate::services::prompts::wrap_document(text));
 
         assert!(user_msg.starts_with("Source type: web_page\n"));
         assert!(user_msg.contains("Source URI: https://example.com/page\n"));
         assert!(user_msg.contains("Source title: Example Page\n"));
         assert!(user_msg.contains("\n---\n\n"));
-        assert!(user_msg.ends_with(text));
+        assert!(user_msg.ends_with("</document>"));
+        assert!(user_msg.contains(text));
     }
 
     #[test]
@@ -804,10 +805,10 @@ mod tests {
         if !user_msg.is_empty() {
             user_msg.push_str("\n---\n\n");
         }
-        user_msg.push_str(text);
+        user_msg.push_str(&crate::services::prompts::wrap_document(text));
 
-        // No context means no prefix — just the raw text.
-        assert_eq!(user_msg, text);
+        // No context means no prefix — just wrapped text.
+        assert_eq!(user_msg, format!("<document>\n{text}\n</document>"));
     }
 
     #[test]
@@ -832,11 +833,12 @@ mod tests {
         if !user_msg.is_empty() {
             user_msg.push_str("\n---\n\n");
         }
-        user_msg.push_str(text);
+        user_msg.push_str(&crate::services::prompts::wrap_document(text));
 
         assert!(user_msg.starts_with("Source type: document\n"));
         assert!(!user_msg.contains("Source URI:"));
         assert!(user_msg.contains("Source title: Research Paper\n"));
-        assert!(user_msg.ends_with(text));
+        assert!(user_msg.ends_with("</document>"));
+        assert!(user_msg.contains(text));
     }
 }
