@@ -430,10 +430,9 @@ impl RetryQueueService {
         Ok(())
     }
 
-    /// Try to claim and dispatch one job. Returns `true` if work was
-    /// found (even if execution failed).
+    /// Try to claim and dispatch jobs up to available concurrency.
+    /// Returns `true` if any work was found.
     async fn poll_once(&self) -> bool {
-        // Try reprocess-family work first (includes async pipeline jobs).
         let reprocess_kinds = [
             JobKind::ReprocessSource,
             JobKind::ExtractStatements,
@@ -444,19 +443,27 @@ impl RetryQueueService {
             JobKind::EmbedBatch,
         ];
 
-        if let Ok(permit) = self.reprocess_sem.clone().try_acquire_owned() {
+        let mut did_work = false;
+
+        // Claim as many reprocess-family jobs as we have permits.
+        loop {
+            let permit = match self.reprocess_sem.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => break, // All permits taken.
+            };
             match JobQueueRepo::claim_next(&*self.repo, &reprocess_kinds).await {
                 Ok(Some(job)) => {
                     self.spawn_job(job, permit);
-                    return true;
+                    did_work = true;
                 }
                 Ok(None) => {
-                    // No reprocess work. Drop permit and try edge work.
                     drop(permit);
+                    break; // No more work.
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to claim reprocess job");
                     drop(permit);
+                    break;
                 }
             }
         }
@@ -466,7 +473,7 @@ impl RetryQueueService {
             match JobQueueRepo::claim_next(&*self.repo, &[JobKind::SynthesizeEdges]).await {
                 Ok(Some(job)) => {
                     self.spawn_job(job, permit);
-                    return true;
+                    did_work = true;
                 }
                 Ok(None) => {
                     drop(permit);
@@ -478,7 +485,7 @@ impl RetryQueueService {
             }
         }
 
-        false
+        did_work
     }
 
     /// Spawn a tokio task that executes the job and holds the
