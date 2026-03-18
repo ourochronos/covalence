@@ -33,15 +33,31 @@ pub struct OutboxEvent {
 ///
 /// This function runs indefinitely. It combines LISTEN/NOTIFY for low-latency
 /// wake-up with a 5-second polling fallback.
+///
+/// **Debounce behavior:** When events arrive in rapid succession (e.g.,
+/// during bulk ingestion), the loop buffers them and only applies once
+/// events stop arriving for `SETTLE_SECS`. This prevents the graph
+/// sidecar from thrashing during bulk operations.
 pub async fn sync_loop(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
+    /// How long to wait with no new events before applying the batch.
+    const SETTLE_SECS: u64 = 10;
+    /// How long to wait between polls when idle.
+    const POLL_SECS: u64 = 5;
+    /// Max events to buffer before forcing an apply (prevents unbounded memory).
+    const MAX_BUFFER: usize = 10_000;
+
     let mut last_seq: i64 = 0;
     let mut listener = sqlx::postgres::PgListener::connect_with(pool).await?;
     listener.listen("graph_sync_ping").await?;
 
-    loop {
-        // Wait for a NOTIFY ping or timeout after 5 seconds
-        let _ = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await;
+    let mut buffer: Vec<OutboxEvent> = Vec::new();
+    let mut last_event_time = std::time::Instant::now();
 
+    loop {
+        // Wait for a NOTIFY ping or timeout
+        let _ = tokio::time::timeout(Duration::from_secs(POLL_SECS), listener.recv()).await;
+
+        // Fetch new events.
         let rows = sqlx::query(
             "SELECT seq_id, entity_type, entity_id, operation, payload \
              FROM outbox_events \
@@ -54,9 +70,6 @@ pub async fn sync_loop(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
         .await?;
 
         if !rows.is_empty() {
-            let count = rows.len();
-            let mut g = graph.write().await;
-
             for row in &rows {
                 let event = OutboxEvent {
                     seq_id: row.get("seq_id"),
@@ -65,11 +78,32 @@ pub async fn sync_loop(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
                     operation: row.get("operation"),
                     payload: row.get("payload"),
                 };
-                g.apply_event(&event);
                 last_seq = event.seq_id;
+                buffer.push(event);
+            }
+            last_event_time = std::time::Instant::now();
+        }
+
+        // Apply buffered events when settled (no new events for SETTLE_SECS)
+        // or when the buffer is full.
+        let settled = last_event_time.elapsed() >= Duration::from_secs(SETTLE_SECS);
+        let buffer_full = buffer.len() >= MAX_BUFFER;
+
+        if !buffer.is_empty() && (settled || buffer_full) {
+            let count = buffer.len();
+            let mut g = graph.write().await;
+
+            for event in buffer.drain(..) {
+                g.apply_event(&event);
             }
 
-            tracing::debug!(count, last_seq, "applied outbox events");
+            tracing::info!(
+                count,
+                last_seq,
+                settled,
+                buffer_full,
+                "applied buffered outbox events"
+            );
         }
     }
 }
