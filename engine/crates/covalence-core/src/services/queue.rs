@@ -76,6 +76,51 @@ impl RetryQueueService {
         Ok(job.map(|j| j.id))
     }
 
+    /// Enqueue per-chunk extraction jobs for all chunks of a source.
+    ///
+    /// Use this after the monolithic reprocess has created chunks.
+    /// The extraction → summary → compose pipeline then runs via
+    /// the async job DAG with fan-in triggers.
+    pub async fn enqueue_extract_chunks(&self, source_id: SourceId) -> Result<u64> {
+        let chunks: Vec<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT id FROM chunks WHERE source_id = $1")
+                .bind(source_id)
+                .fetch_all(self.repo.pool())
+                .await?;
+
+        let mut enqueued = 0u64;
+        for (chunk_id,) in &chunks {
+            let payload = serde_json::json!({
+                "chunk_id": chunk_id.to_string(),
+                "source_id": source_id.into_uuid().to_string(),
+            });
+            let key = format!("extract_chunk:{chunk_id}");
+            match JobQueueRepo::enqueue(
+                &*self.repo,
+                JobKind::ExtractChunk,
+                payload,
+                self.config.max_attempts,
+                Some(&key),
+            )
+            .await
+            {
+                Ok(Some(_)) => enqueued += 1,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(chunk_id = %chunk_id, error = %e, "failed to enqueue extract job");
+                }
+            }
+        }
+
+        tracing::info!(
+            source_id = %source_id,
+            chunks = chunks.len(),
+            enqueued,
+            "enqueued extract_chunk jobs"
+        );
+        Ok(enqueued)
+    }
+
     /// Enqueue semantic summary jobs for all unsummarized code entities.
     ///
     /// Returns the number of jobs enqueued.
@@ -196,6 +241,68 @@ impl RetryQueueService {
         )
         .await?;
         Ok(job.map(|j| j.id))
+    }
+
+    /// Spawn the pipeline watchdog as a background task.
+    ///
+    /// Periodically checks for sources that may have stalled mid-pipeline
+    /// (all child jobs completed but fan-in didn't trigger) and re-runs
+    /// the fan-in check.
+    pub fn spawn_watchdog(self: &Arc<Self>) {
+        let repo = Arc::clone(&self.repo);
+        let interval = std::time::Duration::from_secs(120); // every 2 minutes
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+
+                // Find code sources with entity summaries but no file summary
+                // and no pending compose job — these are stalled.
+                let stalled: Vec<(uuid::Uuid,)> = sqlx::query_as(
+                    "SELECT s.id FROM sources s \
+                     WHERE s.domain = 'code' \
+                       AND s.summary IS NULL \
+                       AND EXISTS ( \
+                         SELECT 1 FROM nodes n \
+                         JOIN extractions ex ON ex.entity_id = n.id \
+                         JOIN chunks c ON c.id = ex.chunk_id \
+                         WHERE c.source_id = s.id \
+                           AND n.entity_class = 'code' \
+                           AND n.properties->>'semantic_summary' IS NOT NULL \
+                       ) \
+                       AND NOT EXISTS ( \
+                         SELECT 1 FROM retry_jobs rj \
+                         WHERE rj.kind = 'compose_source_summary' \
+                           AND rj.payload->>'source_id' = s.id::text \
+                           AND rj.status IN ('pending', 'running') \
+                       ) \
+                     LIMIT 20",
+                )
+                .fetch_all(repo.pool())
+                .await
+                .unwrap_or_default();
+
+                if !stalled.is_empty() {
+                    tracing::info!(
+                        count = stalled.len(),
+                        "watchdog: detected stalled sources, enqueuing compose jobs"
+                    );
+                    for (sid,) in &stalled {
+                        let payload = serde_json::json!({ "source_id": sid.to_string() });
+                        let key = format!("compose:{sid}");
+                        let _ = sqlx::query(
+                            "INSERT INTO retry_jobs (kind, payload, idempotency_key, max_attempts) \
+                             VALUES ('compose_source_summary', $1, $2, 5) \
+                             ON CONFLICT (idempotency_key) DO NOTHING",
+                        )
+                        .bind(&payload)
+                        .bind(&key)
+                        .execute(repo.pool())
+                        .await;
+                    }
+                }
+            }
+        });
     }
 
     /// Background worker loop. Spawned as a tokio task. Never returns.
@@ -788,7 +895,82 @@ async fn summarize_single_entity(
         "semantic summary generated (async job)"
     );
 
+    // Fan-in: check if all summary jobs for this source are done.
+    // If so, auto-enqueue ComposeSourceSummary.
+    let nil = uuid::Uuid::nil();
+    if source_id.into_uuid() != nil {
+        try_advance_to_compose(svc.repo.pool(), source_id).await;
+    }
+
     Ok(())
+}
+
+/// Fan-in trigger: check if all SummarizeEntity jobs for a source
+/// are done. If so, enqueue a ComposeSourceSummary job.
+///
+/// Uses an advisory lock on the source_id to prevent two concurrent
+/// completions from both triggering the compose stage.
+async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
+    let sid = source_id.into_uuid();
+    let lock_key = (sid.as_u128() & 0x7FFF_FFFF_FFFF_FFFF) as i64;
+
+    // Acquire advisory lock.
+    if sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_key)
+        .execute(pool)
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    // Check: any pending/running summarize_entity jobs for this source?
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retry_jobs \
+         WHERE kind = 'summarize_entity' \
+           AND status IN ('pending', 'running') \
+           AND payload->>'source_id' = $1",
+    )
+    .bind(sid.to_string())
+    .fetch_one(pool)
+    .await
+    .unwrap_or(1); // default to 1 (don't trigger) on error
+
+    if remaining == 0 {
+        // Check if source already has a summary (skip if so).
+        let has_summary: bool =
+            sqlx::query_scalar("SELECT summary IS NOT NULL FROM sources WHERE id = $1")
+                .bind(sid)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(true);
+
+        if !has_summary {
+            // Enqueue ComposeSourceSummary.
+            let payload = serde_json::json!({ "source_id": sid.to_string() });
+            let key = format!("compose:{sid}");
+            let _ = sqlx::query(
+                "INSERT INTO retry_jobs (kind, payload, idempotency_key, max_attempts) \
+                 VALUES ('compose_source_summary', $1, $2, 5) \
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+            )
+            .bind(payload)
+            .bind(&key)
+            .execute(pool)
+            .await;
+
+            tracing::info!(
+                source_id = %sid,
+                "fan-in: all summaries complete, enqueued compose_source_summary"
+            );
+        }
+    }
+
+    // Release advisory lock.
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock_key)
+        .execute(pool)
+        .await;
 }
 
 /// Extract entities from a single chunk via the LLM extractor.
@@ -879,7 +1061,94 @@ async fn extract_single_chunk(
         "chunk extraction complete (async job)"
     );
 
+    // Fan-in: check if all ExtractChunk jobs for this source are done.
+    // If so, enqueue SummarizeEntity jobs for code entities.
+    try_advance_to_summarize(svc.repo.pool(), source_id).await;
+
     Ok(())
+}
+
+/// Fan-in trigger: when all ExtractChunk jobs for a source complete,
+/// enqueue SummarizeEntity jobs for the code entities extracted.
+async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
+    let sid = source_id.into_uuid();
+    let lock_key = ((sid.as_u128() >> 1) & 0x7FFF_FFFF_FFFF_FFFF) as i64;
+
+    if sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_key)
+        .execute(pool)
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    // Check: any pending/running extract_chunk jobs for this source?
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retry_jobs \
+         WHERE kind = 'extract_chunk' \
+           AND status IN ('pending', 'running') \
+           AND payload->>'source_id' = $1",
+    )
+    .bind(sid.to_string())
+    .fetch_one(pool)
+    .await
+    .unwrap_or(1);
+
+    if remaining == 0 {
+        // Find code entities for this source that need summaries.
+        let entities: Vec<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT n.id \
+             FROM nodes n \
+             JOIN extractions ex ON ex.entity_id = n.id AND ex.entity_type = 'node' \
+             JOIN chunks c ON c.id = ex.chunk_id \
+             WHERE c.source_id = $1 \
+               AND n.entity_class = 'code' \
+               AND (n.properties->>'semantic_summary' IS NULL \
+                    OR n.properties->>'semantic_summary' = '') \
+               AND n.node_type != 'code_test' \
+               AND n.canonical_name NOT LIKE 'test_%'",
+        )
+        .bind(sid)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut enqueued = 0usize;
+        for (node_id,) in &entities {
+            let payload = serde_json::json!({
+                "node_id": node_id.to_string(),
+                "source_id": sid.to_string(),
+            });
+            let key = format!("summarize:{node_id}");
+            if sqlx::query(
+                "INSERT INTO retry_jobs (kind, payload, idempotency_key, max_attempts) \
+                 VALUES ('summarize_entity', $1, $2, 5) \
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+            )
+            .bind(&payload)
+            .bind(&key)
+            .execute(pool)
+            .await
+            .is_ok()
+            {
+                enqueued += 1;
+            }
+        }
+
+        if enqueued > 0 {
+            tracing::info!(
+                source_id = %sid,
+                enqueued,
+                "fan-in: all extractions complete, enqueued summarize_entity jobs"
+            );
+        }
+    }
+
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock_key)
+        .execute(pool)
+        .await;
 }
 
 /// Compose a file-level summary from entity summaries for a code source.
