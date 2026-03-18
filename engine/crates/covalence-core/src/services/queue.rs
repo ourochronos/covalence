@@ -166,11 +166,15 @@ impl RetryQueueService {
     /// Try to claim and dispatch one job. Returns `true` if work was
     /// found (even if execution failed).
     async fn poll_once(&self) -> bool {
-        // Try reprocess-family work first.
+        // Try reprocess-family work first (includes async pipeline jobs).
         let reprocess_kinds = [
             JobKind::ReprocessSource,
             JobKind::ExtractStatements,
             JobKind::ExtractEntities,
+            JobKind::ExtractChunk,
+            JobKind::SummarizeEntity,
+            JobKind::ComposeSourceSummary,
+            JobKind::EmbedBatch,
         ];
 
         if let Ok(permit) = self.reprocess_sem.clone().try_acquire_owned() {
@@ -325,6 +329,42 @@ async fn execute_job(job: &RetryJob, source_service: Option<&Arc<SourceService>>
             tracing::warn!(
                 kind = ?job.kind,
                 "job kind not yet independently implemented, marking as succeeded"
+            );
+            Ok(())
+        }
+        JobKind::ExtractChunk => {
+            // TODO: extract entities from a single chunk
+            tracing::info!(
+                chunk_id = job.payload.get("chunk_id").and_then(|v| v.as_str()),
+                "extract_chunk job — stub"
+            );
+            Ok(())
+        }
+        JobKind::SummarizeEntity => {
+            // TODO: generate semantic summary for a single entity
+            tracing::info!(
+                node_id = job.payload.get("node_id").and_then(|v| v.as_str()),
+                "summarize_entity job — stub"
+            );
+            Ok(())
+        }
+        JobKind::ComposeSourceSummary => {
+            // TODO: compose file-level summary from entity summaries
+            tracing::info!(
+                source_id = job.payload.get("source_id").and_then(|v| v.as_str()),
+                "compose_source_summary job — stub"
+            );
+            Ok(())
+        }
+        JobKind::EmbedBatch => {
+            // TODO: embed a batch of items
+            tracing::info!(
+                batch_size = job
+                    .payload
+                    .get("item_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len()),
+                "embed_batch job — stub"
             );
             Ok(())
         }

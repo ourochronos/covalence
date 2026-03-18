@@ -46,6 +46,14 @@ pub enum JobKind {
     ExtractEntities,
     /// Synthesize co-occurrence edges across the graph.
     SynthesizeEdges,
+    /// Extract entities from a single chunk (async pipeline).
+    ExtractChunk,
+    /// Generate semantic summary for a single entity (async pipeline).
+    SummarizeEntity,
+    /// Fan-in: compose source summary from entity summaries (async pipeline).
+    ComposeSourceSummary,
+    /// Embed a batch of items (async pipeline).
+    EmbedBatch,
 }
 
 impl JobKind {
@@ -56,6 +64,10 @@ impl JobKind {
             Self::ExtractStatements => "extract_statements",
             Self::ExtractEntities => "extract_entities",
             Self::SynthesizeEdges => "synthesize_edges",
+            Self::ExtractChunk => "extract_chunk",
+            Self::SummarizeEntity => "summarize_entity",
+            Self::ComposeSourceSummary => "compose_source_summary",
+            Self::EmbedBatch => "embed_batch",
         }
     }
 
@@ -66,6 +78,10 @@ impl JobKind {
             "extract_statements" => Some(Self::ExtractStatements),
             "extract_entities" => Some(Self::ExtractEntities),
             "synthesize_edges" => Some(Self::SynthesizeEdges),
+            "extract_chunk" => Some(Self::ExtractChunk),
+            "summarize_entity" => Some(Self::SummarizeEntity),
+            "compose_source_summary" => Some(Self::ComposeSourceSummary),
+            "embed_batch" => Some(Self::EmbedBatch),
             _ => None,
         }
     }
@@ -134,6 +150,10 @@ mod tests {
             JobKind::ExtractStatements,
             JobKind::ExtractEntities,
             JobKind::SynthesizeEdges,
+            JobKind::ExtractChunk,
+            JobKind::SummarizeEntity,
+            JobKind::ComposeSourceSummary,
+            JobKind::EmbedBatch,
         ];
         for kind in &kinds {
             let s = kind.as_pg_str();
