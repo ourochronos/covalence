@@ -806,20 +806,11 @@ impl SourceService {
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown");
 
-                        let prompt = format!(
-                            "You are a code documentation engine. \
-                             Summarize the `{name}` {ntype} from the code below.\n\n\
-                             Output a concise (50-150 word) natural language summary of \
-                             its purpose, inputs, outputs, and key behavior. Focus on \
-                             WHAT it does and WHY, not HOW. Write as if explaining to \
-                             someone who understands the domain but hasn't read the code.\n\n\
-                             IMPORTANT: Only describe `{name}`. Ignore other code in the \
-                             same block.\n\n\
-                             File: {file}\n\n```\n{code}\n```",
-                            name = node.canonical_name,
-                            ntype = node.node_type,
-                            file = file_path,
-                            code = &raw[..raw.len().min(3000)],
+                        let prompt = super::prompts::build_summary_prompt(
+                            &node.canonical_name,
+                            &node.node_type,
+                            file_path,
+                            raw,
                         );
 
                         match chat.chat("", &prompt, false, 0.2).await {

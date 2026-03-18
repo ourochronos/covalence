@@ -13,6 +13,7 @@ pub mod memory;
 pub mod node;
 pub(crate) mod noise_filter;
 pub(crate) mod pipeline;
+pub(crate) mod prompts;
 pub mod queue;
 pub mod search;
 pub(crate) mod search_helpers;
