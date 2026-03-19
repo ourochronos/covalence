@@ -177,9 +177,13 @@ impl ChatBackend for CliChatBackend {
 
         // Build CLI arguments based on the command. Each CLI tool
         // has different flags for non-interactive prompt mode:
-        //   gemini:  -p <prompt> --model <model>
-        //   copilot: -p <prompt> --model <model>
+        //   gemini:  --prompt=<text> --model <model>
+        //   copilot: --prompt=<text> --model <model>
         //   claude:  --print --model <model> <prompt>
+        //
+        // For gemini/copilot: use `--prompt=<value>` (equals syntax)
+        // to avoid yargs misinterpreting prompt content containing
+        // dashes (e.g. "---" markdown separators) as CLI flags.
         let mut cmd = Command::new(&self.command);
         if self.command == "claude" {
             cmd.arg("--print")
@@ -187,7 +191,9 @@ impl ChatBackend for CliChatBackend {
                 .arg(&self.model)
                 .arg(&prompt);
         } else {
-            cmd.arg("-p").arg(&prompt).arg("--model").arg(&self.model);
+            cmd.arg(format!("--prompt={prompt}"))
+                .arg("--model")
+                .arg(&self.model);
         }
 
         // Run from a neutral directory to prevent CLI agents from
