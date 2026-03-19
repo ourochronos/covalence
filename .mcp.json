@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "covalence": {
+      "command": "node",
+      "args": ["/Users/zonk1024/projects/covalence/mcp-server/index.js"],
+      "env": {
+        "COVALENCE_API_URL": "http://covalence-wsl:8441"
+      }
+    }
+  }
+}
