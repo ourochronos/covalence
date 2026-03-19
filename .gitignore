@@ -59,3 +59,4 @@ tarpaulin-report.html
 logs/
 .playwright-mcp/
 .test-fixtures/.last-ingest-commit
+mcp-server/node_modules/
