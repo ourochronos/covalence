@@ -5,13 +5,17 @@
 //! confidence metadata, sends it to an LLM for grounded synthesis,
 //! and returns a structured answer with citations.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use uuid::Uuid;
 
 use crate::error::Result;
 use crate::ingestion::ChatBackend;
 use crate::ingestion::chat_backend::CliChatBackend;
+use crate::models::node::{EntityClass, derive_entity_class};
 use crate::search::fusion::FusedResult;
 use crate::search::strategy::SearchStrategy;
 use crate::services::SearchService;
@@ -64,13 +68,24 @@ pub struct AskResponse {
     pub context_used: usize,
 }
 
+/// Maximum number of code entities to enrich with graph edges.
+const MAX_GRAPH_ENRICHED_ENTITIES: usize = 5;
+
+/// Maximum number of edges to include per direction per entity.
+const MAX_EDGES_PER_DIRECTION: usize = 10;
+
+/// Edge relationship types to look up in outgoing direction.
+const OUTGOING_REL_TYPES: &[&str] = &["calls", "uses_type", "contains"];
+
+/// Edge relationship types to look up in incoming direction
+/// (converted to `_by` suffix in display).
+const INCOMING_REL_TYPES: &[&str] = &["calls", "contains"];
+
 /// Service for answering questions via LLM synthesis over graph search.
 pub struct AskService {
     search: Arc<SearchService>,
     chat: Arc<dyn ChatBackend>,
-    /// Database repo — reserved for future provenance enrichment
-    /// (e.g. looking up source metadata for node-type results).
-    #[allow(dead_code)]
+    /// Database repo for provenance enrichment and graph edge lookups.
     repo: Arc<PgRepo>,
 }
 
@@ -128,7 +143,8 @@ impl AskService {
     }
 
     /// Build numbered context blocks from search results, enriching
-    /// each with source provenance metadata.
+    /// each with source provenance metadata and graph edges for code
+    /// entities.
     async fn build_context_blocks(&self, results: &[FusedResult]) -> Vec<ContextBlock> {
         let mut blocks = Vec::with_capacity(results.len());
         for (i, result) in results.iter().enumerate() {
@@ -158,8 +174,31 @@ impl AskService {
                 },
                 snippet,
                 fused_score: result.fused_score,
+                graph_edges: None,
             });
         }
+
+        // Enrich code entities with call graph and structural edges.
+        let mut enriched_count = 0usize;
+        for (i, result) in results.iter().enumerate() {
+            if enriched_count >= MAX_GRAPH_ENRICHED_ENTITIES {
+                break;
+            }
+            if !is_code_entity(result) {
+                continue;
+            }
+            let entity_name = result.name.clone().unwrap_or_default();
+            if entity_name.is_empty() {
+                continue;
+            }
+            if let Ok(edges) = self.lookup_graph_edges(result.id).await {
+                if !edges.is_empty() {
+                    blocks[i].graph_edges = Some(GraphEdgeContext { entity_name, edges });
+                    enriched_count += 1;
+                }
+            }
+        }
+
         blocks
     }
 
@@ -202,6 +241,74 @@ impl AskService {
         // source_title.
         None
     }
+
+    /// Look up structural graph edges for a node (calls, uses_type,
+    /// contains) from the database. Returns edges grouped by
+    /// relationship type with direction suffix (e.g. "called_by").
+    ///
+    /// This is a lightweight SQL query — no graph algorithms, just
+    /// direct edge lookups with a JOIN for the neighbor's name.
+    async fn lookup_graph_edges(&self, node_id: Uuid) -> Result<Vec<GraphEdge>> {
+        let outgoing_types: Vec<String> = OUTGOING_REL_TYPES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let incoming_types: Vec<String> = INCOMING_REL_TYPES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        // Outgoing: node --rel_type--> target
+        let out_rows = sqlx::query(
+            "SELECT n2.canonical_name, e.rel_type
+             FROM edges e
+             JOIN nodes n2 ON n2.id = e.target_node_id
+             WHERE e.source_node_id = $1
+               AND e.rel_type = ANY($2)
+               AND e.invalid_at IS NULL
+             LIMIT $3",
+        )
+        .bind(node_id)
+        .bind(&outgoing_types)
+        .bind(MAX_EDGES_PER_DIRECTION as i64)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        // Incoming: source --rel_type--> node (displayed as rel_type_by)
+        let in_rows = sqlx::query(
+            "SELECT n1.canonical_name, e.rel_type
+             FROM edges e
+             JOIN nodes n1 ON n1.id = e.source_node_id
+             WHERE e.target_node_id = $1
+               AND e.rel_type = ANY($2)
+               AND e.invalid_at IS NULL
+             LIMIT $3",
+        )
+        .bind(node_id)
+        .bind(&incoming_types)
+        .bind(MAX_EDGES_PER_DIRECTION as i64)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let mut edges = Vec::with_capacity(out_rows.len() + in_rows.len());
+        for row in &out_rows {
+            let name: String = row.get("canonical_name");
+            let rel: String = row.get("rel_type");
+            edges.push(GraphEdge {
+                neighbor_name: name,
+                rel_type: rel,
+            });
+        }
+        for row in &in_rows {
+            let name: String = row.get("canonical_name");
+            let rel: String = row.get("rel_type");
+            edges.push(GraphEdge {
+                neighbor_name: name,
+                rel_type: format!("{rel}_by"),
+            });
+        }
+        Ok(edges)
+    }
 }
 
 /// Internal representation of a context fragment.
@@ -218,6 +325,27 @@ struct ContextBlock {
     /// Retained for potential ranking/filtering use.
     #[allow(dead_code)]
     fused_score: f64,
+    /// Structural graph edges for code entities (calls, uses_type,
+    /// contains, called_by, contained_by).
+    graph_edges: Option<GraphEdgeContext>,
+}
+
+/// Graph edge context for a code entity in the knowledge graph.
+#[derive(Debug, Clone)]
+struct GraphEdgeContext {
+    /// The entity name for the header line.
+    entity_name: String,
+    /// Edges grouped by relationship type.
+    edges: Vec<GraphEdge>,
+}
+
+/// A single graph edge: a named neighbor and its relationship.
+#[derive(Debug, Clone)]
+struct GraphEdge {
+    /// Name of the neighboring entity.
+    neighbor_name: String,
+    /// Relationship type (e.g. "calls", "uses_type", "called_by").
+    rel_type: String,
 }
 
 /// Source provenance metadata.
@@ -228,7 +356,38 @@ struct SourceInfo {
     domain: String,
 }
 
-/// Parse a strategy string to a `SearchStrategy`.
+/// Check if a fused result represents a code entity (function,
+/// struct, trait, impl_block, etc.) that should be enriched with
+/// graph call/structural edges.
+fn is_code_entity(result: &FusedResult) -> bool {
+    result
+        .entity_type
+        .as_deref()
+        .is_some_and(|t| derive_entity_class(t) == EntityClass::Code)
+}
+
+/// Format graph edge context into a text block for the LLM prompt.
+fn format_graph_edges(ctx: &GraphEdgeContext) -> String {
+    // Group edges by rel_type for compact display.
+    let mut by_type: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in &ctx.edges {
+        by_type
+            .entry(&edge.rel_type)
+            .or_default()
+            .push(&edge.neighbor_name);
+    }
+
+    let mut lines = vec![format!("[Graph Context for {}]", ctx.entity_name)];
+    // Sort relationship types for deterministic output.
+    let mut types: Vec<&&str> = by_type.keys().collect();
+    types.sort();
+    for rel_type in types {
+        let names = &by_type[*rel_type];
+        lines.push(format!("- {}: {}", rel_type, names.join(", ")));
+    }
+    lines.join("\n")
+}
+
 /// Resolve a model name to a CLI chat backend.
 fn resolve_model_backend(model: &str) -> CliChatBackend {
     match model {
@@ -305,6 +464,12 @@ fn build_user_prompt(question: &str, blocks: &[ContextBlock]) -> String {
             source_label,
             truncate_context(&block.snippet, 2000),
         ));
+
+        // Append graph edge context for code entities.
+        if let Some(ref graph_ctx) = block.graph_edges {
+            prompt.push_str(&format_graph_edges(graph_ctx));
+            prompt.push('\n');
+        }
     }
 
     prompt.push_str("\nProvide a comprehensive answer based on the context above.");
@@ -465,6 +630,7 @@ mod tests {
                 source_domain: "spec".to_string(),
                 snippet: "Entity resolution uses 5 tiers.".to_string(),
                 fused_score: 0.85,
+                graph_edges: None,
             },
             ContextBlock {
                 number: 2,
@@ -475,6 +641,7 @@ mod tests {
                 source_domain: String::new(),
                 snippet: "HDBSCAN clustering approach.".to_string(),
                 fused_score: 0.6,
+                graph_edges: None,
             },
         ];
         let prompt = build_user_prompt("How does entity resolution work?", &blocks);
@@ -515,6 +682,7 @@ mod tests {
             source_domain: "external".to_string(),
             snippet: "test content".to_string(),
             fused_score: 0.9,
+            graph_edges: None,
         }];
         let citations = build_citations(&results, &blocks);
         assert_eq!(citations.len(), 1);
@@ -552,8 +720,180 @@ mod tests {
             source_domain: String::new(),
             snippet: String::new(),
             fused_score: 0.5,
+            graph_edges: None,
         }];
         let citations = build_citations(&results, &blocks);
         assert_eq!(citations[0].source, "Fallback Name");
+    }
+
+    // --- Graph edge enrichment tests ---
+
+    #[test]
+    fn is_code_entity_detects_code_types() {
+        let make_result = |entity_type: &str| FusedResult {
+            id: Uuid::nil(),
+            fused_score: 0.5,
+            confidence: None,
+            entity_type: Some(entity_type.to_string()),
+            name: None,
+            snippet: None,
+            content: None,
+            source_uri: None,
+            source_title: None,
+            source_type: None,
+            source_domain: None,
+            result_type: Some("node".to_string()),
+            created_at: None,
+            dimension_scores: Default::default(),
+            dimension_ranks: Default::default(),
+            graph_context: None,
+        };
+
+        // Code entity types
+        assert!(is_code_entity(&make_result("function")));
+        assert!(is_code_entity(&make_result("struct")));
+        assert!(is_code_entity(&make_result("trait")));
+        assert!(is_code_entity(&make_result("impl_block")));
+        assert!(is_code_entity(&make_result("enum")));
+        assert!(is_code_entity(&make_result("module")));
+
+        // Non-code entity types
+        assert!(!is_code_entity(&make_result("concept")));
+        assert!(!is_code_entity(&make_result("person")));
+        assert!(!is_code_entity(&make_result("article")));
+        assert!(!is_code_entity(&make_result("chunk")));
+
+        // No entity_type
+        let mut no_type = make_result("function");
+        no_type.entity_type = None;
+        assert!(!is_code_entity(&no_type));
+    }
+
+    #[test]
+    fn format_graph_edges_single_type() {
+        let ctx = GraphEdgeContext {
+            entity_name: "SearchService".to_string(),
+            edges: vec![
+                GraphEdge {
+                    neighbor_name: "search".to_string(),
+                    rel_type: "calls".to_string(),
+                },
+                GraphEdge {
+                    neighbor_name: "clear_cache".to_string(),
+                    rel_type: "calls".to_string(),
+                },
+            ],
+        };
+        let output = format_graph_edges(&ctx);
+        assert!(output.contains("[Graph Context for SearchService]"));
+        assert!(output.contains("- calls: search, clear_cache"));
+    }
+
+    #[test]
+    fn format_graph_edges_multiple_types() {
+        let ctx = GraphEdgeContext {
+            entity_name: "PipelineService".to_string(),
+            edges: vec![
+                GraphEdge {
+                    neighbor_name: "run_search".to_string(),
+                    rel_type: "calls".to_string(),
+                },
+                GraphEdge {
+                    neighbor_name: "SearchFilters".to_string(),
+                    rel_type: "uses_type".to_string(),
+                },
+                GraphEdge {
+                    neighbor_name: "run_pipeline".to_string(),
+                    rel_type: "called_by".to_string(),
+                },
+            ],
+        };
+        let output = format_graph_edges(&ctx);
+        assert!(output.contains("[Graph Context for PipelineService]"));
+        assert!(output.contains("- calls: run_search"));
+        assert!(output.contains("- uses_type: SearchFilters"));
+        assert!(output.contains("- called_by: run_pipeline"));
+    }
+
+    #[test]
+    fn format_graph_edges_deterministic_order() {
+        let ctx = GraphEdgeContext {
+            entity_name: "Node".to_string(),
+            edges: vec![
+                GraphEdge {
+                    neighbor_name: "z_func".to_string(),
+                    rel_type: "uses_type".to_string(),
+                },
+                GraphEdge {
+                    neighbor_name: "a_func".to_string(),
+                    rel_type: "calls".to_string(),
+                },
+                GraphEdge {
+                    neighbor_name: "m_func".to_string(),
+                    rel_type: "contains".to_string(),
+                },
+            ],
+        };
+        let output = format_graph_edges(&ctx);
+        let lines: Vec<&str> = output.lines().collect();
+        // Header + 3 rel types, sorted alphabetically
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains("[Graph Context for Node]"));
+        assert!(lines[1].starts_with("- calls:"));
+        assert!(lines[2].starts_with("- contains:"));
+        assert!(lines[3].starts_with("- uses_type:"));
+    }
+
+    #[test]
+    fn build_user_prompt_includes_graph_edges() {
+        let blocks = vec![ContextBlock {
+            number: 1,
+            result_type: "node".to_string(),
+            confidence: 0.75,
+            source_title: "SearchService".to_string(),
+            source_uri: String::new(),
+            source_domain: "code".to_string(),
+            snippet: "Multi-dimensional fused search.".to_string(),
+            fused_score: 0.8,
+            graph_edges: Some(GraphEdgeContext {
+                entity_name: "SearchService".to_string(),
+                edges: vec![
+                    GraphEdge {
+                        neighbor_name: "search".to_string(),
+                        rel_type: "calls".to_string(),
+                    },
+                    GraphEdge {
+                        neighbor_name: "SearchFilters".to_string(),
+                        rel_type: "contains".to_string(),
+                    },
+                    GraphEdge {
+                        neighbor_name: "run_pipeline".to_string(),
+                        rel_type: "called_by".to_string(),
+                    },
+                ],
+            }),
+        }];
+        let prompt = build_user_prompt("What does SearchService do?", &blocks);
+        assert!(prompt.contains("[Graph Context for SearchService]"));
+        assert!(prompt.contains("- calls: search"));
+        assert!(prompt.contains("- contains: SearchFilters"));
+        assert!(prompt.contains("- called_by: run_pipeline"));
+    }
+
+    #[test]
+    fn build_user_prompt_no_graph_edges_for_non_code() {
+        let blocks = vec![ContextBlock {
+            number: 1,
+            result_type: "chunk".to_string(),
+            confidence: 0.9,
+            source_title: "Some Paper".to_string(),
+            source_uri: "https://example.com".to_string(),
+            source_domain: "research".to_string(),
+            snippet: "Some research content.".to_string(),
+            fused_score: 0.8,
+            graph_edges: None,
+        }];
+        let prompt = build_user_prompt("What is RRF?", &blocks);
+        assert!(!prompt.contains("[Graph Context"));
     }
 }
