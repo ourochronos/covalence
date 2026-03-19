@@ -59,6 +59,49 @@ impl std::fmt::Display for DimensionKind {
     }
 }
 
+/// Orthogonal graph view — restricts which edges the graph
+/// dimension traverses during BFS.
+///
+/// Each view isolates a semantic "slice" of the knowledge graph:
+/// - `Causal`: edges with causal annotations or causal rel_types
+/// - `Temporal`: edges with temporal validity metadata
+/// - `Entity` / `Structural`: structural relationship edges
+/// - `All`: no filtering (default behavior)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphView {
+    /// Only traverse causal edges (causal_level IS NOT NULL or
+    /// rel_type in CAUSED_BY, ENABLED, RESULTS_IN, CONFIRMS,
+    /// CONTRADICTS).
+    Causal,
+    /// Only traverse edges with temporal validity data
+    /// (valid_from IS NOT NULL in PG).
+    Temporal,
+    /// Only traverse structural/entity relationship edges
+    /// (calls, uses_type, contains, implements, extends,
+    /// PART_OF_COMPONENT).
+    Entity,
+    /// Alias for `Entity`.
+    Structural,
+    /// No edge filtering — traverse all edges (default).
+    All,
+}
+
+impl GraphView {
+    /// Parse a graph view from a string, returning `None` for
+    /// unrecognized values.
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "causal" => Some(Self::Causal),
+            "temporal" => Some(Self::Temporal),
+            "entity" => Some(Self::Entity),
+            "structural" => Some(Self::Structural),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
 /// A multi-dimensional search query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
@@ -78,6 +121,9 @@ pub struct SearchQuery {
     /// summaries/sources first, then restrict chunk search to
     /// the top-K most relevant sources.
     pub hierarchical: bool,
+    /// Orthogonal graph view restricting which edges the graph
+    /// dimension traverses. When `None`, all edges are traversed.
+    pub graph_view: Option<GraphView>,
 }
 
 impl Default for SearchQuery {
@@ -90,6 +136,7 @@ impl Default for SearchQuery {
             strategy: SearchStrategy::default(),
             limit: 10,
             hierarchical: false,
+            graph_view: None,
         }
     }
 }
@@ -202,5 +249,37 @@ mod tests {
         assert_eq!(json, "\"graph\"");
         let back: DimensionKind = serde_json::from_str(&json).unwrap();
         assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn graph_view_from_str_opt() {
+        assert_eq!(GraphView::from_str_opt("causal"), Some(GraphView::Causal));
+        assert_eq!(
+            GraphView::from_str_opt("temporal"),
+            Some(GraphView::Temporal)
+        );
+        assert_eq!(GraphView::from_str_opt("entity"), Some(GraphView::Entity));
+        assert_eq!(
+            GraphView::from_str_opt("structural"),
+            Some(GraphView::Structural)
+        );
+        assert_eq!(GraphView::from_str_opt("all"), Some(GraphView::All));
+        assert_eq!(GraphView::from_str_opt("CAUSAL"), Some(GraphView::Causal));
+        assert_eq!(GraphView::from_str_opt("unknown"), None);
+    }
+
+    #[test]
+    fn graph_view_serde_roundtrip() {
+        let view = GraphView::Causal;
+        let json = serde_json::to_string(&view).unwrap();
+        assert_eq!(json, "\"causal\"");
+        let back: GraphView = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, view);
+    }
+
+    #[test]
+    fn search_query_default_graph_view_is_none() {
+        let q = SearchQuery::default();
+        assert!(q.graph_view.is_none());
     }
 }

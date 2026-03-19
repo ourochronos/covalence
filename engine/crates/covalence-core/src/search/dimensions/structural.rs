@@ -168,6 +168,7 @@ mod tests {
                     causal_level: None,
                     clearance_level: 0,
                     is_synthetic: false,
+                    has_valid_from: false,
                 },
             )
             .unwrap();
@@ -182,6 +183,7 @@ mod tests {
                     causal_level: None,
                     clearance_level: 0,
                     is_synthetic: false,
+                    has_valid_from: false,
                 },
             )
             .unwrap();

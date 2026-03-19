@@ -198,6 +198,7 @@ impl AgeEngine {
                     causal_level: None,
                     clearance_level: 0,
                     is_synthetic: parse_agtype_bool(&synth),
+                    has_valid_from: false,
                 },
             );
         }
@@ -968,6 +969,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: false,
+                has_valid_from: false,
             },
         )
         .unwrap();

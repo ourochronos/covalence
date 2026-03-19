@@ -127,6 +127,62 @@ pub fn bfs_neighborhood_full(
     results
 }
 
+/// BFS neighborhood with a custom edge predicate.
+///
+/// Like [`bfs_neighborhood_full`] but instead of allow/deny string
+/// lists, the caller supplies a closure that inspects each
+/// `EdgeMeta` and returns `true` to traverse, `false` to skip.
+/// Synthetic-edge skipping and bibliographic deny are subsumed
+/// by the predicate — the caller controls all filtering.
+pub fn bfs_neighborhood_pred<F>(
+    graph: &GraphSidecar,
+    start: Uuid,
+    max_hops: usize,
+    pred: F,
+) -> Vec<(Uuid, usize)>
+where
+    F: Fn(&super::sidecar::EdgeMeta) -> bool,
+{
+    let Some(start_idx) = graph.node_index(start) else {
+        return Vec::new();
+    };
+
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
+    visited.insert(start_idx);
+
+    let mut queue: VecDeque<(NodeIndex, usize)> = VecDeque::new();
+    queue.push_back((start_idx, 0));
+
+    let mut results = Vec::new();
+
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth >= max_hops {
+            continue;
+        }
+
+        for direction in [Direction::Outgoing, Direction::Incoming] {
+            for edge in graph.graph.edges_directed(current, direction) {
+                let edge_meta = &graph.graph[edge.id()];
+                if !pred(edge_meta) {
+                    continue;
+                }
+
+                let neighbor = match direction {
+                    Direction::Outgoing => edge.target(),
+                    Direction::Incoming => edge.source(),
+                };
+                if visited.insert(neighbor) {
+                    let next_depth = depth + 1;
+                    results.push((graph.graph[neighbor].id, next_depth));
+                    queue.push_back((neighbor, next_depth));
+                }
+            }
+        }
+    }
+
+    results
+}
+
 /// DFS neighborhood traversal up to `max_hops` depth.
 ///
 /// Returns `(node_uuid, hop_distance)` for all reachable nodes. The start
@@ -252,6 +308,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: false,
+                has_valid_from: false,
             },
         )
         .unwrap();
@@ -371,6 +428,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: true,
+                has_valid_from: false,
             },
         )
         .unwrap();

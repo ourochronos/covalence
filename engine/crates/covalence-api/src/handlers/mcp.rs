@@ -433,6 +433,7 @@ async fn dispatch_memory_recall(
             date_range: None,
             source_types: None,
             source_layers: None,
+            graph_view: None,
         })
     } else {
         None

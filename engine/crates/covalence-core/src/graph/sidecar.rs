@@ -78,6 +78,10 @@ pub struct EdgeMeta {
     pub clearance_level: i32,
     /// Whether this edge was generated synthetically (co-occurrence).
     pub is_synthetic: bool,
+    /// Whether this edge has temporal validity data (`valid_from`
+    /// IS NOT NULL in PG). Used by the `temporal` graph view to
+    /// restrict traversal to temporally-annotated edges.
+    pub has_valid_from: bool,
 }
 
 impl EdgeMeta {
@@ -382,6 +386,7 @@ impl GraphSidecar {
             .as_str()
             .and_then(CausalLevel::from_str_opt);
         let is_synthetic = payload["is_synthetic"].as_bool().unwrap_or(false);
+        let has_valid_from = !payload["valid_from"].is_null();
 
         // Remove existing edge if updating
         let _ = self.remove_edge(entity_id);
@@ -397,6 +402,7 @@ impl GraphSidecar {
                 causal_level,
                 clearance_level,
                 is_synthetic,
+                has_valid_from,
             },
         )?;
         Ok(())
@@ -432,6 +438,7 @@ mod tests {
             causal_level: None,
             clearance_level: 0,
             is_synthetic: false,
+            has_valid_from: false,
         }
     }
 
@@ -603,6 +610,7 @@ mod tests {
             causal_level: None,
             clearance_level: 0,
             is_synthetic: false,
+            has_valid_from: false,
         };
         assert!((edge.effective_weight() - 1.0).abs() < f64::EPSILON);
         assert!((edge.effective_confidence() - 0.9).abs() < f64::EPSILON);
@@ -618,6 +626,7 @@ mod tests {
             causal_level: None,
             clearance_level: 0,
             is_synthetic: true,
+            has_valid_from: false,
         };
         assert!(
             (edge.effective_weight() - 0.1).abs() < f64::EPSILON,
@@ -646,6 +655,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: false,
+                has_valid_from: false,
             };
             assert!(
                 (edge.effective_weight() - 0.2).abs() < f64::EPSILON,

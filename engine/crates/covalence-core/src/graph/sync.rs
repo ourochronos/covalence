@@ -125,7 +125,8 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
         "SELECT id, source_node_id, target_node_id, \
          COALESCE(canonical_rel_type, rel_type) AS rel_type, \
          weight, confidence, clearance_level, is_synthetic, \
-         properties->>'causal_level' as causal_level \
+         properties->>'causal_level' as causal_level, \
+         (valid_from IS NOT NULL) AS has_valid_from \
          FROM edges \
          WHERE invalid_at IS NULL",
     )
@@ -168,6 +169,7 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
                 causal_level,
                 clearance_level: row.get("clearance_level"),
                 is_synthetic: row.get("is_synthetic"),
+                has_valid_from: row.get("has_valid_from"),
             },
         ) {
             tracing::warn!(error = %e, "failed to add edge during full reload");

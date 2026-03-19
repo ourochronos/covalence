@@ -226,6 +226,11 @@ pub struct SearchRequest {
     /// sources first, then retrieves chunks only from those sources.
     #[serde(default)]
     pub hierarchical: bool,
+    /// Orthogonal graph view restricting which edges the graph
+    /// dimension traverses during BFS. Values: "causal",
+    /// "temporal", "entity", "structural", "all". Default: all
+    /// edges (bibliographic and synthetic excluded).
+    pub graph_view: Option<String>,
 }
 
 /// A single fused search result.
