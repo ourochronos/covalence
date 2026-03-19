@@ -190,10 +190,13 @@ impl ChatBackend for CliChatBackend {
             cmd.arg("-p").arg(&prompt).arg("--model").arg(&self.model);
         }
 
-        // Run from /tmp to prevent CLI agents from picking up the
-        // repo cwd and entering agentic/tool-use mode.
+        // Run from a neutral directory to prevent CLI agents from
+        // picking up the repo cwd and entering agentic/tool-use mode.
+        // Use $HOME instead of /tmp — some CLIs (gemini) scan the cwd
+        // and fail on /tmp due to permission errors on systemd dirs.
+        let neutral_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let output = cmd
-            .current_dir("/tmp")
+            .current_dir(&neutral_dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
