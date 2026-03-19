@@ -296,7 +296,7 @@ impl AnalysisService {
         // the design source (code evolved, design didn't).
         let rows: Vec<(String, String, f64, String)> = sqlx::query_as(
             "SELECT s.title, 'source' AS ntype, \
-                    EXTRACT(EPOCH FROM (MAX(n.last_seen) - s.ingested_at)) / 86400.0 AS days_behind, \
+                    (EXTRACT(EPOCH FROM (MAX(n.last_seen) - s.ingested_at)) / 86400.0)::FLOAT8 AS days_behind, \
                     STRING_AGG(DISTINCT n.canonical_name, ', ' ORDER BY n.canonical_name) AS code_entities \
              FROM sources s \
              JOIN chunks c ON c.source_id = s.id \
