@@ -67,8 +67,8 @@ See [03-storage](03-storage.md) for schema details.
 
 Stateless compute except for the in-memory graph sidecar.
 
-**Graph Sidecar (petgraph)**
-- Mirrors the PG edge table as a `DiGraph<Uuid, EdgeMeta>`
+**Graph Sidecar** (abstracted behind a `GraphEngine` trait with two backends: `PetgraphEngine` for in-memory dev use and `AgeEngine` for Apache AGE in prod; selected via `COVALENCE_GRAPH_ENGINE=petgraph|age`)
+- Mirrors the PG edge table as a `DiGraph<Uuid, EdgeMeta>` (petgraph) or queries AGE's property graph directly (AGE)
 - Provides fast traversal, PageRank, community detection, topological confidence
 - Periodic TrustRank batch computation for global confidence calibration
 - Cross-domain analysis: erosion detection, coverage analysis, blast-radius simulation (see [04-graph](04-graph.md#cross-domain-analysis))
@@ -117,6 +117,7 @@ Thin routing layer. No business logic.
 
 - HTTP REST endpoints for CRUD, search, ingestion
 - MCP tool interface for Claude/agent integration
+- MCP server (`mcp-server/index.js`) bridges Claude Code sessions to the API for in-session graph queries
 - See [08-api](08-api.md)
 
 ## Data Flow

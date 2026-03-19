@@ -84,6 +84,10 @@ topo_confidence(node) = α * normalized_pagerank(node) + β * path_diversity(nod
 - Nodes mentioned by many sources via diverse paths have higher topological confidence
 - See [04-graph](04-graph.md) for details
 
+### Domain Entropy
+
+Nodes store a `domain_entropy` value: the Shannon entropy of the node's source domain distribution (e.g., a node with provenance from code, spec, and research sources has higher entropy than one from a single domain). Domain entropy is used for domain-aware search routing — high-entropy nodes are cross-domain bridge concepts, while low-entropy nodes are domain-specific.
+
 ### Composite Confidence
 
 For query results, confidence is composed from multiple signals. The projected probability from the opinion tuple serves as the primary score, modified by topological confidence:
@@ -264,6 +268,15 @@ edge.properties.valid_from: Timestamp     -- when the relationship became true
 edge.properties.valid_until: Timestamp?   -- when it ceased (null = still valid)
 edge.properties.recorded_at: Timestamp    -- when the system learned of it
 ```
+
+Edges may also carry invalidation metadata for temporal conflict resolution:
+
+```
+edge.properties.invalid_at: Timestamp?      -- when this edge was invalidated by a newer contradicting edge
+edge.properties.invalidated_by: Uuid?        -- the edge that caused invalidation
+```
+
+When a temporal contradiction is detected, the older edge's `invalid_at` is set to the newer edge's timestamp. Invalidated edges are excluded from graph algorithms and analysis queries but remain queryable for temporal history. See also Lesson 10 in [10-lessons-learned](10-lessons-learned.md).
 
 Causal edges (L1+) carry additional metadata:
 

@@ -207,3 +207,31 @@ With this bridge in place, five capabilities emerge naturally from graph queries
 5. **Dialectical design partner** — find counterarguments from the system's own knowledge
 
 These aren't separate features to build — they're graph traversal patterns that become possible once the three domains are connected.
+
+## Lesson 16: Provider Failover Chains
+
+**Date:** 2026-03
+**Source:** Covalence production experience
+
+Multi-provider LLM chains (claude → copilot → gemini) with per-call provider attribution prevent single-provider quota exhaustion from blocking pipelines. When one provider hits rate limits, the next takes over transparently. Recording which provider handled each call enables quality comparison across providers and debugging extraction inconsistencies.
+
+## Lesson 17: Async Per-Entity Jobs
+
+**Date:** 2026-03
+**Source:** ADR-0017 / Async Pipeline (#140)
+
+Making each LLM call a separate retry queue job (vs monolithic per-source processing) provides fine-grained error recovery and enables fan-in composition. A single failed entity extraction doesn't block or roll back the entire source. Jobs can be retried independently with exponential backoff, and fan-in triggers (e.g., "all entities for this source are done → compile sections") compose naturally from job completion events.
+
+## Lesson 18: Domain Drowning
+
+**Date:** 2026-03
+**Source:** Covalence production search quality
+
+When research papers vastly outnumber spec/design docs (e.g., 148 research sources vs 14 spec docs), self-referential queries ("how does our ingestion pipeline work?") get drowned by topically related research results. The fix: DDSS (Domain-Decomposed Score Skew) compares the max score from internal-domain results against external-domain results. When the internal max is competitive (ratio >= 0.7), internal results get a 1.5x boost, surfacing the system's own documentation over third-party papers about similar topics.
+
+## Lesson 19: Epistemic Data Lifecycle
+
+**Date:** 2026-03
+**Source:** Covalence production data management
+
+Old source versions and orphan nodes are observations, not garbage. Never auto-delete. The instinct to "clean up" stale data destroys temporal provenance and makes it impossible to answer "what did the system believe at time T?" Manual GC with preview (showing what would be deleted and why) preserves epistemic integrity while still allowing intentional cleanup. Automated eviction should only occur through the BMR forgetting pipeline (spec 07), which has mathematical guarantees about what's safe to prune.

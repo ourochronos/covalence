@@ -120,7 +120,19 @@ The `covalence-eval` crate (`engine/crates/covalence-eval/`) implements a fixtur
 
 All evaluators implement the `LayerEvaluator` trait, which takes typed inputs, produces outputs, and scores them against expected baselines. Test fixtures live in the `fixtures` module. Metrics types are `ChunkerMetrics`, `ExtractorMetrics`, and `SearchMetrics`.
 
-RAGAS integration (reference-free faithfulness, answer relevancy, context precision/recall) is planned but not yet implemented. The current harness focuses on deterministic, fixture-based evaluation of individual pipeline layers rather than end-to-end LLM-judged metrics.
+RAGAS integration (reference-free faithfulness, answer relevancy, context precision/recall) has stub implementations that return 1.0 — not yet wired to actual LLM-judged evaluation. The current harness focuses on deterministic, fixture-based evaluation of individual pipeline layers.
+
+### Current Baselines
+
+Concrete metrics from production (as of 2026-03):
+
+| Metric | Value | Quality Gate | Status |
+|--------|-------|-------------|--------|
+| Search precision@5 | 0.86 | >0.80 | Passing |
+| Entity precision | 96% | >90% | Passing |
+| Search regression | 20/20 queries stable | 0 regressions | Passing |
+
+The search regression baseline is stored in `search_precision_baseline.json` (20 curated queries covering vector, lexical, graph, temporal, and cross-domain search). The `make eval-search` target runs these queries against the prod API and flags any result count drops or zero-result regressions.
 
 ## Tools
 

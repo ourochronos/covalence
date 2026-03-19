@@ -28,6 +28,21 @@ Where:
 - `rank_i(d)` = rank of document `d` in dimension `i` (1-indexed, ∞ if absent)
 - `weight_i` = per-dimension weight (configurable per query strategy)
 
+### CC Fusion with Coverage Multiplier
+
+After RRF computes fused scores, a **coverage multiplier** rewards results corroborated by more dimensions and penalizes single-dimension results:
+
+```
+final_score = cc_score * (0.5 + 0.5 * dims_present / active_dims)
+```
+
+Where:
+- `cc_score` = the raw RRF fused score
+- `dims_present` = number of dimensions that returned this result
+- `active_dims` = number of dimensions that returned any results
+
+This produces a range of `[0.5 + 0.5/N .. 1.0]`. A result found by only 1 of 6 active dimensions gets its score halved (~0.58x), while a result found by all 6 dimensions keeps its full score (1.0x). Single-dimension results are not eliminated, just appropriately discounted. The multiplier is only applied when more than one dimension is active.
+
 **v2 consideration: SRRF (Soft Reciprocal Rank Fusion).** Standard RRF discards score distribution information by converting scores to ranks. SRRF (Kuzi et al., 2024 — "An Analysis of Fusion Functions for Hybrid Retrieval") replaces the indicator function inside the rank computation with a sigmoid, preserving score magnitude information. With an appropriate β parameter, SRRF outperforms RRF. However, for v1 with 5+ heterogeneous dimensions (vector, graph, keyword, temporal, structural), RRF's zero-shot rank-only property is a strength — no score normalization needed across radically different scoring functions. SRRF is most beneficial for 2-dimension hybrid search (dense + sparse). Evaluate for v2 when we have retrieval quality benchmarks to compare against.
 
 ## Search Dimensions
@@ -153,6 +168,13 @@ fn personalized_pagerank(
 
 **Hop-decay (fallback):** `score(node, hops) = base_score * decay^hops` where `decay = 0.7` (from covalence)
 
+**Edge damping:** Not all edges carry equal semantic signal. The graph sidecar applies damping factors to edge weights before they are used in traversal scoring (PPR, hop-decay, trust propagation):
+- **Synthetic edges** (co-occurrence): `effective_weight = weight * 0.1`. These are auto-generated from shared chunk provenance and represent statistical co-occurrence rather than semantic relationships. Without damping, high-degree co-occurrence hubs dominate PPR and spreading activation.
+- **Bibliographic edges** (authored, published_in, works_at, affiliated_with, edited, reviewed): `effective_weight = weight * 0.2`. These represent publication metadata rather than knowledge relationships and create dense bipartite subgraphs that distort centrality metrics.
+- **All other edges**: `effective_weight = weight * 1.0` (no damping).
+
+The same damping factors apply to `effective_confidence` for trust propagation.
+
 **Edge-type filtering:** Queries can specify which relationship types to traverse (e.g., only `CAUSED_BY` for causal queries). PPR respects edge-type filters by zeroing out transition probabilities on excluded edge types.
 
 **Features:**
@@ -232,8 +254,11 @@ Users can also provide custom weights.
 6. Apply RRF fusion with selected strategy weights
 7. **Rerank** top-20 fused results with Voyage rerank-2.5
 8. Apply topological confidence as a multiplier on reranked scores
-9. Deduplicate (keep highest-scoring instance per logical entity)
-10. Return top-N results with provenance metadata and citations
+9. **DDSS self-referential boost** (see Domain-Decomposed Score Skew below)
+10. **Post-retrieval quality filters** — remove chunk-type results that match: `is_bibliography_entry`, `is_reference_section`, `is_boilerplate_heavy`, `is_metadata_only`, `is_title_only`, `is_author_block`, `is_trivial_code_chunk`. Non-chunk results pass through unfiltered.
+11. **Post-fusion filters** — apply `min_confidence`, `node_types`, `entity_classes`, `source_types`, `source_layers`, `date_range` if specified
+12. Deduplicate (keep highest-scoring instance per logical entity)
+13. Return top-N results with provenance metadata and citations
 ```
 
 **Adaptive strategy selection (SkewRoute pattern):**
@@ -257,6 +282,29 @@ gini = (2 * sum(i * sorted_scores[i] for i in 1..n)) / (n * sum(scores)) - (n + 
 - **Fallback:** If vector search returns < 5 results, always use `balanced` (insufficient signal for distribution analysis)
 
 These thresholds are starting points — tune via the evaluation harness (spec 11) against your query distribution.
+
+## Search Query Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `text` | `String` | (required) | The search query text |
+| `strategy` | `SearchStrategy` | `Auto` | `auto`, `balanced`, `precise`, `exploratory`, `recent`, `graph_first`, `global`, or custom weights |
+| `limit` | `usize` | `10` | Maximum results to return |
+| `hierarchical` | `bool` | `false` | Whether to include hierarchical chunk levels |
+| `graph_view` | `GraphView` | `None` (all) | Orthogonal graph view restricting which edges the graph dimension traverses. Values: `causal` (causal-annotated edges only), `temporal` (edges with temporal validity data), `entity` / `structural` (structural relationship edges: calls, uses_type, contains, implements, extends, PART_OF_COMPONENT), `all` (no filtering, default) |
+
+### Post-Fusion Filters
+
+Applied after fusion and reranking. When any filter is present, cache lookup is skipped and the pipeline over-fetches internally to ensure enough candidates survive filtering.
+
+| Filter | Type | Description |
+|--------|------|-------------|
+| `min_confidence` | `f64` | Exclude results below this composite confidence |
+| `node_types` | `Vec<String>` | Restrict to specific node types |
+| `entity_classes` | `Vec<String>` | Restrict to specific entity classes: `code`, `domain`, `actor`, `analysis`. Applied post-fusion — for node results, entity class is derived from entity type |
+| `source_types` | `Vec<String>` | Restrict to specific source types (e.g., `document`, `code`) |
+| `source_layers` | `Vec<String>` | Restrict to specific source layers derived from URI prefix |
+| `date_range` | `(DateTime, DateTime)` | Restrict to a temporal date range |
 
 ## Multi-Granularity Search Targets
 
@@ -414,6 +462,40 @@ Search results incorporate confidence from the epistemic model:
    final_score = rrf_score * (1 + γ * (composite_confidence - 0.5))
    ```
 3. **Explainability** — Each result includes its `confidence_breakdown`, allowing the consumer to understand why a result is (or isn't) trusted
+
+## Post-Retrieval Quality Filters
+
+After reranking, chunk-type results are filtered through a battery of content quality checks. Non-chunk results (nodes, articles, community summaries) pass through unfiltered. These filters run **after** reranking so the reranker cannot blend scores back up for low-quality content.
+
+| Filter | What it catches |
+|--------|----------------|
+| `is_bibliography_entry` | Reference list entries (e.g., "[1] Author, Title, Year") — bibliography text often scores well on search dimensions because it contains domain terminology |
+| `is_reference_section` | Entire reference/bibliography sections |
+| `is_boilerplate_heavy` | Chunks dominated by boilerplate (headers, footers, navigation) |
+| `is_metadata_only` | Chunks containing only metadata (dates, IDs, status fields) with no informational content |
+| `is_title_only` | Chunks that are just a title or heading with no body text |
+| `is_author_block` | Author attribution blocks (names, affiliations, emails) |
+| `is_trivial_code_chunk` | Very short code chunks: mod declarations, config test markers, bare braces |
+
+Results are **removed**, not demoted. Demotion (e.g., `score *= 0.1`) is insufficient because bibliography and boilerplate text scores well enough on search dimensions to remain competitive even after significant score reduction.
+
+## Domain-Decomposed Score Skew (DDSS)
+
+Post-fusion, the search pipeline applies a self-referential domain boost to prevent **domain drowning** — the problem where a large corpus of external research papers (e.g., 256 papers) systematically outscores a small corpus of internal documentation (e.g., 15 spec docs) even when the query is about the system itself.
+
+**Mechanism:**
+
+1. Classify each fused result's source domain as **internal** or **external**:
+   - Internal domains: `code`, `spec`, `design`
+   - External domains: `research`, `external`, and all others
+2. Compute the **max-score ratio**: `ratio = max_internal_score / max_external_score`
+3. If `ratio >= 0.7` (the internal domain's best result is competitive with the external domain's best), boost **all internal results** by `1.5x`.
+4. A secondary signal from code-class entities in top results can also trigger the boost.
+5. Re-sort fused results after boosting.
+
+**Rationale:** When internal content scores within 70% of external content, the query is likely about the system itself. Without the boost, sheer volume of external research papers dilutes internal results through RRF rank averaging. The 1.5x multiplier is conservative — it surfaces internal results without eliminating external ones.
+
+**No-op cases:** When the query is genuinely about external topics (e.g., "explain Dempster-Shafer theory"), the max internal score is low relative to external, the ratio stays below 0.7, and no boost is applied.
 
 ## Information Foraging Navigation
 
