@@ -300,6 +300,7 @@ mod tests {
             resolve_trigram_threshold: 0.4,
             resolve_vector_threshold: 0.85,
             queue: RetryQueueConfig::default(),
+            ask_model: "sonnet".to_string(),
         }
     }
 
