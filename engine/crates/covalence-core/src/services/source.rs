@@ -543,7 +543,7 @@ impl SourceService {
         // Clean up superseded source AFTER the new pipeline succeeds.
         // This ensures old data is preserved if the new pipeline fails (#113).
         if let Some(ref info) = supersedes_info {
-            self.mark_superseded(info.old_source_id, &info.update_class)
+            self.mark_superseded(info.old_source_id, source.id, &info.update_class)
                 .await?;
             // FK ordering: extractions → statements → sections → chunks.
             // extractions.statement_id FK → statements, statements.section_id FK → sections.
@@ -663,13 +663,23 @@ impl SourceService {
         }))
     }
 
-    /// Mark an old source as superseded.
-    async fn mark_superseded(&self, old_id: SourceId, update_class: &UpdateClass) -> Result<()> {
-        sqlx::query("UPDATE sources SET update_class = $2 WHERE id = $1")
-            .bind(old_id)
-            .bind(update_class.as_str())
-            .execute(self.repo.pool())
-            .await?;
+    /// Mark an old source as superseded by a newer version.
+    async fn mark_superseded(
+        &self,
+        old_id: SourceId,
+        new_id: SourceId,
+        update_class: &UpdateClass,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE sources \
+             SET update_class = $2, superseded_by = $3, superseded_at = NOW() \
+             WHERE id = $1",
+        )
+        .bind(old_id)
+        .bind(update_class.as_str())
+        .bind(new_id)
+        .execute(self.repo.pool())
+        .await?;
         Ok(())
     }
 

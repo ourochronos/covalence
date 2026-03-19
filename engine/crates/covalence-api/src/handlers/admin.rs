@@ -1073,3 +1073,21 @@ pub async fn resurrect_dead_handler(
     let resurrected = state.queue_service.resurrect_dead(kind).await?;
     Ok(Json(ResurrectDeadResponse { resurrected }))
 }
+
+/// Data health preview — shows stale, orphaned, and duplicated data
+/// without modifying anything.
+#[utoipa::path(
+    get,
+    path = "/admin/data-health",
+    responses(
+        (status = 200, description = "Data health report",
+         body = serde_json::Value),
+    ),
+    tag = "admin"
+)]
+pub async fn data_health_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let report = state.admin_service.data_health_report().await?;
+    Ok(Json(serde_json::to_value(report).unwrap_or_default()))
+}

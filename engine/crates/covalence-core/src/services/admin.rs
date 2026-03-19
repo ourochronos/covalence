@@ -94,6 +94,28 @@ pub struct GcResult {
     pub aliases_removed: u64,
 }
 
+/// Data health report — preview of what's stale, orphaned, or
+/// duplicated without modifying anything.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DataHealthReport {
+    /// Sources superseded by newer versions.
+    pub superseded_sources: u64,
+    /// Chunks belonging to superseded sources.
+    pub superseded_chunks: u64,
+    /// Nodes with no extraction provenance.
+    pub orphan_nodes: u64,
+    /// Orphan nodes that still have edges (load-bearing).
+    pub orphan_nodes_with_edges: u64,
+    /// Duplicate sources (same title, same domain).
+    pub duplicate_sources: u64,
+    /// Nodes with no embedding.
+    pub unembedded_nodes: u64,
+    /// Code entities missing semantic summaries.
+    pub unsummarized_code_entities: u64,
+    /// Sources missing summaries.
+    pub unsummarized_sources: u64,
+}
+
 /// Count weakly connected components in a `StableDiGraph`.
 ///
 /// `petgraph::algo::connected_components` requires `NodeCompactIndexable`
@@ -1006,6 +1028,58 @@ impl AdminService {
             nodes_evicted,
             edges_removed,
             aliases_removed,
+        })
+    }
+
+    /// Preview data health — shows what's stale, orphaned, or
+    /// duplicated without modifying anything.
+    pub async fn data_health_report(&self) -> Result<DataHealthReport> {
+        use sqlx::Row;
+
+        let row = sqlx::query(
+            "SELECT \
+               (SELECT COUNT(*) FROM sources WHERE superseded_by IS NOT NULL)::bigint \
+                 AS superseded_sources, \
+               (SELECT COUNT(*) FROM chunks c JOIN sources s ON s.id = c.source_id \
+                WHERE s.superseded_by IS NOT NULL)::bigint \
+                 AS superseded_chunks, \
+               (SELECT COUNT(*) FROM nodes n \
+                WHERE NOT EXISTS (SELECT 1 FROM extractions ex WHERE ex.entity_id = n.id))::bigint \
+                 AS orphan_nodes, \
+               (SELECT COUNT(*) FROM nodes n \
+                WHERE NOT EXISTS (SELECT 1 FROM extractions ex WHERE ex.entity_id = n.id) \
+                  AND EXISTS (SELECT 1 FROM edges e \
+                              WHERE e.source_node_id = n.id OR e.target_node_id = n.id))::bigint \
+                 AS orphan_nodes_with_edges, \
+               (SELECT COUNT(*) FROM ( \
+                  SELECT title, domain FROM sources \
+                  WHERE title IS NOT NULL \
+                  GROUP BY title, domain HAVING COUNT(*) > 1 \
+                ) dup)::bigint AS duplicate_sources, \
+               (SELECT COUNT(*) FROM nodes WHERE embedding IS NULL)::bigint \
+                 AS unembedded_nodes, \
+               (SELECT COUNT(*) FROM nodes \
+                WHERE entity_class = 'code' \
+                  AND (properties->>'semantic_summary' IS NULL \
+                       OR properties->>'semantic_summary' = ''))::bigint \
+                 AS unsummarized_code, \
+               (SELECT COUNT(*) FROM sources \
+                WHERE (summary IS NULL OR summary = '') \
+                  AND superseded_by IS NULL)::bigint \
+                 AS unsummarized_sources",
+        )
+        .fetch_one(self.repo.pool())
+        .await?;
+
+        Ok(DataHealthReport {
+            superseded_sources: row.get::<i64, _>("superseded_sources") as u64,
+            superseded_chunks: row.get::<i64, _>("superseded_chunks") as u64,
+            orphan_nodes: row.get::<i64, _>("orphan_nodes") as u64,
+            orphan_nodes_with_edges: row.get::<i64, _>("orphan_nodes_with_edges") as u64,
+            duplicate_sources: row.get::<i64, _>("duplicate_sources") as u64,
+            unembedded_nodes: row.get::<i64, _>("unembedded_nodes") as u64,
+            unsummarized_code_entities: row.get::<i64, _>("unsummarized_code") as u64,
+            unsummarized_sources: row.get::<i64, _>("unsummarized_sources") as u64,
         })
     }
 
