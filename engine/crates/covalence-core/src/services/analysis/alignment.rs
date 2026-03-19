@@ -143,19 +143,21 @@ impl AnalysisService {
                AND n.node_type NOT IN ('code_test', 'module') \
                AND n.canonical_name NOT LIKE 'test_%' \
                AND n.mention_count >= 2 \
-             HAVING ( \
-               SELECT MIN(n.embedding <=> s.embedding) \
-               FROM nodes s \
-               WHERE s.primary_domain IN ('spec', 'design') \
-                 AND s.entity_class = 'domain' \
-                 AND s.embedding IS NOT NULL \
-             ) > $1 OR ( \
-               SELECT MIN(n.embedding <=> s.embedding) \
-               FROM nodes s \
-               WHERE s.primary_domain IN ('spec', 'design') \
-                 AND s.entity_class = 'domain' \
-                 AND s.embedding IS NOT NULL \
-             ) IS NULL \
+               AND ( \
+                 ( \
+                   SELECT MIN(n.embedding <=> s.embedding) \
+                   FROM nodes s \
+                   WHERE s.primary_domain IN ('spec', 'design') \
+                     AND s.entity_class = 'domain' \
+                     AND s.embedding IS NOT NULL \
+                 ) > $1 OR ( \
+                   SELECT MIN(n.embedding <=> s.embedding) \
+                   FROM nodes s \
+                   WHERE s.primary_domain IN ('spec', 'design') \
+                     AND s.entity_class = 'domain' \
+                     AND s.embedding IS NOT NULL \
+                 ) IS NULL \
+               ) \
              ORDER BY n.mention_count DESC \
              LIMIT $2",
         )
