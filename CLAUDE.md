@@ -2,7 +2,7 @@
 
 ## Overview
 
-Covalence is a hybrid GraphRAG knowledge engine replacing the existing `ourochronos/covalence` repo. It ingests unstructured sources, builds a property graph with rich epistemic annotations (Subjective Logic, causal hierarchy, provenance), and provides multi-dimensional fused search via Reciprocal Rank Fusion.
+Covalence is a hybrid GraphRAG knowledge engine. It ingests unstructured sources (code, specs, research papers, design docs), builds a property graph with rich epistemic annotations (Subjective Logic, causal hierarchy, provenance), and provides multi-dimensional fused search via Reciprocal Rank Fusion. Includes an MCP server for Claude Code integration, grounded Q&A (`/ask`), cross-domain alignment analysis, and an async pipeline with provider-attributed LLM calls.
 
 **Repo:** `ourochronos/covalence`
 **License:** MIT
@@ -274,6 +274,9 @@ Autonomous sessions should proactively maintain engineering quality:
 - **Don't ignore failures.** If a consolidation run fails, a test is flaky, or an ingestion produces warnings — investigate immediately or create an issue. Moving past failures silently compounds debt.
 - **Run edge synthesis after bulk ingestion.** New sources create disconnected subgraphs. Run `POST /api/v1/admin/edges/synthesize` with `{"min_cooccurrences": 1}` after ingesting multiple sources to connect them via co-occurrence edges.
 - **Clear the search cache after deploys.** `POST /api/v1/admin/cache/clear` — otherwise stale cached results hide quality improvements.
+- **Holistic changes.** When modifying behavior, update ALL artifacts together in the same commit: code, tests, relevant specs, design docs, CLAUDE.md, and README. A feature that's implemented but not documented in the spec creates drift. A spec change without a code change is aspirational — mark it as such. The goal is that at any commit, spec/design/code/docs are in sync.
+- **Spec-code-design triangle.** Every feature should be traceable: spec describes the concept, design docs record the decision, code implements it, tests verify it. When changing any vertex, check the other two. Use `/analysis/alignment` to detect drift.
+- **Epistemic data lifecycle.** Never automatically delete old source versions, orphan nodes, or duplicates. Old observations aren't false — they're prior state. Use `/admin/data-health` to preview what's stale, then make conscious cleanup decisions.
 
 ### Track What You Find
 
@@ -355,7 +358,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 936 passing tests (870 core + 19 api + 47 eval), 17 ignored integration tests
+# Current: 1,394 passing tests (1,324 core + 21 api + 49 eval), 17 ignored integration tests
 
 # Integration tests (requires running PG on port 5435)
 cd engine && cargo test --workspace -- --ignored
@@ -474,4 +477,4 @@ The dashboard is served by the existing Axum engine (alongside the API and Swagg
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–9 complete.** 936 tests passing. Zero code TODOs remaining. Post-milestone waves delivered: vector resolution (#9), ontology clustering (#12), GLiNER2 extractor (#5), format converters (#6), embedding dimension fix (#13/#15), search dimension fix (#14/#16), provider docs (#17), idempotent migrations (#19), per-table dimension tiering (#20), Voyage AI provider switch with auto-reranking (#22), epistemic observability (#21), graph context disambiguation, late chunking via Voyage contextual embeddings, dimension validation (#23), full MCP/memory/consolidation wiring. See GitHub issues for ongoing enhancements.
+Current phase: **M0-M11 + Waves 1–17 complete.** 1,394 tests passing (1,324 core + 21 api + 49 eval). See `MILESTONES.md` for the full wave history. Recent waves: graph type system (ADR-0018), async pipeline (#140), semantic code summaries (#139), structural edges (#145), MCP server (#143), pipeline decomposition (#148), provider attribution, data health, spec sync.

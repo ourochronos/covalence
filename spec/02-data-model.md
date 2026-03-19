@@ -36,7 +36,7 @@ Source {
   title: String?,
   author: String?,
   project: Text,            -- project namespace (default 'covalence'), NULL = global
-  domain: Text?,            -- 'code' | 'spec' | 'design' | 'research' | 'external'
+  domain: Text?,            -- 'code' | 'spec' | 'design' | 'research' | 'external' (set at ingest, see Domain Classification)
   created_date: Timestamp?, -- when the source was originally created/published
   ingested_at: Timestamp,   -- when we ingested it
   content_hash: Bytes,      -- SHA-256 hash of raw content for dedup
@@ -47,10 +47,15 @@ Source {
   reliability_score: Float, -- Beta(α,β).mean() = α/(α+β), cached for query use
   clearance_level: Int,     -- 0=local_strict, 1=federated_trusted, 2=federated_public
   update_class: Enum?,      -- "append_only", "versioned", "correction", "refactor" (null for first ingest)
-  supersedes_id: UUID?,     -- FK → Source (previous version, if applicable)
+  supersedes_id: UUID?,     -- FK → Source: forward pointer (this source supersedes that one)
+  superseded_by: UUID?,     -- FK → Source: backward pointer (this source was superseded by that one)
+  superseded_at: Timestamp?, -- when this source was marked as superseded
   content_version: Int,     -- version counter, increments on update
+  processing: JSONB,        -- latest pipeline processing state per stage (default '{}')
 }
 ```
+
+**Supersession model:** Sources form version chains via two directional pointers. When source B replaces source A: A's `superseded_by` is set to B's id and `superseded_at` is timestamped (backward pointer), while B's `supersedes_id` is set to A's id (forward pointer). This enables both "what replaced this?" and "what did this replace?" queries. Non-superseded sources (`superseded_by IS NULL`) are the active set. Superseded sources are preserved for temporal queries and audit trail. See migration 017.
 
 ### Chunk
 
@@ -91,18 +96,23 @@ Node {
   id: UUID,
   canonical_name: String,
   node_type: String,            -- dynamically assigned during extraction
-  entity_class: Text?,          -- 'code' | 'domain' | 'actor' | 'analysis' (derived from node_type)
+  entity_class: Text?,          -- 'code' | 'domain' | 'actor' | 'analysis' (see Entity Classification below)
   description: Text?,
   properties: JSONB,
-  embedding: Vector?,           -- optional: derived from description or aggregated from chunks
+  embedding: Vector?,           -- derived from description or aggregated from chunks (pgvector halfvec)
   embedding_model: String?,     -- tracks which model produced the embedding (null if no embedding)
+  domain_entropy: Float?,       -- Shannon entropy of source-domain distribution (low = single-domain, high = cross-cutting)
+  primary_domain: Text?,        -- most-mentioned source domain ('code', 'spec', 'design', 'research', 'external')
   confidence_breakdown: JSONB?, -- Subjective Logic opinion tuple (b, d, u, a)
   clearance_level: Int,         -- most restrictive of all sources this node was extracted from
+  processing: JSONB,            -- latest pipeline processing state per stage (default '{}')
   first_seen: Timestamp,
   last_seen: Timestamp,
   mention_count: Int,
 }
 ```
+
+`domain_entropy` and `primary_domain` are computed from extraction provenance: for each node, the system counts how many times it was extracted from sources of each domain, then computes Shannon entropy over those counts. A node mentioned only in code sources has `domain_entropy = 0.0` and `primary_domain = 'code'`. A node mentioned across research, spec, and code has high entropy. These fields are used by the DDSS (Domain-Dominant Self-referential Score) search routing to detect self-referential queries and boost internal-domain results. See migration 015.
 
 ### Edge (Graph Relationship)
 
@@ -272,6 +282,50 @@ Components are connected to the graph via typed edges:
 - `PART_OF_COMPONENT`: Code Node → Component (upward, toward logical grouping)
 - `THEORETICAL_BASIS`: Component → Research Node (lateral, toward academic foundation)
 
+### ProcessingLog (Audit Trail)
+
+An append-only audit trail recording every processing step applied to any data item. Enables cost tracking, prompt version management, and selective reprocessing when prompts evolve.
+
+```
+ProcessingLog {
+  id: UUID,
+  item_table: Text,           -- 'chunks', 'nodes', 'statements', 'sources'
+  item_id: UUID,              -- FK to the item that was processed
+  stage: Text,                -- 'extraction', 'summary', 'embedding', 'compose', etc.
+  model: Text?,               -- 'claude-haiku-4.5', 'voyage-3-large', etc.
+  duration_ms: Int?,          -- wall-clock time for this processing step
+  status: Text,               -- 'success' | 'error' (default 'success')
+  error_message: Text?,       -- error details if status = 'error'
+  ingestion_id: UUID?,        -- groups all processing for one source reprocess run
+  prompt_version: Int?,       -- tracks prompt evolution for selective reprocessing
+  input_chars: Int?,          -- size of input sent to model
+  output_chars: Int?,         -- size of output received
+  metadata: JSONB,            -- additional stage-specific data (default '{}')
+  created_at: Timestamp,
+}
+```
+
+The `item_table` + `item_id` pair is a polymorphic reference that can point to any data entity. Indexed for fast per-item history lookup. The `ingestion_id` groups all processing steps from a single reprocess run, enabling cost accounting per ingestion.
+
+### SourcePipelineStatus (Fan-In Counters)
+
+Tracks the progress of the async ingestion pipeline for a single source. Uses atomic counter decrements for fan-in stage transitions: when `pending_extractions` hits 0, the pipeline advances from `extracting` to `extracted` and spawns the next stage's jobs.
+
+```
+SourcePipelineStatus {
+  source_id: UUID,              -- PK, FK → Source (ON DELETE CASCADE)
+  ingestion_id: UUID,           -- groups this pipeline run
+  pending_extractions: Int,     -- chunks awaiting LLM extraction (default 0)
+  pending_summaries: Int,       -- entities awaiting semantic summary (default 0)
+  pending_statements: Int,      -- statements awaiting processing (default 0)
+  current_stage: Text,          -- pipeline stage (default 'chunked')
+  created_at: Timestamp,
+  updated_at: Timestamp,
+}
+```
+
+**Stage progression:** `chunked` -> `extracting` -> `extracted` -> `summarizing` -> `summarized` -> `composing` -> `complete`. Each transition is triggered by the corresponding counter reaching zero, checked atomically via `UPDATE ... SET pending_X = pending_X - 1 ... RETURNING pending_X`. See migration 016.
+
 ### Code Entities (Specialized Node Types)
 
 Code entities are graph Nodes with specialized `node_type` values and code-specific properties in JSONB. They are created by the AST-aware code ingestion pipeline (see [spec/12-code-ingestion](12-code-ingestion.md)).
@@ -307,7 +361,7 @@ The `semantic_summary` is the key bridge: it's a natural language description of
 
 ## Source Labels
 
-Sources carry metadata that classifies them by project and knowledge domain. These labels are set at ingestion time (not derived at query time) and propagate through extractions to entities.
+Sources carry metadata that classifies them by project and knowledge domain. These labels are set at ingestion time (not derived at query time) and propagate through extractions to entities. Introduced in [ADR-0018](../docs/adr/0018-graph-type-system.md) and migration 014.
 
 ### Project
 
@@ -333,7 +387,7 @@ Classifies the source's role in the knowledge graph:
 | `research` | Academic papers, external knowledge | `https://arxiv.org/...`, `https://doi.org/...`, ingested papers |
 | `external` | Third-party documentation, API references | External docs not classifiable as research |
 
-**Domain assignment rules** (applied at ingestion time by `derive_domain()`):
+**Domain assignment rules** (applied at ingestion time by `derive_domain()` in the source service, based on `source_type` and URI patterns -- not derived at query time):
 
 ```
 source_type = code                                              → domain = code
@@ -361,9 +415,9 @@ Node.entity_class: TEXT  -- 'code' | 'domain' | 'actor' | 'analysis'
 | `actor` | person, organization, location, role | People, organizations, places |
 | `analysis` | component | System-generated analysis entities |
 
-**Derivation:** `entity_class` is deterministically derived from `node_type` at entity creation time. The mapping is maintained as a function (`derive_entity_class()`) — if a new `node_type` appears from LLM extraction, it defaults to `domain`.
+**Derivation:** `entity_class` is derived from `node_type` with source-domain context at entity creation time via `derive_entity_class_with_context(node_type, source_domain)`. The base mapping (`derive_entity_class()`) maps `node_type` to one of the four classes, with unknown types defaulting to `domain`. The context-aware wrapper then applies a demotion rule: if the base class is `code` but the source domain is not `code`, the entity is demoted to `domain`. This prevents a "struct" mentioned in a spec document from being classified as a code entity -- it is a domain concept that happens to use a code-type name. Only entities extracted from actual source code (`domain = 'code'`) retain the `code` entity class. See [ADR-0018](../docs/adr/0018-graph-type-system.md).
 
-**Interaction with `canonical_type`:** The ontology clustering system (Wave 8) produces `canonical_type` by merging noisy `node_type` variants. `entity_class` is orthogonal — it classifies the *kind* of entity regardless of how the type was normalized. Both fields coexist.
+**Interaction with `canonical_type`:** The ontology clustering system (Wave 8) produces `canonical_type` by merging noisy `node_type` variants. `entity_class` is orthogonal — it classifies the *kind* of entity regardless of how the type was normalized. Both fields coexist. The `entity_class` derivation uses `COALESCE(canonical_type, node_type)` as input, preferring the ontology-clustered type when available.
 
 ## Traceability Edge Types
 
@@ -431,6 +485,10 @@ Source ──1:N──→ Statement ──N:1──→ Section
                   │
                   └──1:N──→ Extraction ──→ Node or Edge (statement provenance)
 
+Source ──1:1──→ SourcePipelineStatus (async pipeline tracking)
+Source ──supersedes_id──→ Source (this supersedes that)
+Source ←──superseded_by── Source (this was superseded by that)
+
 Component ──IMPLEMENTS_INTENT──→ Node (spec/topic concept)
 Component ←──PART_OF_COMPONENT── Node (code_* entity)
 Component ──THEORETICAL_BASIS──→ Node (research concept)
@@ -440,6 +498,8 @@ Node ──M:N──→ Node (via Edge)
 
 Source ──N:M──→ Article (via compilation)
 Article ──1:N──→ Node (ORIGINATES / covers)
+
+ProcessingLog ──item_table+item_id──→ Source | Chunk | Node | Statement (polymorphic)
 ```
 
 ## Open Questions

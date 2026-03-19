@@ -41,6 +41,14 @@ CREATE TABLE sources (
     content_version INT NOT NULL DEFAULT 1,
     -- Document-level embedding (replaces doc-level chunk embedding, see migration 003)
     embedding halfvec(2048),
+    -- Graph type system (migration 014)
+    project TEXT NOT NULL DEFAULT 'covalence',  -- project namespace
+    domain TEXT,                                 -- 'code', 'spec', 'design', 'research', 'external'
+    -- Source supersession (migration 017)
+    superseded_by UUID REFERENCES sources(id),  -- pointer to the version that replaced this one
+    superseded_at TIMESTAMPTZ,                  -- when this source was superseded
+    -- Processing metadata (migration 016)
+    processing JSONB DEFAULT '{}',              -- pipeline state per stage (separate from user metadata)
     UNIQUE(content_hash)
 );
 
@@ -52,6 +60,10 @@ CREATE INDEX idx_sources_supersedes ON sources(supersedes_id);
 CREATE INDEX idx_sources_embedding ON sources
     USING hnsw (embedding halfvec_cosine_ops)
     WITH (m = 16, ef_construction = 64);
+CREATE INDEX idx_sources_domain ON sources(domain);
+CREATE INDEX idx_sources_project ON sources(project);
+CREATE INDEX idx_sources_superseded ON sources(superseded_by) WHERE superseded_by IS NULL;
+CREATE INDEX idx_sources_uri_ingested ON sources(uri, ingested_at DESC) WHERE uri IS NOT NULL;
 ```
 
 ### `chunks`
@@ -71,7 +83,9 @@ CREATE TABLE chunks (
     structural_hierarchy ltree NOT NULL DEFAULT '',  -- ltree: 'doc_123.chapter_2.section_2_1'
     clearance_level INT NOT NULL DEFAULT 0,
     metadata JSONB NOT NULL DEFAULT '{}',  -- heading_text, page_number, speaker, contains_table, etc.
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Processing metadata (migration 016)
+    processing JSONB DEFAULT '{}'              -- pipeline state per stage
 );
 
 CREATE INDEX idx_chunks_source ON chunks(source_id);
@@ -114,7 +128,14 @@ CREATE TABLE nodes (
     clearance_level INT NOT NULL DEFAULT 0,
     first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
-    mention_count INT NOT NULL DEFAULT 1
+    mention_count INT NOT NULL DEFAULT 1,
+    -- Graph type system (migration 014)
+    entity_class TEXT,                        -- 'code', 'actor', 'analysis', 'domain'
+    -- Domain entropy (migration 015)
+    domain_entropy REAL,                      -- Shannon entropy across source domains (0 = single domain, high = cross-cutting)
+    primary_domain TEXT,                      -- most common source domain for this node
+    -- Processing metadata (migration 016)
+    processing JSONB DEFAULT '{}'             -- pipeline state per stage
 );
 
 CREATE INDEX idx_nodes_type ON nodes(node_type);
@@ -125,6 +146,8 @@ CREATE INDEX idx_nodes_embedding ON nodes
     USING hnsw (embedding halfvec_cosine_ops)
     WITH (m = 16, ef_construction = 64);
 CREATE INDEX idx_nodes_properties ON nodes USING GIN(properties);
+CREATE INDEX idx_nodes_entity_class ON nodes(entity_class);
+CREATE INDEX idx_nodes_primary_domain ON nodes(primary_domain);
 ```
 
 **Code entity types** (`code_function`, `code_struct`, `code_trait`, `code_module`, `code_impl`, `code_type`, `code_test`) use the `properties` JSONB column for language-specific metadata:
@@ -237,7 +260,9 @@ CREATE TABLE statements (
     section_id UUID REFERENCES sections(id), -- Assigned during clustering
     is_evicted BOOLEAN NOT NULL DEFAULT false, -- Soft-delete on re-extraction
     confidence FLOAT NOT NULL DEFAULT 1.0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Processing metadata (migration 016)
+    processing JSONB DEFAULT '{}'              -- pipeline state per stage
 );
 
 CREATE INDEX idx_statements_source ON statements(source_id);
@@ -328,6 +353,82 @@ DELETE FROM outbox_events WHERE created_at < now() - INTERVAL '24 hours';
 ```
 
 **Sidecar recovery after extended downtime:** If the sidecar has been down for >24 hours and missed outbox events, it detects this on startup by comparing its `last_processed_seq_id` against the minimum `seq_id` in the outbox. If there's a gap (missing events already pruned), it automatically triggers a full reload from source tables rather than attempting incremental sync. The sidecar logs a warning: "outbox gap detected, performing full reload." This is safe because full reload is idempotent and the sidecar holds no state that PG doesn't also have.
+
+### `retry_jobs` (Persistent Retry Queue)
+
+```sql
+CREATE TABLE retry_jobs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind            job_kind    NOT NULL,       -- enum: reprocess_source, extract_statements,
+                                                --   extract_entities, synthesize_edges,
+                                                --   extract_chunk, summarize_entity,
+                                                --   compose_source_summary, embed_batch
+    status          job_status  NOT NULL DEFAULT 'pending',  -- enum: pending, running, succeeded, failed, dead
+    payload         JSONB       NOT NULL DEFAULT '{}',
+    next_due        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt         INT         NOT NULL DEFAULT 0,
+    max_attempts    INT         NOT NULL DEFAULT 5,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_error      TEXT,
+    dead_reason     TEXT,
+    idempotency_key TEXT        UNIQUE
+);
+
+CREATE INDEX idx_retry_jobs_due ON retry_jobs(next_due, status)
+    WHERE status = 'pending';
+CREATE INDEX idx_retry_jobs_kind_status ON retry_jobs(kind, status);
+```
+
+Jobs progress through error classification: transient errors are retried with exponential backoff, rate-limit errors are retried after a cooldown, and permanent errors are moved to `dead` status with a `dead_reason`. The `idempotency_key` prevents duplicate job creation for the same logical operation.
+
+### `processing_log` (Processing Audit Trail)
+
+```sql
+CREATE TABLE processing_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    item_table TEXT NOT NULL,         -- 'chunks', 'nodes', 'statements', 'sources'
+    item_id UUID NOT NULL,
+    stage TEXT NOT NULL,              -- 'extraction', 'summary', 'embedding', 'compose', etc.
+    model TEXT,                       -- 'claude-haiku-4.5', 'voyage-3-large', etc.
+    duration_ms INTEGER,
+    status TEXT NOT NULL DEFAULT 'success',  -- 'success', 'error'
+    error_message TEXT,
+    ingestion_id UUID,               -- groups all processing for one source reprocess run
+    prompt_version INTEGER,          -- tracks prompt evolution for selective reprocessing
+    input_chars INTEGER,
+    output_chars INTEGER,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_processing_log_item ON processing_log(item_table, item_id);
+CREATE INDEX idx_processing_log_ingestion ON processing_log(ingestion_id)
+    WHERE ingestion_id IS NOT NULL;
+CREATE INDEX idx_processing_log_stage_model ON processing_log(stage, model);
+```
+
+Append-only audit trail for every processing step. Each row records what model processed an item, how long it took, and whether it succeeded. The `ingestion_id` groups all processing for a single source reprocess run.
+
+### `source_pipeline_status` (Async Pipeline Fan-In)
+
+```sql
+CREATE TABLE source_pipeline_status (
+    source_id UUID PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    ingestion_id UUID NOT NULL,
+    pending_extractions INTEGER NOT NULL DEFAULT 0,
+    pending_summaries INTEGER NOT NULL DEFAULT 0,
+    pending_statements INTEGER NOT NULL DEFAULT 0,
+    current_stage TEXT NOT NULL DEFAULT 'chunked',
+    -- Stage progression:
+    -- 'chunked' -> 'extracting' -> 'extracted' -> 'summarizing' ->
+    -- 'summarized' -> 'composing' -> 'complete'
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+Tracks per-source pipeline progress using atomic counter decrements. When a `pending_*` counter hits 0, the next stage is triggered. This enables fan-in: many per-entity jobs (extraction, summarization) converge into a single source-level completion event.
 
 ### `audit_logs` (System Decision Tracking)
 
@@ -453,6 +554,34 @@ Per-table dimensions are configured via environment variables: `COVALENCE_EMBED_
 - Destructive migrations (drop column, change type) require a two-phase approach: add new → migrate data → drop old
 
 **Migration 003 (`003_source_embedding.sql`):** Adds `embedding halfvec(2048)` to the `sources` table with an HNSW index. Document-level chunks previously duplicated the full source text and produced low-quality embeddings for large documents. This migration moves the document-level embedding onto the source record itself, avoiding both the duplication and the quality issue.
+
+**Migration 004 (`004_fix_embedding_dimensions.sql`):** Fixes embedding column dimensions to match per-table configuration.
+
+**Migration 005 (`005_search_traces.sql`):** Adds search trace/diagnostic infrastructure.
+
+**Migration 006 (`006_stored_procedures.sql`):** Adds PostgreSQL stored procedures for common operations.
+
+**Migration 007 (`007_per_table_dimensions.sql`):** Implements per-table embedding dimension tiering (source=2048, chunk=1024, node=256, etc.).
+
+**Migration 008 (`008_ontology_clusters.sql`):** Adds ontology clustering infrastructure for entity type normalization.
+
+**Migration 009 (`009_hdbscan_clustering.sql`):** Adds HDBSCAN batch clustering support for Tier 5 entity resolution.
+
+**Migration 010 (`010_normalized_content_byte_offsets.sql`):** Adds normalized content and byte offset columns for provenance tracking.
+
+**Migration 011 (`011_statement_tables.sql`):** Creates `statements` and `sections` tables for the statement-first extraction pipeline.
+
+**Migration 012 (`012_wave8_foundation.sql`):** Creates `offset_projection_ledgers` (fastcoref mutation tracking) and `unresolved_entities` (Tier 5 pool). Drops legacy landscape analysis columns from chunks.
+
+**Migration 013 (`013_retry_queue.sql`):** Creates `retry_jobs` table with `job_status` and `job_kind` enums for persistent async job processing with backoff.
+
+**Migration 014 (`014_graph_type_system.sql`):** ADR-0018. Adds `project` and `domain` to sources, `entity_class` to nodes. Backfills domain from URI patterns and entity_class from node_type.
+
+**Migration 015 (`015_domain_entropy.sql`):** Adds `domain_entropy` (Shannon entropy across source domains) and `primary_domain` to nodes. Backfills from extraction provenance.
+
+**Migration 016 (`016_processing_metadata.sql`):** Adds `processing JSONB` to sources, chunks, nodes, and statements for per-stage pipeline state. Creates `processing_log` (append-only audit trail) and `source_pipeline_status` (fan-in counters for async pipeline). Extends `job_kind` enum with `extract_chunk`, `summarize_entity`, `compose_source_summary`, `embed_batch`.
+
+**Migration 017 (`017_source_supersession.sql`):** Adds `superseded_by` and `superseded_at` to sources for version lineage tracking. Backfills old code file versions as superseded by the newest version with the same URI.
 
 ## Stored Procedures
 

@@ -422,6 +422,83 @@ Execute the uncompromising `design/v2-migration-plan.md`:
 - [x] Zero clippy warnings, fmt clean
 - [x] All endpoints live on prod (:8441)
 
+## Wave 10 — Graph Type System *(complete)*
+
+ADR-0018: source labels, entity classification, traceability edges.
+
+- [x] Migration 014: `project`/`domain` columns on sources, `entity_class` on nodes with backfill
+- [x] `derive_domain()` in source service: classifies sources at ingestion time (code/spec/design/research/external)
+- [x] `derive_entity_class_with_context()` in node model: source-domain-aware classification
+- [x] `entity_classes` filter on search API: filter search results by entity class
+- [x] Domain labels in `/ask` context: LLM synthesis sees domain provenance per fragment
+- [x] All analysis queries use domain/entity_class — zero URI heuristics remaining
+- [x] Self-referential domain boost (DDSS): max-score ratio compares internal vs external domain results, boosts internal by 1.5x when ratio >= 0.7
+
+## Wave 11 — Async Pipeline (#140) *(complete)*
+
+Per-entity asynchronous pipeline with persistent retry queue.
+
+- [x] Per-entity jobs with fan-in triggers
+- [x] Watchdog for stuck/failed jobs
+- [x] Processing metadata (migration 016)
+- [x] Error classification: permanent, rate-limit, transient
+- [x] Persistent retry queue with exponential backoff
+- [x] Design doc reviewed by Gemini 3.1 Pro
+
+## Wave 12 — Semantic Code Summaries (#139) *(complete)*
+
+Spec 12 Stage 2: rich semantic summaries for code entities.
+
+- [x] Per-method extraction from impl blocks
+- [x] Definition-pattern chunk matching
+- [x] Bottom-up file summary composition
+- [x] Entity summaries: 92% of code entities have semantic summaries
+- [x] File summaries: 88% of code files have composed summaries
+
+## Wave 13 — Structural Edges (#145) *(complete)*
+
+Spec 12 Stage 3: CALLS/USES_TYPE edges from code structure.
+
+- [x] CALLS edges between functions/methods
+- [x] USES_TYPE edges from functions to types
+- [x] Structural edge extraction from AST analysis
+
+## Wave 14 — MCP Server (#143) *(complete)*
+
+Claude Code integration via Model Context Protocol.
+
+- [x] MCP server at `mcp-server/index.js` (Node.js)
+- [x] 7 tools: search, ask, health, data_health, alignment, node, blast_radius
+- [x] Bridges Claude Code sessions to the Covalence API
+- [x] Environment-driven API URL configuration
+
+## Wave 15 — Pipeline Decomposition (#148) *(complete)*
+
+Break down the 1,680-line ingestion monolith into focused modules.
+
+- [x] Split into 5 modules from single source_service file
+- [x] Clean separation of concerns: parsing, chunking, extraction, embedding, storage
+- [x] No behavior changes — pure structural refactor
+
+## Wave 16 — Provider Attribution + Data Health *(complete)*
+
+Observability improvements for LLM providers and data quality.
+
+- [x] `ChatResponse` with provider tracking — know which LLM answered each request
+- [x] `/admin/data-health` endpoint — source quality metrics and health checks
+- [x] Source supersession (migration 017) — track when sources are replaced by newer versions
+- [x] ChainChatBackend — multi-provider failover: claude(haiku) → copilot → gemini
+
+## Wave 17 — Spec Sync *(complete)*
+
+Update specifications to match implementation reality.
+
+- [x] Specs 02–08 updated to reflect current code
+- [x] Specs 12–13 updated with Stage 2/3 completion, structural edges, analysis endpoints
+- [x] Zero spec-implementation drift on covered sections
+
+**Note:** 1,394 tests passing (1,324 core + 21 api + 49 eval), clippy clean, fmt clean.
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)

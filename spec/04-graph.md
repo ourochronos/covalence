@@ -4,9 +4,16 @@
 
 ## Overview
 
-The graph compute layer is a Rust in-memory sidecar built on petgraph. It mirrors the node/edge data from PostgreSQL into a `StableDiGraph` for fast traversal and algorithm execution. PG handles persistence; petgraph handles compute.
+The graph compute layer is abstracted behind a `GraphEngine` trait with two implementations:
 
-**Why `StableDiGraph` over `DiGraph`:** Standard `petgraph::DiGraph` invalidates `NodeIndex` values on node removal (it swaps the last node into the removed slot). Since we delete/archive nodes during organic forgetting and source deletion cascades, this would silently corrupt our `HashMap<Uuid, NodeIndex>` lookup. `StableDiGraph` preserves index stability at the cost of ~20% memory overhead — a trivial price at our scale target.
+- **`PetgraphEngine`** — In-memory petgraph `StableDiGraph` sidecar (default for dev). All methods acquire a `RwLock` read guard synchronously — the graph is CPU-bound and fast for typical knowledge-graph sizes.
+- **`AgeEngine`** — Apache AGE queries against PostgreSQL (used in prod). Executes Cypher queries via `ag_catalog.cypher()` against the same PG instance. Algorithms not available in Cypher (PageRank, TrustRank, structural importance, communities) fetch the full adjacency list and compute in Rust, reusing the existing algorithm implementations.
+
+The active backend is selected via the `COVALENCE_GRAPH_ENGINE` environment variable: `petgraph` (default) or `age`.
+
+Both implementations mirror the node/edge data from PostgreSQL. PG handles persistence; the graph engine handles compute.
+
+**Why `StableDiGraph` over `DiGraph` (petgraph backend):** Standard `petgraph::DiGraph` invalidates `NodeIndex` values on node removal (it swaps the last node into the removed slot). Since we delete/archive nodes during organic forgetting and source deletion cascades, this would silently corrupt our `HashMap<Uuid, NodeIndex>` lookup. `StableDiGraph` preserves index stability at the cost of ~20% memory overhead — a trivial price at our scale target.
 
 ## Data Structure
 
@@ -22,7 +29,11 @@ struct EdgeMeta {
     weight: f64,
     confidence: f64,
     causal_level: Option<CausalLevel>,  // L0/L1/L2 per Pearl's hierarchy
-    clearance_level: u8,
+    clearance_level: i32,
+    is_synthetic: bool,                 // co-occurrence edge (damped to 10% weight)
+    /// Whether this edge has temporal validity data (valid_from IS NOT NULL).
+    /// Used by the Temporal graph view to restrict traversal.
+    has_valid_from: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -36,8 +47,10 @@ enum CausalLevel {
 struct NodeMeta {
     id: Uuid,
     node_type: String,
+    /// Entity class: code, domain, actor, analysis (ADR-0018).
+    entity_class: Option<String>,
     canonical_name: String,
-    clearance_level: u8,
+    clearance_level: i32,
 }
 
 /// The in-memory graph sidecar
@@ -76,29 +89,48 @@ LISTEN/NOTIFY has an 8KB payload limit, making it unreliable for large batch ope
 
 ```rust
 async fn sync_loop(pool: &PgPool, graph: SharedGraph) {
+    const SETTLE_SECS: u64 = 10;     // wait for events to stop arriving
+    const POLL_SECS: u64 = 5;        // idle poll interval
+    const MAX_BUFFER: usize = 10_000; // force apply if buffer fills
+
     let mut last_seq: i64 = 0;
     let mut listener = PgListener::connect_with(pool).await?;
     listener.listen("graph_sync_ping").await?;
+    let mut buffer: Vec<OutboxEvent> = Vec::new();
+    let mut last_event_time = Instant::now();
 
     loop {
         // Wait for ping or timeout (5s fallback)
-        let _ = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(POLL_SECS), listener.recv()).await;
 
-        let events = sqlx::query_as!(OutboxEvent,
+        let events = sqlx::query(
             "SELECT * FROM outbox_events WHERE seq_id > $1 ORDER BY seq_id ASC LIMIT 1000",
-            last_seq
-        ).fetch_all(pool).await?;
+        ).bind(last_seq).fetch_all(pool).await?;
 
         if !events.is_empty() {
-            let mut g = graph.write().await;
             for event in &events {
-                g.apply_event(event);
+                last_seq = event.seq_id;
+                buffer.push(event);
             }
-            last_seq = events.last().unwrap().seq_id;
+            last_event_time = Instant::now();
+        }
+
+        // Apply buffered events when settled (no new events for SETTLE_SECS)
+        // or when the buffer is full (prevents unbounded memory growth).
+        let settled = last_event_time.elapsed() >= Duration::from_secs(SETTLE_SECS);
+        let buffer_full = buffer.len() >= MAX_BUFFER;
+
+        if !buffer.is_empty() && (settled || buffer_full) {
+            let mut g = graph.write().await;
+            for event in buffer.drain(..) {
+                g.apply_event(&event);
+            }
         }
     }
 }
 ```
+
+**Debounced sync:** During bulk ingestion, hundreds of outbox events may arrive in rapid succession. Rather than acquiring the write lock for each batch of 1000, the sync loop buffers events and only applies them once events stop arriving for `SETTLE_SECS` (10 seconds). If the buffer reaches `MAX_BUFFER` (10,000 events), it forces an apply regardless of the settle timer. This prevents graph thrashing — repeated lock acquisitions and graph mutations — during high-throughput operations.
 
 ### Consistency Model
 
@@ -287,6 +319,50 @@ impl GraphSidecar {
 ```
 
 See [09-federation](09-federation.md) for egress filtering details.
+
+## MAGMA Orthogonal Graph Views
+
+The `GraphView` enum provides five orthogonal "slices" of the knowledge graph for BFS traversal in the graph search dimension. Each view is a predicate filter on edges — only edges passing the predicate are traversed. All views unconditionally exclude synthetic (co-occurrence) and bibliographic edges.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphView {
+    /// Causal edges only: edges with `causal_level` IS NOT NULL,
+    /// or `rel_type` in CAUSAL_REL_TYPES (CAUSED_BY, ENABLED,
+    /// RESULTS_IN, CONFIRMS, CONTRADICTS).
+    Causal,
+    /// Temporal edges only: edges where `has_valid_from` is true
+    /// (i.e., `valid_from IS NOT NULL` in PG).
+    Temporal,
+    /// Entity relationship edges: calls, uses_type, contains,
+    /// implements, extends, PART_OF_COMPONENT.
+    Entity,
+    /// Alias for `Entity` — same predicate.
+    Structural,
+    /// All edges except bibliographic and synthetic.
+    All,
+}
+```
+
+**Usage:** The graph search dimension accepts an optional `graph_view` parameter on the search query. When set, BFS traversal only follows edges that pass the corresponding predicate. When unset, defaults to `All`.
+
+### Edge Filtering Constants
+
+Two constant lists control which edges participate in graph algorithms and traversal:
+
+**`CAUSAL_REL_TYPES`** — Relationship types recognized by the `Causal` view even without an explicit `causal_level` annotation:
+- `CAUSED_BY`, `ENABLED`, `RESULTS_IN`, `CONFIRMS`, `CONTRADICTS`
+
+**`BIBLIOGRAPHIC_DENY`** — Relationship types excluded from all graph views. These represent publication metadata rather than knowledge relationships and create dense clusters around prolific authors and venues:
+- `authored`, `published_in`, `works_at`, `evaluated_on`, `trained_on`, `uses_dataset`, `created_by`, `edited_by`
+
+**`ENTITY_REL_TYPES`** — Structural/entity relationships recognized by the `Entity` and `Structural` views:
+- `calls`, `uses_type`, `contains`, `implements`, `extends`, `PART_OF_COMPONENT`
+
+Additionally, edge weight damping constants apply globally across all graph algorithms:
+- `SYNTHETIC_EDGE_DAMPING = 0.1` — Synthetic (co-occurrence) edges contribute 10% of their nominal weight.
+- `BIBLIOGRAPHIC_EDGE_DAMPING = 0.2` — Bibliographic edges contribute 20% of their nominal weight.
+- `BIBLIOGRAPHIC_REL_TYPES` (in `sidecar.rs`) — `authored`, `published_in`, `works_at`, `has_preprint_id`, `edited_by`, `affiliated_with`. Used by `EdgeMeta::effective_weight()` and `EdgeMeta::effective_confidence()`.
 
 ## Topology-Derived Embeddings (Optional)
 
