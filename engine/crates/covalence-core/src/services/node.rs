@@ -97,18 +97,58 @@ impl NodeService {
     }
 
     /// Get the neighborhood of a node via BFS on the graph sidecar.
-    pub async fn neighborhood(&self, id: NodeId, hops: usize) -> Result<Vec<Node>> {
+    ///
+    /// When `include_invalidated` is true, nodes connected through
+    /// invalidated edges (queried directly from PG) are appended to
+    /// the sidecar BFS results.
+    pub async fn neighborhood(
+        &self,
+        id: NodeId,
+        hops: usize,
+        include_invalidated: bool,
+    ) -> Result<Vec<Node>> {
         let neighbor_ids = {
             let graph = self.graph.read().await;
             bfs_neighborhood(&graph, id.into_uuid(), hops, None)
         };
 
+        let mut seen: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+        seen.insert(id.into_uuid());
+
         let mut nodes = Vec::with_capacity(neighbor_ids.len());
-        for (uuid, _distance) in neighbor_ids {
-            if let Some(node) = NodeRepo::get(&*self.repo, NodeId::from_uuid(uuid)).await? {
+        for (uuid, _distance) in &neighbor_ids {
+            seen.insert(*uuid);
+            if let Some(node) = NodeRepo::get(&*self.repo, NodeId::from_uuid(*uuid)).await? {
                 nodes.push(node);
             }
         }
+
+        // Append nodes reachable through invalidated edges.
+        if include_invalidated {
+            let inv_ids: Vec<(uuid::Uuid,)> = sqlx::query_as(
+                "SELECT DISTINCT CASE \
+                     WHEN e.source_node_id = $1 THEN e.target_node_id \
+                     ELSE e.source_node_id END \
+                 FROM edges e \
+                 WHERE e.invalid_at IS NOT NULL \
+                   AND (e.source_node_id = $1 OR e.target_node_id = $1) \
+                 LIMIT 200",
+            )
+            .bind(id.into_uuid())
+            .fetch_all(self.repo.pool())
+            .await?;
+
+            for (uuid,) in inv_ids {
+                if seen.contains(&uuid) {
+                    continue;
+                }
+                seen.insert(uuid);
+                if let Some(node) = NodeRepo::get(&*self.repo, NodeId::from_uuid(uuid)).await? {
+                    nodes.push(node);
+                }
+            }
+        }
+
         Ok(nodes)
     }
 

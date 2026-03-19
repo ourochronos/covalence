@@ -201,10 +201,16 @@ impl AnalysisService {
     /// Traverses the graph sidecar outward from the target node up to
     /// `max_hops` hops, collecting affected nodes grouped by hop distance.
     /// Stops early if `BLAST_RADIUS_NODE_CAP` nodes are collected.
+    ///
+    /// When `include_invalidated` is true, nodes reachable through
+    /// invalidated edges are also returned (at hop distance 1) so
+    /// that the blast radius reflects historically-connected nodes
+    /// that may still be affected by changes.
     pub async fn blast_radius(
         &self,
         target_name: &str,
         max_hops: usize,
+        include_invalidated: bool,
     ) -> Result<BlastRadiusResult> {
         // Find the target node by name (exact, then fuzzy fallback).
         let (target_id, target_canonical, target_type) =
@@ -231,6 +237,11 @@ impl AnalysisService {
         };
         let bfs_nodes = self.graph.bfs_neighborhood(target_id, bfs_opts).await?;
 
+        // Collect IDs already present from BFS to avoid duplicates.
+        let mut seen_ids: std::collections::HashSet<uuid::Uuid> =
+            bfs_nodes.iter().map(|n| n.id).collect();
+        seen_ids.insert(target_id);
+
         // Group BFS results by hop distance for the blast radius response,
         // capping total collected at BLAST_RADIUS_NODE_CAP.
         let mut affected: Vec<BlastRadiusHop> = Vec::new();
@@ -256,6 +267,57 @@ impl AnalysisService {
                     hop_distance: hop,
                     nodes: hop_nodes,
                 });
+            }
+        }
+
+        // When include_invalidated is set, query PG for nodes
+        // reachable through invalidated edges at hop distance 1.
+        if include_invalidated && total_collected < Self::BLAST_RADIUS_NODE_CAP {
+            let remaining = Self::BLAST_RADIUS_NODE_CAP - total_collected;
+            let invalidated_neighbors: Vec<(uuid::Uuid, String, String, String)> = sqlx::query_as(
+                "SELECT n.id, n.canonical_name, n.node_type, \
+                            e.rel_type \
+                     FROM edges e \
+                     JOIN nodes n ON n.id = CASE \
+                         WHEN e.source_node_id = $1 \
+                             THEN e.target_node_id \
+                         ELSE e.source_node_id END \
+                     WHERE e.invalid_at IS NOT NULL \
+                       AND (e.source_node_id = $1 OR e.target_node_id = $1) \
+                     LIMIT $2",
+            )
+            .bind(target_id)
+            .bind(remaining as i64)
+            .fetch_all(self.repo.pool())
+            .await?;
+
+            let mut inv_nodes: Vec<AffectedNode> = Vec::new();
+            for (id, name, node_type, relationship) in invalidated_neighbors {
+                if seen_ids.contains(&id) {
+                    continue;
+                }
+                seen_ids.insert(id);
+                inv_nodes.push(AffectedNode {
+                    node_id: id,
+                    name,
+                    node_type,
+                    relationship: format!("{} (invalidated)", relationship),
+                });
+            }
+
+            if !inv_nodes.is_empty() {
+                // Merge into hop-1 if it exists, otherwise create it.
+                if let Some(hop1) = affected.iter_mut().find(|h| h.hop_distance == 1) {
+                    hop1.nodes.extend(inv_nodes);
+                } else {
+                    affected.insert(
+                        0,
+                        BlastRadiusHop {
+                            hop_distance: 1,
+                            nodes: inv_nodes,
+                        },
+                    );
+                }
             }
         }
 

@@ -20,7 +20,7 @@ pub(crate) mod search_helpers;
 pub mod source;
 pub(crate) mod statement_pipeline;
 
-pub use admin::{AdminService, CooccurrenceResult, GcResult};
+pub use admin::{AdminService, CooccurrenceResult, GcResult, InvalidatedEdgeStats};
 pub use analysis::AnalysisService;
 pub use article::ArticleService;
 pub use ask::{AskResponse, AskService, Citation};

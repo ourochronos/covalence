@@ -239,6 +239,41 @@ pub struct BridgeResult {
     pub skipped_existing: u64,
 }
 
+/// A relationship type with its count of invalidated edges.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InvalidatedEdgeType {
+    /// Relationship type (e.g. "RELATED_TO", "co_occurs").
+    pub rel_type: String,
+    /// Number of invalidated edges with this type.
+    pub count: i64,
+}
+
+/// A node with a high count of invalidated edges (controversy indicator).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InvalidatedEdgeNode {
+    /// Node UUID.
+    pub node_id: uuid::Uuid,
+    /// Canonical node name.
+    pub canonical_name: String,
+    /// Node type.
+    pub node_type: String,
+    /// Number of invalidated edges touching this node.
+    pub invalidated_edge_count: i64,
+}
+
+/// Statistics about invalidated edges in the graph.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InvalidatedEdgeStats {
+    /// Total number of invalidated edges.
+    pub total_invalidated: i64,
+    /// Total number of valid (non-invalidated) edges.
+    pub total_valid: i64,
+    /// Top relationship types by invalidated edge count.
+    pub top_types: Vec<InvalidatedEdgeType>,
+    /// Nodes with the highest number of invalidated edges.
+    pub top_nodes: Vec<InvalidatedEdgeNode>,
+}
+
 /// Compute knowledge gap candidates from the graph sidecar.
 ///
 /// Returns tuples of `(uuid, name, type, in_degree, out_degree)` for
@@ -381,6 +416,89 @@ impl AdminService {
     pub async fn reload_graph(&self) -> Result<GraphStats> {
         self.graph.reload(self.repo.pool()).await?;
         Ok(self.graph_stats().await)
+    }
+
+    /// Retrieve statistics about invalidated edges.
+    ///
+    /// Returns the total count, top relationship types, and nodes
+    /// with the highest invalidated edge counts (controversy
+    /// indicators). These edges are normally invisible to the graph
+    /// sidecar (`full_reload` filters `WHERE invalid_at IS NULL`).
+    pub async fn invalidated_edge_stats(
+        &self,
+        type_limit: usize,
+        node_limit: usize,
+    ) -> Result<InvalidatedEdgeStats> {
+        // Total invalidated.
+        let total_invalidated: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE invalid_at IS NOT NULL")
+                .fetch_one(self.repo.pool())
+                .await?;
+
+        // Total valid.
+        let total_valid: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE invalid_at IS NULL")
+                .fetch_one(self.repo.pool())
+                .await?;
+
+        // Top invalidated edge types.
+        let top_types: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT COALESCE(rel_type, 'unknown'), COUNT(*) \
+             FROM edges \
+             WHERE invalid_at IS NOT NULL \
+             GROUP BY 1 \
+             ORDER BY 2 DESC \
+             LIMIT $1",
+        )
+        .bind(type_limit as i64)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        // Nodes with the highest invalidated-edge count.
+        //
+        // We UNION source and target sides so a node touching many
+        // invalidated edges on either direction is surfaced.
+        let top_nodes: Vec<(uuid::Uuid, String, String, i64)> = sqlx::query_as(
+            "SELECT n.id, n.canonical_name, n.node_type, cnt \
+             FROM ( \
+                 SELECT node_id, SUM(c) AS cnt FROM ( \
+                     SELECT source_node_id AS node_id, COUNT(*) AS c \
+                     FROM edges WHERE invalid_at IS NOT NULL \
+                     GROUP BY 1 \
+                     UNION ALL \
+                     SELECT target_node_id AS node_id, COUNT(*) AS c \
+                     FROM edges WHERE invalid_at IS NOT NULL \
+                     GROUP BY 1 \
+                 ) sub \
+                 GROUP BY node_id \
+             ) agg \
+             JOIN nodes n ON n.id = agg.node_id \
+             ORDER BY cnt DESC \
+             LIMIT $1",
+        )
+        .bind(node_limit as i64)
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        Ok(InvalidatedEdgeStats {
+            total_invalidated,
+            total_valid,
+            top_types: top_types
+                .into_iter()
+                .map(|(rel_type, count)| InvalidatedEdgeType { rel_type, count })
+                .collect(),
+            top_nodes: top_nodes
+                .into_iter()
+                .map(
+                    |(node_id, canonical_name, node_type, count)| InvalidatedEdgeNode {
+                        node_id,
+                        canonical_name,
+                        node_type,
+                        invalidated_edge_count: count,
+                    },
+                )
+                .collect(),
+        })
     }
 
     /// Check system health.
@@ -1836,5 +1954,36 @@ mod tests {
         assert_eq!(cloned.nodes_evicted, result.nodes_evicted);
         assert_eq!(cloned.edges_removed, result.edges_removed);
         assert_eq!(cloned.aliases_removed, result.aliases_removed);
+    }
+
+    #[test]
+    fn invalidated_edge_stats_serializes() {
+        let stats = InvalidatedEdgeStats {
+            total_invalidated: 23000,
+            total_valid: 113000,
+            top_types: vec![
+                InvalidatedEdgeType {
+                    rel_type: "RELATED_TO".into(),
+                    count: 15000,
+                },
+                InvalidatedEdgeType {
+                    rel_type: "co_occurs".into(),
+                    count: 5000,
+                },
+            ],
+            top_nodes: vec![InvalidatedEdgeNode {
+                node_id: uuid::Uuid::new_v4(),
+                canonical_name: "Entity Resolution".into(),
+                node_type: "concept".into(),
+                invalidated_edge_count: 42,
+            }],
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("23000"));
+        assert!(json.contains("113000"));
+        assert!(json.contains("RELATED_TO"));
+        assert!(json.contains("co_occurs"));
+        assert!(json.contains("Entity Resolution"));
+        assert!(json.contains("42"));
     }
 }
