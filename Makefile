@@ -249,7 +249,7 @@ ingest-changes:
 	fi; \
 	echo "Ingesting changes: $$LAST..$$HEAD"; \
 	git diff --name-only "$$LAST..$$HEAD" -- '*.rs' '*.go' | grep -v '/target/' > /tmp/cov-ingest-code.txt || true; \
-	git diff --name-only "$$LAST..$$HEAD" -- 'spec/*.md' 'docs/adr/*.md' 'CLAUDE.md' 'VISION.md' 'MILESTONES.md' > /tmp/cov-ingest-docs.txt || true; \
+	git diff --name-only "$$LAST..$$HEAD" -- 'spec/*.md' 'docs/adr/*.md' 'design/*.md' 'CLAUDE.md' 'VISION.md' 'MILESTONES.md' 'README.md' > /tmp/cov-ingest-docs.txt || true; \
 	while IFS= read -r f; do \
 		[ -f "$$f" ] || continue; \
 		echo "  [code] $$f"; \
@@ -263,7 +263,7 @@ ingest-changes:
 		[ -f "$$f" ] || continue; \
 		echo "  [doc] $$f"; \
 		b64=$$(base64 < "$$f"); \
-		curl -sf -X POST $(INGEST_API)/api/v1/sources \
+		curl -sf --max-time 600 -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
 			-d "{\"content\": \"$$b64\", \"source_type\": \"document\", \"uri\": \"file://$$f\"}" \
 			> /dev/null 2>&1 || echo "    FAILED: $$f"; \

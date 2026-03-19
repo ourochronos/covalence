@@ -197,8 +197,10 @@ impl AnalysisService {
              FROM nodes n \
              WHERE n.entity_class = 'domain' \
                AND n.primary_domain IN ('spec', 'design') \
+               AND n.node_type NOT IN ('technology', 'actor') \
                AND n.mention_count >= 2 \
                AND LENGTH(n.canonical_name) >= 3 \
+               AND n.canonical_name !~ '^[a-z]+$' \
                AND NOT EXISTS ( \
                  SELECT 1 FROM edges e \
                  WHERE e.target_node_id = n.id \
