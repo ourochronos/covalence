@@ -72,10 +72,11 @@ impl StatementExtractor for LlmStatementExtractor {
             text.to_string()
         };
 
-        let content = self
+        let chat_resp = self
             .backend
             .chat(SYSTEM_PROMPT, &user_content, true, 0.0)
             .await?;
+        let content = chat_resp.text;
 
         // Strip markdown code fences if the LLM wrapped the JSON.
         let cleaned = strip_markdown_fences(&content);

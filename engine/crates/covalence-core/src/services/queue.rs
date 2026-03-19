@@ -848,9 +848,11 @@ async fn summarize_single_entity(
         super::prompts::build_summary_prompt(&node.canonical_name, &node.node_type, file_path, raw);
 
     let start = Instant::now();
-    let summary = chat.chat("", &prompt, false, 0.2).await?;
+    let chat_response = chat.chat("", &prompt, false, 0.2).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    let provider = chat_response.provider;
+    let summary = chat_response.text;
     let summary = summary.trim();
     if summary.is_empty() {
         return Ok(());
@@ -878,6 +880,7 @@ async fn summarize_single_entity(
     .bind(summary)
     .bind(serde_json::json!({
         "model": "haiku",
+        "provider": provider,
         "at": chrono::Utc::now().to_rfc3339(),
         "ms": duration_ms,
         "prompt_version": super::prompts::SUMMARY_PROMPT_VERSION,

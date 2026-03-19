@@ -128,9 +128,10 @@ impl AskService {
         } else {
             Arc::clone(&self.chat)
         };
-        let answer = backend
+        let chat_resp = backend
             .chat(&system_prompt, &user_prompt, false, 0.3)
             .await?;
+        let answer = chat_resp.text;
 
         // 5. Build citations from the search results.
         let citations = build_citations(&results, &context_blocks);

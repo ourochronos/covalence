@@ -633,8 +633,8 @@ impl SourceService {
                         );
 
                         match chat.chat("", &prompt, false, 0.2).await {
-                            Ok(summary) if !summary.trim().is_empty() => {
-                                let summary = summary.trim().to_string();
+                            Ok(resp) if !resp.text.trim().is_empty() => {
+                                let summary = resp.text.trim().to_string();
                                 // Store summary in properties and update
                                 // description for embedding.
                                 sqlx::query(

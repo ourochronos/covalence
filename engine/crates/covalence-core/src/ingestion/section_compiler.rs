@@ -128,10 +128,11 @@ impl SectionCompiler for LlmSectionCompiler {
             ));
         }
 
-        let content = self
+        let chat_resp = self
             .backend
             .chat(section_system_prompt(), &user_content, true, 0.3)
             .await?;
+        let content = chat_resp.text;
 
         // Strip markdown code fences if the LLM wrapped the JSON.
         let cleaned = strip_markdown_fences(&content);
@@ -184,12 +185,12 @@ impl SourceSummaryCompiler for LlmSectionCompiler {
             user_content.push_str(&format!("## {}\n{}\n\n", entry.title, entry.summary));
         }
 
-        let content = self
+        let chat_resp = self
             .backend
             .chat(source_summary_system_prompt(), &user_content, false, 0.3)
             .await?;
 
-        Ok(content.trim().to_string())
+        Ok(chat_resp.text.trim().to_string())
     }
 }
 

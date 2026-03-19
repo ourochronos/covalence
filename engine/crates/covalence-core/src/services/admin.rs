@@ -1452,8 +1452,8 @@ impl AdminService {
             );
 
             match chat.chat(system_prompt, &user_prompt, false, 0.3).await {
-                Ok(summary) => {
-                    let summary = summary.trim().to_string();
+                Ok(resp) => {
+                    let summary = resp.text.trim().to_string();
                     if summary.is_empty() {
                         failed += 1;
                         continue;

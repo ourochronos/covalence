@@ -9,14 +9,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+/// Response from a chat backend, including the provider that handled it.
+#[derive(Debug, Clone)]
+pub struct ChatResponse {
+    /// The assistant's response text.
+    pub text: String,
+    /// Label identifying which provider handled the request
+    /// (e.g. "claude(haiku)", "gemini(2.5-flash)", "openai(gpt-4)").
+    pub provider: String,
+}
+
 /// A backend for LLM chat completions.
 ///
 /// Implementations handle the transport (HTTP, CLI subprocess, etc.)
 /// while callers provide prompts and parse the response text.
 #[async_trait::async_trait]
 pub trait ChatBackend: Send + Sync {
-    /// Send a chat completion request and return the assistant's
-    /// response text.
+    /// Send a chat completion request and return the response with
+    /// provider attribution.
     ///
     /// When `json_mode` is true the backend should request
     /// structured JSON output (via `response_format` for HTTP, or
@@ -27,7 +37,7 @@ pub trait ChatBackend: Send + Sync {
         user_prompt: &str,
         json_mode: bool,
         temperature: f64,
-    ) -> Result<String>;
+    ) -> Result<ChatResponse>;
 }
 
 // ── HTTP backend (OpenAI-compatible) ────────────────────────────
@@ -64,7 +74,7 @@ impl ChatBackend for HttpChatBackend {
         user_prompt: &str,
         json_mode: bool,
         temperature: f64,
-    ) -> Result<String> {
+    ) -> Result<ChatResponse> {
         let body = HttpChatRequest {
             model: &self.model,
             messages: vec![
@@ -116,7 +126,10 @@ impl ChatBackend for HttpChatBackend {
             .and_then(|c| c.message.content)
             .unwrap_or_default();
 
-        Ok(content)
+        Ok(ChatResponse {
+            text: content,
+            provider: format!("http({})", self.model),
+        })
     }
 }
 
@@ -155,7 +168,7 @@ impl ChatBackend for CliChatBackend {
         user_prompt: &str,
         json_mode: bool,
         temperature: f64,
-    ) -> Result<String> {
+    ) -> Result<ChatResponse> {
         use tokio::process::Command;
 
         // Build the prompt. The CLI doesn't have a separate system
@@ -235,7 +248,10 @@ impl ChatBackend for CliChatBackend {
             .trim()
             .to_string();
 
-        Ok(content)
+        Ok(ChatResponse {
+            text: content,
+            provider: format!("{}({})", self.command, self.model),
+        })
     }
 }
 
@@ -263,7 +279,7 @@ impl ChatBackend for FallbackChatBackend {
         user_prompt: &str,
         json_mode: bool,
         temperature: f64,
-    ) -> Result<String> {
+    ) -> Result<ChatResponse> {
         match self
             .primary
             .chat(system_prompt, user_prompt, json_mode, temperature)
@@ -310,7 +326,7 @@ impl ChatBackend for ChainChatBackend {
         user_prompt: &str,
         json_mode: bool,
         temperature: f64,
-    ) -> Result<String> {
+    ) -> Result<ChatResponse> {
         let mut last_err = None;
         for (i, (label, backend)) in self.chain.iter().enumerate() {
             match backend
@@ -409,18 +425,21 @@ mod tests {
 
     /// Mock backend that returns a fixed result.
     struct MockBackend {
-        result: std::sync::Mutex<Result<String>>,
+        label: String,
+        result: std::sync::Mutex<std::result::Result<String, Error>>,
     }
 
     impl MockBackend {
         fn ok(s: &str) -> Self {
             Self {
+                label: "mock".to_string(),
                 result: std::sync::Mutex::new(Ok(s.to_string())),
             }
         }
 
         fn err(msg: &str) -> Self {
             Self {
+                label: "mock".to_string(),
                 result: std::sync::Mutex::new(Err(Error::Ingestion(msg.to_string()))),
             }
         }
@@ -434,13 +453,16 @@ mod tests {
             _user_prompt: &str,
             _json_mode: bool,
             _temperature: f64,
-        ) -> Result<String> {
+        ) -> Result<ChatResponse> {
             let mut guard = self.result.lock().unwrap();
-            // Take the result so the mock can only be called once.
-            std::mem::replace(
+            let result = std::mem::replace(
                 &mut *guard,
                 Err(Error::Ingestion("already consumed".into())),
-            )
+            );
+            result.map(|text| ChatResponse {
+                text,
+                provider: self.label.clone(),
+            })
         }
     }
 
@@ -451,7 +473,7 @@ mod tests {
             Box::new(MockBackend::ok("fallback")),
         );
         let result = fb.chat("sys", "user", false, 0.0).await.unwrap();
-        assert_eq!(result, "primary");
+        assert_eq!(result.text, "primary");
     }
 
     #[tokio::test]
@@ -461,7 +483,7 @@ mod tests {
             Box::new(MockBackend::ok("fallback response")),
         );
         let result = fb.chat("sys", "user", false, 0.0).await.unwrap();
-        assert_eq!(result, "fallback response");
+        assert_eq!(result.text, "fallback response");
     }
 
     #[tokio::test]

@@ -541,10 +541,11 @@ impl Extractor for ChatBackendExtractor {
         }
         user_msg.push_str(&crate::services::prompts::wrap_document(text));
 
-        let content = self
+        let chat_resp = self
             .backend
             .chat(system_prompt(), &user_msg, true, 0.0)
             .await?;
+        let content = chat_resp.text;
 
         // Strip markdown fences (CLI backends often wrap JSON in ```).
         let cleaned = crate::ingestion::utils::strip_markdown_fences(&content);

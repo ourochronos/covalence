@@ -716,7 +716,8 @@ impl AnalysisService {
             evidence_summary(code, "Code"),
         );
 
-        let response = backend.chat(system, &user, true, 0.3).await?;
+        let chat_resp = backend.chat(system, &user, true, 0.3).await?;
+        let response = chat_resp.text;
 
         // Parse the LLM response as JSON.
         let synthesis: CritiqueSynthesis = serde_json::from_str(&response)
