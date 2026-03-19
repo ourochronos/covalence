@@ -274,7 +274,17 @@ Autonomous sessions should proactively maintain engineering quality:
 - **Don't ignore failures.** If a consolidation run fails, a test is flaky, or an ingestion produces warnings — investigate immediately or create an issue. Moving past failures silently compounds debt.
 - **Run edge synthesis after bulk ingestion.** New sources create disconnected subgraphs. Run `POST /api/v1/admin/edges/synthesize` with `{"min_cooccurrences": 1}` after ingesting multiple sources to connect them via co-occurrence edges.
 - **Clear the search cache after deploys.** `POST /api/v1/admin/cache/clear` — otherwise stale cached results hide quality improvements.
-- **Holistic changes.** When modifying behavior, update ALL artifacts together in the same commit: code, tests, relevant specs, design docs, CLAUDE.md, and README. A feature that's implemented but not documented in the spec creates drift. A spec change without a code change is aspirational — mark it as such. The goal is that at any commit, spec/design/code/docs are in sync.
+- **Holistic changes.** Every feature change must update all affected artifacts together. Use this checklist before pushing:
+  - [ ] Code: implementation complete, `cargo fmt` + `cargo clippy` clean
+  - [ ] Tests: new/updated tests covering the change
+  - [ ] Spec: relevant spec section updated (or aspirational parts marked as such)
+  - [ ] Design docs: ADR if architectural decision, design doc if non-trivial
+  - [ ] CLAUDE.md: updated if config, environment, workflow, or conventions change
+  - [ ] README: updated if user-visible capability changes
+  - [ ] MILESTONES.md: updated if it completes a wave/milestone item
+  - [ ] GitHub issues: referenced in commits, updated with progress, closed when done
+  - [ ] Ingestion: re-ingest changed specs/docs after deploy so the graph stays current
+  A feature that's implemented but not documented creates drift. A spec change without code is aspirational — mark it explicitly.
 - **Spec-code-design triangle.** Every feature should be traceable: spec describes the concept, design docs record the decision, code implements it, tests verify it. When changing any vertex, check the other two. Use `/analysis/alignment` to detect drift.
 - **Epistemic data lifecycle.** Never automatically delete old source versions, orphan nodes, or duplicates. Old observations aren't false — they're prior state. Use `/admin/data-health` to preview what's stale, then make conscious cleanup decisions.
 
