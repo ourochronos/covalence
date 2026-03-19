@@ -16,9 +16,9 @@ use crate::handlers::dto::{
     NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem, OntologyClusterItem,
     OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
     QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
-    RetryFailedRequest, RetryFailedResponse, SearchTraceResponse, SeedOpinionsResponse,
-    SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse,
-    TraceReplayResponse,
+    ResurrectDeadResponse, RetryFailedRequest, RetryFailedResponse, SearchTraceResponse,
+    SeedOpinionsResponse, SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
+    TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -1049,4 +1049,27 @@ pub async fn clear_dead_handler(
         .and_then(covalence_core::models::retry_job::JobKind::from_pg_str);
     let deleted = state.queue_service.clear_dead(kind).await?;
     Ok(Json(ClearDeadResponse { deleted }))
+}
+
+/// Resurrect dead jobs — reset to pending so they retry.
+#[utoipa::path(
+    post,
+    path = "/admin/queue/dead/resurrect",
+    request_body = ClearDeadRequest,
+    responses(
+        (status = 200, description = "Dead jobs resurrected",
+         body = ResurrectDeadResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn resurrect_dead_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ClearDeadRequest>,
+) -> Result<Json<ResurrectDeadResponse>, ApiError> {
+    let kind = req
+        .kind
+        .as_deref()
+        .and_then(covalence_core::models::retry_job::JobKind::from_pg_str);
+    let resurrected = state.queue_service.resurrect_dead(kind).await?;
+    Ok(Json(ResurrectDeadResponse { resurrected }))
 }

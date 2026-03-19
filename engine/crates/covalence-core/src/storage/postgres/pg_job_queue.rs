@@ -247,6 +247,44 @@ impl JobQueueRepo for PgRepo {
 
         Ok(rows.iter().map(job_from_row).collect())
     }
+
+    async fn resurrect_dead(&self, kind: Option<JobKind>) -> Result<u64> {
+        let result = match kind {
+            Some(k) => {
+                sqlx::query(
+                    "UPDATE retry_jobs
+                     SET status = 'pending'::job_status,
+                         attempt = 0,
+                         next_due = now(),
+                         last_error = NULL,
+                         dead_reason = NULL,
+                         idempotency_key = NULL,
+                         updated_at = now()
+                     WHERE status = 'dead'::job_status
+                       AND kind = $1::job_kind",
+                )
+                .bind(k.as_pg_str())
+                .execute(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "UPDATE retry_jobs
+                     SET status = 'pending'::job_status,
+                         attempt = 0,
+                         next_due = now(),
+                         last_error = NULL,
+                         dead_reason = NULL,
+                         idempotency_key = NULL,
+                         updated_at = now()
+                     WHERE status = 'dead'::job_status",
+                )
+                .execute(&self.pool)
+                .await?
+            }
+        };
+        Ok(result.rows_affected())
+    }
 }
 
 /// Parse a [`RetryJob`] from a PostgreSQL row.

@@ -169,6 +169,7 @@ use crate::handlers::{admin, analysis, ask, dto, edges, mcp, nodes, search, sour
         dto::ListDeadResponse,
         dto::ClearDeadRequest,
         dto::ClearDeadResponse,
+        dto::ResurrectDeadResponse,
         dto::EnqueueReprocessResponse,
         dto::BootstrapResponse,
         dto::LinkDomainsRequest,

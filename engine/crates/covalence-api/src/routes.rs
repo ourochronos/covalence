@@ -100,6 +100,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/queue/dead", get(admin::list_dead_handler))
         .route("/admin/queue/dead/clear", post(admin::clear_dead_handler))
         .route(
+            "/admin/queue/dead/resurrect",
+            post(admin::resurrect_dead_handler),
+        )
+        .route(
             "/admin/queue/summarize-all",
             post(admin::enqueue_summarize_all),
         )

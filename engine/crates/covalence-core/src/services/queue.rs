@@ -407,6 +407,13 @@ impl RetryQueueService {
         JobQueueRepo::clear_dead(&*self.repo, kind).await
     }
 
+    /// Admin: resurrect dead jobs — reset to pending with attempt=0.
+    ///
+    /// Returns the number of jobs resurrected.
+    pub async fn resurrect_dead(&self, kind: Option<JobKind>) -> Result<u64> {
+        JobQueueRepo::resurrect_dead(&*self.repo, kind).await
+    }
+
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------

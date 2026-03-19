@@ -616,4 +616,10 @@ pub trait JobQueueRepo: Send + Sync {
 
     /// List dead jobs, most recently updated first.
     fn list_dead(&self, limit: i64) -> impl Future<Output = Result<Vec<RetryJob>>> + Send;
+
+    /// Resurrect dead jobs — reset to pending with attempt=0.
+    /// Optionally filter by kind. Clears idempotency_key so
+    /// fan-in triggers can re-enqueue if needed.
+    /// Returns the number of jobs resurrected.
+    fn resurrect_dead(&self, kind: Option<JobKind>) -> impl Future<Output = Result<u64>> + Send;
 }

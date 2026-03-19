@@ -1604,6 +1604,13 @@ pub struct ClearDeadResponse {
     pub deleted: u64,
 }
 
+/// Response for resurrecting dead-letter jobs.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ResurrectDeadResponse {
+    /// Number of dead jobs resurrected to pending.
+    pub resurrected: u64,
+}
+
 /// Response for enqueuing a source reprocess.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EnqueueReprocessResponse {
