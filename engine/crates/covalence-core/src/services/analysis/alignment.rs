@@ -284,40 +284,38 @@ impl AnalysisService {
 
     /// Find design docs whose descriptions diverge from code reality.
     ///
-    /// Compares design source summaries against code entity summaries
-    /// for entities linked via IMPLEMENTS_INTENT or PART_OF_COMPONENT.
+    /// Flags design docs where linked code entities were updated more
+    /// recently, suggesting the design may be stale relative to the code.
     async fn check_stale_design(
         &self,
-        distance_threshold: f64,
+        _distance_threshold: f64,
         limit: i64,
     ) -> Result<Vec<AlignmentItem>> {
-        // Design sources with summaries, compared against the code
-        // entities they're supposed to describe.
+        // Design sources linked to code entities via extractions.
+        // Flag when the newest linked code entity was updated after
+        // the design source (code evolved, design didn't).
         let rows: Vec<(String, String, f64, String)> = sqlx::query_as(
             "SELECT s.title, 'source' AS ntype, \
-                    AVG(s.embedding <=> n.embedding) AS avg_dist, \
+                    EXTRACT(EPOCH FROM (MAX(n.updated_at) - s.updated_at)) / 86400.0 AS days_behind, \
                     STRING_AGG(DISTINCT n.canonical_name, ', ' ORDER BY n.canonical_name) AS code_entities \
              FROM sources s \
              JOIN chunks c ON c.source_id = s.id \
              JOIN extractions ex ON ex.chunk_id = c.id AND ex.entity_type = 'node' \
              JOIN nodes n ON n.id = ex.entity_id \
                AND n.entity_class = 'code' \
-               AND n.embedding IS NOT NULL \
              WHERE s.domain = 'design' \
-               AND s.embedding IS NOT NULL \
-             GROUP BY s.id, s.title \
-             HAVING AVG(s.embedding <=> n.embedding) > $1 \
-             ORDER BY avg_dist DESC \
-             LIMIT $2",
+             GROUP BY s.id, s.title, s.updated_at \
+             HAVING MAX(n.updated_at) > s.updated_at \
+             ORDER BY days_behind DESC \
+             LIMIT $1",
         )
-        .bind(distance_threshold)
         .bind(limit)
         .fetch_all(self.repo.pool())
         .await?;
 
         Ok(rows
             .into_iter()
-            .map(|(name, ntype, avg_dist, code_entities)| {
+            .map(|(name, ntype, days_behind, code_entities)| {
                 let entities_preview = if code_entities.len() > 80 {
                     format!("{}...", &code_entities[..77])
                 } else {
@@ -326,13 +324,13 @@ impl AnalysisService {
                 AlignmentItem {
                     check: "stale_design".to_string(),
                     reason: format!(
-                        "Design doc diverges from linked code (avg distance: {avg_dist:.3}). \
+                        "Design doc is {days_behind:.1} days behind linked code. \
                          Code entities: {entities_preview}"
                     ),
                     name,
                     domain: "design".to_string(),
                     node_type: ntype,
-                    closest_match_score: Some(1.0 - avg_dist),
+                    closest_match_score: None,
                     closest_match_name: None,
                     closest_match_domain: Some("code".to_string()),
                 }
