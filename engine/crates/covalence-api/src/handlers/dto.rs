@@ -772,6 +772,70 @@ pub struct InvalidatedEdgeStatsResponse {
     pub top_nodes: Vec<InvalidatedEdgeNodeResponse>,
 }
 
+/// Request body for alignment analysis.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AlignmentRequest {
+    /// Which checks to run: "code_ahead", "spec_ahead",
+    /// "design_contradicted", "stale_design". Empty = all.
+    pub checks: Option<Vec<String>>,
+    /// Minimum embedding similarity for matching (default 0.4).
+    pub min_similarity: Option<f64>,
+    /// Max items per check (default 20).
+    pub limit: Option<i64>,
+}
+
+/// A single misalignment finding.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AlignmentItemResponse {
+    /// Category: code_ahead, spec_ahead, design_contradicted, stale_design.
+    pub check: String,
+    /// Entity name.
+    pub name: String,
+    /// Entity domain.
+    pub domain: String,
+    /// Entity type.
+    pub node_type: String,
+    /// Similarity to closest match (0.0-1.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closest_match_score: Option<f64>,
+    /// Closest match entity name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closest_match_name: Option<String>,
+    /// Closest match domain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closest_match_domain: Option<String>,
+    /// Explanation of the misalignment.
+    pub reason: String,
+}
+
+impl From<covalence_core::services::analysis::AlignmentItem> for AlignmentItemResponse {
+    fn from(item: covalence_core::services::analysis::AlignmentItem) -> Self {
+        Self {
+            check: item.check,
+            name: item.name,
+            domain: item.domain,
+            node_type: item.node_type,
+            closest_match_score: item.closest_match_score,
+            closest_match_name: item.closest_match_name,
+            closest_match_domain: item.closest_match_domain,
+            reason: item.reason,
+        }
+    }
+}
+
+/// Full alignment report response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AlignmentReportResponse {
+    /// Code entities with no matching spec concept.
+    pub code_ahead: Vec<AlignmentItemResponse>,
+    /// Spec concepts with no implementing code.
+    pub spec_ahead: Vec<AlignmentItemResponse>,
+    /// Design decisions potentially contradicted by research.
+    pub design_contradicted: Vec<AlignmentItemResponse>,
+    /// Design docs diverging from code reality.
+    pub stale_design: Vec<AlignmentItemResponse>,
+}
+
 /// Response for opinion seeding.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SeedOpinionsResponse {

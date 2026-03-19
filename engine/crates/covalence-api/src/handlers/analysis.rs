@@ -13,6 +13,7 @@ use crate::handlers::dto::{
     VerifyRequest, VerifyResponse, WhitespaceGapResponse, WhitespaceNodeResponse,
     WhitespaceRequest, WhitespaceResponse,
 };
+use crate::handlers::dto::{AlignmentReportResponse, AlignmentRequest as AlignmentApiRequest};
 use crate::state::AppState;
 
 /// Bootstrap Component nodes for the 9 known subsystems.
@@ -338,5 +339,44 @@ pub async fn critique(
                 .collect(),
             recommendation: s.recommendation,
         }),
+    }))
+}
+
+/// Cross-domain alignment report.
+///
+/// Compares entities across spec, design, code, and research domains
+/// to surface misalignments.
+#[utoipa::path(
+    post,
+    path = "/analysis/alignment",
+    request_body = AlignmentApiRequest,
+    responses(
+        (status = 200, description = "Alignment report",
+         body = AlignmentReportResponse),
+    ),
+    tag = "analysis"
+)]
+pub async fn alignment_report(
+    State(state): State<AppState>,
+    Json(req): Json<AlignmentApiRequest>,
+) -> Result<Json<AlignmentReportResponse>, ApiError> {
+    let report = state
+        .analysis_service
+        .alignment_report(&covalence_core::services::analysis::AlignmentRequest {
+            checks: req.checks.unwrap_or_default(),
+            min_similarity: req.min_similarity.unwrap_or(0.4),
+            limit: req.limit.unwrap_or(20),
+        })
+        .await?;
+
+    Ok(Json(AlignmentReportResponse {
+        code_ahead: report.code_ahead.into_iter().map(Into::into).collect(),
+        spec_ahead: report.spec_ahead.into_iter().map(Into::into).collect(),
+        design_contradicted: report
+            .design_contradicted
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        stale_design: report.stale_design.into_iter().map(Into::into).collect(),
     }))
 }

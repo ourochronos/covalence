@@ -10,6 +10,7 @@ use crate::ingestion::ChatBackend;
 use crate::ingestion::Embedder;
 use crate::storage::postgres::PgRepo;
 
+mod alignment;
 mod bootstrap;
 mod constants;
 mod health;
@@ -17,6 +18,7 @@ mod intelligence;
 mod tests;
 
 // Re-export all public types so `use crate::services::analysis::*` works.
+pub use alignment::{AlignmentItem, AlignmentReport, AlignmentRequest};
 pub use health::{
     CoverageItem, CoverageResult, DivergentNode, ErosionItem, ErosionResult, WhitespaceGap,
     WhitespaceNode, WhitespaceResult,

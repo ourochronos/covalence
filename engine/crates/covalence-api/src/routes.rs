@@ -112,6 +112,7 @@ pub fn router(state: AppState) -> Router {
         .route("/analysis/blast-radius", post(analysis::blast_radius))
         .route("/analysis/whitespace", post(analysis::whitespace_roadmap))
         .route("/analysis/verify", post(analysis::verify_implementation))
+        .route("/analysis/alignment", post(analysis::alignment_report))
         .route("/analysis/critique", post(analysis::critique));
 
     // Resolve the dashboard directory relative to the working
