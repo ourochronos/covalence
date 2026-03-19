@@ -159,6 +159,43 @@ impl AnalysisService {
     /// Maximum affected nodes to collect before stopping BFS early.
     const BLAST_RADIUS_NODE_CAP: usize = 500;
 
+    /// Resolve a node by name with fuzzy fallback.
+    ///
+    /// Resolution order:
+    /// 1. Exact case-insensitive match on `canonical_name`.
+    /// 2. Substring match (`ILIKE '%…%'`), picking the row with the
+    ///    highest `mention_count` when multiple rows match.
+    async fn resolve_node_by_name(&self, name: &str) -> Result<(uuid::Uuid, String, String)> {
+        // Step 1: exact case-insensitive match.
+        let exact: Option<(uuid::Uuid, String, String)> = sqlx::query_as(
+            "SELECT id, canonical_name, node_type FROM nodes \
+             WHERE LOWER(canonical_name) = LOWER($1) LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(self.repo.pool())
+        .await?;
+
+        if let Some(row) = exact {
+            return Ok(row);
+        }
+
+        // Step 2: substring (ILIKE) match, highest mention_count wins.
+        let fuzzy: Option<(uuid::Uuid, String, String)> = sqlx::query_as(
+            "SELECT id, canonical_name, node_type FROM nodes \
+             WHERE canonical_name ILIKE '%' || $1 || '%' \
+             ORDER BY mention_count DESC, canonical_name ASC \
+             LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(self.repo.pool())
+        .await?;
+
+        fuzzy.ok_or_else(|| Error::NotFound {
+            entity_type: "node",
+            id: name.to_string(),
+        })
+    }
+
     /// Estimate the blast radius of changing a given node.
     ///
     /// Traverses the graph sidecar outward from the target node up to
@@ -169,21 +206,9 @@ impl AnalysisService {
         target_name: &str,
         max_hops: usize,
     ) -> Result<BlastRadiusResult> {
-        // Find the target node by canonical name.
-        let target: Option<(uuid::Uuid, String, String)> = sqlx::query_as(
-            "SELECT id, canonical_name, node_type FROM nodes \
-             WHERE LOWER(canonical_name) = LOWER($1) LIMIT 1",
-        )
-        .bind(target_name)
-        .fetch_optional(self.repo.pool())
-        .await?;
-
-        let Some((target_id, target_canonical, target_type)) = target else {
-            return Err(Error::NotFound {
-                entity_type: "node",
-                id: target_name.to_string(),
-            });
-        };
+        // Find the target node by name (exact, then fuzzy fallback).
+        let (target_id, target_canonical, target_type) =
+            self.resolve_node_by_name(target_name).await?;
 
         // Find the component this node belongs to.
         let component: Option<(uuid::Uuid, String)> = sqlx::query_as(
