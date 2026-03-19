@@ -16,7 +16,7 @@ use crate::search::abstention::{AbstentionConfig, check_abstention};
 use crate::search::cache::{CacheConfig, QueryCache};
 use crate::search::context::{AssembledContext, ContextConfig, RawContextItem, assemble_context};
 use crate::search::dimensions::{
-    GlobalDimension, GraphDimension, LexicalDimension, SearchDimension, SearchQuery,
+    GlobalDimension, GraphDimension, GraphView, LexicalDimension, SearchDimension, SearchQuery,
     StructuralDimension, TemporalDimension, VectorDimension,
 };
 use crate::search::expansion::spreading_activation;
@@ -54,6 +54,10 @@ pub struct SearchFilters {
     /// Layers: "spec", "design", "code", "research", "external".
     /// Applies only to chunk and source results.
     pub source_layers: Option<Vec<String>>,
+    /// Orthogonal graph view restricting which edges the graph
+    /// dimension traverses: "causal", "temporal", "entity",
+    /// "structural", "all". Passed through to the graph dimension.
+    pub graph_view: Option<GraphView>,
 }
 
 /// Derive a source layer from a source URI.
@@ -386,6 +390,7 @@ impl SearchService {
         };
 
         // --- Step 4: Run all 6 dimensions concurrently ---
+        let graph_view = filters.as_ref().and_then(|f| f.graph_view);
         let search_query = SearchQuery {
             text: query.to_string(),
             strategy: effective_strategy.clone(),
@@ -393,6 +398,7 @@ impl SearchService {
             time_range,
             embedding: query_embedding.clone(),
             hierarchical,
+            graph_view,
             ..SearchQuery::default()
         };
 

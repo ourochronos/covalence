@@ -9,11 +9,11 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use super::{DimensionKind, SearchDimension, SearchQuery, extract_query_terms};
+use super::{DimensionKind, GraphView, SearchDimension, SearchQuery, extract_query_terms};
 use crate::error::Result;
 use crate::graph::SharedGraph;
-use crate::graph::sidecar::GraphSidecar;
-use crate::graph::traversal::{bfs_neighborhood_full, hop_decay_score};
+use crate::graph::sidecar::{EdgeMeta, GraphSidecar};
+use crate::graph::traversal::{bfs_neighborhood_pred, hop_decay_score};
 use crate::search::SearchResult;
 
 /// Edge types to skip during graph search traversal.
@@ -33,6 +33,88 @@ const BIBLIOGRAPHIC_DENY: &[&str] = &[
     "created_by",
     "edited_by",
 ];
+
+/// Causal relationship types recognized by the `causal` graph view.
+///
+/// Edges with any of these `rel_type` values pass the causal filter
+/// even when they lack an explicit `causal_level` annotation.
+const CAUSAL_REL_TYPES: &[&str] = &[
+    "CAUSED_BY",
+    "ENABLED",
+    "RESULTS_IN",
+    "CONFIRMS",
+    "CONTRADICTS",
+];
+
+/// Structural/entity relationship types recognized by the `entity`
+/// (and `structural`) graph view.
+const ENTITY_REL_TYPES: &[&str] = &[
+    "calls",
+    "uses_type",
+    "contains",
+    "implements",
+    "extends",
+    "PART_OF_COMPONENT",
+];
+
+/// Build an edge predicate for the given [`GraphView`].
+///
+/// The returned closure inspects an [`EdgeMeta`] reference and
+/// returns `true` if the edge should be traversed. Bibliographic
+/// and synthetic edges are always excluded regardless of view.
+fn view_predicate(view: &GraphView) -> Box<dyn Fn(&EdgeMeta) -> bool + Send + Sync> {
+    match view {
+        GraphView::Causal => Box::new(|m: &EdgeMeta| {
+            if m.is_synthetic {
+                return false;
+            }
+            if BIBLIOGRAPHIC_DENY
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
+            {
+                return false;
+            }
+            m.causal_level.is_some()
+                || CAUSAL_REL_TYPES
+                    .iter()
+                    .any(|r| r.eq_ignore_ascii_case(&m.rel_type))
+        }),
+        GraphView::Temporal => Box::new(|m: &EdgeMeta| {
+            if m.is_synthetic {
+                return false;
+            }
+            if BIBLIOGRAPHIC_DENY
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
+            {
+                return false;
+            }
+            m.has_valid_from
+        }),
+        GraphView::Entity | GraphView::Structural => Box::new(|m: &EdgeMeta| {
+            if m.is_synthetic {
+                return false;
+            }
+            if BIBLIOGRAPHIC_DENY
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
+            {
+                return false;
+            }
+            ENTITY_REL_TYPES
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case(&m.rel_type))
+        }),
+        GraphView::All => Box::new(|m: &EdgeMeta| {
+            if m.is_synthetic {
+                return false;
+            }
+            !BIBLIOGRAPHIC_DENY
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
+        }),
+    }
+}
 
 /// Graph-based search using BFS traversal from seed nodes.
 ///
@@ -118,61 +200,41 @@ impl SearchDimension for GraphDimension {
             return Ok(Vec::new());
         }
 
+        // Build the edge predicate for the requested graph view.
+        // When no view is set (or All), use the default
+        // bibliographic-deny + skip-synthetic filter.
+        let effective_view = query.graph_view.unwrap_or(GraphView::All);
+        let pred = view_predicate(&effective_view);
+
         // Merge results from all seeds, keeping best score per node.
         let mut best: HashMap<Uuid, f64> = HashMap::new();
 
         // Compute the maximum semantic degree across all nodes for
-        // normalization. "Semantic degree" counts only non-synthetic,
-        // non-denied edges — the meaningful connections.
+        // normalization. The degree count respects the active view
+        // predicate so that the bonus is view-consistent.
         let max_degree = sidecar
             .graph
             .node_indices()
-            .map(|n| {
-                sidecar
-                    .graph
-                    .edges(n)
-                    .filter(|e| {
-                        let m = e.weight();
-                        !m.is_synthetic
-                            && !BIBLIOGRAPHIC_DENY
-                                .iter()
-                                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
-                    })
-                    .count()
-            })
+            .map(|n| sidecar.graph.edges(n).filter(|e| pred(e.weight())).count())
             .max()
             .unwrap_or(1)
             .max(1) as f64;
 
         for &seed in &seeds {
-            let neighbors = bfs_neighborhood_full(
-                &sidecar,
-                seed,
-                MAX_HOPS,
-                None,
-                true,
-                Some(BIBLIOGRAPHIC_DENY),
-            );
+            let neighbors = bfs_neighborhood_pred(&sidecar, seed, MAX_HOPS, &pred);
             for (node_id, hops) in neighbors {
                 // Base score from hop decay.
                 let base = hop_decay_score(1.0, hops);
-                // Degree bonus: nodes with more semantic connections
-                // get a small score boost (up to 10% of base). This
-                // breaks ties between same-hop results and ensures
-                // the graph dimension has nonzero score spread.
+                // Degree bonus: nodes with more connections
+                // in this view get a small score boost (up to
+                // 10% of base).
                 let degree = sidecar
                     .node_index(node_id)
                     .map(|idx| {
                         sidecar
                             .graph
                             .edges(idx)
-                            .filter(|e| {
-                                let m = e.weight();
-                                !m.is_synthetic
-                                    && !BIBLIOGRAPHIC_DENY
-                                        .iter()
-                                        .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
-                            })
+                            .filter(|e| pred(e.weight()))
                             .count()
                     })
                     .unwrap_or(0) as f64;
@@ -244,6 +306,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: false,
+                has_valid_from: false,
             },
         )
         .unwrap();
@@ -258,6 +321,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: false,
+                has_valid_from: false,
             },
         )
         .unwrap();
@@ -296,6 +360,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: false,
+                has_valid_from: false,
             },
         )
         .unwrap();
@@ -310,6 +375,7 @@ mod tests {
                 causal_level: None,
                 clearance_level: 0,
                 is_synthetic: false,
+                has_valid_from: false,
             },
         )
         .unwrap();
@@ -513,5 +579,211 @@ mod tests {
         }
         let seeds = find_seed_nodes(&g, "node");
         assert_eq!(seeds.len(), MAX_AUTO_SEEDS);
+    }
+
+    // --- Graph view tests ---
+
+    /// Build a graph with mixed edge types for view testing.
+    ///
+    /// ```text
+    /// A --[CAUSED_BY]--> B --[contains]--> C --[related]--> D
+    ///                         (has_valid_from)
+    /// ```
+    fn make_view_graph() -> (SharedGraph, Uuid, Uuid, Uuid, Uuid) {
+        use crate::types::causal::CausalLevel;
+
+        let mut g = GraphSidecar::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let d = Uuid::new_v4();
+        for (id, name) in [(a, "ViewA"), (b, "ViewB"), (c, "ViewC"), (d, "ViewD")] {
+            g.add_node(NodeMeta {
+                id,
+                node_type: "entity".into(),
+                entity_class: None,
+                canonical_name: name.into(),
+                clearance_level: 0,
+            })
+            .unwrap();
+        }
+
+        // A -> B: causal edge (rel_type = CAUSED_BY)
+        g.add_edge(
+            a,
+            b,
+            EdgeMeta {
+                id: Uuid::new_v4(),
+                rel_type: "CAUSED_BY".into(),
+                weight: 1.0,
+                confidence: 0.9,
+                causal_level: Some(CausalLevel::Intervention),
+                clearance_level: 0,
+                is_synthetic: false,
+                has_valid_from: false,
+            },
+        )
+        .unwrap();
+
+        // B -> C: structural edge (contains) with valid_from
+        g.add_edge(
+            b,
+            c,
+            EdgeMeta {
+                id: Uuid::new_v4(),
+                rel_type: "contains".into(),
+                weight: 1.0,
+                confidence: 0.9,
+                causal_level: None,
+                clearance_level: 0,
+                is_synthetic: false,
+                has_valid_from: true,
+            },
+        )
+        .unwrap();
+
+        // C -> D: generic edge (no causal, no temporal, not
+        // structural)
+        g.add_edge(
+            c,
+            d,
+            EdgeMeta {
+                id: Uuid::new_v4(),
+                rel_type: "related".into(),
+                weight: 1.0,
+                confidence: 0.9,
+                causal_level: None,
+                clearance_level: 0,
+                is_synthetic: false,
+                has_valid_from: false,
+            },
+        )
+        .unwrap();
+
+        (Arc::new(RwLock::new(g)), a, b, c, d)
+    }
+
+    #[tokio::test]
+    async fn graph_view_all_traverses_everything() {
+        let (graph, a, b, c, d) = make_view_graph();
+        let dim = GraphDimension::new(graph);
+        let query = SearchQuery {
+            seed_nodes: vec![a],
+            limit: 10,
+            graph_view: Some(GraphView::All),
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query).await.unwrap();
+        let ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&b));
+        assert!(ids.contains(&c));
+        assert!(ids.contains(&d));
+    }
+
+    #[tokio::test]
+    async fn graph_view_causal_only_causal_edges() {
+        let (graph, a, b, _c, _d) = make_view_graph();
+        let dim = GraphDimension::new(graph);
+        let query = SearchQuery {
+            seed_nodes: vec![a],
+            limit: 10,
+            graph_view: Some(GraphView::Causal),
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query).await.unwrap();
+        let ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        // Only B is reachable via the CAUSED_BY edge.
+        assert!(ids.contains(&b));
+        // C and D are behind non-causal edges.
+        assert!(!ids.contains(&_c));
+        assert!(!ids.contains(&_d));
+    }
+
+    #[tokio::test]
+    async fn graph_view_temporal_only_valid_from_edges() {
+        let (graph, a, _b, c, _d) = make_view_graph();
+        let dim = GraphDimension::new(graph);
+        // Start from B (which has the temporal edge B->C).
+        // From A, only the causal edge A->B exists; the temporal
+        // view won't traverse it. So start from B directly.
+        let query = SearchQuery {
+            seed_nodes: vec![_b],
+            limit: 10,
+            graph_view: Some(GraphView::Temporal),
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query).await.unwrap();
+        let ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        // Only C is reachable from B via has_valid_from edge.
+        assert!(ids.contains(&c));
+        // A is behind a non-temporal edge (CAUSED_BY has
+        // has_valid_from=false). D is behind a non-temporal
+        // "related" edge.
+        assert!(!ids.contains(&a));
+        assert!(!ids.contains(&_d));
+    }
+
+    #[tokio::test]
+    async fn graph_view_entity_only_structural_edges() {
+        let (graph, _a, b, c, _d) = make_view_graph();
+        let dim = GraphDimension::new(graph);
+        // Start from B, which has "contains" -> C.
+        let query = SearchQuery {
+            seed_nodes: vec![b],
+            limit: 10,
+            graph_view: Some(GraphView::Entity),
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query).await.unwrap();
+        let ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        // C is reachable via "contains" (structural).
+        assert!(ids.contains(&c));
+        // A is behind CAUSED_BY (not structural).
+        assert!(!ids.contains(&_a));
+        // D is behind "related" (not structural).
+        assert!(!ids.contains(&_d));
+    }
+
+    #[tokio::test]
+    async fn graph_view_structural_alias_for_entity() {
+        let (graph, _a, b, c, _d) = make_view_graph();
+        let dim = GraphDimension::new(graph);
+        let query = SearchQuery {
+            seed_nodes: vec![b],
+            limit: 10,
+            graph_view: Some(GraphView::Structural),
+            ..SearchQuery::default()
+        };
+        let results = dim.search(&query).await.unwrap();
+        let ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&c));
+        assert!(!ids.contains(&_a));
+        assert!(!ids.contains(&_d));
+    }
+
+    #[tokio::test]
+    async fn graph_view_none_same_as_all() {
+        let (graph, a, _, _, _) = make_view_graph();
+        let dim = GraphDimension::new(Arc::clone(&graph));
+        // With graph_view = None (default)
+        let q_none = SearchQuery {
+            seed_nodes: vec![a],
+            limit: 10,
+            ..SearchQuery::default()
+        };
+        let r_none = dim.search(&q_none).await.unwrap();
+
+        // With graph_view = All
+        let dim2 = GraphDimension::new(graph);
+        let q_all = SearchQuery {
+            seed_nodes: vec![a],
+            limit: 10,
+            graph_view: Some(GraphView::All),
+            ..SearchQuery::default()
+        };
+        let r_all = dim2.search(&q_all).await.unwrap();
+
+        // Same result count (same traversal).
+        assert_eq!(r_none.len(), r_all.len());
     }
 }

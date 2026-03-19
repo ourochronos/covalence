@@ -108,12 +108,28 @@ pub async fn search(
         }
     }
 
+    // Parse optional graph_view parameter.
+    let graph_view = if let Some(ref gv) = req.graph_view {
+        let parsed =
+            covalence_core::search::dimensions::GraphView::from_str_opt(gv).ok_or_else(|| {
+                ApiError::from(covalence_core::error::Error::InvalidInput(format!(
+                    "invalid graph_view: {gv}. \
+                                 Expected: causal, temporal, \
+                                 entity, structural, all"
+                )))
+            })?;
+        Some(parsed)
+    } else {
+        None
+    };
+
     let filters = if req.min_confidence.is_some()
         || req.node_types.is_some()
         || req.entity_classes.is_some()
         || req.source_types.is_some()
         || req.source_layers.is_some()
         || date_range.is_some()
+        || graph_view.is_some()
     {
         Some(covalence_core::services::SearchFilters {
             min_confidence: req.min_confidence,
@@ -122,6 +138,7 @@ pub async fn search(
             date_range,
             source_types: req.source_types,
             source_layers: req.source_layers,
+            graph_view,
         })
     } else {
         None

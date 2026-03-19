@@ -14,7 +14,7 @@ pub mod trace;
 pub use abstention::{AbstentionCheck, AbstentionConfig, check_abstention};
 pub use cache::{CacheConfig, CachedResponse, QueryCache};
 pub use context::{AssembledContext, ContextConfig, ContextItem, RawContextItem, assemble_context};
-pub use dimensions::{DimensionKind, SearchDimension, SearchQuery};
+pub use dimensions::{DimensionKind, GraphView, SearchDimension, SearchQuery};
 pub use expansion::{ExpandedQuery, SpreadingResult, expand_query, spreading_activation};
 pub use fusion::{DEFAULT_K, FusedResult, SearchResult, rrf_fuse};
 pub use rerank::{HttpReranker, NoopReranker, RerankConfig, RerankedResult, Reranker};
