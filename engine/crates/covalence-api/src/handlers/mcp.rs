@@ -260,7 +260,7 @@ async fn dispatch_traverse(
 
     let nodes = state
         .node_service
-        .neighborhood(start_node_id.into(), hops)
+        .neighborhood(start_node_id.into(), hops, false)
         .await
         .map_err(|e| e.to_string())?;
 

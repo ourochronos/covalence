@@ -10,10 +10,12 @@ use crate::handlers::dto::{
     ClearDeadResponse, CodeSummaryResponse, CommunityParams, CommunityResponse,
     ConfigAuditResponse, ConsolidateResponse, CooccurrenceRequest, CooccurrenceResponse,
     DeadJobResponse, DomainLinkResponse, DomainResponse, GcResponse, GraphStatsResponse,
-    HealthResponse, KnowledgeGapItem, KnowledgeGapParams, KnowledgeGapsResponse, ListDeadParams,
-    ListDeadResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem,
-    OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse, PaginationParams,
-    PublishResponse, QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
+    HealthResponse, InvalidatedEdgeNodeResponse, InvalidatedEdgeStatsParams,
+    InvalidatedEdgeStatsResponse, InvalidatedEdgeTypeResponse, KnowledgeGapItem,
+    KnowledgeGapParams, KnowledgeGapsResponse, ListDeadParams, ListDeadResponse, MetricsResponse,
+    NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem, OntologyClusterItem,
+    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
+    QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
     RetryFailedRequest, RetryFailedResponse, SearchTraceResponse, SeedOpinionsResponse,
     SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse,
     TraceReplayResponse,
@@ -120,6 +122,56 @@ pub async fn graph_topology(State(state): State<AppState>) -> Json<TopologyRespo
         total_nodes: topo.total_nodes,
         total_edges: topo.total_edges,
     })
+}
+
+/// Get statistics about invalidated edges.
+///
+/// Invalidated edges are normally invisible to the graph sidecar.
+/// This endpoint exposes their distribution by relationship type
+/// and highlights nodes with high invalidated-edge counts
+/// (controversy indicators).
+#[utoipa::path(
+    get,
+    path = "/admin/graph/invalidated-stats",
+    params(InvalidatedEdgeStatsParams),
+    responses(
+        (status = 200, description = "Invalidated edge statistics",
+         body = InvalidatedEdgeStatsResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn invalidated_edge_stats(
+    State(state): State<AppState>,
+    Query(params): Query<InvalidatedEdgeStatsParams>,
+) -> Result<Json<InvalidatedEdgeStatsResponse>, ApiError> {
+    let type_limit = params.type_limit.unwrap_or(10).min(100);
+    let node_limit = params.node_limit.unwrap_or(20).min(200);
+    let stats = state
+        .admin_service
+        .invalidated_edge_stats(type_limit, node_limit)
+        .await?;
+    Ok(Json(InvalidatedEdgeStatsResponse {
+        total_invalidated: stats.total_invalidated,
+        total_valid: stats.total_valid,
+        top_types: stats
+            .top_types
+            .into_iter()
+            .map(|t| InvalidatedEdgeTypeResponse {
+                rel_type: t.rel_type,
+                count: t.count,
+            })
+            .collect(),
+        top_nodes: stats
+            .top_nodes
+            .into_iter()
+            .map(|n| InvalidatedEdgeNodeResponse {
+                node_id: n.node_id,
+                canonical_name: n.canonical_name,
+                node_type: n.node_type,
+                invalidated_edge_count: n.invalidated_edge_count,
+            })
+            .collect(),
+    }))
 }
 
 /// List recent audit log entries.

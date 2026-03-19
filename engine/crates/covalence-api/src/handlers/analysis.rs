@@ -164,9 +164,10 @@ pub async fn blast_radius(
     Json(req): Json<BlastRadiusRequest>,
 ) -> Result<Json<BlastRadiusResponse>, ApiError> {
     let max_hops = req.max_hops.unwrap_or(2).min(10);
+    let include_invalidated = req.include_invalidated.unwrap_or(false);
     let result = state
         .analysis_service
-        .blast_radius(&req.target, max_hops)
+        .blast_radius(&req.target, max_hops, include_invalidated)
         .await?;
     Ok(Json(BlastRadiusResponse {
         target_node_id: result.target.node_id,

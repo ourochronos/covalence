@@ -53,6 +53,7 @@ use crate::handlers::{admin, analysis, ask, dto, edges, mcp, nodes, search, sour
         mcp::call_tool,
         // Admin
         admin::reload_graph,
+        admin::invalidated_edge_stats,
         admin::publish_source,
         admin::trigger_consolidation,
         admin::trigger_raptor,
@@ -195,6 +196,10 @@ use crate::handlers::{admin, analysis, ask, dto, edges, mcp, nodes, search, sour
         dto::SupportingArgumentResponse,
         dto::CritiqueSynthesisResponse,
         dto::CritiqueResponse,
+        dto::InvalidatedEdgeStatsParams,
+        dto::InvalidatedEdgeTypeResponse,
+        dto::InvalidatedEdgeNodeResponse,
+        dto::InvalidatedEdgeStatsResponse,
         mcp::McpTool,
         mcp::McpToolCall,
         mcp::McpToolResult,

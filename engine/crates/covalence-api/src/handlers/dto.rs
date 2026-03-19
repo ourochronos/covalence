@@ -461,6 +461,8 @@ pub struct NodeDetailResponse {
 pub struct NeighborhoodParams {
     /// Number of hops (default 1).
     pub hops: Option<usize>,
+    /// Include nodes connected via invalidated edges (default false).
+    pub include_invalidated: Option<bool>,
 }
 
 /// Request body for node resolution.
@@ -719,6 +721,50 @@ pub struct BackfillResponse {
     pub embedded: u64,
     /// Nodes that failed to embed.
     pub failed: u64,
+}
+
+/// Query parameters for invalidated edge statistics.
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct InvalidatedEdgeStatsParams {
+    /// Maximum number of top relationship types to return (default 10).
+    pub type_limit: Option<usize>,
+    /// Maximum number of top nodes to return (default 20).
+    pub node_limit: Option<usize>,
+}
+
+/// A relationship type with its count of invalidated edges.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InvalidatedEdgeTypeResponse {
+    /// Relationship type (e.g. "RELATED_TO", "co_occurs").
+    pub rel_type: String,
+    /// Number of invalidated edges with this type.
+    pub count: i64,
+}
+
+/// A node with a high count of invalidated edges (controversy indicator).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InvalidatedEdgeNodeResponse {
+    /// Node UUID.
+    pub node_id: Uuid,
+    /// Canonical node name.
+    pub canonical_name: String,
+    /// Node type.
+    pub node_type: String,
+    /// Number of invalidated edges touching this node.
+    pub invalidated_edge_count: i64,
+}
+
+/// Response for invalidated edge statistics.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InvalidatedEdgeStatsResponse {
+    /// Total number of invalidated edges.
+    pub total_invalidated: i64,
+    /// Total number of valid (non-invalidated) edges.
+    pub total_valid: i64,
+    /// Top relationship types by invalidated edge count.
+    pub top_types: Vec<InvalidatedEdgeTypeResponse>,
+    /// Nodes with the highest invalidated-edge count (controversy indicators).
+    pub top_nodes: Vec<InvalidatedEdgeNodeResponse>,
 }
 
 /// Response for opinion seeding.
@@ -1174,6 +1220,8 @@ pub struct BlastRadiusRequest {
     pub target: String,
     /// Maximum hops to traverse (default 2).
     pub max_hops: Option<usize>,
+    /// Include nodes connected via invalidated edges (default false).
+    pub include_invalidated: Option<bool>,
 }
 
 /// An affected node in the blast radius.

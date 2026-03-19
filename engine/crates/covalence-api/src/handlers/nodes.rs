@@ -84,7 +84,11 @@ pub async fn get_neighborhood(
     Query(params): Query<NeighborhoodParams>,
 ) -> Result<Json<Vec<NodeResponse>>, ApiError> {
     let hops = params.hops.unwrap_or(1).min(10);
-    let nodes = state.node_service.neighborhood(id.into(), hops).await?;
+    let include_invalidated = params.include_invalidated.unwrap_or(false);
+    let nodes = state
+        .node_service
+        .neighborhood(id.into(), hops, include_invalidated)
+        .await?;
     Ok(Json(nodes.into_iter().map(node_to_response).collect()))
 }
 
