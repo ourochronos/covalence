@@ -11,7 +11,7 @@ The ingestion pipeline transforms raw unstructured sources into structured graph
 3. **Structure-preserving** — Capture document hierarchy (title, headings, sections, paragraphs) as metadata, not just flat text.
 4. **Metadata-rich** — Source type, author, date, URI, format-specific properties are all first-class.
 5. **Offset Projection Ledger** — Use an automated fastcoref pass to normalize pronouns into explicit referents. Generate an offset projection ledger to map mutated text indices exactly back to the canonical source, ensuring perfect provenance.
-6. **Two-pass LLM extraction** — Statement extraction and entity extraction are separate passes to avoid attention dilution. Pass 1 extracts self-contained statements from the coref-resolved text. Pass 2 extracts entities and relationships from those statements. Both passes use Gemini Flash 3.0 for high-throughput, massive-context processing.
+6. **Two-pass LLM extraction** — Statement extraction and entity extraction are separate passes to avoid attention dilution. Pass 1 extracts self-contained statements from the coref-resolved text. Pass 2 extracts entities and relationships from those statements. Both passes use the pluggable `ChatBackend` abstraction (see [LLM Backend Abstraction](#llm-backend-abstraction)), enabling multi-provider failover without changing pipeline logic.
 7. **Entity resolution** — Deduplicate entities across sources using vector similarity, graph context, and an HDBSCAN catch-all for dynamic grouping of unclassified entities.
 8. **Incremental & Idempotent** — Re-ingesting an updated source should update, not duplicate.
 
@@ -110,9 +110,9 @@ Because modifying the text destroys the absolute coordinate system of the origin
 }
 ```
 
-### Stage 6: Windowed Statement Extraction (Gemini Flash 3.0)
+### Stage 6: Windowed Statement Extraction
 
-The `mutated_text` is processed in overlapping windows (e.g., 5 paragraphs with 2-paragraph overlap). Each window is sent to **Gemini Flash 3.0** with a strict JSON-schema prompt that extracts atomic, self-contained factual claims.
+The `mutated_text` is processed in overlapping windows (e.g., 5 paragraphs with 2-paragraph overlap). Each window is sent to the configured `ChatBackend` with a strict JSON-schema prompt that extracts atomic, self-contained factual claims.
 
 **Requirements:**
 1. **Self-containment** — Every statement must be independently meaningful.
@@ -130,12 +130,12 @@ Each extracted statement is embedded using the configured embedding provider (e.
 Statements are clustered into **Sections** using Hierarchical Agglomerative Clustering (HAC) on their embeddings (cosine distance, complete linkage, threshold 0.75).
 
 For each cluster:
-- **Gemini Flash 3.0** compiles a Section title and narrative body.
+- The `ChatBackend` compiles a Section title and narrative body.
 - The Section body is embedded for retrieval.
 
 Finally, an LLM pass compiles a **Source Summary** based on all section titles and bodies.
 
-### Stage 9: Entity & Triple Extraction (Gemini Flash 3.0)
+### Stage 9: Entity & Triple Extraction
 
 Entities and relationships are extracted directly from the self-contained statements (Pass 2 of the two-pass pipeline).
 - Prompt: "Extract (subject -> relationship -> object) triples from the provided statement. Relationship `rel_type` should be UPPER_SNAKE_CASE verbs."
@@ -174,7 +174,7 @@ When `source_type = "code"`, the pipeline diverges to use AST-aware processing. 
 
 ## Source Update Classes
 
-Sources don't all update the same way. The system recognizes four classes of updates, each with distinct handling:
+Sources don't all update the same way. The system recognizes five classes of updates, each with distinct handling. Update class detection is automatic: when a source is ingested with a URI that matches an existing source, the system compares content overlap to determine the class.
 
 ### Class 1: Append-Only (Conversations, Logs, Event Streams)
 - Hash and process only the **delta** (new messages/entries).
@@ -195,6 +195,14 @@ Sources don't all update the same way. The system recognizes four classes of upd
 ### Class 5: Takedown / Deletion (GDPR, User Deletion)
 - Soft-delete source, execute TMS Cascade to mark sole-provenance nodes as inactive or deleted. Run orphan detection to clean up graph islands.
 
+### Supersession Tracking
+
+When a source update creates a new source record (Classes 2 and 3), the system maintains explicit lineage:
+- The new source records `supersedes_id` pointing to the old source, along with the detected `update_class` and an incremented `content_version`.
+- The old source is marked with `superseded_by` (pointing to the new source) and `superseded_at` (timestamp).
+- Old extractions are marked as superseded via `ExtractionRepo::mark_superseded_by_source` so they no longer pollute search results.
+- Old data (extractions, chunks, ledger entries) is cleaned up only **after** the new pipeline succeeds, ensuring rollback safety.
+
 ---
 
 ## Three-Timescale Consolidation
@@ -213,11 +221,118 @@ Ingestion is the online (fast) tier of a three-timescale consolidation pipeline.
 - LLM extraction failures (rate limits, malformed output) → retry with exponential backoff.
 - Resumable pipeline state prevents re-running expensive LLM calls on crash.
 
+### Persistent Retry Queue
+
+Failed pipeline stages are handled by a persistent retry queue backed by PostgreSQL (`retry_jobs` table). The `RetryQueueService` manages the full lifecycle:
+
+**Job kinds:**
+| Kind | Description |
+|------|-------------|
+| `ReprocessSource` | Full source reprocessing (re-chunk, re-extract, re-embed) |
+| `ExtractChunk` | Extract entities from a single chunk |
+| `ExtractStatements` | Extract statements from a source's chunks |
+| `ExtractEntities` | Extract entities from a source's statements |
+| `SummarizeEntity` | Generate semantic summary for a single code entity |
+| `ComposeSourceSummary` | Fan-in: compose file-level summary from entity summaries |
+| `EmbedBatch` | Embed a batch of items (nodes or chunks) |
+| `SynthesizeEdges` | Synthesize co-occurrence edges across the graph |
+
+**Error classification and backoff:**
+- **Permanent** (404, bad payload) — sent to dead-letter queue immediately (no retry).
+- **Rate limit** (429, quota exhaustion) — long backoff starting at 15 minutes, doubling per attempt.
+- **Transient** (timeout, connection reset) — standard exponential backoff (`base * 2^(attempt-1)`, capped at max).
+
+**Concurrency control:**
+- Per-kind semaphores limit concurrent reprocess jobs and edge synthesis jobs independently.
+- Job claiming uses `FOR UPDATE SKIP LOCKED` to prevent double-dispatch across workers.
+- Fan-in triggers use PostgreSQL advisory locks (`pg_try_advisory_xact_lock`) to prevent duplicate compose jobs when multiple chunk extractions complete simultaneously.
+
+**Fan-in triggers:**
+The async pipeline forms a DAG: `ExtractChunk → SummarizeEntity → ComposeSourceSummary`. When all jobs of one stage complete for a source, a fan-in check automatically enqueues the next stage. Advisory locks ensure exactly-once triggering even under concurrent completion.
+
+**Watchdog:**
+A background watchdog task (every 2 minutes) detects sources that have stalled mid-pipeline — all child jobs completed but the fan-in trigger didn't fire — and re-enqueues the missing compose job.
+
+**Scheduler:**
+A periodic scheduler auto-enqueues maintenance jobs on a cadence (edge synthesis every 6 hours, garbage collection every 7 days).
+
+**Recovery:**
+On startup, the worker recovers orphaned `running` jobs (from engine crashes) back to `pending` status with immediate retry eligibility.
+
+**Administration:**
+Dead-letter jobs can be inspected, retried, resurrected, or cleared via the admin API.
+
 ## Performance Considerations
 
-- **Gemini Flash 3.0 Throughput:** Leverage high TPS and massive context window for concurrent windowed extraction.
+- **LLM Throughput:** High-throughput providers are preferred for concurrent windowed extraction. The `ChainChatBackend` enables automatic failover to maintain throughput when a provider is rate-limited.
 - **Parallel extraction:** Multiple windows sent to LLM concurrently (respecting bounded semaphore limits).
 - **Ledger efficiency:** Reverse projection is mathematically negligible compared to LLM-driven coref mutation logic.
+
+## LLM Backend Abstraction
+
+All LLM-driven pipeline stages (statement extraction, entity extraction, section compilation, source summary, semantic summaries) use a pluggable `ChatBackend` trait rather than calling a specific provider directly.
+
+### ChatBackend Trait
+
+```rust
+#[async_trait]
+pub trait ChatBackend: Send + Sync {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        json_mode: bool,
+        temperature: f64,
+    ) -> Result<ChatResponse>;
+}
+```
+
+Every call returns a `ChatResponse` containing both the response text and a `provider` label (e.g. `"claude(haiku)"`, `"gemini(2.5-flash)"`, `"http(gpt-4)"`).
+
+### Implementations
+
+| Backend | Transport | Use case |
+|---------|-----------|----------|
+| `CliChatBackend` | CLI subprocess (claude, gemini, copilot) | Primary: shells out to installed CLI tools |
+| `HttpChatBackend` | OpenAI-compatible HTTP API | Any provider with an HTTP endpoint |
+| `FallbackChatBackend` | Two-layer failover (primary → secondary) | Legacy compatibility |
+| `ChainChatBackend` | Multi-provider ordered failover | Production: tries providers in sequence |
+
+The `ChainChatBackend` is the standard production configuration. It tries each provider in order, falling back to the next on any error, and logs which provider ultimately handled the request.
+
+### Provider Attribution
+
+Every LLM call records which provider handled the request in the entity or source's `processing` metadata (a JSONB column). This includes the provider label, model name, timestamp, latency in milliseconds, and prompt version. Example:
+
+```json
+{
+  "summary": {
+    "model": "haiku",
+    "provider": "claude(haiku)",
+    "at": "2026-03-15T14:30:00Z",
+    "ms": 1250,
+    "prompt_version": 3
+  }
+}
+```
+
+This enables auditing which provider generated each piece of extracted knowledge and selective reprocessing when prompts or models change.
+
+## Prompt Templates
+
+Extraction and compilation prompts are loaded from `engine/prompts/*.md` files at runtime. If the file is not found on disk (e.g. in test environments), a compiled-in fallback is used via `include_str!`.
+
+| File | Stage |
+|------|-------|
+| `entity_extraction.md` | Stage 9: entity extraction from statements |
+| `relationship_extraction.md` | Stage 9: triple extraction from statements |
+| `section_compilation.md` | Stage 8: section title + narrative compilation |
+| `source_summary.md` | Stage 8: source-level summary from sections |
+| `code_summary.md` | Code pipeline: semantic summary for code entities |
+
+Templates are loaded once via `OnceLock` and cached for the process lifetime. Each template has a version constant (`SUMMARY_PROMPT_VERSION`) tracked in processing metadata, enabling selective reprocessing of entities summarized with older prompt versions.
+
+This design allows prompt iteration without recompilation — edit the `.md` file and restart the engine.
 
 ## Open Questions
 
@@ -225,4 +340,4 @@ Ingestion is the online (fast) tier of a three-timescale consolidation pipeline.
 - [x] Single-pass vs two-pass extraction → Two-pass (Statements -> Triples) prevents attention dilution.
 - [x] Offset Projection Ledger → Implemented at Stage 5 and 10 to ensure pristine canonical provenance.
 - [x] HDBSCAN entity resolution → Implemented as the definitive Tier 5 catch-all for dynamic entity grouping.
-- [x] LLM Selection → Gemini Flash 3.0 used for bulk extraction due to required context window and throughput.
+- [x] LLM Selection → Backend-agnostic via `ChatBackend` trait. Default production chain: Claude Haiku → Copilot → Gemini Flash.

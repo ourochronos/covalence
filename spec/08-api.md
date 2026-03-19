@@ -38,18 +38,31 @@ GET /api/v1/sources
 GET /api/v1/sources/{id}
   → Source metadata + ingestion status + reliability score
 
-GET /api/v1/sources/{id}/statements
+GET /api/v1/sources/{id}/statements          (planned)
   → Statement tree for a source (or AST chunks if source_type=code)
   → Each statement includes canonical source byte offsets
 
+GET /api/v1/sources/{id}/chunks
+  → Chunks belonging to a source
+  → Returns: [{ id, source_id, level, ordinal, content, token_count }]
+
 POST /api/v1/sources/{id}/reprocess
-  → Idempotent reprocessing: re-runs the full pipeline on existing content
+  → Synchronous reprocessing: re-runs the full pipeline on existing content
   → Supersedes previous extractions, preserves source identity
-  → Returns: { id, chunks_created, entities_extracted, edges_created }
+  → Returns: { source_id, extractions_superseded, chunks_deleted, chunks_created, content_version }
+
+POST /api/v1/sources/{id}/queue-reprocess
+  → Asynchronous reprocessing via the persistent retry queue
+  → Enqueues the job and returns immediately; the background worker processes it
+    with automatic retries on transient failures
+  → Returns: { enqueued: bool, job_id?: UUID }
 
 DELETE /api/v1/sources/{id}
   → Cascading deletion: extractions → aliases → statements/chunks → orphaned edges → orphaned nodes
-  → Returns: { deleted, extractions_deleted, nodes_deleted, edges_deleted }
+  → TMS cascade: surviving nodes/edges have epistemic opinions recalculated
+  → Returns: { deleted, chunks_deleted, extractions_deleted, statements_deleted,
+               sections_deleted, nodes_deleted, edges_deleted,
+               nodes_recalculated, edges_recalculated }
 ```
 
 ### Search
@@ -61,15 +74,17 @@ POST /api/v1/search
     strategy: "auto" | "balanced" | "precise" | "exploratory" | "recent" | "graph_first" | "global" | "custom",
     weights: { vector, lexical, temporal, graph, structural, global }?,
     limit: Int?,
-    mode: "results" | "context",                  // results (default) or assembled context
+    min_confidence: Float?,               // epistemic confidence threshold (0.0–1.0)
+    node_types: [String]?,                // restrict to specific node types
+    entity_classes: [String]?,            // restrict to entity classes: code, domain, actor, analysis
+    source_types: [String]?,              // restrict to source types (e.g. "document", "code")
+    source_layers: [String]?,             // restrict by source domain layer: spec, design, code, research, external
+    date_range_start: String?,            // ISO 8601 start of date range
+    date_range_end: String?,              // ISO 8601 end of date range
+    mode: "results" | "context",          // results (default) or assembled context
     granularity: "section" | "paragraph" | "source",  // section (default), paragraph, or full source
-    source_layers: ["spec" | "design" | "code" | "research"]?,  // filter by source URI prefix layer
-    filters: {
-      source_types: [String]?,
-      date_range: { start, end }?,
-      node_types: [String]?,
-      min_confidence: Float?,
-    }?
+    hierarchical: bool?,                  // coarse-to-fine: find sources first, then chunks (default false)
+    graph_view: String?,                  // orthogonal graph view for BFS: causal, temporal, entity, structural, all
   }
   → Returns: [SearchResult] or ContextResponse depending on mode
   → strategy "auto" (default) uses SkewRoute for adaptive strategy selection based on
@@ -78,12 +93,44 @@ POST /api/v1/search
       "section"   — walk up to the parent section chunk (default)
       "paragraph" — use the matched chunk content as-is
       "source"    — use the full source normalized_content
-  → source_layers filters results by URI prefix layer (e.g. spec/, docs/adr/, *.rs, research papers)
+  → source_layers filters results by source domain label (code, spec, design, research, external)
+  → entity_classes filters by the graph type system classification (code, domain, actor, analysis)
+  → graph_view restricts which edges the graph search dimension traverses during BFS;
+    orthogonal views (ADR-0018) isolate causal, temporal, entity, or structural edge subsets
+  → hierarchical mode first identifies relevant sources, then retrieves chunks only from those
+    sources — useful for broad exploratory queries
+  → Post-retrieval quality filter removes bibliography, boilerplate, metadata-only, and
+    title-only chunks from results
 
 POST /api/v1/search/feedback
-  Body: { trace_id, result_id, relevant: bool, comment? }
-  → Records relevance feedback for a search result
+  Body: { query, result_id, relevance: Float, comment? }
+  → Records relevance feedback for a search result (relevance is 0.0–1.0)
   → Used to build eval datasets and tune retrieval quality
+```
+
+### Ask (LLM Synthesis)
+
+```
+POST /api/v1/ask
+  Body: {
+    question: String,              // natural language question
+    max_context: Int?,             // max search results to use as context (default 15)
+    strategy: String?,             // search strategy: auto, balanced, precise, etc.
+    model: String?,                // LLM model override: haiku, sonnet, opus, gemini, copilot
+  }
+  → Searches the knowledge graph across all dimensions, enriches context with
+    provenance and confidence metadata, and sends to an LLM for grounded synthesis
+  → Requires a chat backend to be configured (COVALENCE_CHAT_CLI_COMMAND or HTTP backend)
+  → Returns: {
+      answer: String,              // synthesized answer grounded in graph evidence
+      citations: [{
+        source: String,            // source name or URI
+        snippet: String,           // relevant excerpt from the source
+        result_type: String,       // chunk, statement, section, node, etc.
+        confidence: Float,         // epistemic confidence score
+      }],
+      context_used: Int,           // number of search results used as context
+    }
 ```
 
 ### Nodes
@@ -206,6 +253,13 @@ GET /api/v1/admin/metrics
 
 POST /api/v1/admin/graph/reload
   → Force full reload of graph sidecar from PG
+  → Returns: { node_count, edge_count, semantic_edge_count, synthetic_edge_count, density, component_count }
+
+GET /api/v1/admin/graph/invalidated-stats
+  Query: { type_limit?, node_limit? }
+  → Statistics about invalidated (bi-temporally deleted) edges
+  → Surfaces controversy indicators: nodes with high invalidated-edge counts
+  → Returns: { total_invalidated, total_valid, top_types: [...], top_nodes: [...] }
 
 POST /api/v1/admin/publish/{source_id}
   Query: { clearance_level: 1 | 2 }
@@ -219,10 +273,49 @@ POST /api/v1/admin/gc
   → Provenance-based garbage collection: remove nodes with zero active extractions
 
 POST /api/v1/admin/ontology/cluster
-  → Run ontology clustering (greedy agglomerative by cosine similarity)
+  Body: { level?: "entity" | "entity_type" | "rel_type", min_cluster_size?: Int, dry_run?: bool }
+  → Run ontology clustering (HDBSCAN density-based)
+  → Default dry_run=true: report clusters without writing
+  → Returns: { applied, cluster_count, clusters: [...], noise_labels: [...] }
 
 POST /api/v1/admin/config-audit
   → Config drift detection: sidecar health checks + configuration warnings
+  → Returns: { current_config, sidecars: [{ name, configured, reachable, fallback? }], warnings: [...] }
+
+POST /api/v1/admin/tier5/resolve
+  Body: { min_cluster_size?: Int }
+  → Trigger Tier 5 HDBSCAN batch entity resolution
+  → Returns: { entities_processed, clusters_formed, clustered_resolved, noise_promoted, skipped_no_embedding }
+
+POST /api/v1/admin/nodes/cleanup
+  Body: { dry_run?: bool }
+  → Retroactively clean noise entities from the graph
+  → Scans all nodes through the noise entity filter; default dry_run=true (report only)
+  → Returns: { nodes_identified, nodes_deleted, edges_removed, aliases_removed, dry_run, entities: [...] }
+
+POST /api/v1/admin/nodes/backfill-embeddings
+  → Backfill embeddings for nodes that are missing them
+  → Returns: { total_missing, embedded, failed }
+
+POST /api/v1/admin/nodes/summarize-code
+  → Generate LLM semantic summaries for code nodes without existing summaries
+  → Returns: { nodes_found, summarized, failed }
+
+POST /api/v1/admin/opinions/seed
+  → Seed epistemic opinions on all nodes and edges from extraction evidence
+  → Returns: { nodes_seeded, nodes_vacuous, edges_seeded, edges_vacuous }
+
+POST /api/v1/admin/edges/bridge
+  Body: { min_similarity?: Float, max_edges_per_node?: Int }
+  → Create cross-domain bridge edges between code entities and concept nodes
+  → min_similarity: cosine similarity threshold (default 0.6)
+  → max_edges_per_node: cap on bridge edges per code node (default 3)
+  → Returns: { code_nodes_checked, edges_created, skipped_existing }
+
+POST /api/v1/admin/raptor
+  → Trigger RAPTOR recursive summarization across all sources
+  → Builds hierarchical summary chunks enabling multi-resolution retrieval
+  → Returns: { sources_processed, sources_skipped, summaries_created, llm_calls, embed_calls, errors }
 
 GET /api/v1/admin/traces
   Query: { limit? }
@@ -230,6 +323,7 @@ GET /api/v1/admin/traces
 
 POST /api/v1/admin/traces/{id}/replay
   → Replay a traced query with different parameters for A/B comparison
+  → Returns: { trace_id, results: [SearchResult] }
 
 POST /api/v1/admin/cache/clear
   → Clear the semantic query cache
@@ -238,67 +332,171 @@ POST /api/v1/admin/cache/clear
 POST /api/v1/admin/edges/synthesize
   Body: { min_cooccurrences?: Int, max_degree?: Int }
   → Run co-occurrence edge synthesis: creates synthetic edges between nodes that
-    frequently appear in the same chunks
+    frequently appear in the same chunks (UNION of chunk-level + statement-level co-occurrences)
   → min_cooccurrences: minimum co-occurrence count to create an edge (default 1)
   → max_degree: only create edges for nodes with degree ≤ this value (default 2)
   → Returns: { edges_created, candidates_evaluated }
 
 GET /api/v1/admin/knowledge-gaps
-  Query: { min_mentions?, max_extractions? }
-  → Identify knowledge gaps: entities with high mention count but low extraction coverage
+  Query: { min_in_degree?, min_label_length?, exclude_types?, limit? }
+  → Identify knowledge gaps: entities with high in-degree but low out-degree
+  → exclude_types defaults to "person,organization,event,location,publication,other"
+    to filter bibliographic noise; pass empty string for all types
+  → Returns: { gap_count, gaps: [{ node_id, canonical_name, node_type, in_degree, out_degree, gap_score, referenced_by }] }
+
+GET /api/v1/admin/health-report
+  → Comprehensive meta-loop health report aggregating metrics, coverage, pipeline
+    progress, and queue status into a single response
+  → Designed to be the first call in every meta-loop iteration
+  → Returns: {
+      graph: { nodes, edges, components },
+      sources: { total, domains: { code: N, spec: N, ... } },
+      entities: { total, classes: { code: N, domain: N, ... } },
+      pipeline: { entity_summaries, total_code_entities, entity_summary_pct,
+                  file_summaries, total_code_files, file_summary_pct },
+      queue: [{ kind, status, count }]
+    }
+
+GET /api/v1/admin/data-health
+  → Data hygiene preview — read-only report of stale, orphaned, and duplicated data
+  → Surfaces: superseded sources, orphan nodes (no extractions), duplicate entities,
+    unembedded nodes, unsummarized code entities
+  → Returns: JSON report (schema varies by data condition)
+```
+
+### Queue Management
+
+```
+GET /api/v1/admin/queue/status
+  → Summary of the persistent retry queue grouped by job kind and status
+  → Returns: { rows: [{ kind, status, count }] }
+
+POST /api/v1/admin/queue/retry
+  Body: { kind?: String }
+  → Retry all failed/dead jobs, optionally filtered by kind
+  → Returns: { retried: Int }
+
+GET /api/v1/admin/queue/dead
+  Query: { limit? }
+  → List dead-letter jobs (permanently failed after max attempts)
+  → Returns: { jobs: [{ id, kind, attempt, max_attempts, last_error, dead_reason,
+                         payload, created_at, updated_at }] }
+
+POST /api/v1/admin/queue/dead/clear
+  Body: { kind?: String }
+  → Delete dead-letter jobs, optionally filtered by kind
+  → Returns: { deleted: Int }
+
+POST /api/v1/admin/queue/dead/resurrect
+  Body: { kind?: String }
+  → Resurrect dead jobs — reset to pending so they retry from scratch
+  → Returns: { resurrected: Int }
+
+POST /api/v1/admin/queue/summarize-all
+  → Enqueue semantic summary jobs for all unsummarized code entities
+  → Returns: { enqueued: Int }
+
+POST /api/v1/admin/queue/compose-all
+  → Enqueue source summary composition for all code sources with entity summaries
+  → Returns: { enqueued: Int }
 ```
 
 ### Analysis (Cross-Domain)
 
 ```
-POST /api/v1/analysis/verify-implementation
-  Body: { concept: String, max_depth?: Int }
-  → Traces from a research concept through spec topics and components to code entities
-  → Returns: { concept, spec_topics: [...], components: [...], code_entities: [...], gaps: [...] }
+POST /api/v1/analysis/bootstrap
+  → Bootstrap Component bridge nodes for the 9 known subsystems
+  → Idempotent: skips already-existing components
+  → Returns: { components_created, components_existing, components_embedded }
+
+POST /api/v1/analysis/link
+  Body: { min_similarity?: Float, max_edges_per_component?: Int }
+  → Create cross-domain bridge edges between Components and code/spec/research entities
+  → Edge types: PART_OF_COMPONENT, IMPLEMENTS_INTENT, THEORETICAL_BASIS
+  → Returns: { part_of_edges, intent_edges, basis_edges, skipped_existing }
+
+POST /api/v1/analysis/coverage
+  → Detect orphaned code entities and unimplemented spec concepts
+  → Returns: { orphan_code: [...], unimplemented_specs: [...], coverage_score }
 
 POST /api/v1/analysis/erosion
-  Body: { component_id?: UUID, threshold?: Float }
+  Body: { threshold?: Float }
   → Measures semantic drift between Component descriptions and their code entities
   → drift(component) = 1 - mean(cosine(component.embedding, code_node.embedding))
-  → Returns: { components: [{ id, name, drift_score, code_entities: [...] }] }
-
-POST /api/v1/analysis/whitespace
-  Body: { min_cluster_size?: Int }
-  → Finds dense research clusters with no corresponding Component or spec topic links
-  → Returns: { gaps: [{ research_cluster, concepts: [...], density, nearest_component }] }
+  → threshold: report components above this drift score (default 0.3)
+  → Returns: { eroded_components: [{ component_id, component_name, spec_intent, drift_score,
+                divergent_nodes: [{ node_id, name, summary?, distance }] }], total_components }
 
 POST /api/v1/analysis/blast-radius
-  Body: { entity_id: UUID, max_hops?: Int }
+  Body: { target: String, max_hops?: Int, include_invalidated?: bool }
   → Traverses structural and semantic edges to compute full impact of modifying an entity
-  → Returns: { entity, direct_deps: [...], transitive_deps: [...], affected_components: [...], affected_specs: [...] }
+  → target can be a node name or UUID
+  → Returns: { target_node_id, target_name, target_node_type, component?,
+               affected_by_hop: [{ hop_distance, nodes: [...] }], total_affected }
+
+POST /api/v1/analysis/whitespace
+  Body: { min_cluster_size?: Int, domain?: String }
+  → Finds research sources with no corresponding Component or spec topic bridges
+  → Returns: { gaps: [{ source_id, title, uri?, node_count, representative_nodes,
+               connected_components, connected_spec_topics, assessment }],
+               total_research_sources, unbridged_sources, whitespace_score }
+
+POST /api/v1/analysis/verify
+  Body: { research_query: String, component?: String }
+  → Verify research-to-execution alignment through the Component bridge layer
+  → Searches for research-domain and code-domain nodes matching the query
+  → Returns: { research_query, research_matches: [...], code_matches: [...],
+               alignment_score?, component? }
 
 POST /api/v1/analysis/critique
   Body: { proposal: String }
-  → Searches the graph for competing approaches, contradicting claims, and conflicting implementations
-  → Returns: { arguments_for: [...], arguments_against: [...], conflicts: [...], alternatives: [...] }
+  → Generate a dialectical critique of a design proposal using graph evidence
+  → Searches research, spec, and code domains for supporting/opposing evidence
+  → If a chat backend is available, synthesizes counter-arguments and recommendations
+  → Returns: { proposal, research_evidence: [...], spec_evidence: [...],
+               code_evidence: [...], synthesis?: { counter_arguments, supporting_arguments,
+               recommendation } }
 
-POST /api/v1/analysis/coverage
-  Body: { layer?: "spec" | "code" | "research" }
-  → Measures coverage between knowledge domains
-  → Returns: { coverage_score, covered_topics: [...], uncovered_topics: [...], orphan_code: [...] }
+POST /api/v1/analysis/alignment
+  Body: {
+    checks: [String]?,          // which checks to run: code_ahead, spec_ahead,
+                                //   design_contradicted, stale_design (empty = all)
+    min_similarity: Float?,     // embedding similarity threshold for matching (default 0.4)
+    limit: Int?,                // max items per check (default 20)
+  }
+  → Cross-domain alignment report comparing entities across spec, design, code,
+    and research domains to surface misalignments
+  → Returns: {
+      code_ahead: [...],            // code entities with no matching spec concept
+      spec_ahead: [...],            // spec concepts with no implementing code
+      design_contradicted: [...],   // design decisions potentially contradicted by research
+      stale_design: [...],          // design docs diverging from code reality
+    }
+  → Each item: { check, name, domain, node_type, closest_match_score?, closest_match_name?,
+                  closest_match_domain?, reason }
 ```
 
-### Components
+### Components (planned)
+
+Component CRUD endpoints are planned but not yet implemented as dedicated routes.
+Component creation is currently handled via `POST /api/v1/analysis/bootstrap` (which
+creates the 9 known subsystem Components) and Component linking via
+`POST /api/v1/analysis/link` (which creates bridge edges automatically).
 
 ```
-GET /api/v1/components
+GET /api/v1/components                   (planned)
   Query: { limit?, offset? }
   → Paginated list of Component bridge nodes
 
-GET /api/v1/components/{id}
+GET /api/v1/components/{id}              (planned)
   → Component with linked spec topics, code entities, and research concepts
 
-POST /api/v1/components
+POST /api/v1/components                  (planned)
   Body: { name, description, source_id?, metadata? }
   → Create a Component bridge node
   → Returns: { id }
 
-POST /api/v1/components/{id}/link
+POST /api/v1/components/{id}/link        (planned)
   Body: { entity_id: UUID, edge_type: "IMPLEMENTS_INTENT" | "PART_OF_COMPONENT" | "THEORETICAL_BASIS" }
   → Link a code entity, spec topic, or research concept to this component
 ```
@@ -350,7 +548,9 @@ Traces enable:
 
 ## MCP Tools
 
-For Claude/agent integration via MCP protocol:
+For Claude/agent integration via MCP protocol. Available via `POST /api/v1/mcp/tools/call`.
+
+### Implemented Tools
 
 ```
 search(query, strategy?, limit?)
@@ -359,17 +559,17 @@ search(query, strategy?, limit?)
 get_node(id)
   → Node details with neighborhood summary
 
-get_provenance(node_id | edge_id)
-  → Provenance chain for a fact
+get_provenance(node_id)
+  → Provenance chain for a node (extraction, chunk, source counts)
 
-ingest_source(content, source_type, metadata)
-  → Submit a source for ingestion
+ingest_source(content, source_type, mime?)
+  → Submit a source for ingestion (raw text, not base64)
 
-traverse(start_node_id, hops?, edge_types?)
+traverse(start_node_id, hops?)
   → Graph neighborhood exploration
 
-resolve_entity(name, description?)
-  → Find or create an entity
+resolve_entity(name)
+  → Find an existing entity by name, or null if not found
 
 list_communities()
   → Community overview with top nodes per community
@@ -377,32 +577,30 @@ list_communities()
 get_contradictions(node_id?)
   → Active contradictions in the knowledge base
 
-memory_store(content, importance?, tags?, context?)
-  → Remember something for later recall
+memory_store(content, topic?)
+  → Store a memory (creates an observation source)
 
-memory_recall(query, tags?, limit?)
-  → Recall relevant memories
+memory_recall(query, limit?, topic?, min_confidence?)
+  → Recall relevant memories using semantic search
 
-memory_forget(memory_id, reason?)
-  → Soft-forget a memory
+memory_forget(id)
+  → Delete a memory by its source ID
+```
 
-verify_implementation(concept)
-  → Trace research concept through spec to code
+### Analysis Tools (REST only, not yet wired as MCP dispatch targets)
 
-detect_erosion(component_id?, threshold?)
-  → Measure semantic drift between spec and code
+The following tools are available as REST endpoints under `/api/v1/analysis/` but
+are not yet exposed through the MCP tool dispatch. They can be accessed directly
+via their HTTP endpoints.
 
-find_whitespace()
-  → Find research areas with no implementation
-
-blast_radius(entity_id, max_hops?)
-  → Compute impact of modifying an entity
-
-critique_proposal(proposal)
-  → Find counterarguments from the knowledge graph
-
-coverage_analysis(layer?)
-  → Measure cross-domain coverage
+```
+verify_implementation          → POST /api/v1/analysis/verify
+detect_erosion                 → POST /api/v1/analysis/erosion
+find_whitespace                → POST /api/v1/analysis/whitespace
+blast_radius                   → POST /api/v1/analysis/blast-radius
+critique_proposal              → POST /api/v1/analysis/critique
+coverage_analysis              → POST /api/v1/analysis/coverage
+alignment_report               → POST /api/v1/analysis/alignment
 ```
 
 ## Authentication / Authorization

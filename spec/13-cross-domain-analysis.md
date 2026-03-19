@@ -1,6 +1,6 @@
 # 13 — Cross-Domain Analysis
 
-**Status:** Proposed
+**Status:** Implemented (deployed)
 
 When the system ingests its own spec, its own code, and its research foundations, three semantic domains exist in the same graph. Cross-domain analysis traverses the bridges between them to surface insights that no single domain can provide alone.
 
@@ -179,12 +179,15 @@ Traditional impact analysis follows import chains. Graph-based blast radius foll
 4. Traverse downward from affected Components: find all other code entities in the blast radius
 5. Score impact by hop distance and edge confidence
 
+**Invalidated edges:** By default, blast radius only traverses edges with `invalid_at IS NULL`. When `include_invalidated` is true, nodes reachable through invalidated edges are also returned (at hop distance 1) so the blast radius reflects historically-connected nodes that may still be affected by changes.
+
 **Output:**
 ```
 POST /api/v1/analysis/blast-radius
 {
   "target": "run_statement_pipeline",  // function name or node ID
-  "max_hops": 3
+  "max_hops": 3,
+  "include_invalidated": false  // optional, default false
 }
 ```
 
@@ -329,32 +332,147 @@ Response:
 }
 ```
 
-## Implementation Approach
+## Capability 7: Cross-Domain Alignment Report
 
-### Phase 1: Data Model + AST Parsing
-- Add Component table + code node types + bridge edge types to DB
-- Integrate Tree-sitter for Rust and Go
-- Build AST chunking pipeline
+**Question:** "Where are spec, design, code, and research out of sync?"
 
-### Phase 2: Semantic Wrapper + Statement Integration
+The alignment report runs four targeted checks across the domain boundaries, surfacing misalignments that require human review. Unlike erosion detection (which measures drift within a component), alignment analysis compares entities *across* domains using embedding distance and graph structure.
+
+**Checks:**
+
+1. **`code_ahead`** — Code entities (entity_class = `code`) with no semantically close match in the spec or design domain. Uses embedding cosine distance against all `primary_domain IN ('spec', 'design')` nodes. Filters out test nodes and low-mention entities.
+
+2. **`spec_ahead`** — Spec/design concepts (`primary_domain IN ('spec', 'design')`, entity_class = `domain`) with no inbound `IMPLEMENTS_INTENT` edge (filtering `invalid_at IS NULL`). These are specified but unimplemented features.
+
+3. **`design_contradicted`** — Design concepts semantically close to research concepts (same topic, potentially different conclusion). Flags pairs where embedding distance is below the threshold — these may describe conflicting approaches and need review.
+
+4. **`stale_design`** — Design documents where linked code entities have a more recent `last_seen` timestamp than the design source's `ingested_at`. The code has evolved but the design doc hasn't been updated.
+
+**Output:**
+```
+POST /api/v1/analysis/alignment
+{
+  "checks": [],             // empty = run all four checks
+  "min_similarity": 0.4,    // minimum embedding similarity for matching
+  "limit": 20               // max items per check
+}
+```
+
+Response:
+```json
+{
+  "code_ahead": [
+    {
+      "check": "code_ahead",
+      "name": "run_async_pipeline",
+      "domain": "code",
+      "node_type": "code_function",
+      "closest_match_score": 0.32,
+      "closest_match_name": "Ingestion Pipeline",
+      "closest_match_domain": "spec/design",
+      "reason": "Code entity with no close spec match (nearest: Ingestion Pipeline, distance: 0.680)"
+    }
+  ],
+  "spec_ahead": [
+    {
+      "check": "spec_ahead",
+      "name": "Federation Egress Filter",
+      "domain": "spec",
+      "node_type": "concept",
+      "reason": "Spec concept mentioned 5 times with no IMPLEMENTS_INTENT edge"
+    }
+  ],
+  "design_contradicted": [...],
+  "stale_design": [
+    {
+      "check": "stale_design",
+      "name": "ADR-0015: Statement-First Extraction",
+      "domain": "design",
+      "node_type": "source",
+      "reason": "Design doc is 42.3 days behind linked code. Code entities: run_statement_pipeline, extract_statements..."
+    }
+  ]
+}
+```
+
+## Capability 8: Data Health Report
+
+**Question:** "What data quality issues exist in the knowledge graph?"
+
+A read-only observability endpoint on the admin API that reports structural data quality issues without modifying anything. Useful for monitoring graph hygiene and prioritizing cleanup.
+
+**Metrics reported:**
+
+| Metric | Description |
+|--------|-------------|
+| `superseded_sources` | Sources replaced by newer versions (superseded_by IS NOT NULL) |
+| `superseded_chunks` | Chunks belonging to superseded sources |
+| `orphan_nodes` | Nodes with no extraction provenance linking them to any source |
+| `orphan_nodes_with_edges` | Subset of orphan nodes that still have edges (load-bearing despite missing provenance) |
+| `duplicate_sources` | Sources sharing the same title and domain |
+| `unembedded_nodes` | Nodes with NULL embedding (invisible to vector search) |
+| `unsummarized_code_entities` | Code entities missing semantic summaries |
+| `unsummarized_sources` | Sources missing summaries |
+
+**Output:**
+```
+GET /api/v1/admin/data-health
+```
+
+Response:
+```json
+{
+  "superseded_sources": 3,
+  "superseded_chunks": 47,
+  "orphan_nodes": 12,
+  "orphan_nodes_with_edges": 4,
+  "duplicate_sources": 2,
+  "unembedded_nodes": 18,
+  "unsummarized_code_entities": 31,
+  "unsummarized_sources": 5
+}
+```
+
+## Edge Validity Filtering
+
+All analysis queries filter on `invalid_at IS NULL` by default, excluding edges that have been epistemically invalidated. This ensures analysis results reflect the current trusted state of the graph rather than historical connections.
+
+The `blast_radius` endpoint is the one exception: it accepts an `include_invalidated` flag (default `false`) to optionally include historically-connected nodes when assessing change impact.
+
+## Implementation Status
+
+All five implementation phases are complete and deployed.
+
+### Phase 1: Data Model + AST Parsing — Complete
+- Component nodes, code node types, and bridge edge types in DB
+- Tree-sitter integration for Rust and Go
+- AST chunking pipeline
+
+### Phase 2: Semantic Wrapper + Statement Integration — Complete
 - LLM semantic summary generation for code chunks
-- Feed summaries through statement pipeline
-- Embed summaries and store on code Nodes
+- Bottom-up file summary composition
+- Embedded summaries stored on code nodes
 
-### Phase 3: Component Linking
-- Manual Component creation (bootstrap with known components)
-- Auto-detection of IMPLEMENTS_INTENT via semantic similarity
-- Module-path-based PART_OF_COMPONENT assignment
+### Phase 3: Component Linking — Complete
+- 9 Component nodes bootstrapped via `POST /analysis/bootstrap`
+- MODULE_PATH_MAPPINGS (64 patterns) for `PART_OF_COMPONENT` assignment
+- Embedding similarity for `IMPLEMENTS_INTENT` detection
+- `THEORETICAL_BASIS` edges linking components to research
 
-### Phase 4: Analysis Endpoints
-- Coverage analysis (orphan detection) — simplest, just graph queries
-- Erosion detection — cosine distance computation
-- Whitespace roadmap — research cluster gap detection
-- Blast radius — graph traversal + impact scoring
-- Research-to-execution — cross-domain traversal + comparison
-- Dialectical critique — adversarial synthesis
+### Phase 4: Analysis Endpoints — Complete
+All 9 endpoints deployed under `/api/v1/analysis/` and `/api/v1/admin/`:
+- `POST /analysis/bootstrap` — create/update Component nodes
+- `POST /analysis/link` — bulk-create bridge edges
+- `POST /analysis/coverage` — orphan code + unimplemented specs
+- `POST /analysis/erosion` — component drift detection
+- `POST /analysis/blast-radius` — semantic impact simulation
+- `POST /analysis/whitespace` — research gap detection
+- `POST /analysis/verify` — research-to-execution comparison
+- `POST /analysis/alignment` — cross-domain alignment report
+- `POST /analysis/critique` — dialectical design partner
+- `GET /admin/data-health` — structural data quality report
 
-### Phase 5: Continuous Monitoring
-- On code re-ingestion: recompute drift metrics, update SEMANTIC_DRIFT edges
-- On research ingestion: recompute whitespace gaps
-- Dashboard integration: visualize coverage, drift, gaps
+### Phase 5: Continuous Monitoring — Partial
+- On code re-ingestion: semantic summaries regenerated, bridge edges updated
+- Incremental ingestion on deploy detects changed files
+- Dashboard integration: planned (not yet built)

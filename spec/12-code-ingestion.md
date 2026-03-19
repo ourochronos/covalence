@@ -1,6 +1,6 @@
 # 12 — Code Ingestion
 
-**Status:** Proposed
+**Status:** Implemented
 
 Code sources require a fundamentally different ingestion pipeline than prose. Splitting a function at a token boundary destroys its meaning. Embedding raw syntax produces vectors that live in a different semantic space than natural language. This spec defines the AST-aware code ingestion pipeline that produces code entities which exist in the same vector space as prose concepts.
 
@@ -21,15 +21,26 @@ Source (code file)
   │         │
   │         ├──→ Chunk by AST boundary → code chunks (functions, structs, traits, impls)
   │         │         │
-  │         │         ├──→ LLM semantic summary → natural language description
-  │         │         │         │
-  │         │         │         └──→ Embed summary → vector (same space as prose)
+  │         │         ├──→ AST hash → structural change detection
   │         │         │
-  │         │         └──→ AST hash → structural change detection
+  │         │         └──→ Extract entities (including methods from impl blocks)
+  │         │                   │
+  │         │                   └──→ Extract structural edges (CALLS, USES_TYPE, IMPLEMENTS,
+  │         │                        CONTAINS, DEPENDS_ON) with noise filtering
   │         │
-  │         └──→ Extract structural edges → CALLS, USES_TYPE, IMPLEMENTS, CONTAINS, DEPENDS_ON
-  │
-  └──→ Statement pipeline (on semantic summaries) → statements, sections, source summary
+  │         └──→ Per-entity async jobs (SummarizeEntity):
+  │                   │
+  │                   ├──→ Definition-pattern chunk matching → find entity's source code
+  │                   │
+  │                   ├──→ LLM semantic summary → natural language description
+  │                   │         │
+  │                   │         └──→ Embed summary → vector (same space as prose)
+  │                   │
+  │                   └──→ Fan-in trigger (ComposeSourceSummary):
+  │                             │
+  │                             └──→ Bottom-up file summary from entity summaries
+  │                                       │
+  │                                       └──→ Re-embed file summary → Source.embedding
 ```
 
 ## Stage 1: AST Parsing
@@ -130,7 +141,32 @@ The `ast_hash` is computed from the AST structure, not the raw text. This means 
 
 Raw code syntax creates poor vector embeddings when compared against natural language. The semantic summary bridges this gap.
 
-For each AST chunk, pass the raw source to an LLM with this prompt pattern:
+Each entity extracted from the AST gets its own semantic summary. The pipeline locates the entity's source code via **definition-pattern chunk matching**, then sends it to an LLM for summarization.
+
+### Definition-Pattern Chunk Matching
+
+To find the right chunk for summarization, the pipeline constructs a definition pattern from the entity's type and name:
+
+| Entity Type | Pattern |
+|------------|---------|
+| function | `fn {name}` |
+| struct | `struct {name}` |
+| enum | `enum {name}` |
+| trait | `trait {name}` |
+| impl_block | `impl {name}` |
+| module | `mod {name}` |
+| constant | `const {name}` |
+| macro | `macro_rules! {name}` |
+
+The pattern is matched against chunks in two stages:
+1. **Extraction-linked search** — Find chunks linked to the entity via the `extractions` table whose content contains the definition pattern. This is the most precise match.
+2. **Source-wide fallback** — If no extraction-linked chunk matches, search all chunks from the same source for the definition pattern, preferring the shortest matching chunk (most focused).
+
+If neither produces a match, the entity's description (from AST extraction) is used as input. Chunks shorter than 50 characters are skipped as too short to produce useful summaries.
+
+### Summary Prompt
+
+For each entity, pass the matched source code to an LLM:
 
 ```
 System: You are a code documentation engine. Read the following {language} code
@@ -147,7 +183,7 @@ Context: This is part of module `{parent_module}` in file `{file_path}`.
 {doc_comment if present}
 ```
 
-**Model selection:** This is a low-cognitive-load task — a fast model (Gemini Flash, Claude Haiku, or a local 14B) is sufficient. The summary is typically 50-150 words.
+**Model selection:** This is a low-cognitive-load task — Claude Haiku is the default, with copilot and Gemini as fallbacks via the `ChainChatBackend`. The summary is typically 50-150 words.
 
 The summary is stored as `semantic_summary` in the Node's `properties` JSONB, and the Node's `embedding` is computed from the summary text. This places code entities in the same semantic vector space as prose concepts — enabling cross-domain search.
 
@@ -175,32 +211,52 @@ Structural code edges (CALLS, USES_TYPE, IMPLEMENTS, CONTAINS, DEPENDS_ON) are c
 Tree-sitter provides structural relationships for free. These become typed edges in the graph:
 
 ### Call Graph (CALLS)
-Identify function calls within function bodies:
-```scheme
-;; Rust
-(call_expression
-  function: (identifier) @callee)
-(call_expression
-  function: (field_expression
-    value: (_) @receiver
-    field: (field_identifier) @callee))
+The AST extractor recursively walks function bodies to find `call_expression` nodes and extracts call targets in three forms:
 
-;; Go
-(call_expression
-  function: (identifier) @callee)
-(call_expression
-  function: (selector_expression
-    operand: (_) @receiver
-    field: (field_identifier) @callee))
-```
+- **Direct calls**: `foo()` — extracted from `identifier` nodes
+- **Method calls**: `self.foo()` or `obj.foo()` — extracted from `field_expression` nodes (the `field` child)
+- **Scoped calls**: `Module::foo()` — extracted from `scoped_identifier` nodes (the `name` child)
+
+Call targets are deduplicated per function. A **noise filter** excludes common methods that produce uninformative edges:
+
+| Category | Excluded Names |
+|----------|---------------|
+| Conversion | `clone`, `to_string`, `into`, `from` |
+| Option/Result | `unwrap`, `expect`, `ok`, `err`, `map`, `and_then`, `unwrap_or`, `unwrap_or_default`, `unwrap_or_else`, `is_some`, `is_none`, `is_ok`, `is_err` |
+| Reference | `as_ref`, `as_str`, `as_deref` |
+| Collection | `len`, `is_empty`, `push`, `insert`, `get`, `contains`, `iter`, `collect`, `filter` |
+| IO/Logging | `format`, `println`, `eprintln`, `write`, `debug`, `info`, `warn`, `error` |
+| sqlx | `bind`, `execute`, `fetch_one`, `fetch_all`, `fetch_optional` |
+| Async | `await` |
 
 Resolution: Match `@callee` against known function names in the same crate/package. Cross-crate calls are tracked but not resolved to external nodes.
 
 ### Type References (USES_TYPE)
-Functions reference types through parameters, return types, and local variables. Extract these as edges linking `code_function` → `code_struct`/`code_type`.
+Functions reference types through parameters and return types. The extractor walks the `parameters` and `return_type` fields of function nodes to find `type_identifier` AST nodes.
 
-### Module Hierarchy (CONTAINS)
+A **primitive/common type filter** excludes types that would create noisy edges:
+
+| Category | Excluded Types |
+|----------|---------------|
+| Primitives | `bool`, `u8`–`u128`, `i8`–`i128`, `usize`, `isize`, `f32`, `f64`, `str` |
+| Standard types | `String`, `Vec`, `Option`, `Result`, `Box`, `Arc`, `Rc`, `HashMap`, `HashSet`, `BTreeMap`, `BTreeSet`, `Cow`, `Pin`, `Future` |
+| Marker traits | `Send`, `Sync`, `Clone`, `Debug`, `Display`, `Default` |
+| Iterator traits | `Iterator`, `IntoIterator` |
+| Serde | `Serialize`, `Deserialize` |
+| Self | `Self` |
+
+Only domain-specific types survive the filter, producing edges like `code_function` → `code_struct`/`code_type`.
+
+### Module Hierarchy and Method Containment (CONTAINS)
 Every function, struct, trait belongs to a module. The `CONTAINS` edge preserves this hierarchy: `code_module` → `code_function`.
+
+**Method extraction from impl blocks:** The AST extractor walks into impl block bodies and extracts each method as a **separate function entity** with its own `CONTAINS` edge back to the impl block. This applies to:
+
+- **Rust impl blocks** — `function_item` children of the impl body are extracted via `extract_rust_function_full`, producing full function entities with their own CALLS and USES_TYPE relationships, plus a `contains` edge from the impl block to the method.
+- **Python classes** — `function_definition` children of the class body are extracted as individual function entities with `contains` edges from the class.
+- **Go methods** — `method_declaration` nodes automatically get a `contains` edge from the receiver type (e.g., `Server` → `Server.Start`). Go method names are qualified with the receiver type: `ReceiverType.MethodName`.
+
+Each extracted method gets its own AST hash, enabling incremental re-summarization when only a single method changes. The method entity also gets its own semantic summary and embedding in Stage 2, placing it independently in the shared vector space alongside prose concepts.
 
 ### Trait Implementations (IMPLEMENTS)
 Impl blocks that name a trait create an `IMPLEMENTS` edge: `code_impl` → `code_trait`.
@@ -208,13 +264,54 @@ Impl blocks that name a trait create an `IMPLEMENTS` edge: `code_impl` → `code
 ### Dependencies (DEPENDS_ON)
 `use` statements create `DEPENDS_ON` edges between modules. These enable dependency-aware queries ("what depends on the embedder module?").
 
-## Stage 4: Statement Extraction from Code
+## Stage 4: Bottom-Up File Summary Composition
 
-After semantic summaries are generated, the standard statement pipeline (ADR-0015) runs on the summaries — not the raw code. This produces atomic statements about what the code does, which cluster into topics and compile into source summaries.
+Code file summaries are composed from individual entity summaries using a bottom-up pattern that mirrors the prose pipeline's statement → section → source structure. Instead of running the statement pipeline on raw code, the pipeline composes entity-level summaries into a file-level summary.
 
-For code sources, the statement extraction window is the semantic summary of a single function or struct. This is already a self-contained unit, so windowing is trivial.
+### Composition Flow
 
-The statements reference the code entity they describe (via the code Node's ID), providing full provenance: `statement → code_function → file:line → raw source`.
+```
+Entity summaries (function, struct, trait, ...)
+  │
+  └──→ SourceSummaryCompiler.compile_source_summary()
+         │
+         └──→ File-level summary (stored on Source.summary)
+               │
+               └──→ Re-embed file summary → Source.embedding
+```
+
+Each entity's semantic summary is treated as a "section summary entry" with a title of the form `{node_type}: {entity_name}`. The `SourceSummaryCompiler` trait (backed by `LlmSectionCompiler`) takes these section entries and compiles them into a coherent file-level summary — the same trait used by the prose pipeline for source summary compilation.
+
+The composed summary is stored on the `Source.summary` field, and the source embedding is recomputed from this summary text. This means a code file's embedding captures the semantics of all its entities, enabling file-level search across both code and prose sources.
+
+### Async Per-Entity Summarization
+
+Entity summarization runs as **individual retry queue jobs** rather than a synchronous batch pass. This enables:
+- **Independent retry** — If one entity's summary fails (LLM timeout, rate limit), only that entity retries, not the entire file.
+- **Parallelism** — Multiple entity summaries from different sources can run concurrently across queue workers.
+- **Fan-in coordination** — When all entity summaries for a source complete, the pipeline automatically advances to file summary composition.
+
+The job flow:
+
+```
+ExtractChunk (per chunk)
+  │
+  └──→ fan-in: try_advance_to_summarize()
+         │  (advisory lock prevents duplicate triggers)
+         │
+         ├──→ SummarizeEntity (per code entity without summary)
+         │     │
+         │     └──→ fan-in: try_advance_to_compose()
+         │            │
+         │            └──→ ComposeSourceSummary (per source)
+         │
+         └──→ [skips test entities and entities starting with test_]
+```
+
+- **`SummarizeEntity`** jobs carry `{node_id, source_id}` payloads. Each job locates the entity's source code via definition-pattern chunk matching, generates a summary via the chat backend, and stores it on the node. Processing metadata (model, provider, timing, prompt version) is recorded in `nodes.processing`.
+- **`ComposeSourceSummary`** jobs carry `{source_id}` payloads. They collect all entity summaries for the source, pass them through `SourceSummaryCompiler`, and update the source summary and embedding.
+- **Advisory locks** prevent race conditions: when multiple `SummarizeEntity` jobs for the same source complete concurrently, `pg_try_advisory_xact_lock` ensures only one worker enqueues the compose job.
+- A **watchdog** in the queue service periodically checks for stalled sources (all entities summarized but no compose job pending) and enqueues missing compose jobs.
 
 ## Stage 5: Component Linking
 
@@ -253,11 +350,11 @@ This makes re-ingestion proportional to the size of the change, not the size of 
 
 ## Supported Languages
 
-### Phase 1: Rust and Go
-These are the languages used in Covalence itself. Rust has complex AST patterns (impl blocks, traits, macros, async) that stress-test the pipeline. Go is simpler but covers the CLI codebase.
+### Phase 1: Rust, Go, and Python
+Rust, Go, and Python are fully supported. Rust has complex AST patterns (impl blocks, traits, macros, async) that stress-test the pipeline. Go covers the CLI codebase. Python covers external dependencies and tooling.
 
-### Phase 2: Python, TypeScript
-Natural extensions for broader applicability. Tree-sitter grammars are mature for both.
+### Phase 2: TypeScript
+Natural extension for broader applicability. Tree-sitter grammar is mature.
 
 ### Adding a Language
 To add a new language:
@@ -278,9 +375,11 @@ Code ingestion uses the same `Source`, `Node`, `Edge`, `Statement`, `Section` en
 | Embedding source | Chunk text (with contextual prefix) | Semantic summary (natural language) |
 | Structural edges | LLM-extracted entities and relationships | AST-extracted call graph, type refs, module hierarchy |
 | Entity resolution | Vector + fuzzy matching | Qualified name matching + vector fallback |
+| Source summary | Statement → section → source compilation | Entity summary → file summary (bottom-up composition) |
+| Summarization | Synchronous per-source | Async per-entity jobs with fan-in triggers |
 | Re-ingestion | Content hash comparison | AST hash comparison (structural change detection) |
 
-Both pipelines produce Nodes, Edges, Statements, Sections, and Source Summaries that participate equally in search and graph algorithms.
+Both pipelines produce Nodes, Edges, and Source Summaries that participate equally in search and graph algorithms. The code pipeline skips the statement pipeline entirely — entity summaries serve the same role as statements for building the source-level summary.
 
 ## Cross-Domain Search
 
