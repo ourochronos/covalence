@@ -159,6 +159,13 @@ pub struct Config {
 
     /// Persistent retry queue configuration.
     pub queue: RetryQueueConfig,
+
+    /// Model for the /ask synthesis endpoint.
+    ///
+    /// Synthesis benefits from deeper reasoning than extraction, so
+    /// this defaults to `"sonnet"` while extraction uses Haiku.
+    /// Env: `COVALENCE_ASK_MODEL`. Default: `"sonnet"`.
+    pub ask_model: String,
 }
 
 /// Configuration for the embedding subsystem.
@@ -487,6 +494,7 @@ impl std::fmt::Debug for Config {
             .field("resolve_trigram_threshold", &self.resolve_trigram_threshold)
             .field("resolve_vector_threshold", &self.resolve_vector_threshold)
             .field("queue", &self.queue)
+            .field("ask_model", &self.ask_model)
             .finish()
     }
 }
@@ -604,6 +612,7 @@ impl Config {
                 edge_concurrency: env_parse("COVALENCE_QUEUE_EDGE_CONCURRENCY", 1)?,
                 job_timeout_secs: env_parse("COVALENCE_QUEUE_JOB_TIMEOUT", 600)?,
             },
+            ask_model: env_or("COVALENCE_ASK_MODEL", "sonnet"),
         })
     }
 }
@@ -867,6 +876,7 @@ mod tests {
                 resolve_trigram_threshold: 0.4,
                 resolve_vector_threshold: 0.85,
                 queue: RetryQueueConfig::default(),
+                ask_model: "sonnet".into(),
             }
         );
         assert!(debug_out.contains("[REDACTED]"));

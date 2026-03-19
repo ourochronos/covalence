@@ -495,14 +495,24 @@ impl AppState {
                 .with_node_embed_dim(config.embedding.table_dims.node),
         );
 
-        // Build the ask service when a chat backend is available.
-        let ask_service = chat_backend.as_ref().map(|cb| {
-            Arc::new(AskService::new(
+        // Build the ask service with a dedicated chat backend.
+        //
+        // Synthesis benefits from deeper reasoning than extraction, so
+        // the ask endpoint uses a separate model (default: sonnet) instead
+        // of sharing the extraction backend (default: haiku).
+        let ask_service = {
+            let ask_model = &config.ask_model;
+            let ask_backend: Arc<dyn ChatBackend> = Arc::new(resolve_ask_backend(ask_model));
+            tracing::info!(
+                model = %ask_model,
+                "ask service using dedicated synthesis backend"
+            );
+            Some(Arc::new(AskService::new(
                 Arc::clone(&search_service),
-                Arc::clone(cb),
+                ask_backend,
                 Arc::clone(&repo),
-            ))
-        });
+            )))
+        };
 
         let admin_service = Arc::new(
             AdminService::new(
@@ -549,5 +559,19 @@ impl AppState {
             ask_service,
             queue_service,
         })
+    }
+}
+
+/// Resolve a model name to a [`CliChatBackend`] for the ask service.
+///
+/// Uses the same mapping as [`covalence_core::services::ask::resolve_model_backend`]
+/// so that the default and per-request overrides use the same logic.
+fn resolve_ask_backend(model: &str) -> CliChatBackend {
+    match model {
+        "haiku" | "sonnet" | "opus" => CliChatBackend::new("claude".to_string(), model.to_string()),
+        "gemini" => CliChatBackend::new("gemini".to_string(), "gemini-2.5-flash".to_string()),
+        "copilot" => CliChatBackend::new("copilot".to_string(), "claude-haiku-4.5".to_string()),
+        // Default: treat as a claude model name.
+        other => CliChatBackend::new("claude".to_string(), other.to_string()),
     }
 }
