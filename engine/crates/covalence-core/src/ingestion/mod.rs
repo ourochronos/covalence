@@ -70,8 +70,9 @@ pub use pii::{PiiDetector, PiiMatch, RegexPiiDetector};
 pub use projection::{reverse_project, reverse_project_batch, sort_ledger};
 pub use resolver::{EntityResolver, MatchType, MockResolver, ResolvedEntity};
 pub use section_compiler::{
-    LlmSectionCompiler, MockSectionCompiler, SectionCompilationInput, SectionCompilationOutput,
-    SectionCompiler, SectionSummaryEntry, SourceSummaryCompiler, SourceSummaryInput,
+    CompilationOutput, LlmSectionCompiler, MockSectionCompiler, SectionCompilationInput,
+    SectionCompilationOutput, SectionCompiler, SectionSummaryEntry, SourceSummaryCompiler,
+    SourceSummaryInput,
 };
 pub use sidecar_extractor::SidecarExtractor;
 pub use source_profile::{ProfileRegistry, SourceProfile};

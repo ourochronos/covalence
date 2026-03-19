@@ -813,8 +813,8 @@ impl SourceService {
                         })
                         .await
                     {
-                        Ok(summary) if !summary.trim().is_empty() => {
-                            let summary = summary.trim();
+                        Ok(compilation) if !compilation.text.trim().is_empty() => {
+                            let summary = compilation.text.trim();
                             SourceRepo::update_summary(&*self.repo, input.source_id, summary)
                                 .await?;
 

@@ -318,19 +318,20 @@ pub async fn run_statement_pipeline(
                         source_title: input.source_title.map(|s| s.to_string()),
                     };
 
-                    let source_summary = summary_compiler
+                    let compilation = summary_compiler
                         .compile_source_summary(&summary_input)
                         .await?;
 
-                    if !source_summary.is_empty() {
-                        SourceRepo::update_summary(&**repo, input.source_id, &source_summary)
+                    if !compilation.text.is_empty() {
+                        let source_summary = &compilation.text;
+                        SourceRepo::update_summary(&**repo, input.source_id, source_summary)
                             .await?;
 
                         // Embed the source summary and store on the
                         // source's embedding field.
                         if let Some(embedder) = embedder {
                             let embs = embedder
-                                .embed(std::slice::from_ref(&source_summary))
+                                .embed(std::slice::from_ref(source_summary))
                                 .await?;
                             if let Some(emb) = embs.into_iter().next() {
                                 let dim = table_dims.source;
@@ -345,6 +346,7 @@ pub async fn run_statement_pipeline(
                         source_summary_generated = true;
                         tracing::info!(
                             source_id = %input.source_id,
+                            provider = %compilation.provider,
                             summary_len = source_summary.len(),
                             "source summary generated and stored"
                         );
@@ -719,11 +721,16 @@ pub async fn reextract_statements(
                             section_summaries,
                             source_title: input.source_title.map(|s| s.to_string()),
                         };
-                        let summary = summary_compiler
+                        let compilation = summary_compiler
                             .compile_source_summary(&summary_input)
                             .await?;
-                        if !summary.is_empty() {
-                            SourceRepo::update_summary(&**repo, input.source_id, &summary).await?;
+                        if !compilation.text.is_empty() {
+                            SourceRepo::update_summary(
+                                &**repo,
+                                input.source_id,
+                                &compilation.text,
+                            )
+                            .await?;
                         }
                     }
                 }

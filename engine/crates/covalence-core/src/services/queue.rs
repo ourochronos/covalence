@@ -1205,7 +1205,7 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
         .unwrap_or("unknown");
 
     let start = Instant::now();
-    let summary = summary_compiler
+    let compilation = summary_compiler
         .compile_source_summary(&SourceSummaryInput {
             section_summaries: section_entries,
             source_title: Some(file_name.to_string()),
@@ -1213,6 +1213,8 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
         .await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    let provider = compilation.provider;
+    let summary = compilation.text;
     let summary = summary.trim();
     if summary.is_empty() {
         return Ok(());
@@ -1240,6 +1242,7 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
     .bind(source_id)
     .bind(serde_json::json!({
         "model": "haiku",
+        "provider": provider,
         "at": chrono::Utc::now().to_rfc3339(),
         "ms": duration_ms,
         "entities_composed": summaries.len(),

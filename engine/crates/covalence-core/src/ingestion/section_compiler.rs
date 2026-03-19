@@ -63,11 +63,23 @@ pub struct SectionSummaryEntry {
     pub summary: String,
 }
 
+/// Result of source summary compilation with provider attribution.
+#[derive(Debug, Clone)]
+pub struct CompilationOutput {
+    /// The compiled summary text.
+    pub text: String,
+    /// Which LLM provider handled the request.
+    pub provider: String,
+}
+
 /// Trait for compiling section summaries into a source-level summary.
 #[async_trait::async_trait]
 pub trait SourceSummaryCompiler: Send + Sync {
     /// Compile section summaries into a source-level summary.
-    async fn compile_source_summary(&self, input: &SourceSummaryInput) -> Result<String>;
+    async fn compile_source_summary(
+        &self,
+        input: &SourceSummaryInput,
+    ) -> Result<CompilationOutput>;
 }
 
 // ── LLM implementation ──────────────────────────────────────────
@@ -170,9 +182,15 @@ impl SectionCompiler for LlmSectionCompiler {
 
 #[async_trait::async_trait]
 impl SourceSummaryCompiler for LlmSectionCompiler {
-    async fn compile_source_summary(&self, input: &SourceSummaryInput) -> Result<String> {
+    async fn compile_source_summary(
+        &self,
+        input: &SourceSummaryInput,
+    ) -> Result<CompilationOutput> {
         if input.section_summaries.is_empty() {
-            return Ok(String::new());
+            return Ok(CompilationOutput {
+                text: String::new(),
+                provider: "none".to_string(),
+            });
         }
 
         let mut user_content = String::new();
@@ -190,7 +208,10 @@ impl SourceSummaryCompiler for LlmSectionCompiler {
             .chat(source_summary_system_prompt(), &user_content, false, 0.3)
             .await?;
 
-        Ok(chat_resp.text.trim().to_string())
+        Ok(CompilationOutput {
+            text: chat_resp.text.trim().to_string(),
+            provider: chat_resp.provider,
+        })
     }
 }
 
@@ -211,13 +232,19 @@ impl SectionCompiler for MockSectionCompiler {
 
 #[async_trait::async_trait]
 impl SourceSummaryCompiler for MockSectionCompiler {
-    async fn compile_source_summary(&self, input: &SourceSummaryInput) -> Result<String> {
-        Ok(input
-            .section_summaries
-            .iter()
-            .map(|s| s.summary.clone())
-            .collect::<Vec<_>>()
-            .join(" "))
+    async fn compile_source_summary(
+        &self,
+        input: &SourceSummaryInput,
+    ) -> Result<CompilationOutput> {
+        Ok(CompilationOutput {
+            text: input
+                .section_summaries
+                .iter()
+                .map(|s| s.summary.clone())
+                .collect::<Vec<_>>()
+                .join(" "),
+            provider: "mock".to_string(),
+        })
     }
 }
 
@@ -284,7 +311,8 @@ mod tests {
             source_title: Some("Test".to_string()),
         };
         let result = compiler.compile_source_summary(&input).await.unwrap();
-        assert_eq!(result, "Summary A. Summary B.");
+        assert_eq!(result.text, "Summary A. Summary B.");
+        assert_eq!(result.provider, "mock");
     }
 
     #[tokio::test]
