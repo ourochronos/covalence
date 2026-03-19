@@ -94,6 +94,19 @@ server.tool(
   }
 );
 
+// --- Data Health ---
+server.tool(
+  "covalence_data_health",
+  "Preview data hygiene: superseded sources, orphan nodes, duplicates, unembedded/unsummarized entities. Read-only — shows what could be cleaned without modifying anything.",
+  {},
+  async () => {
+    const report = await apiCall("/admin/data-health");
+    return {
+      content: [{ type: "text", text: JSON.stringify(report, null, 2) }],
+    };
+  }
+);
+
 // --- Alignment Report ---
 server.tool(
   "covalence_alignment",
