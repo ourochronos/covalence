@@ -16,7 +16,6 @@
 
 use std::sync::Arc;
 
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
@@ -246,36 +245,26 @@ impl PgResolver {
 
     /// Try fuzzy trigram match using `pg_trgm` similarity.
     ///
-    /// Queries nodes where `similarity(canonical_name, $1)` exceeds
-    /// the configured threshold, ordering by same `node_type` first,
-    /// then by descending similarity.
+    /// Uses `sp_search_nodes_fuzzy_typed` which orders by same
+    /// `node_type` first, then by descending similarity.
     async fn try_fuzzy_match(&self, entity: &ExtractedEntity) -> Result<Option<ResolvedEntity>> {
-        let row = sqlx::query(
-            "SELECT id, canonical_name, node_type,
-                    similarity(canonical_name, $1) AS sim
-             FROM nodes
-             WHERE similarity(canonical_name, $1) >= $2
-             ORDER BY
-                 (node_type = $3) DESC,
-                 sim DESC
-             LIMIT 1",
-        )
-        .bind(&entity.name)
-        .bind(self.threshold)
-        .bind(&entity.entity_type)
-        .fetch_optional(self.repo.pool())
-        .await
-        .map_err(|e| Error::EntityResolution(format!("fuzzy match query failed: {e}")))?;
+        let row: Option<(Uuid, String, String, f32)> =
+            sqlx::query_as("SELECT * FROM sp_search_nodes_fuzzy_typed($1, $2, $3, $4)")
+                .bind(&entity.name)
+                .bind(self.threshold)
+                .bind(&entity.entity_type)
+                .bind(1_i32)
+                .fetch_optional(self.repo.pool())
+                .await
+                .map_err(|e| Error::EntityResolution(format!("fuzzy match query failed: {e}")))?;
 
-        Ok(row.map(|r| {
-            let id: NodeId = r.get("id");
-            let canonical_name: String = r.get("canonical_name");
-            ResolvedEntity {
-                node_id: Some(id),
+        Ok(
+            row.map(|(id, canonical_name, _node_type, _sim)| ResolvedEntity {
+                node_id: Some(NodeId::from(id)),
                 canonical_name,
                 match_type: MatchType::Fuzzy,
-            }
-        }))
+            }),
+        )
     }
 
     /// Check whether a candidate match is contextually compatible
@@ -335,52 +324,41 @@ impl PgResolver {
     /// Resolve a relationship type label against existing edge types.
     ///
     /// Strategy:
-    /// 1. **Exact match** — if the given `rel_type` already exists
-    ///    among edges, return it unchanged.
-    /// 2. **Fuzzy match** — use `pg_trgm` similarity to find the
-    ///    closest existing `rel_type` above the configured threshold.
-    ///    When a match is found, return the canonical form (the most
-    ///    frequently used spelling).
-    /// 3. **No match** — return the input unchanged (it is a
-    ///    genuinely new relationship type).
+    /// 1. **Exact match** via `sp_resolve_rel_type_exact` — returns
+    ///    the canonical form if the rel_type already exists.
+    /// 2. **Fuzzy match** via `sp_resolve_rel_type_fuzzy` — finds the
+    ///    closest existing rel_type above the configured threshold,
+    ///    weighted by frequency.
+    /// 3. **No match** — return the input unchanged (genuinely new).
     pub async fn resolve_rel_type(&self, rel_type: &str) -> Result<String> {
         // Normalize for comparison: lowercase + trim.
         let normalized = rel_type.trim().to_lowercase();
 
-        // 1. Exact match — check if this rel_type already exists.
-        let exact = sqlx::query(
-            "SELECT rel_type FROM edges \
-             WHERE LOWER(rel_type) = LOWER($1) \
-             LIMIT 1",
-        )
-        .bind(&normalized)
-        .fetch_optional(self.repo.pool())
-        .await
-        .map_err(|e| Error::EntityResolution(format!("rel_type exact match query failed: {e}")))?;
+        // 1. Exact match via stored procedure (returns scalar TEXT or NULL).
+        let exact: (Option<String>,) = sqlx::query_as("SELECT sp_resolve_rel_type_exact($1)")
+            .bind(&normalized)
+            .fetch_one(self.repo.pool())
+            .await
+            .map_err(|e| {
+                Error::EntityResolution(format!("rel_type exact match query failed: {e}"))
+            })?;
 
-        if let Some(row) = exact {
-            return Ok(row.get::<String, _>("rel_type"));
+        if let (Some(resolved),) = exact {
+            return Ok(resolved);
         }
 
-        // 2. Fuzzy match — find the closest existing rel_type.
-        let fuzzy = sqlx::query(
-            "SELECT rel_type, \
-                    similarity(rel_type, $1) AS sim, \
-                    COUNT(*) AS freq \
-             FROM edges \
-             WHERE similarity(rel_type, $1) > $2 \
-             GROUP BY rel_type \
-             ORDER BY sim DESC, freq DESC \
-             LIMIT 1",
-        )
-        .bind(&normalized)
-        .bind(self.threshold)
-        .fetch_optional(self.repo.pool())
-        .await
-        .map_err(|e| Error::EntityResolution(format!("rel_type fuzzy match query failed: {e}")))?;
+        // 2. Fuzzy match via stored procedure (returns scalar TEXT or NULL).
+        let fuzzy: (Option<String>,) = sqlx::query_as("SELECT sp_resolve_rel_type_fuzzy($1, $2)")
+            .bind(&normalized)
+            .bind(self.threshold)
+            .fetch_one(self.repo.pool())
+            .await
+            .map_err(|e| {
+                Error::EntityResolution(format!("rel_type fuzzy match query failed: {e}"))
+            })?;
 
-        if let Some(row) = fuzzy {
-            return Ok(row.get::<String, _>("rel_type"));
+        if let (Some(resolved),) = fuzzy {
+            return Ok(resolved);
         }
 
         // 3. No match — use the input as-is.

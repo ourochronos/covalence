@@ -73,44 +73,35 @@ impl SearchDimension for GlobalDimension {
         let pgvec_articles = self.pgvec_for_table(embedding, "articles")?;
         let pgvec_sections = self.pgvec_for_table(embedding, "sections")?;
 
-        // Run community summaries + sections concurrently.
+        // Run community summaries + sections concurrently via stored
+        // procedures. SPs return (id, ..., distance); convert to score.
         let section_limit = (limit / 2).max(2);
         let summary_limit = limit - section_limit;
         let (summary_rows, section_rows) = tokio::join!(
-            sqlx::query_as::<_, (Uuid, f64)>(
-                "SELECT id, \
-                 GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
-                 FROM nodes \
-                 WHERE embedding IS NOT NULL \
-                   AND node_type = 'community_summary' \
-                 ORDER BY embedding <=> $1::halfvec \
-                 LIMIT $2",
+            sqlx::query_as::<_, (Uuid, String, Option<String>, f64)>(
+                "SELECT * FROM sp_search_community_summaries_vector($1::halfvec, $2)",
             )
             .bind(&pgvec_nodes)
-            .bind(summary_limit)
+            .bind(summary_limit as i32)
             .fetch_all(&self.pool),
-            sqlx::query_as::<_, (Uuid, f64)>(
-                "SELECT id, \
-                 GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
-                 FROM sections \
-                 WHERE embedding IS NOT NULL \
-                 ORDER BY embedding <=> $1::halfvec \
-                 LIMIT $2",
+            sqlx::query_as::<_, (Uuid, Uuid, Option<String>, Option<String>, f64)>(
+                "SELECT * FROM sp_search_sections_vector($1::halfvec, $2)",
             )
             .bind(&pgvec_sections)
-            .bind(section_limit)
+            .bind(section_limit as i32)
             .fetch_all(&self.pool),
         );
         let summary_rows = summary_rows?;
         let section_rows = section_rows?;
 
-        // Merge community summaries and sections.
+        // Merge community summaries and sections, converting
+        // distance to score: score = max(0.0, 1.0 - distance).
         let mut combined: Vec<(Uuid, f64, &str)> = Vec::new();
-        for (id, score) in &summary_rows {
-            combined.push((*id, *score, "node"));
+        for (id, _name, _desc, distance) in &summary_rows {
+            combined.push((*id, (1.0 - distance).max(0.0), "node"));
         }
-        for (id, score) in &section_rows {
-            combined.push((*id, *score, "section"));
+        for (id, _source_id, _title, _body, distance) in &section_rows {
+            combined.push((*id, (1.0 - distance).max(0.0), "section"));
         }
 
         // If we have results from summaries or sections, use them.
@@ -131,26 +122,22 @@ impl SearchDimension for GlobalDimension {
                 .collect());
         }
 
-        // Fall back to articles (compiled from communities).
-        let article_rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-             GREATEST(0.0, 1.0 - (embedding <=> $1::halfvec)) AS score \
-             FROM articles \
-             WHERE embedding IS NOT NULL \
-             ORDER BY embedding <=> $1::halfvec \
-             LIMIT $2",
+        // Fall back to articles (compiled from communities) via
+        // stored procedure. SP returns (id, title, body, distance).
+        let article_rows = sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, f64)>(
+            "SELECT * FROM sp_search_articles_vector($1::halfvec, $2)",
         )
         .bind(&pgvec_articles)
-        .bind(limit)
+        .bind(limit as i32)
         .fetch_all(&self.pool)
         .await?;
 
         Ok(article_rows
             .into_iter()
             .enumerate()
-            .map(|(i, (id, score))| SearchResult {
+            .map(|(i, (id, _title, _body, distance))| SearchResult {
                 id,
-                score,
+                score: (1.0 - distance).max(0.0),
                 rank: i + 1,
                 dimension: "global".to_string(),
                 snippet: None,

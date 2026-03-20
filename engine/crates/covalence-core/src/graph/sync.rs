@@ -57,17 +57,12 @@ pub async fn sync_loop(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
         // Wait for a NOTIFY ping or timeout
         let _ = tokio::time::timeout(Duration::from_secs(POLL_SECS), listener.recv()).await;
 
-        // Fetch new events.
-        let rows = sqlx::query(
-            "SELECT seq_id, entity_type, entity_id, operation, payload \
-             FROM outbox_events \
-             WHERE seq_id > $1 \
-             ORDER BY seq_id ASC \
-             LIMIT 1000",
-        )
-        .bind(last_seq)
-        .fetch_all(pool)
-        .await?;
+        // Fetch new events via stored procedure.
+        let rows = sqlx::query("SELECT * FROM sp_poll_outbox_events($1, $2)")
+            .bind(last_seq)
+            .bind(1000_i32)
+            .fetch_all(pool)
+            .await?;
 
         if !rows.is_empty() {
             for row in &rows {
@@ -112,37 +107,26 @@ pub async fn sync_loop(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
 ///
 /// Used on startup and for admin-triggered full reloads.
 pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
-    // Fetch all nodes
-    let node_rows = sqlx::query(
-        "SELECT id, COALESCE(canonical_type, node_type) AS node_type, \
-         entity_class, canonical_name, clearance_level FROM nodes",
-    )
-    .fetch_all(pool)
-    .await?;
+    // Fetch all nodes via stored procedure.
+    let node_rows = sqlx::query("SELECT * FROM sp_load_all_nodes()")
+        .fetch_all(pool)
+        .await?;
 
-    // Fetch all non-invalidated edges
-    let edge_rows = sqlx::query(
-        "SELECT id, source_node_id, target_node_id, \
-         COALESCE(canonical_rel_type, rel_type) AS rel_type, \
-         weight, confidence, clearance_level, is_synthetic, \
-         properties->>'causal_level' as causal_level, \
-         (valid_from IS NOT NULL) AS has_valid_from \
-         FROM edges \
-         WHERE invalid_at IS NULL",
-    )
-    .fetch_all(pool)
-    .await?;
+    // Fetch all non-invalidated edges via stored procedure.
+    let edge_rows = sqlx::query("SELECT * FROM sp_load_all_edges()")
+        .fetch_all(pool)
+        .await?;
 
     let mut g = graph.write().await;
     // Clear existing graph
     *g = GraphSidecar::new();
 
-    // Insert nodes
+    // Insert nodes (SP returns canonical_type = COALESCE(canonical_type, node_type))
     let mut node_errors = 0usize;
     for row in &node_rows {
         if let Err(e) = g.add_node(NodeMeta {
             id: row.get("id"),
-            node_type: row.get("node_type"),
+            node_type: row.get("canonical_type"),
             entity_class: row.get("entity_class"),
             canonical_name: row.get("canonical_name"),
             clearance_level: row.get("clearance_level"),
@@ -152,18 +136,25 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
         }
     }
 
-    // Insert edges (add_edge populates both the graph and edge_index)
+    // Insert edges (add_edge populates both the graph and edge_index).
+    // SP returns canonical_rel_type = COALESCE(canonical_rel_type, rel_type)
+    // and causal_level as INT (0 = none/association, 1 = intervention,
+    // 2 = counterfactual).
     let mut edge_errors = 0usize;
     for row in &edge_rows {
-        let causal_str: Option<String> = row.get("causal_level");
-        let causal_level = causal_str.as_deref().and_then(CausalLevel::from_str_opt);
+        let causal_int: i32 = row.get("causal_level");
+        let causal_level = match causal_int {
+            1 => Some(CausalLevel::Intervention),
+            2 => Some(CausalLevel::Counterfactual),
+            _ => None,
+        };
 
         if let Err(e) = g.add_edge(
             row.get("source_node_id"),
             row.get("target_node_id"),
             EdgeMeta {
                 id: row.get("id"),
-                rel_type: row.get("rel_type"),
+                rel_type: row.get("canonical_rel_type"),
                 weight: row.get("weight"),
                 confidence: row.get("confidence"),
                 causal_level,

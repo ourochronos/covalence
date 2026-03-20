@@ -123,22 +123,31 @@ impl NodeService {
             }
         }
 
-        // Append nodes reachable through invalidated edges.
+        // Append nodes reachable through invalidated edges via
+        // stored procedure. Only select the two node-ID columns we
+        // need to avoid a clippy type-complexity warning.
         if include_invalidated {
-            let inv_ids: Vec<(uuid::Uuid,)> = sqlx::query_as(
-                "SELECT DISTINCT CASE \
-                     WHEN e.source_node_id = $1 THEN e.target_node_id \
-                     ELSE e.source_node_id END \
-                 FROM edges e \
-                 WHERE e.invalid_at IS NOT NULL \
-                   AND (e.source_node_id = $1 OR e.target_node_id = $1) \
-                 LIMIT 200",
+            let inv_edges: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+                "SELECT source_node_id, target_node_id \
+                 FROM sp_get_invalidated_edges_for_node($1, $2)",
             )
             .bind(id.into_uuid())
+            .bind(200_i32)
             .fetch_all(self.repo.pool())
             .await?;
 
-            for (uuid,) in inv_ids {
+            let node_uuid = id.into_uuid();
+            let mut neighbor_ids = std::collections::HashSet::new();
+            for (source_node_id, target_node_id) in &inv_edges {
+                let neighbor = if *source_node_id == node_uuid {
+                    *target_node_id
+                } else {
+                    *source_node_id
+                };
+                neighbor_ids.insert(neighbor);
+            }
+
+            for uuid in neighbor_ids {
                 if seen.contains(&uuid) {
                     continue;
                 }
@@ -285,11 +294,8 @@ impl NodeService {
             target.merge_description(source_node.description.as_deref());
 
             // Soft-delete source node (clearance -1 marks it as merged)
-            let mut tombstone = source_node;
-            tombstone.clearance_level = crate::types::clearance::ClearanceLevel::LocalStrict;
-            // Use raw SQL to set clearance_level = -1 since
-            // ClearanceLevel enum doesn't have a tombstone variant
-            sqlx::query("UPDATE nodes SET clearance_level = -1 WHERE id = $1")
+            // via stored procedure.
+            sqlx::query("SELECT sp_tombstone_node($1)")
                 .bind(*source_id)
                 .execute(self.repo.pool())
                 .await?;
@@ -571,8 +577,8 @@ impl NodeService {
             }
         }
 
-        // Soft-delete original node
-        sqlx::query("UPDATE nodes SET clearance_level = -1 WHERE id = $1")
+        // Soft-delete original node via stored procedure.
+        sqlx::query("SELECT sp_tombstone_node($1)")
             .bind(id)
             .execute(self.repo.pool())
             .await?;
