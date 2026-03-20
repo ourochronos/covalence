@@ -98,12 +98,12 @@ CREATE OR REPLACE FUNCTION sp_lookup_query_cache(
     p_strategy TEXT,
     p_max_distance FLOAT8,
     p_ttl_secs INT
-) RETURNS TABLE(id UUID, results JSONB) AS $$
-    SELECT id, results FROM query_cache
-    WHERE strategy = p_strategy
-      AND embedding <=> p_embedding < p_max_distance
+) RETURNS TABLE(id UUID, response JSONB) AS $$
+    SELECT id, response FROM query_cache
+    WHERE strategy_used = p_strategy
+      AND query_embedding <=> p_embedding < p_max_distance
       AND created_at > NOW() - (p_ttl_secs || ' seconds')::interval
-    ORDER BY embedding <=> p_embedding
+    ORDER BY query_embedding <=> p_embedding
     LIMIT 1;
 $$ LANGUAGE sql STABLE;
 
@@ -126,7 +126,7 @@ CREATE OR REPLACE FUNCTION sp_store_query_cache(
     p_results JSONB,
     p_query_text TEXT
 ) RETURNS VOID AS $$
-    INSERT INTO query_cache (id, embedding, strategy, results, query_text)
+    INSERT INTO query_cache (id, query_embedding, strategy_used, response, query_text)
     VALUES (p_id, p_embedding, p_strategy, p_results, p_query_text);
 $$ LANGUAGE sql;
 
