@@ -118,53 +118,12 @@ impl AnalysisService {
         // Code entities with embeddings that have no close match
         // in the spec domain.
         #[allow(clippy::type_complexity)]
-        let rows: Vec<(String, String, String, Option<f64>, Option<String>)> = sqlx::query_as(
-            "SELECT n.canonical_name, n.node_type, \
-                    COALESCE(n.primary_domain, 'code'), \
-                    ( \
-                      SELECT MIN(n.embedding <=> s.embedding) \
-                      FROM nodes s \
-                      WHERE s.primary_domain IN ('spec', 'design') \
-                        AND s.entity_class = 'domain' \
-                        AND s.embedding IS NOT NULL \
-                    ) AS closest_dist, \
-                    ( \
-                      SELECT s.canonical_name \
-                      FROM nodes s \
-                      WHERE s.primary_domain IN ('spec', 'design') \
-                        AND s.entity_class = 'domain' \
-                        AND s.embedding IS NOT NULL \
-                      ORDER BY n.embedding <=> s.embedding ASC \
-                      LIMIT 1 \
-                    ) AS closest_name \
-             FROM nodes n \
-             WHERE n.entity_class = 'code' \
-               AND n.embedding IS NOT NULL \
-               AND n.node_type NOT IN ('code_test', 'module') \
-               AND n.canonical_name NOT LIKE 'test_%' \
-               AND n.mention_count >= 2 \
-               AND ( \
-                 ( \
-                   SELECT MIN(n.embedding <=> s.embedding) \
-                   FROM nodes s \
-                   WHERE s.primary_domain IN ('spec', 'design') \
-                     AND s.entity_class = 'domain' \
-                     AND s.embedding IS NOT NULL \
-                 ) > $1 OR ( \
-                   SELECT MIN(n.embedding <=> s.embedding) \
-                   FROM nodes s \
-                   WHERE s.primary_domain IN ('spec', 'design') \
-                     AND s.entity_class = 'domain' \
-                     AND s.embedding IS NOT NULL \
-                 ) IS NULL \
-               ) \
-             ORDER BY n.mention_count DESC \
-             LIMIT $2",
-        )
-        .bind(distance_threshold)
-        .bind(limit)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let rows: Vec<(String, String, String, Option<f64>, Option<String>)> =
+            sqlx::query_as("SELECT * FROM sp_find_code_ahead($1, $2)")
+                .bind(distance_threshold)
+                .bind(limit)
+                .fetch_all(self.repo.pool())
+                .await?;
 
         Ok(rows
             .into_iter()
@@ -192,27 +151,11 @@ impl AnalysisService {
     /// Uses primary_domain to identify true spec concepts (not
     /// cross-cutting entities that happen to be mentioned in specs).
     async fn check_spec_ahead(&self, limit: i64) -> Result<Vec<AlignmentItem>> {
-        let rows: Vec<(String, String, i32)> = sqlx::query_as(
-            "SELECT n.canonical_name, n.node_type, n.mention_count \
-             FROM nodes n \
-             WHERE n.entity_class = 'domain' \
-               AND n.primary_domain IN ('spec', 'design') \
-               AND n.node_type NOT IN ('technology', 'actor') \
-               AND n.mention_count >= 2 \
-               AND LENGTH(n.canonical_name) >= 3 \
-               AND n.canonical_name !~ '^[a-z]+$' \
-               AND NOT EXISTS ( \
-                 SELECT 1 FROM edges e \
-                 WHERE e.target_node_id = n.id \
-                   AND e.rel_type = 'IMPLEMENTS_INTENT' \
-                   AND e.invalid_at IS NULL \
-               ) \
-             ORDER BY n.mention_count DESC \
-             LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let rows: Vec<(String, String, i32)> =
+            sqlx::query_as("SELECT * FROM sp_check_spec_ahead($1)")
+                .bind(limit)
+                .fetch_all(self.repo.pool())
+                .await?;
 
         Ok(rows
             .into_iter()
@@ -244,26 +187,12 @@ impl AnalysisService {
         // Find design entities that have close research matches —
         // these are candidates for contradiction (same topic,
         // potentially different conclusion).
-        let rows: Vec<(String, String, f64, String)> = sqlx::query_as(
-            "SELECT d.canonical_name, d.node_type, \
-                    (d.embedding <=> r.embedding) AS dist, \
-                    r.canonical_name AS research_name \
-             FROM nodes d \
-             JOIN nodes r ON r.primary_domain = 'research' \
-               AND r.entity_class = 'domain' \
-               AND r.embedding IS NOT NULL \
-               AND (d.embedding <=> r.embedding) < $1 \
-             WHERE d.primary_domain = 'design' \
-               AND d.entity_class = 'domain' \
-               AND d.embedding IS NOT NULL \
-               AND d.mention_count >= 2 \
-             ORDER BY dist ASC \
-             LIMIT $2",
-        )
-        .bind(distance_threshold)
-        .bind(limit)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let rows: Vec<(String, String, f64, String)> =
+            sqlx::query_as("SELECT * FROM sp_find_design_contradictions($1, $2)")
+                .bind(distance_threshold)
+                .bind(limit)
+                .fetch_all(self.repo.pool())
+                .await?;
 
         Ok(rows
             .into_iter()
@@ -296,24 +225,11 @@ impl AnalysisService {
         // Design sources linked to code entities via extractions.
         // Flag when the newest linked code entity was updated after
         // the design source (code evolved, design didn't).
-        let rows: Vec<(String, String, f64, String)> = sqlx::query_as(
-            "SELECT s.title, 'source' AS ntype, \
-                    (EXTRACT(EPOCH FROM (MAX(n.last_seen) - s.ingested_at)) / 86400.0)::FLOAT8 AS days_behind, \
-                    STRING_AGG(DISTINCT n.canonical_name, ', ' ORDER BY n.canonical_name) AS code_entities \
-             FROM sources s \
-             JOIN chunks c ON c.source_id = s.id \
-             JOIN extractions ex ON ex.chunk_id = c.id AND ex.entity_type = 'node' \
-             JOIN nodes n ON n.id = ex.entity_id \
-               AND n.entity_class = 'code' \
-             WHERE s.domain = 'design' \
-             GROUP BY s.id, s.title, s.ingested_at \
-             HAVING MAX(n.last_seen) > s.ingested_at \
-             ORDER BY days_behind DESC \
-             LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let rows: Vec<(String, String, f64, String)> =
+            sqlx::query_as("SELECT * FROM sp_find_stale_design($1)")
+                .bind(limit)
+                .fetch_all(self.repo.pool())
+                .await?;
 
         Ok(rows
             .into_iter()

@@ -451,30 +451,19 @@ impl AdminService {
         type_limit: usize,
         node_limit: usize,
     ) -> Result<InvalidatedEdgeStats> {
-        // Total invalidated.
-        let total_invalidated: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE invalid_at IS NOT NULL")
-                .fetch_one(self.repo.pool())
-                .await?;
+        // Total invalidated + valid via SP.
+        let stats_row: (i64, i64) = sqlx::query_as("SELECT * FROM sp_invalidated_edge_stats()")
+            .fetch_one(self.repo.pool())
+            .await?;
+        let total_invalidated = stats_row.0;
+        let total_valid = stats_row.1;
 
-        // Total valid.
-        let total_valid: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE invalid_at IS NULL")
-                .fetch_one(self.repo.pool())
+        // Top invalidated edge types via SP.
+        let top_types: Vec<(String, i64)> =
+            sqlx::query_as("SELECT * FROM sp_top_invalidated_rel_types($1)")
+                .bind(type_limit as i32)
+                .fetch_all(self.repo.pool())
                 .await?;
-
-        // Top invalidated edge types.
-        let top_types: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT COALESCE(rel_type, 'unknown'), COUNT(*) \
-             FROM edges \
-             WHERE invalid_at IS NOT NULL \
-             GROUP BY 1 \
-             ORDER BY 2 DESC \
-             LIMIT $1",
-        )
-        .bind(type_limit as i64)
-        .fetch_all(self.repo.pool())
-        .await?;
 
         // Nodes with the highest invalidated-edge count.
         //
@@ -781,16 +770,10 @@ impl AdminService {
             return Ok(Vec::new());
         }
 
-        // Phase 2: batch-fetch source URIs for the gap nodes.
+        // Phase 2: batch-fetch source URIs for the gap nodes via SP.
         let node_ids: Vec<uuid::Uuid> = candidates.iter().map(|c| c.0).collect();
         let rows = sqlx::query_as::<_, (uuid::Uuid, Option<String>, Option<String>)>(
-            "SELECT DISTINCT e.entity_id, s.uri, s.title \
-             FROM extractions e \
-             JOIN chunks c ON c.id = e.chunk_id \
-             JOIN sources s ON s.id = c.source_id \
-             WHERE e.entity_type = 'node' \
-               AND e.entity_id = ANY($1) \
-               AND e.is_superseded = false",
+            "SELECT * FROM sp_get_node_provenance_sources($1)",
         )
         .bind(&node_ids)
         .fetch_all(self.repo.pool())
@@ -860,70 +843,14 @@ impl AdminService {
         min_cooccurrences: i64,
         max_degree: i64,
     ) -> Result<CooccurrenceResult> {
-        // Find co-occurring entity pairs from both chunk-level and
-        // statement-level extractions, where at least one entity is
-        // poorly connected. The DB does the heavy filtering.
-        let rows: Vec<(uuid::Uuid, uuid::Uuid, i64)> = sqlx::query_as(
-            "WITH chunk_pairs AS ( \
-                SELECT e1.entity_id AS n1, e2.entity_id AS n2, \
-                       count(DISTINCT e1.chunk_id) AS freq \
-                FROM extractions e1 \
-                JOIN extractions e2 \
-                  ON e1.chunk_id = e2.chunk_id \
-                 AND e1.entity_id < e2.entity_id \
-                WHERE e1.entity_type = 'node' \
-                  AND e2.entity_type = 'node' \
-                  AND e1.is_superseded = false \
-                  AND e2.is_superseded = false \
-                  AND e1.chunk_id IS NOT NULL \
-                GROUP BY e1.entity_id, e2.entity_id \
-            ), \
-            stmt_pairs AS ( \
-                SELECT e1.entity_id AS n1, e2.entity_id AS n2, \
-                       count(DISTINCT e1.statement_id) AS freq \
-                FROM extractions e1 \
-                JOIN extractions e2 \
-                  ON e1.statement_id = e2.statement_id \
-                 AND e1.entity_id < e2.entity_id \
-                WHERE e1.entity_type = 'node' \
-                  AND e2.entity_type = 'node' \
-                  AND e1.is_superseded = false \
-                  AND e2.is_superseded = false \
-                  AND e1.statement_id IS NOT NULL \
-                GROUP BY e1.entity_id, e2.entity_id \
-            ), \
-            pair_freq AS ( \
-                SELECT n1, n2, SUM(freq)::bigint AS freq \
-                FROM ( \
-                    SELECT n1, n2, freq FROM chunk_pairs \
-                    UNION ALL \
-                    SELECT n1, n2, freq FROM stmt_pairs \
-                ) combined \
-                GROUP BY n1, n2 \
-                HAVING SUM(freq) >= $1 \
-            ), \
-            node_degree AS ( \
-                SELECT n.id, \
-                       (SELECT count(*) FROM edges e \
-                        WHERE e.source_node_id = n.id \
-                           OR e.target_node_id = n.id) AS deg \
-                FROM nodes n \
-            ) \
-            SELECT pf.n1, pf.n2, pf.freq \
-            FROM pair_freq pf \
-            JOIN node_degree d1 ON d1.id = pf.n1 \
-            JOIN node_degree d2 ON d2.id = pf.n2 \
-            WHERE (d1.deg <= $2 OR d2.deg <= $2) \
-              AND NOT EXISTS ( \
-                  SELECT 1 FROM edges e \
-                  WHERE (e.source_node_id = pf.n1 AND e.target_node_id = pf.n2) \
-                     OR (e.source_node_id = pf.n2 AND e.target_node_id = pf.n1) \
-              )",
-        )
-        .bind(min_cooccurrences)
-        .bind(max_degree)
-        .fetch_all(self.repo.pool())
-        .await?;
+        // Find co-occurring entity pairs via SP. The SP filters by
+        // min co-occurrences, max degree, and excludes existing edges.
+        let rows: Vec<(uuid::Uuid, uuid::Uuid, i64)> =
+            sqlx::query_as("SELECT * FROM sp_find_cooccurrence_pairs($1, $2)")
+                .bind(min_cooccurrences as i32)
+                .bind(max_degree as i32)
+                .fetch_all(self.repo.pool())
+                .await?;
 
         let total_candidates = rows.len() as u64;
         let mut edges_created: u64 = 0;
@@ -1034,52 +961,20 @@ impl AdminService {
     /// Preview data health — shows what's stale, orphaned, or
     /// duplicated without modifying anything.
     pub async fn data_health_report(&self) -> Result<DataHealthReport> {
-        use sqlx::Row;
-
-        let row = sqlx::query(
-            "SELECT \
-               (SELECT COUNT(*) FROM sources WHERE superseded_by IS NOT NULL)::bigint \
-                 AS superseded_sources, \
-               (SELECT COUNT(*) FROM chunks c JOIN sources s ON s.id = c.source_id \
-                WHERE s.superseded_by IS NOT NULL)::bigint \
-                 AS superseded_chunks, \
-               (SELECT COUNT(*) FROM nodes n \
-                WHERE NOT EXISTS (SELECT 1 FROM extractions ex WHERE ex.entity_id = n.id))::bigint \
-                 AS orphan_nodes, \
-               (SELECT COUNT(*) FROM nodes n \
-                WHERE NOT EXISTS (SELECT 1 FROM extractions ex WHERE ex.entity_id = n.id) \
-                  AND EXISTS (SELECT 1 FROM edges e \
-                              WHERE e.source_node_id = n.id OR e.target_node_id = n.id))::bigint \
-                 AS orphan_nodes_with_edges, \
-               (SELECT COUNT(*) FROM ( \
-                  SELECT title, domain FROM sources \
-                  WHERE title IS NOT NULL \
-                  GROUP BY title, domain HAVING COUNT(*) > 1 \
-                ) dup)::bigint AS duplicate_sources, \
-               (SELECT COUNT(*) FROM nodes WHERE embedding IS NULL)::bigint \
-                 AS unembedded_nodes, \
-               (SELECT COUNT(*) FROM nodes \
-                WHERE entity_class = 'code' \
-                  AND (properties->>'semantic_summary' IS NULL \
-                       OR properties->>'semantic_summary' = ''))::bigint \
-                 AS unsummarized_code, \
-               (SELECT COUNT(*) FROM sources \
-                WHERE (summary IS NULL OR summary = '') \
-                  AND superseded_by IS NULL)::bigint \
-                 AS unsummarized_sources",
-        )
-        .fetch_one(self.repo.pool())
-        .await?;
+        let row: (i64, i64, i64, i64, i64, i64, i64, i64) =
+            sqlx::query_as("SELECT * FROM sp_data_health_report()")
+                .fetch_one(self.repo.pool())
+                .await?;
 
         Ok(DataHealthReport {
-            superseded_sources: row.get::<i64, _>("superseded_sources") as u64,
-            superseded_chunks: row.get::<i64, _>("superseded_chunks") as u64,
-            orphan_nodes: row.get::<i64, _>("orphan_nodes") as u64,
-            orphan_nodes_with_edges: row.get::<i64, _>("orphan_nodes_with_edges") as u64,
-            duplicate_sources: row.get::<i64, _>("duplicate_sources") as u64,
-            unembedded_nodes: row.get::<i64, _>("unembedded_nodes") as u64,
-            unsummarized_code_entities: row.get::<i64, _>("unsummarized_code") as u64,
-            unsummarized_sources: row.get::<i64, _>("unsummarized_sources") as u64,
+            superseded_sources: row.0 as u64,
+            superseded_chunks: row.1 as u64,
+            orphan_nodes: row.2 as u64,
+            orphan_nodes_with_edges: row.3 as u64,
+            duplicate_sources: row.4 as u64,
+            unembedded_nodes: row.5 as u64,
+            unsummarized_code_entities: row.6 as u64,
+            unsummarized_sources: row.7 as u64,
         })
     }
 
@@ -1291,13 +1186,12 @@ impl AdminService {
             .map(|c| c.embedding.table_dims.node)
             .unwrap_or(256);
 
-        // Fetch nodes missing embeddings.
-        let rows: Vec<(uuid::Uuid, String, Option<String>)> = sqlx::query_as(
-            "SELECT id, canonical_name, description \
-             FROM nodes WHERE embedding IS NULL",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
+        // Fetch nodes missing embeddings via SP.
+        let rows: Vec<(uuid::Uuid, String, Option<String>)> =
+            sqlx::query_as("SELECT * FROM sp_list_nodes_without_embeddings($1)")
+                .bind(i32::MAX)
+                .fetch_all(self.repo.pool())
+                .await?;
 
         if rows.is_empty() {
             return Ok(BackfillResult {

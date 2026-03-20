@@ -121,30 +121,10 @@ impl AnalysisService {
         // Orphan code: code-class nodes from code-domain sources with no
         // PART_OF_COMPONENT edge. Uses entity_class and domain fields
         // instead of hardcoded type lists and source_type checks.
-        let orphan_rows: Vec<(uuid::Uuid, String, String, String)> = sqlx::query_as(
-            "SELECT n.id, n.canonical_name, n.node_type, \
-                    COALESCE(n.properties->>'file_path', '') \
-             FROM nodes n \
-             WHERE n.entity_class = 'code' \
-               AND n.node_type != 'code_test' \
-               AND n.canonical_name NOT LIKE 'test_%' \
-               AND EXISTS ( \
-                 SELECT 1 FROM extractions ex \
-                 JOIN chunks c ON ex.chunk_id = c.id \
-                 JOIN sources s ON c.source_id = s.id \
-                 WHERE ex.entity_id = n.id \
-                   AND s.domain = 'code' \
-               ) \
-               AND NOT EXISTS ( \
-                 SELECT 1 FROM edges e \
-                 WHERE e.source_node_id = n.id \
-                   AND e.rel_type = 'PART_OF_COMPONENT' \
-               ) \
-             ORDER BY n.canonical_name \
-             LIMIT 200",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
+        let orphan_rows: Vec<(uuid::Uuid, String, String, String)> =
+            sqlx::query_as("SELECT * FROM sp_get_orphan_code_nodes()")
+                .fetch_all(self.repo.pool())
+                .await?;
 
         let orphan_code: Vec<CoverageItem> = orphan_rows
             .into_iter()
@@ -162,23 +142,10 @@ impl AnalysisService {
         // Uses primary_domain (from domain_entropy computation) to avoid
         // counting cross-cutting concepts that happen to be mentioned in
         // specs (e.g., "gpt-4o-mini", "MRL-E" are primarily research).
-        let unimpl_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-            "SELECT DISTINCT n.id, n.canonical_name, n.node_type \
-             FROM nodes n \
-             WHERE n.entity_class = 'domain' \
-               AND n.primary_domain IN ('spec', 'design') \
-               AND n.mention_count >= 2 \
-               AND LENGTH(n.canonical_name) >= 3 \
-               AND NOT EXISTS ( \
-                 SELECT 1 FROM edges e \
-                 WHERE e.target_node_id = n.id \
-                   AND e.rel_type = 'IMPLEMENTS_INTENT' \
-               ) \
-             ORDER BY n.canonical_name \
-             LIMIT 200",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
+        let unimpl_rows: Vec<(uuid::Uuid, String, String)> =
+            sqlx::query_as("SELECT * FROM sp_get_unimplemented_specs()")
+                .fetch_all(self.repo.pool())
+                .await?;
 
         let unimplemented_specs: Vec<CoverageItem> = unimpl_rows
             .into_iter()
@@ -193,32 +160,13 @@ impl AnalysisService {
 
         // Coverage score: (spec concepts with implementation / total spec
         // concepts).
-        let total_spec: i64 = sqlx::query_scalar(
-            "SELECT COUNT(DISTINCT n.id) \
-             FROM nodes n \
-             WHERE n.entity_class = 'domain' \
-               AND n.primary_domain IN ('spec', 'design') \
-               AND n.mention_count >= 2 \
-               AND LENGTH(n.canonical_name) >= 3",
-        )
-        .fetch_one(self.repo.pool())
-        .await?;
+        let total_spec: i64 = sqlx::query_scalar("SELECT sp_count_spec_concepts()")
+            .fetch_one(self.repo.pool())
+            .await?;
 
-        let implemented: i64 = sqlx::query_scalar(
-            "SELECT COUNT(DISTINCT n.id) \
-             FROM nodes n \
-             WHERE n.entity_class = 'domain' \
-               AND n.primary_domain IN ('spec', 'design') \
-               AND n.mention_count >= 2 \
-               AND LENGTH(n.canonical_name) >= 3 \
-               AND EXISTS ( \
-                 SELECT 1 FROM edges e \
-                 WHERE e.target_node_id = n.id \
-                   AND e.rel_type = 'IMPLEMENTS_INTENT' \
-               )",
-        )
-        .fetch_one(self.repo.pool())
-        .await?;
+        let implemented: i64 = sqlx::query_scalar("SELECT sp_count_implemented_specs()")
+            .fetch_one(self.repo.pool())
+            .await?;
 
         let coverage_score = if total_spec > 0 {
             implemented as f64 / total_spec as f64
@@ -254,13 +202,10 @@ impl AnalysisService {
     /// flagged.
     pub async fn detect_erosion(&self, threshold: f64) -> Result<ErosionResult> {
         // Fetch all component nodes with embeddings.
-        let components: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-            "SELECT id, canonical_name, COALESCE(description, '') \
-             FROM nodes \
-             WHERE node_type = 'component' AND embedding IS NOT NULL",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
+        let components: Vec<(uuid::Uuid, String, String)> =
+            sqlx::query_as("SELECT * FROM sp_list_component_nodes()")
+                .fetch_all(self.repo.pool())
+                .await?;
 
         let total_components = components.len() as u64;
         let mut eroded = Vec::new();
@@ -354,30 +299,13 @@ impl AnalysisService {
         domain_filter: Option<&str>,
     ) -> Result<WhitespaceResult> {
         // Find research sources using the domain field instead of URI heuristics.
-        let rows: Vec<(uuid::Uuid, String, Option<String>, i64, i64)> = sqlx::query_as(
-            "SELECT s.id, s.title, s.uri, \
-                    COUNT(DISTINCT n.id) AS node_count, \
-                    COUNT(DISTINCT CASE WHEN e.id IS NOT NULL THEN n.id END) AS bridged \
-             FROM sources s \
-             JOIN chunks c ON c.source_id = s.id \
-             JOIN extractions ex ON ex.chunk_id = c.id \
-             JOIN nodes n ON n.id = ex.entity_id \
-             LEFT JOIN edges e ON e.target_node_id = n.id \
-                               AND e.rel_type = 'THEORETICAL_BASIS' \
-             WHERE s.domain IN ('research', 'external') \
-               AND ($3::text IS NULL \
-                    OR LOWER(s.title) LIKE '%' || LOWER($3::text) || '%' \
-                    OR LOWER(COALESCE(s.uri, '')) LIKE '%' || LOWER($3::text) || '%') \
-             GROUP BY s.id, s.title, s.uri \
-             HAVING COUNT(DISTINCT n.id) >= $1 \
-             ORDER BY COUNT(DISTINCT n.id) DESC \
-             LIMIT $2",
-        )
-        .bind(min_cluster_size as i64)
-        .bind(Self::MAX_WHITESPACE_GAPS as i64)
-        .bind(domain_filter)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let rows: Vec<(uuid::Uuid, String, Option<String>, i64, i64)> =
+            sqlx::query_as("SELECT * FROM sp_get_research_source_bridges($1, $2, $3)")
+                .bind(min_cluster_size as i64)
+                .bind(Self::MAX_WHITESPACE_GAPS as i64)
+                .bind(domain_filter)
+                .fetch_all(self.repo.pool())
+                .await?;
 
         let mut gaps = Vec::new();
         let mut total_research = 0u64;

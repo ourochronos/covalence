@@ -575,8 +575,8 @@ impl SourceService {
     /// claimed. Runs chunk → embed → extract → resolve → summarize,
     /// then handles supersession cleanup and the statement pipeline.
     pub(crate) async fn process_accepted(&self, source_id: SourceId) -> Result<()> {
-        // Update status to processing.
-        sqlx::query("UPDATE sources SET status = 'processing' WHERE id = $1")
+        // Update status to processing via SP.
+        sqlx::query("SELECT sp_update_source_status($1, 'processing')")
             .bind(source_id)
             .execute(self.repo.pool())
             .await?;
@@ -663,45 +663,25 @@ impl SourceService {
                     self.mark_superseded(old_id, source_id, &update_class)
                         .await?;
 
-                    // Cancel pending queue jobs for the old source (#174).
-                    // Without this, ExtractChunk jobs fire after chunks
-                    // are deleted, causing "chunk not found" dead jobs.
-                    let jobs_cancelled: i64 = sqlx::query_scalar(
-                        "WITH cancelled AS ( \
-                           DELETE FROM retry_jobs \
-                           WHERE status IN ('pending', 'failed') \
-                             AND payload->>'source_id' = $1 \
-                           RETURNING id \
-                         ) SELECT COUNT(*)::bigint FROM cancelled",
-                    )
-                    .bind(old_id.to_string())
-                    .fetch_one(self.repo.pool())
-                    .await
-                    .unwrap_or(0);
-
-                    if jobs_cancelled > 0 {
-                        tracing::info!(
-                            old_source = %old_id,
-                            jobs_cancelled,
-                            "cancelled pending jobs for superseded source"
-                        );
-                    }
-
-                    let ext_deleted = ExtractionRepo::delete_by_source(&*self.repo, old_id).await?;
-                    let stmts_deleted =
-                        StatementRepo::delete_by_source(&*self.repo, old_id).await?;
-                    let sects_deleted = SectionRepo::delete_by_source(&*self.repo, old_id).await?;
-                    UnresolvedEntityRepo::delete_by_source(&*self.repo, old_id).await?;
-                    let aliases_cleared =
-                        NodeAliasRepo::clear_source_chunks(&*self.repo, old_id).await?;
-                    let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, old_id).await?;
-                    let ledger_deleted = LedgerRepo::delete_by_source(&*self.repo, old_id).await?;
-                    SourceRepo::clear_embedding(&*self.repo, old_id).await?;
+                    // Cascade cleanup via SP: cancels pending jobs,
+                    // deletes extractions, statements, sections,
+                    // unresolved entities, clears alias refs, deletes
+                    // chunks, ledger, and clears source embedding.
+                    let cascade: (i64, i64, i64, i64, i64, i64, i64) =
+                        sqlx::query_as("SELECT * FROM sp_delete_source_cascade($1)")
+                            .bind(old_id)
+                            .fetch_one(self.repo.pool())
+                            .await?;
                     tracing::info!(
                         old_source = %old_id,
-                        ext_deleted, stmts_deleted, sects_deleted,
-                        aliases_cleared, chunks_deleted, ledger_deleted,
-                        "cleaned up superseded source"
+                        ext_deleted = cascade.0,
+                        stmts_deleted = cascade.1,
+                        sects_deleted = cascade.2,
+                        aliases_cleared = cascade.3,
+                        chunks_deleted = cascade.4,
+                        ledger_deleted = cascade.5,
+                        jobs_cancelled = cascade.6,
+                        "cleaned up superseded source via SP"
                     );
                 }
             }
@@ -755,7 +735,7 @@ impl SourceService {
         // status = 'complete' when ComposeSourceSummary finishes.
         // If there are no chunks (empty source), mark complete now.
         if chunks.is_empty() {
-            sqlx::query("UPDATE sources SET status = 'complete' WHERE id = $1")
+            sqlx::query("SELECT sp_update_source_status($1, 'complete')")
                 .bind(source_id)
                 .execute(self.repo.pool())
                 .await?;

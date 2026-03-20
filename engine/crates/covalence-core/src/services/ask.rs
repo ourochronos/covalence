@@ -260,36 +260,20 @@ impl AskService {
             .collect();
 
         // Outgoing: node --rel_type--> target
-        let out_rows = sqlx::query(
-            "SELECT n2.canonical_name, e.rel_type
-             FROM edges e
-             JOIN nodes n2 ON n2.id = e.target_node_id
-             WHERE e.source_node_id = $1
-               AND e.rel_type = ANY($2)
-               AND e.invalid_at IS NULL
-             LIMIT $3",
-        )
-        .bind(node_id)
-        .bind(&outgoing_types)
-        .bind(MAX_EDGES_PER_DIRECTION as i64)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let out_rows = sqlx::query("SELECT * FROM sp_get_outgoing_edges($1, $2, $3)")
+            .bind(node_id)
+            .bind(&outgoing_types)
+            .bind(MAX_EDGES_PER_DIRECTION as i64)
+            .fetch_all(self.repo.pool())
+            .await?;
 
         // Incoming: source --rel_type--> node (displayed as rel_type_by)
-        let in_rows = sqlx::query(
-            "SELECT n1.canonical_name, e.rel_type
-             FROM edges e
-             JOIN nodes n1 ON n1.id = e.source_node_id
-             WHERE e.target_node_id = $1
-               AND e.rel_type = ANY($2)
-               AND e.invalid_at IS NULL
-             LIMIT $3",
-        )
-        .bind(node_id)
-        .bind(&incoming_types)
-        .bind(MAX_EDGES_PER_DIRECTION as i64)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let in_rows = sqlx::query("SELECT * FROM sp_get_incoming_edges($1, $2, $3)")
+            .bind(node_id)
+            .bind(&incoming_types)
+            .bind(MAX_EDGES_PER_DIRECTION as i64)
+            .fetch_all(self.repo.pool())
+            .await?;
 
         let mut edges = Vec::with_capacity(out_rows.len() + in_rows.len());
         for row in &out_rows {

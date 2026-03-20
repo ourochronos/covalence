@@ -208,7 +208,7 @@ impl AnalysisService {
 
         // Fetch all component nodes.
         let components: Vec<(uuid::Uuid, String)> =
-            sqlx::query_as("SELECT id, canonical_name FROM nodes WHERE entity_class = 'analysis'")
+            sqlx::query_as("SELECT id, canonical_name FROM sp_list_component_nodes()")
                 .fetch_all(self.repo.pool())
                 .await?;
 
@@ -244,15 +244,12 @@ impl AnalysisService {
             };
 
             // Check if edge already exists.
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM edges \
-                 WHERE source_node_id = $1 AND target_node_id = $2 \
-                   AND rel_type = 'PART_OF_COMPONENT')",
-            )
-            .bind(code_id)
-            .bind(comp_id)
-            .fetch_one(self.repo.pool())
-            .await?;
+            let exists: bool = sqlx::query_scalar("SELECT sp_check_edge_exists($1, $2, $3)")
+                .bind(code_id)
+                .bind(comp_id)
+                .bind("PART_OF_COMPONENT")
+                .fetch_one(self.repo.pool())
+                .await?;
 
             if exists {
                 skipped += 1;
@@ -288,13 +285,10 @@ impl AnalysisService {
         max_edges: i64,
     ) -> Result<(u64, u64, u64)> {
         // Fetch component nodes that have embeddings.
-        let components: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-            "SELECT id, canonical_name, COALESCE(description, '') \
-             FROM nodes \
-             WHERE entity_class = 'analysis' AND embedding IS NOT NULL",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
+        let components: Vec<(uuid::Uuid, String, String)> =
+            sqlx::query_as("SELECT * FROM sp_list_component_nodes()")
+                .fetch_all(self.repo.pool())
+                .await?;
 
         if components.is_empty() {
             tracing::warn!("no embedded component nodes found — run bootstrap first");
@@ -418,16 +412,12 @@ impl AnalysisService {
                 break;
             }
 
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM edges \
-                 WHERE source_node_id = $1 AND target_node_id = $2 \
-                   AND rel_type = $3)",
-            )
-            .bind(comp_id)
-            .bind(target_id)
-            .bind(rel_type)
-            .fetch_one(self.repo.pool())
-            .await?;
+            let exists: bool = sqlx::query_scalar("SELECT sp_check_edge_exists($1, $2, $3)")
+                .bind(comp_id)
+                .bind(target_id)
+                .bind(rel_type)
+                .fetch_one(self.repo.pool())
+                .await?;
 
             if exists {
                 skipped += 1;
