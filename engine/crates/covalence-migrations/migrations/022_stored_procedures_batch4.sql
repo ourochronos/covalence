@@ -180,8 +180,8 @@ $$ LANGUAGE sql STABLE;
 CREATE OR REPLACE FUNCTION sp_search_sections_vector(
     p_embedding halfvec,
     p_limit INT DEFAULT 10
-) RETURNS TABLE(id UUID, source_id UUID, title TEXT, body TEXT, distance FLOAT8) AS $$
-    SELECT id, source_id, title, body,
+) RETURNS TABLE(id UUID, source_id UUID, title TEXT, summary TEXT, distance FLOAT8) AS $$
+    SELECT id, source_id, title, summary,
            (embedding <=> p_embedding) AS distance
     FROM sections
     WHERE embedding IS NOT NULL

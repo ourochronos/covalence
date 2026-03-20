@@ -53,8 +53,8 @@ $$ LANGUAGE sql STABLE;
 CREATE OR REPLACE FUNCTION sp_search_sections_lexical(
     p_query TEXT,
     p_limit INT DEFAULT 20
-) RETURNS TABLE(id UUID, source_id UUID, title TEXT, body TEXT, rank REAL) AS $$
-    SELECT s.id, s.source_id, s.title, s.body,
+) RETURNS TABLE(id UUID, source_id UUID, title TEXT, summary TEXT, rank REAL) AS $$
+    SELECT s.id, s.source_id, s.title, s.summary,
            ts_rank_cd(s.body_tsv, plainto_tsquery('english', p_query)) AS rank
     FROM sections s
     WHERE s.body_tsv @@ plainto_tsquery('english', p_query)
