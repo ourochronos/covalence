@@ -1030,25 +1030,53 @@ async fn extract_single_chunk(
     let result = extractor.extract(&chunk.content, &context).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
-    // Store entities and relationships.
-    let mut entity_count = 0usize;
-    for entity in &result.entities {
-        if super::noise_filter::is_noise_entity(&entity.name, &entity.entity_type) {
-            continue;
+    // Resolve entities concurrently within this chunk (#169).
+    //
+    // Bounded concurrency (5) to avoid connection pool exhaustion.
+    // Deduplicate by name to prevent advisory lock contention.
+    // Errors propagate (fail the chunk for retry) rather than
+    // being silently swallowed.
+    use futures::stream::{self, TryStreamExt};
+
+    let mut seen_names = std::collections::HashSet::new();
+    let filtered_entities: Vec<_> = result
+        .entities
+        .iter()
+        .filter(|e| !super::noise_filter::is_noise_entity(&e.name, &e.entity_type))
+        .filter(|e| seen_names.insert(e.name.to_lowercase()))
+        .cloned()
+        .collect();
+
+    let entity_count = std::sync::atomic::AtomicUsize::new(0);
+    let entity_count_ref = &entity_count;
+
+    stream::iter(
+        filtered_entities
+            .into_iter()
+            .map(Ok::<_, crate::error::Error>),
+    )
+    .try_for_each_concurrent(5, |entity| {
+        let svc = Arc::clone(svc);
+        let source_domain = source_domain.clone();
+        async move {
+            let node_id = svc
+                .resolve_and_store_entity(
+                    &entity,
+                    ExtractionProvenance::Chunk(chunk_id_typed),
+                    "llm",
+                    source_id,
+                    source_domain.as_deref(),
+                )
+                .await?;
+            if node_id.is_some() {
+                entity_count_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(())
         }
-        let node_id = svc
-            .resolve_and_store_entity(
-                entity,
-                ExtractionProvenance::Chunk(chunk_id_typed),
-                "llm",
-                source_id,
-                source_domain.as_deref(),
-            )
-            .await?;
-        if node_id.is_some() {
-            entity_count += 1;
-        }
-    }
+    })
+    .await?;
+
+    let entity_count = entity_count.load(std::sync::atomic::Ordering::Relaxed);
 
     // Mark chunk as processed.
     let ingestion_id = job
