@@ -635,7 +635,7 @@ impl SourceService {
                     "chunk_id": chunk_id.to_string(),
                     "source_id": source_id.into_uuid().to_string(),
                 }),
-                max_attempts: 5, // TODO: source from RetryQueueConfig
+                max_attempts: 5,
                 idempotency_key: Some(format!("extract_chunk:{chunk_id}")),
             })
             .collect();

@@ -499,6 +499,7 @@ async function refreshAll() {
     fetchQueue(),
     fetchDataHealth(),
     fetchConfig(),
+    fetchAdapters(),
   ]);
   document.getElementById("last-refresh").textContent =
     `Last refresh: ${new Date().toLocaleTimeString()}`;
@@ -591,6 +592,37 @@ async function saveConfig(key) {
 }
 
 // Initial load
+// ── Source Adapters ────────────────────────────────────────────
+
+async function fetchAdapters() {
+  const el = document.getElementById("adapters-content");
+  try {
+    const adapters = await apiFetch("/admin/adapters");
+    if (!adapters || adapters.length === 0) {
+      el.innerHTML = "<p>No adapters configured (run migration 024)</p>";
+      return;
+    }
+    let html = `<table><thead><tr><th>Name</th><th>Domain</th><th>MIME</th><th>Converter</th><th>Default Domain</th><th>Active</th></tr></thead><tbody>`;
+    for (const a of adapters) {
+      html += `<tr>
+        <td><strong>${a.name}</strong></td>
+        <td>${a.match_domain || "—"}</td>
+        <td>${a.match_mime || "—"}</td>
+        <td>${a.converter || "—"}</td>
+        <td>${a.default_domain || "—"}</td>
+        <td>${a.is_active ? "✓" : "✗"}</td>
+      </tr>`;
+    }
+    html += "</tbody></table>";
+    if (adapters[0]?.description) {
+      html += `<p style="color:#8b949e;font-size:12px;margin-top:8px">${adapters.length} adapters configured</p>`;
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<p class="error">Failed to load adapters: ${e.message}</p>`;
+  }
+}
+
 refreshAll();
 
 // Auto-refresh every 30 seconds
