@@ -962,6 +962,29 @@ async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
     .unwrap_or(1);
 
     if remaining == 0 {
+        // Check for failed summarization jobs (#170).
+        let failed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM retry_jobs \
+             WHERE kind = 'summarize_entity' \
+               AND status IN ('dead', 'failed') \
+               AND payload->>'source_id' = $1",
+        )
+        .bind(sid.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or(0);
+
+        if failed > 0 {
+            tracing::warn!(
+                source_id = %sid,
+                failed_summaries = failed,
+                "fan-in: summarization partially failed — composing with available summaries"
+            );
+            let _ = sqlx::query("UPDATE sources SET status = 'partial' WHERE id = $1")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await;
+        }
         let has_summary: bool =
             sqlx::query_scalar("SELECT summary IS NOT NULL FROM sources WHERE id = $1")
                 .bind(sid)
@@ -1148,6 +1171,30 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
     .unwrap_or(1);
 
     if remaining == 0 {
+        // Check for failed/dead extraction jobs (#170).
+        let failed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM retry_jobs \
+             WHERE kind = 'extract_chunk' \
+               AND status IN ('dead', 'failed') \
+               AND payload->>'source_id' = $1",
+        )
+        .bind(sid.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or(0);
+
+        if failed > 0 {
+            tracing::warn!(
+                source_id = %sid,
+                failed_chunks = failed,
+                "fan-in: extraction partially failed — proceeding with degraded coverage"
+            );
+            // Mark source as partial so downstream knows.
+            let _ = sqlx::query("UPDATE sources SET status = 'partial' WHERE id = $1")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await;
+        }
         let entities: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT DISTINCT n.id \
              FROM nodes n \
@@ -1302,13 +1349,15 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
         "source summary composed (async job)"
     );
 
-    // Mark source as complete — this is the final stage of the
-    // fan-out DAG (ProcessSource → ExtractChunk → SummarizeEntity
-    // → ComposeSourceSummary → complete).
-    sqlx::query("UPDATE sources SET status = 'complete' WHERE id = $1")
-        .bind(source_id)
-        .execute(svc.repo.pool())
-        .await?;
+    // Mark source as complete — unless upstream set it to 'partial'
+    // due to failed extraction/summarization jobs (#170).
+    sqlx::query(
+        "UPDATE sources SET status = 'complete' \
+         WHERE id = $1 AND status != 'partial'",
+    )
+    .bind(source_id)
+    .execute(svc.repo.pool())
+    .await?;
 
     Ok(())
 }
