@@ -881,9 +881,16 @@ impl AdminService {
                 total_candidates,
                 min_cooccurrences,
                 max_degree,
-                "co-occurrence edge synthesis complete, reloading graph"
+                "co-occurrence edge synthesis complete"
             );
-            self.graph.reload(self.repo.pool()).await?;
+            // Only reload if graph is active (has been loaded).
+            // Workers run with an empty graph — reloading would
+            // wastefully load the entire graph into memory.
+            let stats = self.graph.stats().await?;
+            if stats.node_count > 0 {
+                self.graph.reload(self.repo.pool()).await?;
+                tracing::info!("graph sidecar reloaded after edge synthesis");
+            }
         } else {
             tracing::info!("co-occurrence synthesis: no new edges to create");
         }
