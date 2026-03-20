@@ -172,8 +172,14 @@ impl ChatBackend for CliChatBackend {
         use tokio::process::Command;
 
         // Build the prompt. The CLI doesn't have a separate system
-        // prompt channel, so we combine them.
-        let mut prompt = format!("{system_prompt}\n\n---\n\n{user_prompt}");
+        // prompt channel, so we combine them. Use "====" as separator
+        // instead of "---" to avoid CLI argument parsing issues (both
+        // Claude and Gemini CLIs can misinterpret leading dashes).
+        let mut prompt = if system_prompt.is_empty() {
+            user_prompt.to_string()
+        } else {
+            format!("{system_prompt}\n\n====\n\n{user_prompt}")
+        };
 
         // For JSON mode, reinforce the instruction since there's no
         // response_format parameter.
