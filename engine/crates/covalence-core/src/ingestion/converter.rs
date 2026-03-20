@@ -219,7 +219,7 @@ impl SourceConverter for ReaderLmConverter {
 ///
 /// Calls a configurable HTTP endpoint (e.g., pymupdf4llm sidecar)
 /// to extract Markdown from PDF files. The sidecar must accept
-/// `POST /convert-pdf` with `{"pdf_base64": "..."}` and return
+/// `POST /convert-pdf` with raw PDF bytes in the body and return
 /// `{"markdown": "..."}`.
 pub struct PdfConverter {
     /// Base URL of the PDF conversion sidecar.
@@ -236,6 +236,35 @@ impl PdfConverter {
             .build()
             .unwrap_or_default();
         Self { base_url, client }
+    }
+
+    /// Validate connectivity with the PDF sidecar.
+    ///
+    /// Calls the health endpoint to verify the sidecar is reachable
+    /// and ready. Returns an error with a clear message if not.
+    pub async fn validate(&self) -> Result<()> {
+        let url = format!("{}/health", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Ingestion(format!(
+                    "PDF sidecar validation failed ({}): {e}",
+                    self.base_url
+                ))
+            })?;
+
+        if !resp.status().is_success() {
+            return Err(Error::Ingestion(format!(
+                "PDF sidecar health check returned {}",
+                resp.status()
+            )));
+        }
+
+        Ok(())
     }
 }
 

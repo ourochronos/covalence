@@ -5,7 +5,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 ## Features
 
 - **6-dimension search fusion** — vector, lexical, temporal, graph, structural, and global dimensions fused via RRF with SkewRoute adaptive strategy selection
-- **Statement-first ingestion** — two-pass LLM extraction (statements then triples) with fastcoref coreference resolution and offset projection
+- **Statement-first ingestion** — two-pass LLM extraction (statements then triples) with fastcoref coreference resolution and offset projection. PDF, HTML, Markdown, and code via pluggable converter sidecars
 - **Epistemic model** — Subjective Logic opinions, Dempster-Shafer fusion, DF-QuAD argumentation, Bayesian Model Reduction forgetting
 - **5-tier entity resolution** — exact, alias, vector cosine, fuzzy trigram, HDBSCAN batch clustering
 - **Graph type system** — entity classification (entity_class), domain labels (project/domain on sources), traceability edges (ADR-0018)

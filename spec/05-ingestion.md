@@ -71,7 +71,14 @@ enum SourceType {
 
 ### Stage 2: Format Conversion
 
-Before parsing, raw source content passes through a pluggable converter that produces Markdown. Built-in converters handle PDF, HTML, Markdown, Plain Text, and Code.
+Before parsing, raw source content passes through a pluggable `ConverterRegistry` that produces Markdown. Converters:
+
+- **PDF** — `PdfConverter` calls a pymupdf4llm sidecar (`POST /convert-pdf` with raw PDF bytes → `{"markdown": "..."}`). Config: `COVALENCE_PDF_URL`. Preserves tables and document structure.
+- **HTML** — `ReaderLmConverter` calls a ReaderLM sidecar for clean article extraction. Config: `COVALENCE_READERLM_URL`.
+- **Code** — `code_to_markdown()` wraps source code in fenced blocks with language annotations. Detected from MIME type and file extension.
+- **Markdown/Plain text** — passed through directly.
+
+All HTTP sidecar converters are validated at engine startup (see Lesson 20). If a sidecar is unreachable, that converter is disabled with an error log.
 
 ### Stage 3: Parse + Extract Metadata
 

@@ -260,8 +260,20 @@ impl AppState {
             converter_registry.register_front(Box::new(ReaderLmConverter::new(url.clone())));
         }
         if let Some(ref url) = config.pdf_url {
-            tracing::info!(url = %url, "PDF converter enabled");
-            converter_registry.register(Box::new(PdfConverter::new(url.clone())));
+            let pdf_conv = PdfConverter::new(url.clone());
+            match pdf_conv.validate().await {
+                Ok(()) => {
+                    tracing::info!(url = %url, "PDF converter validated and enabled");
+                    converter_registry.register(Box::new(pdf_conv));
+                }
+                Err(e) => {
+                    tracing::error!(
+                        url = %url,
+                        error = %e,
+                        "PDF sidecar validation FAILED — PDF ingestion disabled"
+                    );
+                }
+            }
         }
 
         // Determine the Fastcoref sidecar URL for neural coref
