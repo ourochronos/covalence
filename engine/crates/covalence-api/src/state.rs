@@ -58,6 +58,8 @@ pub struct AppState {
     pub ask_service: Option<Arc<AskService>>,
     /// Persistent retry queue.
     pub queue_service: Arc<RetryQueueService>,
+    /// Runtime configuration service.
+    pub config_service: Arc<covalence_core::services::ConfigService>,
 }
 
 impl AppState {
@@ -571,6 +573,15 @@ impl AppState {
             config.queue.clone(),
         ));
 
+        // Runtime config service — polls DB every 30s.
+        let config_service = Arc::new(covalence_core::services::ConfigService::new(Arc::clone(
+            &repo,
+        )));
+        if let Err(e) = config_service.refresh().await {
+            tracing::warn!(error = %e, "initial config load failed (will retry)");
+        }
+        config_service.spawn_refresh_loop(30);
+
         Ok(Self {
             config,
             repo,
@@ -585,6 +596,7 @@ impl AppState {
             analysis_service,
             ask_service,
             queue_service,
+            config_service,
         })
     }
 }

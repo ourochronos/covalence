@@ -5,6 +5,7 @@ pub mod analysis;
 pub mod article;
 pub mod ask;
 pub mod chunk_quality;
+pub mod config_service;
 pub mod consolidation;
 pub mod edge;
 pub mod health;
@@ -24,6 +25,7 @@ pub use admin::{AdminService, CooccurrenceResult, GcResult, InvalidatedEdgeStats
 pub use analysis::AnalysisService;
 pub use article::ArticleService;
 pub use ask::{AskResponse, AskService, Citation};
+pub use config_service::ConfigService;
 pub use consolidation::GraphDeepConsolidator;
 pub use edge::EdgeService;
 pub use health::{ConfigAudit, SidecarHealth};

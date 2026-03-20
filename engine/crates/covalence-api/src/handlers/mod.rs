@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod analysis;
 pub mod ask;
+pub mod config;
 pub mod dto;
 pub mod edges;
 pub mod mcp;

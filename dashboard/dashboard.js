@@ -496,9 +496,98 @@ async function refreshAll() {
     fetchMemory(),
     fetchTopology(),
     fetchAnalysis(),
+    fetchQueue(),
+    fetchDataHealth(),
+    fetchConfig(),
   ]);
   document.getElementById("last-refresh").textContent =
     `Last refresh: ${new Date().toLocaleTimeString()}`;
+}
+
+// ── Queue Status ──────────────────────────────────────────────
+
+async function fetchQueue() {
+  const el = document.getElementById("queue-content");
+  try {
+    const data = await apiFetch("/admin/queue/status");
+    if (!data.rows || data.rows.length === 0) {
+      el.innerHTML = "<p>No queue activity</p>";
+      return;
+    }
+    let html = `<table><thead><tr><th>Job Kind</th><th>Status</th><th>Count</th></tr></thead><tbody>`;
+    for (const row of data.rows) {
+      const statusClass = row.status === "dead" ? "error" : row.status === "running" ? "info" : "";
+      html += `<tr class="${statusClass}"><td>${row.kind}</td><td>${row.status}</td><td>${row.count}</td></tr>`;
+    }
+    html += "</tbody></table>";
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<p class="error">Failed to load queue: ${e.message}</p>`;
+  }
+}
+
+// ── Data Health ───────────────────────────────────────────────
+
+async function fetchDataHealth() {
+  const el = document.getElementById("data-health-content");
+  try {
+    const data = await apiFetch("/admin/data-health");
+    let html = `<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>`;
+    for (const [key, value] of Object.entries(data)) {
+      const warn = (key.includes("orphan") || key.includes("superseded") || key.includes("dead")) && value > 0;
+      html += `<tr class="${warn ? 'warning' : ''}"><td>${key.replace(/_/g, " ")}</td><td>${value}</td></tr>`;
+    }
+    html += "</tbody></table>";
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<p class="error">Failed to load data health: ${e.message}</p>`;
+  }
+}
+
+// ── Runtime Config ────────────────────────────────────────────
+
+async function fetchConfig() {
+  const el = document.getElementById("config-content");
+  try {
+    const entries = await apiFetch("/admin/config");
+    if (!entries || entries.length === 0) {
+      el.innerHTML = "<p>No config entries (run migration 023)</p>";
+      return;
+    }
+    let html = `<table><thead><tr><th>Key</th><th>Value</th><th>Description</th><th></th></tr></thead><tbody>`;
+    for (const e of entries) {
+      const val = typeof e.value === "string" ? e.value : JSON.stringify(e.value);
+      html += `<tr>
+        <td><code>${e.key}</code></td>
+        <td><input id="cfg-${e.key.replace(/\./g, '-')}" value="${val}" style="width:100px;background:#111;border:1px solid #333;color:#e1e4e8;padding:4px 8px;border-radius:4px" /></td>
+        <td style="color:#8b949e;font-size:12px">${e.description || ""}</td>
+        <td><button onclick="saveConfig('${e.key}')" style="background:#58a6ff;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px">Save</button></td>
+      </tr>`;
+    }
+    html += "</tbody></table>";
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<p class="error">Failed to load config: ${e.message}</p>`;
+  }
+}
+
+async function saveConfig(key) {
+  const inputId = "cfg-" + key.replace(/\./g, "-");
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  let value = input.value;
+  try { value = JSON.parse(value); } catch(e) { /* keep as string */ }
+  try {
+    await fetch(API_BASE + "/admin/config/" + encodeURIComponent(key), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    input.style.borderColor = "#3fb950";
+    setTimeout(() => { input.style.borderColor = "#333"; }, 1500);
+  } catch (e) {
+    input.style.borderColor = "#f85149";
+  }
 }
 
 // Initial load

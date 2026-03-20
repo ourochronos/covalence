@@ -1,12 +1,12 @@
 //! Route definitions — thin handlers that delegate to services.
 
 use axum::Router;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 
-use crate::handlers::{admin, analysis, ask, edges, mcp, memory, nodes, search, sources};
+use crate::handlers::{admin, analysis, ask, config, edges, mcp, memory, nodes, search, sources};
 use crate::middleware::require_api_key;
 use crate::openapi::ApiDoc;
 use crate::state::AppState;
@@ -93,6 +93,9 @@ pub fn router(state: AppState) -> Router {
             post(admin::summarize_code_nodes),
         )
         .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts))
+        // Config
+        .route("/admin/config", get(config::list_config))
+        .route("/admin/config/{key}", put(config::update_config))
         // Queue
         .route("/admin/health-report", get(admin::health_report))
         .route("/admin/data-health", get(admin::data_health_handler))
