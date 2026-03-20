@@ -313,6 +313,32 @@ impl FastcorefClient {
         }
     }
 
+    /// Validate connectivity and API compatibility with the sidecar.
+    ///
+    /// Sends a minimal test request and verifies the response parses
+    /// correctly. Returns an error with a clear message if the sidecar
+    /// is unreachable or returns an unexpected format.
+    pub async fn validate(&self) -> Result<()> {
+        let test_text = "John went home. He was tired.";
+        let result = self.resolve_single(test_text).await.map_err(|e| {
+            Error::Ingestion(format!(
+                "fastcoref sidecar validation failed ({}): {e}",
+                self.base_url
+            ))
+        })?;
+
+        // Verify the response is meaningful — resolved text should
+        // differ from input (the pronoun "He" should be resolved).
+        if result.resolved == test_text && result.mutations.is_empty() {
+            tracing::warn!(
+                url = %self.base_url,
+                "fastcoref sidecar returned unchanged text — model may not be loaded"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Resolve coreferences in the given text.
     ///
     /// Splits text into overlapping windows if it exceeds the

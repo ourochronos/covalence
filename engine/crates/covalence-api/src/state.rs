@@ -312,12 +312,28 @@ impl AppState {
         ));
 
         if let Some(ref url) = coref_url {
-            tracing::info!(url = %url, "Fastcoref preprocessing enabled");
-            source_svc = source_svc.with_coref_client(Arc::new(FastcorefClient::with_windowing(
+            let coref_client = Arc::new(FastcorefClient::with_windowing(
                 url.clone(),
                 config.pipeline.coref_window_chars,
                 config.pipeline.coref_window_overlap,
-            )));
+            ));
+            // Validate sidecar connectivity at startup — catch API
+            // mismatches immediately rather than failing silently
+            // during ingestion.
+            match coref_client.validate().await {
+                Ok(()) => {
+                    tracing::info!(url = %url, "fastcoref sidecar validated and enabled");
+                    source_svc = source_svc.with_coref_client(coref_client);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        url = %url,
+                        error = %e,
+                        "fastcoref sidecar validation FAILED — coref disabled. \
+                         Fix the sidecar and restart the engine."
+                    );
+                }
+            }
         }
 
         // Build the chat backend (shared by statement pipeline + admin endpoints).
