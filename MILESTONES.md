@@ -520,8 +520,32 @@ Accept-then-process pattern for source ingestion, research paper scoring.
 - [x] 85 research papers scored across 10 categories (target: 400)
 - [x] "Build the right solution" directive added to CLAUDE.md
 
+## Wave 20 — Architecture Evolution (#175, #147) *(complete)*
+
+Multi-binary decomposition, stored procedures, Gemini SRE hardening.
+
+- [x] 75 stored procedures across 4 migrations (019-022)
+- [x] 65 inline SQL calls migrated to SPs
+- [x] covalence-worker binary crate (separate process from API)
+- [x] Queue polling removed from API binary
+- [x] Per-kind concurrency (6 semaphores: process/extract/summarize/compose/edge/embed)
+- [x] Poison pill error classification (#172)
+- [x] Graph reload skip in worker context
+- [x] Batch enqueue via UNNEST (#168)
+- [x] Parallel entity resolution with bounded concurrency (#169)
+- [x] Fan-in failure tracking with 'partial' status (#170)
+- [x] Source adapter table (migration 024)
+- [x] Runtime config table + ConfigService (migration 023)
+- [x] Dashboard: queue, data health, and config management
+- [x] Systemd unit for worker binary
+- [x] Supersession cleanup cancels pending queue jobs (#174)
+- [x] Resolver outside advisory lock (#167)
+
+**Note:** 1,399 tests passing (1,329 core + 21 api + 49 eval), clippy clean, fmt clean.
+
 ## Future
 
+- Source adapter webhook integration (Phase 4)
 - Federation protocol (clearance-based egress, ZK edges)
 - Multi-tenant support
 - Cross-encoder reranking (ColBERT via BGE-M3)

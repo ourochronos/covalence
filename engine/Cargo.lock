@@ -392,6 +392,7 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 

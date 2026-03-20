@@ -8,6 +8,7 @@ description = "Covalence knowledge engine — core library"
 
 [dependencies]
 tokio = { workspace = true }
+url = "2"
 sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

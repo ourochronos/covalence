@@ -150,9 +150,10 @@ deploy:
 	@echo "=== Building release ==="
 	ssh $(PROD_HOST) 'source $$HOME/.cargo/env && cd $(PROD_DIR)/engine && cargo build --release 2>&1 | tail -3'
 	@echo "=== Running migrations ==="
-	ssh $(PROD_HOST) 'source $$HOME/.cargo/env && cd $(PROD_DIR)/engine && DATABASE_URL=postgres://covalence:covalence@localhost:5432/covalence_prod cargo run -p covalence-migrations 2>&1 | tail -3'
-	@echo "=== Restarting engine ==="
+	ssh $(PROD_HOST) 'source $$HOME/.cargo/env && cd $(PROD_DIR)/engine && touch crates/covalence-migrations/src/main.rs && DATABASE_URL=postgres://covalence:covalence@localhost:5432/covalence_prod cargo run -p covalence-migrations 2>&1 | tail -3'
+	@echo "=== Restarting services ==="
 	ssh $(PROD_HOST) 'sudo systemctl restart covalence-engine && sleep 2 && curl -sf http://localhost:8441/api/v1/admin/health'
+	ssh $(PROD_HOST) 'sudo systemctl restart covalence-worker 2>/dev/null || echo "  (worker not installed yet — install with: sudo cp deploy/covalence-worker.service /etc/systemd/system/ && sudo systemctl enable covalence-worker)"'
 	@echo "=== Ingesting changes ==="
 	@$(MAKE) ingest-changes || echo "  (ingestion skipped or failed — non-fatal)"
 	@echo "=== Deploy complete ==="

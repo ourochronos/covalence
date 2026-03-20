@@ -1,0 +1,22 @@
+[Unit]
+Description=Covalence Queue Worker
+After=network.target postgresql.service covalence-engine.service
+Wants=covalence-engine.service
+
+[Service]
+Type=simple
+User=covalence
+WorkingDirectory=/home/covalence/covalence
+EnvironmentFile=/home/covalence/covalence/.env.wsl
+ExecStart=/home/covalence/covalence/engine/target/release/covalence-worker
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/covalence/covalence/logs/worker.log
+StandardError=append:/home/covalence/covalence/logs/worker.log
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=4G
+
+[Install]
+WantedBy=multi-user.target

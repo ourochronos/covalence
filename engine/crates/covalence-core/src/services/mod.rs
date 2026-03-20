@@ -1,5 +1,6 @@
 //! Service layer — business logic orchestrating storage and graph operations.
 
+pub mod adapter_service;
 pub mod admin;
 pub mod analysis;
 pub mod article;
