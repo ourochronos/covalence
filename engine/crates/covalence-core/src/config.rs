@@ -435,10 +435,18 @@ pub struct RetryQueueConfig {
     pub max_backoff_secs: u64,
     /// Default max retry attempts per job.
     pub max_attempts: i32,
-    /// Max concurrent reprocess_source jobs.
+    /// Max concurrent process_source / reprocess_source jobs.
     pub reprocess_concurrency: usize,
+    /// Max concurrent extract_chunk jobs.
+    pub extract_concurrency: usize,
+    /// Max concurrent summarize_entity jobs.
+    pub summarize_concurrency: usize,
+    /// Max concurrent compose_source_summary jobs.
+    pub compose_concurrency: usize,
     /// Max concurrent edge synthesis jobs.
     pub edge_concurrency: usize,
+    /// Max concurrent embed_batch jobs.
+    pub embed_concurrency: usize,
     /// Maximum time a single job can run before being timed out, in
     /// seconds. Prevents long-running jobs from holding semaphore
     /// permits indefinitely.
@@ -452,8 +460,12 @@ impl Default for RetryQueueConfig {
             base_backoff_secs: 30,
             max_backoff_secs: 3600,
             max_attempts: 5,
-            reprocess_concurrency: 2,
+            reprocess_concurrency: 4,
+            extract_concurrency: 24,
+            summarize_concurrency: 10,
+            compose_concurrency: 5,
             edge_concurrency: 1,
+            embed_concurrency: 4,
             job_timeout_secs: 600, // 10 minutes
         }
     }
@@ -608,8 +620,12 @@ impl Config {
                 base_backoff_secs: env_parse("COVALENCE_QUEUE_BASE_BACKOFF", 30)?,
                 max_backoff_secs: env_parse("COVALENCE_QUEUE_MAX_BACKOFF", 3600)?,
                 max_attempts: env_parse("COVALENCE_QUEUE_MAX_ATTEMPTS", 5)?,
-                reprocess_concurrency: env_parse("COVALENCE_QUEUE_REPROCESS_CONCURRENCY", 2)?,
+                reprocess_concurrency: env_parse("COVALENCE_QUEUE_REPROCESS_CONCURRENCY", 4)?,
+                extract_concurrency: env_parse("COVALENCE_QUEUE_EXTRACT_CONCURRENCY", 24)?,
+                summarize_concurrency: env_parse("COVALENCE_QUEUE_SUMMARIZE_CONCURRENCY", 10)?,
+                compose_concurrency: env_parse("COVALENCE_QUEUE_COMPOSE_CONCURRENCY", 5)?,
                 edge_concurrency: env_parse("COVALENCE_QUEUE_EDGE_CONCURRENCY", 1)?,
+                embed_concurrency: env_parse("COVALENCE_QUEUE_EMBED_CONCURRENCY", 4)?,
                 job_timeout_secs: env_parse("COVALENCE_QUEUE_JOB_TIMEOUT", 600)?,
             },
             ask_model: env_or("COVALENCE_ASK_MODEL", "sonnet"),

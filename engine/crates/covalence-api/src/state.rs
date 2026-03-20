@@ -563,24 +563,13 @@ impl AppState {
             .with_config(config.clone()),
         );
 
-        // Persistent retry queue: create, wire source service, spawn
-        // the background worker.
+        // Queue service: used by API to enqueue jobs (POST /sources,
+        // reprocess, etc.). The queue WORKER runs as a separate binary
+        // (covalence-worker) — the API does NOT poll for jobs.
         let queue_service = Arc::new(RetryQueueService::new(
             Arc::clone(&repo),
             config.queue.clone(),
         ));
-        queue_service.set_source_service(Arc::clone(&source_service));
-        queue_service.set_admin_service(Arc::clone(&admin_service));
-        {
-            let qs = Arc::clone(&queue_service);
-            tokio::spawn(async move {
-                qs.run_worker().await;
-            });
-        }
-        // Pipeline watchdog: detects stalled sources and re-triggers fan-in.
-        queue_service.spawn_watchdog();
-        // Periodic scheduler: auto-enqueues maintenance jobs.
-        queue_service.spawn_scheduler();
 
         Ok(Self {
             config,

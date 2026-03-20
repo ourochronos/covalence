@@ -28,10 +28,13 @@ pub struct RetryQueueService {
     repo: Arc<PgRepo>,
     /// Queue configuration (poll interval, backoff, concurrency).
     config: RetryQueueConfig,
-    /// Semaphore controlling concurrent reprocess jobs.
-    reprocess_sem: Arc<Semaphore>,
-    /// Semaphore controlling concurrent edge synthesis jobs.
-    edge_sem: Arc<Semaphore>,
+    /// Per-kind concurrency semaphores.
+    sem_process: Arc<Semaphore>,
+    sem_extract: Arc<Semaphore>,
+    sem_summarize: Arc<Semaphore>,
+    sem_compose: Arc<Semaphore>,
+    sem_edge: Arc<Semaphore>,
+    sem_embed: Arc<Semaphore>,
     /// Lazily-set source service for executing reprocess jobs.
     source_service: tokio::sync::OnceCell<Arc<SourceService>>,
     /// Lazily-set admin service for edge synthesis and other admin jobs.
@@ -39,15 +42,17 @@ pub struct RetryQueueService {
 }
 
 impl RetryQueueService {
-    /// Create a new retry queue service.
+    /// Create a new retry queue service with per-kind concurrency.
     pub fn new(repo: Arc<PgRepo>, config: RetryQueueConfig) -> Self {
-        let reprocess_sem = Arc::new(Semaphore::new(config.reprocess_concurrency));
-        let edge_sem = Arc::new(Semaphore::new(config.edge_concurrency));
         Self {
+            sem_process: Arc::new(Semaphore::new(config.reprocess_concurrency)),
+            sem_extract: Arc::new(Semaphore::new(config.extract_concurrency)),
+            sem_summarize: Arc::new(Semaphore::new(config.summarize_concurrency)),
+            sem_compose: Arc::new(Semaphore::new(config.compose_concurrency)),
+            sem_edge: Arc::new(Semaphore::new(config.edge_concurrency)),
+            sem_embed: Arc::new(Semaphore::new(config.embed_concurrency)),
             repo,
             config,
-            reprocess_sem,
-            edge_sem,
             source_service: tokio::sync::OnceCell::new(),
             admin_service: tokio::sync::OnceCell::new(),
         }
@@ -437,58 +442,66 @@ impl RetryQueueService {
         Ok(())
     }
 
-    /// Try to claim and dispatch jobs up to available concurrency.
+    /// Get the semaphore for a given job kind.
+    fn sem_for_kind(&self, kind: JobKind) -> &Arc<Semaphore> {
+        match kind {
+            JobKind::ProcessSource | JobKind::ReprocessSource => &self.sem_process,
+            JobKind::ExtractChunk => &self.sem_extract,
+            JobKind::SummarizeEntity => &self.sem_summarize,
+            JobKind::ComposeSourceSummary => &self.sem_compose,
+            JobKind::SynthesizeEdges => &self.sem_edge,
+            JobKind::EmbedBatch => &self.sem_embed,
+            JobKind::ExtractStatements | JobKind::ExtractEntities => &self.sem_process,
+        }
+    }
+
+    /// Try to claim and dispatch jobs up to available per-kind concurrency.
     /// Returns `true` if any work was found.
     async fn poll_once(&self) -> bool {
-        let reprocess_kinds = [
-            JobKind::ProcessSource,
-            JobKind::ReprocessSource,
-            JobKind::ExtractStatements,
-            JobKind::ExtractEntities,
-            JobKind::ExtractChunk,
-            JobKind::SummarizeEntity,
-            JobKind::ComposeSourceSummary,
-            JobKind::EmbedBatch,
+        // Per-kind job groups with their semaphores.
+        let job_groups: &[(JobKind, &[JobKind])] = &[
+            (JobKind::ExtractChunk, &[JobKind::ExtractChunk]),
+            (
+                JobKind::ProcessSource,
+                &[
+                    JobKind::ProcessSource,
+                    JobKind::ReprocessSource,
+                    JobKind::ExtractStatements,
+                    JobKind::ExtractEntities,
+                ],
+            ),
+            (JobKind::SummarizeEntity, &[JobKind::SummarizeEntity]),
+            (
+                JobKind::ComposeSourceSummary,
+                &[JobKind::ComposeSourceSummary],
+            ),
+            (JobKind::EmbedBatch, &[JobKind::EmbedBatch]),
+            (JobKind::SynthesizeEdges, &[JobKind::SynthesizeEdges]),
         ];
 
         let mut did_work = false;
 
-        // Claim as many reprocess-family jobs as we have permits.
-        loop {
-            let permit = match self.reprocess_sem.clone().try_acquire_owned() {
-                Ok(p) => p,
-                Err(_) => break, // All permits taken.
-            };
-            match JobQueueRepo::claim_next(&*self.repo, &reprocess_kinds).await {
-                Ok(Some(job)) => {
-                    self.spawn_job(job, permit);
-                    did_work = true;
-                }
-                Ok(None) => {
-                    drop(permit);
-                    break; // No more work.
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to claim reprocess job");
-                    drop(permit);
-                    break;
-                }
-            }
-        }
-
-        // Try edge synthesis work.
-        if let Ok(permit) = self.edge_sem.clone().try_acquire_owned() {
-            match JobQueueRepo::claim_next(&*self.repo, &[JobKind::SynthesizeEdges]).await {
-                Ok(Some(job)) => {
-                    self.spawn_job(job, permit);
-                    did_work = true;
-                }
-                Ok(None) => {
-                    drop(permit);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to claim edge job");
-                    drop(permit);
+        for (sem_kind, claim_kinds) in job_groups {
+            let sem = self.sem_for_kind(*sem_kind);
+            loop {
+                let permit = match sem.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                match JobQueueRepo::claim_next(&*self.repo, claim_kinds).await {
+                    Ok(Some(job)) => {
+                        self.spawn_job(job, permit);
+                        did_work = true;
+                    }
+                    Ok(None) => {
+                        drop(permit);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to claim job");
+                        drop(permit);
+                        break;
+                    }
                 }
             }
         }
