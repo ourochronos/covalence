@@ -662,6 +662,31 @@ impl SourceService {
                             .unwrap_or(crate::models::source::UpdateClass::Versioned);
                     self.mark_superseded(old_id, source_id, &update_class)
                         .await?;
+
+                    // Cancel pending queue jobs for the old source (#174).
+                    // Without this, ExtractChunk jobs fire after chunks
+                    // are deleted, causing "chunk not found" dead jobs.
+                    let jobs_cancelled: i64 = sqlx::query_scalar(
+                        "WITH cancelled AS ( \
+                           DELETE FROM retry_jobs \
+                           WHERE status IN ('pending', 'failed') \
+                             AND payload->>'source_id' = $1 \
+                           RETURNING id \
+                         ) SELECT COUNT(*)::bigint FROM cancelled",
+                    )
+                    .bind(old_id.to_string())
+                    .fetch_one(self.repo.pool())
+                    .await
+                    .unwrap_or(0);
+
+                    if jobs_cancelled > 0 {
+                        tracing::info!(
+                            old_source = %old_id,
+                            jobs_cancelled,
+                            "cancelled pending jobs for superseded source"
+                        );
+                    }
+
                     let ext_deleted = ExtractionRepo::delete_by_source(&*self.repo, old_id).await?;
                     let stmts_deleted =
                         StatementRepo::delete_by_source(&*self.repo, old_id).await?;
