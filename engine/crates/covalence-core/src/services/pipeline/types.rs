@@ -36,6 +36,9 @@ pub(crate) struct PipelineInput<'a> {
     pub normalized: &'a str,
     /// Whether this is a code source (skips coref).
     pub is_code: bool,
+    /// When true, stop after chunking + embedding (stages 4-5.7).
+    /// Extraction and later stages are handled by fan-out queue jobs.
+    pub chunk_only: bool,
 }
 
 /// Output from the shared ingestion pipeline.

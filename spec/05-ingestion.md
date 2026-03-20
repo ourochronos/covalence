@@ -49,6 +49,14 @@ Input: Raw content + metadata envelope. The accept phase is **synchronous and fa
 
 Source status lifecycle: `accepted` → `processing` → `complete` (or `failed`).
 
+Processing itself fans out to a parallel DAG:
+1. `ProcessSource` — chunk + embed + coref + statement pipeline
+2. Fan-out: N × `ExtractChunk` jobs (one per chunk, parallel)
+3. Fan-in: `SummarizeEntity` jobs when all extractions complete
+4. Fan-in: `ComposeSourceSummary` when all summaries complete → `status = 'complete'`
+
+Each stage is independently retryable. A crash at chunk 47 of 50 only retries chunk 47.
+
 Input:
 
 ```rust

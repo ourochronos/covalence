@@ -355,6 +355,13 @@ impl SourceService {
             None
         };
 
+        // If chunk_only, stop here — extraction will be handled by
+        // per-chunk queue jobs (ExtractChunk → SummarizeEntity →
+        // ComposeSourceSummary fan-out DAG).
+        if input.chunk_only {
+            return Ok(PipelineOutput { chunks_created });
+        }
+
         // --- Stages 6-7: Extract + resolve ---
         let ast_ext: Option<Arc<dyn Extractor>> = if input.is_code {
             Some(Arc::new(

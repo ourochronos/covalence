@@ -604,7 +604,8 @@ impl SourceService {
         .is_some()
             || source_type == "code";
 
-        // Run the shared pipeline.
+        // Run chunking + embedding only. Extraction fans out to
+        // per-chunk queue jobs via the async DAG.
         self.run_pipeline(&PipelineInput {
             source_id,
             source_type,
@@ -613,8 +614,54 @@ impl SourceService {
             source_domain: source.domain.clone(),
             normalized,
             is_code,
+            chunk_only: true,
         })
         .await?;
+
+        // Fan out: enqueue per-chunk extraction jobs.
+        // The DAG: ExtractChunk → (fan-in) → SummarizeEntity
+        //        → (fan-in) → ComposeSourceSummary → complete
+        let chunks: Vec<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT id FROM chunks WHERE source_id = $1")
+                .bind(source_id)
+                .fetch_all(self.repo.pool())
+                .await?;
+
+        let mut enqueued = 0u64;
+        for (chunk_id,) in &chunks {
+            let payload = serde_json::json!({
+                "chunk_id": chunk_id.to_string(),
+                "source_id": source_id.into_uuid().to_string(),
+            });
+            let key = format!("extract_chunk:{chunk_id}");
+            use crate::storage::traits::JobQueueRepo;
+            match JobQueueRepo::enqueue(
+                &*self.repo,
+                crate::models::retry_job::JobKind::ExtractChunk,
+                payload,
+                5,
+                Some(&key),
+            )
+            .await
+            {
+                Ok(Some(_)) => enqueued += 1,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        chunk_id = %chunk_id,
+                        error = %e,
+                        "failed to enqueue extract job"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            source_id = %source_id,
+            chunks = chunks.len(),
+            enqueued,
+            "fanned out extraction to per-chunk jobs"
+        );
 
         // Handle supersession cleanup if this source replaces another.
         if let Some(supersession) = source
@@ -704,13 +751,17 @@ impl SourceService {
             }
         }
 
-        // Mark complete.
-        sqlx::query("UPDATE sources SET status = 'complete' WHERE id = $1")
-            .bind(source_id)
-            .execute(self.repo.pool())
-            .await?;
+        // Don't mark complete here — the fan-out DAG will set
+        // status = 'complete' when ComposeSourceSummary finishes.
+        // If there are no chunks (empty source), mark complete now.
+        if chunks.is_empty() {
+            sqlx::query("UPDATE sources SET status = 'complete' WHERE id = $1")
+                .bind(source_id)
+                .execute(self.repo.pool())
+                .await?;
+        }
 
-        tracing::info!(source_id = %source_id, "source processing complete");
+        tracing::info!(source_id = %source_id, "source chunked, extraction fanned out");
         Ok(())
     }
 
@@ -855,6 +906,7 @@ impl SourceService {
                 source_domain: source.domain.clone(),
                 normalized: &prepared.normalized,
                 is_code: prepared.is_code,
+                chunk_only: false,
             })
             .await?;
 

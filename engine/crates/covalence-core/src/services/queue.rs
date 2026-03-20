@@ -1276,6 +1276,14 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
         "source summary composed (async job)"
     );
 
+    // Mark source as complete — this is the final stage of the
+    // fan-out DAG (ProcessSource → ExtractChunk → SummarizeEntity
+    // → ComposeSourceSummary → complete).
+    sqlx::query("UPDATE sources SET status = 'complete' WHERE id = $1")
+        .bind(source_id)
+        .execute(svc.repo.pool())
+        .await?;
+
     Ok(())
 }
 
