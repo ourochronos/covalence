@@ -735,6 +735,18 @@ fn classify_ingestion_error(msg: &str) -> FailureClass {
     } else if lower.contains("not found")
         || lower.contains("404")
         || lower.contains("no raw content")
+        // Poison pills: deterministic failures that won't succeed on retry.
+        || lower.contains("json parse")
+        || lower.contains("invalid json")
+        || lower.contains("expected value")
+        || lower.contains("schema validation")
+        || lower.contains("context window")
+        || lower.contains("context length exceeded")
+        || lower.contains("maximum context")
+        || lower.contains("token limit")
+        || lower.contains("content too long")
+        || lower.contains("invalid base64")
+        || lower.contains("invalid utf-8")
     {
         FailureClass::Permanent
     } else {
