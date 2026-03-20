@@ -38,8 +38,7 @@ use super::chunk_quality::{
     is_metadata_only, is_reference_section, is_title_only,
 };
 use super::ingestion_helpers::{
-    detect_chunk_content_types, group_extraction_batches, has_example_markers,
-    sanitize_ltree_label,
+    detect_chunk_content_types, group_extraction_batches, has_example_markers, sanitize_ltree_label,
 };
 use super::noise_filter::is_noise_entity;
 use super::source::SourceService;
@@ -296,24 +295,20 @@ impl SourceService {
                                 if m.canonical_start < prefix {
                                     continue;
                                 }
-                                chunk_entries.push(
-                                    crate::models::projection::LedgerEntry::new(
-                                        input.source_id,
-                                        (base + m.canonical_start, base + m.canonical_end),
-                                        m.canonical_token.clone(),
-                                        (base + m.mutated_start, base + m.mutated_end),
-                                        m.mutated_token.clone(),
-                                    ),
-                                );
+                                chunk_entries.push(crate::models::projection::LedgerEntry::new(
+                                    input.source_id,
+                                    (base + m.canonical_start, base + m.canonical_end),
+                                    m.canonical_token.clone(),
+                                    (base + m.mutated_start, base + m.mutated_end),
+                                    m.mutated_token.clone(),
+                                ));
                             }
                             if !chunk_entries.is_empty() {
                                 use crate::storage::traits::LedgerRepo;
                                 let count = chunk_entries.len();
-                                if let Err(e) = LedgerRepo::create_batch(
-                                    self.repo.as_ref(),
-                                    &chunk_entries,
-                                )
-                                .await
+                                if let Err(e) =
+                                    LedgerRepo::create_batch(self.repo.as_ref(), &chunk_entries)
+                                        .await
                                 {
                                     tracing::warn!(
                                         chunk_index = idx,

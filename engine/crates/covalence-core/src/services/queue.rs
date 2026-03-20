@@ -609,12 +609,10 @@ async fn execute_job(
                 Ok(()) => Ok(()),
                 Err(e) => {
                     // Mark the source as failed so status is queryable.
-                    let _ = sqlx::query(
-                        "UPDATE sources SET status = 'failed' WHERE id = $1",
-                    )
-                    .bind(source_id)
-                    .execute(svc.repo.pool())
-                    .await;
+                    let _ = sqlx::query("UPDATE sources SET status = 'failed' WHERE id = $1")
+                        .bind(source_id)
+                        .execute(svc.repo.pool())
+                        .await;
                     Err(e)
                 }
             }

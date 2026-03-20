@@ -798,7 +798,10 @@ mod tests {
             "processing_time_ms": 42.5
         });
         let resp: CorefSidecarResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.resolved_text, "John went to the store. John bought milk.");
+        assert_eq!(
+            resp.resolved_text,
+            "John went to the store. John bought milk."
+        );
         assert_eq!(resp.clusters.len(), 1);
         assert_eq!(resp.cluster_spans.len(), 1);
     }
@@ -951,7 +954,10 @@ mod tests {
         let text = "Albert Einstein developed the theory of relativity. \
                      He received the Nobel Prize in Physics in 1921.";
 
-        let result = client.resolve(text).await.expect("fastcoref should respond");
+        let result = client
+            .resolve(text)
+            .await
+            .expect("fastcoref should respond");
 
         // Neural coref should resolve "He" → "Albert Einstein"
         assert_ne!(
@@ -968,16 +974,14 @@ mod tests {
         );
 
         // The mutation records how "He" became "Albert Einstein".
-        let he_mutation = result
-            .mutations
-            .iter()
-            .find(|m| m.canonical_token == "He");
+        let he_mutation = result.mutations.iter().find(|m| m.canonical_token == "He");
         assert!(
             he_mutation.is_some(),
             "should have a mutation for the pronoun 'He'"
         );
         assert_eq!(
-            he_mutation.unwrap().mutated_token, "Albert Einstein",
+            he_mutation.unwrap().mutated_token,
+            "Albert Einstein",
             "mutation should map 'He' → 'Albert Einstein'"
         );
     }

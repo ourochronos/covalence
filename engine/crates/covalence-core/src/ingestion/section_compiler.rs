@@ -76,10 +76,8 @@ pub struct CompilationOutput {
 #[async_trait::async_trait]
 pub trait SourceSummaryCompiler: Send + Sync {
     /// Compile section summaries into a source-level summary.
-    async fn compile_source_summary(
-        &self,
-        input: &SourceSummaryInput,
-    ) -> Result<CompilationOutput>;
+    async fn compile_source_summary(&self, input: &SourceSummaryInput)
+    -> Result<CompilationOutput>;
 }
 
 // ── LLM implementation ──────────────────────────────────────────

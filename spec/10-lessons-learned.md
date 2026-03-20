@@ -243,6 +243,13 @@ Old source versions and orphan nodes are observations, not garbage. Never auto-d
 
 HTTP sidecars (fastcoref, PDF converter, future extractors) can silently fail when their API contract drifts from the client. The FastcorefClient was sending `{"texts": [...]}` but the sidecar expected `{"text": "..."}` — every coref call failed silently for weeks because errors were caught and warned but processing continued without coref. The fix is two-fold: (1) validate backends at startup by sending a test request and verifying the response parses correctly, and (2) if a sidecar URL was *explicitly configured* via environment variable, crash the engine on validation failure (fail-fast) so the orchestrator knows it's broken. Auto-derived URLs degrade gracefully. Every new sidecar integration must include a `validate()` method called at engine startup.
 
+## Lesson 22: No Network I/O Inside Database Transactions
+
+**Date:** 2026-03-19
+**Source:** Gemini SRE review of entity resolution under fan-out concurrency (Session 41)
+
+Never hold a database transaction or advisory lock while waiting for network I/O (API calls, embedding requests, sidecar calls). Under concurrency, every worker grabs a PG connection, locks a row, and sleeps waiting for the network — exhausting the connection pool. The fix: resolve externally first, then lock-check-write in a short transaction. The transaction should only contain fast database operations.
+
 ## Lesson 21: Incremental Flushing for Unbounded Collections
 
 **Date:** 2026-03-19

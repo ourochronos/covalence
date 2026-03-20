@@ -97,11 +97,8 @@ pub async fn create_source(
 
     // For dedup matches, the source is already complete.
     // For new sources, status is "accepted" (processing enqueued).
-    let status = if let Some(src) = covalence_core::storage::traits::SourceRepo::get(
-        &*state.repo,
-        id,
-    )
-    .await?
+    let status = if let Some(src) =
+        covalence_core::storage::traits::SourceRepo::get(&*state.repo, id).await?
     {
         src.status
     } else {

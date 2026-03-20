@@ -34,8 +34,55 @@ impl SourceService {
         use crate::ingestion::resolver::MatchType;
         use sqlx::Row;
 
-        let lock_key = entity_name_lock_key(&entity.name);
+        // Phase 1: Resolve OUTSIDE the transaction.
+        //
+        // The resolver may call vector embedding APIs (network I/O).
+        // Doing this inside a transaction + advisory lock would hold
+        // PG connections open during network waits, exhausting the
+        // pool under concurrency (#167).
+        let active_resolver = if self.pipeline.resolve_enabled {
+            self.resolver.as_ref()
+        } else {
+            None
+        };
 
+        let pre_resolved = if let Some(resolver) = active_resolver {
+            let resolved = resolver.resolve(entity).await?;
+            // Handle Deferred early — no transaction needed.
+            if matches!(resolved.match_type, MatchType::Deferred) {
+                let mut unresolved = crate::models::unresolved_entity::UnresolvedEntity::new(
+                    source_id,
+                    entity.name.clone(),
+                    entity.entity_type.clone(),
+                    entity.confidence,
+                );
+                unresolved.description = entity.description.clone();
+                match &provenance {
+                    ExtractionProvenance::Chunk(cid) => {
+                        unresolved.chunk_id = Some(cid.into_uuid());
+                    }
+                    ExtractionProvenance::Statement(sid) => {
+                        unresolved.statement_id = Some(sid.into_uuid());
+                    }
+                }
+                use crate::storage::traits::UnresolvedEntityRepo;
+                UnresolvedEntityRepo::create(self.repo.as_ref(), &unresolved).await?;
+                tracing::debug!(
+                    entity_name = %entity.name,
+                    "deferred entity to Tier 5 pool"
+                );
+                return Ok(None);
+            }
+            Some(resolved)
+        } else {
+            None
+        };
+
+        // Phase 2: Lock + read-check-write inside transaction.
+        //
+        // The transaction only holds the advisory lock during fast
+        // database operations (no network I/O).
+        let lock_key = entity_name_lock_key(&entity.name);
         let mut tx = self.repo.pool().begin().await?;
 
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -43,42 +90,9 @@ impl SourceService {
             .execute(&mut *tx)
             .await?;
 
-        // --- critical section: read-check-write under lock ---
-
-        let active_resolver = if self.pipeline.resolve_enabled {
-            self.resolver.as_ref()
-        } else {
-            None
-        };
-        let (node_id, match_type) = if let Some(resolver) = active_resolver {
-            let resolved = resolver.resolve(entity).await?;
+        let (node_id, match_type) = if let Some(resolved) = pre_resolved {
             match resolved.match_type {
-                MatchType::Deferred => {
-                    // Route to unresolved_entities pool for Tier 5 HDBSCAN.
-                    let mut unresolved = crate::models::unresolved_entity::UnresolvedEntity::new(
-                        source_id,
-                        entity.name.clone(),
-                        entity.entity_type.clone(),
-                        entity.confidence,
-                    );
-                    unresolved.description = entity.description.clone();
-                    match &provenance {
-                        ExtractionProvenance::Chunk(cid) => {
-                            unresolved.chunk_id = Some(cid.into_uuid());
-                        }
-                        ExtractionProvenance::Statement(sid) => {
-                            unresolved.statement_id = Some(sid.into_uuid());
-                        }
-                    }
-                    use crate::storage::traits::UnresolvedEntityRepo;
-                    UnresolvedEntityRepo::create(self.repo.as_ref(), &unresolved).await?;
-                    tx.commit().await?;
-                    tracing::debug!(
-                        entity_name = %entity.name,
-                        "deferred entity to Tier 5 pool"
-                    );
-                    return Ok(None);
-                }
+                MatchType::Deferred => unreachable!("handled above"),
                 MatchType::New => {
                     let node = self
                         .create_node_in_tx(&mut tx, entity, source_domain)
@@ -99,6 +113,7 @@ impl SourceService {
                 }
             }
         } else {
+            // No resolver — simple exact-match fallback.
             let existing: Option<NodeId> = sqlx::query(
                 "SELECT id FROM nodes \
                  WHERE LOWER(canonical_name) = LOWER($1)",

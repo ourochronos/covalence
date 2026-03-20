@@ -330,9 +330,7 @@ pub async fn run_statement_pipeline(
                         // Embed the source summary and store on the
                         // source's embedding field.
                         if let Some(embedder) = embedder {
-                            let embs = embedder
-                                .embed(std::slice::from_ref(source_summary))
-                                .await?;
+                            let embs = embedder.embed(std::slice::from_ref(source_summary)).await?;
                             if let Some(emb) = embs.into_iter().next() {
                                 let dim = table_dims.source;
                                 let truncated = crate::ingestion::embedder::truncate_and_validate(
@@ -725,12 +723,8 @@ pub async fn reextract_statements(
                             .compile_source_summary(&summary_input)
                             .await?;
                         if !compilation.text.is_empty() {
-                            SourceRepo::update_summary(
-                                &**repo,
-                                input.source_id,
-                                &compilation.text,
-                            )
-                            .await?;
+                            SourceRepo::update_summary(&**repo, input.source_id, &compilation.text)
+                                .await?;
                         }
                     }
                 }

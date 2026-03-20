@@ -581,19 +581,15 @@ impl SourceService {
             .execute(self.repo.pool())
             .await?;
 
-        let source =
-            SourceRepo::get(&*self.repo, source_id)
-                .await?
-                .ok_or_else(|| Error::NotFound {
-                    entity_type: "source",
-                    id: source_id.to_string(),
-                })?;
+        let source = SourceRepo::get(&*self.repo, source_id)
+            .await?
+            .ok_or_else(|| Error::NotFound {
+                entity_type: "source",
+                id: source_id.to_string(),
+            })?;
 
         let normalized = source.normalized_content.as_ref().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "source {} has no normalized_content",
-                source_id
-            ))
+            Error::InvalidInput(format!("source {} has no normalized_content", source_id))
         })?;
 
         let source_type = &source.source_type;
@@ -664,35 +660,27 @@ impl SourceService {
         );
 
         // Handle supersession cleanup if this source replaces another.
-        if let Some(supersession) = source
-            .metadata
-            .get("_supersession")
-        {
+        if let Some(supersession) = source.metadata.get("_supersession") {
             if let (Some(old_id_str), Some(update_class_str)) = (
                 supersession.get("old_source_id").and_then(|v| v.as_str()),
                 supersession.get("update_class").and_then(|v| v.as_str()),
             ) {
                 if let Ok(old_uuid) = old_id_str.parse::<uuid::Uuid>() {
                     let old_id = SourceId::from_uuid(old_uuid);
-                    let update_class = crate::models::source::UpdateClass::from_str_opt(
-                        update_class_str,
-                    )
-                    .unwrap_or(crate::models::source::UpdateClass::Versioned);
+                    let update_class =
+                        crate::models::source::UpdateClass::from_str_opt(update_class_str)
+                            .unwrap_or(crate::models::source::UpdateClass::Versioned);
                     self.mark_superseded(old_id, source_id, &update_class)
                         .await?;
-                    let ext_deleted =
-                        ExtractionRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let ext_deleted = ExtractionRepo::delete_by_source(&*self.repo, old_id).await?;
                     let stmts_deleted =
                         StatementRepo::delete_by_source(&*self.repo, old_id).await?;
-                    let sects_deleted =
-                        SectionRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let sects_deleted = SectionRepo::delete_by_source(&*self.repo, old_id).await?;
                     UnresolvedEntityRepo::delete_by_source(&*self.repo, old_id).await?;
                     let aliases_cleared =
                         NodeAliasRepo::clear_source_chunks(&*self.repo, old_id).await?;
-                    let chunks_deleted =
-                        ChunkRepo::delete_by_source(&*self.repo, old_id).await?;
-                    let ledger_deleted =
-                        LedgerRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let chunks_deleted = ChunkRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let ledger_deleted = LedgerRepo::delete_by_source(&*self.repo, old_id).await?;
                     SourceRepo::clear_embedding(&*self.repo, old_id).await?;
                     tracing::info!(
                         old_source = %old_id,
@@ -727,10 +715,7 @@ impl SourceService {
                 {
                     Ok(_result) => {
                         if let Err(e) = self
-                            .extract_entities_from_statements(
-                                source_id,
-                                source.domain.as_deref(),
-                            )
+                            .extract_entities_from_statements(source_id, source.domain.as_deref())
                             .await
                         {
                             tracing::warn!(

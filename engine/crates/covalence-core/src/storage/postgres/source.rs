@@ -258,6 +258,8 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
         normalized_content: row.get("normalized_content"),
         normalized_hash: row.get("normalized_hash"),
         summary: row.get("summary"),
-        status: row.try_get("status").unwrap_or_else(|_| "complete".to_string()),
+        status: row
+            .try_get("status")
+            .unwrap_or_else(|_| "complete".to_string()),
     }
 }
