@@ -32,7 +32,6 @@ impl SourceService {
         source_domain: Option<&str>,
     ) -> Result<Option<NodeId>> {
         use crate::ingestion::resolver::MatchType;
-        use sqlx::Row;
 
         // Phase 1: Resolve OUTSIDE the transaction.
         //
@@ -114,14 +113,11 @@ impl SourceService {
             }
         } else {
             // No resolver — simple exact-match fallback.
-            let existing: Option<NodeId> = sqlx::query(
-                "SELECT id FROM nodes \
-                 WHERE LOWER(canonical_name) = LOWER($1)",
-            )
-            .bind(&entity.name)
-            .fetch_optional(&mut *tx)
-            .await?
-            .map(|r| r.get("id"));
+            let existing: Option<NodeId> =
+                sqlx::query_scalar("SELECT sp_get_node_by_name_exact($1)")
+                    .bind(&entity.name)
+                    .fetch_one(&mut *tx)
+                    .await?;
 
             if let Some(nid) = existing {
                 Self::bump_mention_in_tx(&mut tx, nid).await?;
@@ -155,14 +151,13 @@ impl SourceService {
                 .and_then(|m| m.get("ast_hash"))
                 .and_then(|v| v.as_str())
             {
-                let row: Option<(Option<serde_json::Value>,)> =
-                    sqlx::query_as("SELECT properties FROM nodes WHERE id = $1")
+                let (props_val,): (Option<serde_json::Value>,) =
+                    sqlx::query_as("SELECT sp_get_node_properties($1)")
                         .bind(node_id)
-                        .fetch_optional(&mut *tx)
+                        .fetch_one(&mut *tx)
                         .await?;
-                let old_hash = row
+                let old_hash = props_val
                     .as_ref()
-                    .and_then(|(p,)| p.as_ref())
                     .and_then(|p| p.get("ast_hash"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
@@ -170,38 +165,26 @@ impl SourceService {
                 if old_hash != new_hash {
                     // Hash changed → clear semantic_summary, update
                     // ast_hash and description.
-                    let mut props = row
-                        .and_then(|(p,)| p)
-                        .unwrap_or_else(|| serde_json::json!({}));
+                    let mut props = props_val.unwrap_or_else(|| serde_json::json!({}));
                     props["ast_hash"] = serde_json::json!(new_hash);
                     props.as_object_mut().map(|o| o.remove("semantic_summary"));
-                    sqlx::query(
-                        "UPDATE nodes SET properties = $2, \
-                             description = COALESCE($3, description) \
-                         WHERE id = $1",
-                    )
-                    .bind(node_id)
-                    .bind(&props)
-                    .bind(&entity.description)
-                    .execute(&mut *tx)
-                    .await?;
+                    sqlx::query("SELECT sp_update_node_ast_hash($1, $2, $3)")
+                        .bind(node_id)
+                        .bind(&props)
+                        .bind(&entity.description)
+                        .execute(&mut *tx)
+                        .await?;
                     tracing::debug!(
                         node = %entity.name,
                         "ast_hash changed, cleared semantic_summary"
                     );
                 } else {
                     // Hash unchanged — just update ast_hash (idempotent).
-                    sqlx::query(
-                        "UPDATE nodes \
-                         SET properties = jsonb_set(\
-                             COALESCE(properties, '{}'), \
-                             '{ast_hash}', $2::jsonb) \
-                         WHERE id = $1",
-                    )
-                    .bind(node_id)
-                    .bind(serde_json::json!(new_hash))
-                    .execute(&mut *tx)
-                    .await?;
+                    sqlx::query("SELECT sp_update_node_ast_hash_only($1, $2)")
+                        .bind(node_id)
+                        .bind(new_hash)
+                        .execute(&mut *tx)
+                        .await?;
                 }
             }
         }
@@ -209,36 +192,24 @@ impl SourceService {
         let ext_id = uuid::Uuid::new_v4();
         match provenance {
             ExtractionProvenance::Chunk(chunk_id) => {
-                sqlx::query(
-                    "INSERT INTO extractions (
-                        id, chunk_id, entity_type, entity_id,
-                        extraction_method, confidence, is_superseded
-                    ) VALUES ($1, $2, $3, $4, $5, $6, false)",
-                )
-                .bind(ext_id)
-                .bind(chunk_id)
-                .bind("node")
-                .bind(node_id.into_uuid())
-                .bind(extraction_method)
-                .bind(entity.confidence)
-                .execute(&mut *tx)
-                .await?;
+                sqlx::query("SELECT sp_create_extraction_from_chunk($1, $2, $3, $4, $5)")
+                    .bind(ext_id)
+                    .bind(chunk_id)
+                    .bind(node_id.into_uuid())
+                    .bind(extraction_method)
+                    .bind(entity.confidence)
+                    .execute(&mut *tx)
+                    .await?;
             }
             ExtractionProvenance::Statement(stmt_id) => {
-                sqlx::query(
-                    "INSERT INTO extractions (
-                        id, statement_id, entity_type, entity_id,
-                        extraction_method, confidence, is_superseded
-                    ) VALUES ($1, $2, $3, $4, $5, $6, false)",
-                )
-                .bind(ext_id)
-                .bind(stmt_id)
-                .bind("node")
-                .bind(node_id.into_uuid())
-                .bind(extraction_method)
-                .bind(entity.confidence)
-                .execute(&mut *tx)
-                .await?;
+                sqlx::query("SELECT sp_create_extraction_from_statement($1, $2, $3, $4, $5)")
+                    .bind(ext_id)
+                    .bind(stmt_id)
+                    .bind(node_id.into_uuid())
+                    .bind(extraction_method)
+                    .bind(entity.confidence)
+                    .execute(&mut *tx)
+                    .await?;
             }
         }
 
@@ -316,15 +287,10 @@ impl SourceService {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         node_id: NodeId,
     ) -> Result<()> {
-        sqlx::query(
-            "UPDATE nodes \
-             SET mention_count = mention_count + 1, \
-                 last_seen = NOW() \
-             WHERE id = $1",
-        )
-        .bind(node_id)
-        .execute(&mut **tx)
-        .await?;
+        sqlx::query("SELECT sp_bump_node_mention($1)")
+            .bind(node_id)
+            .execute(&mut **tx)
+            .await?;
         Ok(())
     }
 
@@ -345,8 +311,6 @@ impl SourceService {
         node_id: NodeId,
         chunk_id: ChunkId,
     ) -> Result<()> {
-        use sqlx::Row;
-
         // Reject short aliases that cause noise (#122).
         if alias_text.trim().len() < Self::MIN_ALIAS_LEN {
             tracing::debug!(
@@ -358,15 +322,10 @@ impl SourceService {
         }
 
         // Check if alias already exists (for any node).
-        let existing: Option<uuid::Uuid> = sqlx::query(
-            "SELECT node_id FROM node_aliases \
-             WHERE LOWER(alias) = LOWER($1) \
-             LIMIT 1",
-        )
-        .bind(alias_text)
-        .fetch_optional(&mut **tx)
-        .await?
-        .map(|r| r.get("node_id"));
+        let existing: Option<uuid::Uuid> = sqlx::query_scalar("SELECT sp_get_alias_by_text($1)")
+            .bind(alias_text)
+            .fetch_one(&mut **tx)
+            .await?;
 
         match existing {
             Some(existing_node_id) if existing_node_id == node_id.into_uuid() => {

@@ -92,7 +92,7 @@ impl RetryQueueService {
     /// the async job DAG with fan-in triggers.
     pub async fn enqueue_extract_chunks(&self, source_id: SourceId) -> Result<u64> {
         let chunks: Vec<(uuid::Uuid,)> =
-            sqlx::query_as("SELECT id FROM chunks WHERE source_id = $1")
+            sqlx::query_as("SELECT * FROM sp_get_chunks_by_source($1)")
                 .bind(source_id)
                 .fetch_all(self.repo.pool())
                 .await?;
@@ -609,8 +609,9 @@ async fn execute_job(
                 Ok(()) => Ok(()),
                 Err(e) => {
                     // Mark the source as failed so status is queryable.
-                    let _ = sqlx::query("UPDATE sources SET status = 'failed' WHERE id = $1")
+                    let _ = sqlx::query("SELECT sp_update_source_status($1, $2)")
                         .bind(source_id)
+                        .bind("failed")
                         .execute(svc.repo.pool())
                         .await;
                     Err(e)
@@ -813,37 +814,24 @@ async fn summarize_single_entity(
     };
 
     // Find the chunk containing this entity's definition.
-    let mut chunk_content: Option<String> = sqlx::query_scalar(
-        "SELECT c.content FROM extractions ex \
-         JOIN chunks c ON c.id = ex.chunk_id \
-         WHERE ex.entity_id = $1 AND ex.entity_type = 'node' \
-           AND ex.chunk_id IS NOT NULL \
-           AND c.content LIKE '%' || $2 || '%' \
-         ORDER BY ex.confidence DESC \
-         LIMIT 1",
-    )
-    .bind(node_id)
-    .bind(&def_pattern)
-    .fetch_optional(svc.repo.pool())
-    .await
-    .ok()
-    .flatten();
+    let mut chunk_content: Option<String> =
+        sqlx::query_scalar("SELECT sp_get_chunk_content_for_entity($1, $2)")
+            .bind(node_id)
+            .bind(&def_pattern)
+            .fetch_optional(svc.repo.pool())
+            .await
+            .ok()
+            .flatten();
 
     // Fallback: search all chunks from the same source.
     if chunk_content.is_none() {
-        chunk_content = sqlx::query_scalar(
-            "SELECT c.content FROM chunks c \
-             WHERE c.source_id = $1 \
-               AND c.content LIKE '%' || $2 || '%' \
-             ORDER BY LENGTH(c.content) ASC \
-             LIMIT 1",
-        )
-        .bind(source_id)
-        .bind(&def_pattern)
-        .fetch_optional(svc.repo.pool())
-        .await
-        .ok()
-        .flatten();
+        chunk_content = sqlx::query_scalar("SELECT sp_get_chunk_by_source_pattern($1, $2)")
+            .bind(source_id)
+            .bind(&def_pattern)
+            .fetch_optional(svc.repo.pool())
+            .await
+            .ok()
+            .flatten();
     }
 
     let raw = chunk_content
@@ -875,26 +863,20 @@ async fn summarize_single_entity(
         return Ok(());
     }
 
-    // Store summary + processing metadata on the node.
+    // Store summary on the node (properties, description, clear embedding).
+    sqlx::query("SELECT sp_update_node_semantic_summary($1, $2)")
+        .bind(node_id)
+        .bind(summary)
+        .execute(svc.repo.pool())
+        .await?;
+
+    // Record processing metadata on the node.
     sqlx::query(
-        "UPDATE nodes SET \
-           properties = jsonb_set(\
-             COALESCE(properties, '{}'), \
-             '{semantic_summary}', \
-             $2::jsonb\
-           ), \
-           description = $3, \
-           embedding = NULL, \
-           processing = jsonb_set(\
-             COALESCE(processing, '{}'), \
-             '{summary}', \
-             $4::jsonb\
-           ) \
-         WHERE id = $1",
+        "UPDATE nodes SET processing = jsonb_set(\
+           COALESCE(processing, '{}'), '{summary}', $2::jsonb\
+         ) WHERE id = $1",
     )
     .bind(node_id)
-    .bind(serde_json::json!(summary))
-    .bind(summary)
     .bind(serde_json::json!({
         "model": "haiku",
         "provider": provider,
@@ -950,29 +932,21 @@ async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
     }
 
     // Check: any pending/running summarize_entity jobs for this source?
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM retry_jobs \
-         WHERE kind = 'summarize_entity' \
-           AND status IN ('pending', 'running') \
-           AND payload->>'source_id' = $1",
-    )
-    .bind(sid.to_string())
-    .fetch_one(&mut *tx)
-    .await
-    .unwrap_or(1);
-
-    if remaining == 0 {
-        // Check for failed summarization jobs (#170).
-        let failed: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM retry_jobs \
-             WHERE kind = 'summarize_entity' \
-               AND status IN ('dead', 'failed') \
-               AND payload->>'source_id' = $1",
-        )
+    let remaining: i64 = sqlx::query_scalar("SELECT sp_count_pending_jobs_for_source($1, $2)")
+        .bind("summarize_entity")
         .bind(sid.to_string())
         .fetch_one(&mut *tx)
         .await
-        .unwrap_or(0);
+        .unwrap_or(1);
+
+    if remaining == 0 {
+        // Check for failed summarization jobs (#170).
+        let failed: i64 = sqlx::query_scalar("SELECT sp_count_failed_jobs_for_source($1, $2)")
+            .bind("summarize_entity")
+            .bind(sid.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(0);
 
         if failed > 0 {
             tracing::warn!(
@@ -980,17 +954,17 @@ async fn try_advance_to_compose(pool: &sqlx::PgPool, source_id: SourceId) {
                 failed_summaries = failed,
                 "fan-in: summarization partially failed — composing with available summaries"
             );
-            let _ = sqlx::query("UPDATE sources SET status = 'partial' WHERE id = $1")
+            let _ = sqlx::query("SELECT sp_update_source_status($1, $2)")
                 .bind(sid)
+                .bind("partial")
                 .execute(&mut *tx)
                 .await;
         }
-        let has_summary: bool =
-            sqlx::query_scalar("SELECT summary IS NOT NULL FROM sources WHERE id = $1")
-                .bind(sid)
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap_or(true);
+        let has_summary: bool = sqlx::query_scalar("SELECT sp_source_has_summary($1)")
+            .bind(sid)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(true);
 
         if !has_summary {
             let payload = serde_json::json!({ "source_id": sid.to_string() });
@@ -1108,22 +1082,19 @@ async fn extract_single_chunk(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    sqlx::query(
-        "UPDATE chunks SET processing = jsonb_set(\
-           COALESCE(processing, '{}'), '{extraction}', $2::jsonb\
-         ) WHERE id = $1",
-    )
-    .bind(chunk_id)
-    .bind(serde_json::json!({
-        "model": "haiku",
-        "at": chrono::Utc::now().to_rfc3339(),
-        "ms": duration_ms,
-        "entities_found": entity_count,
-        "relationships_found": result.relationships.len(),
-        "ingestion_id": ingestion_id,
-    }))
-    .execute(svc.repo.pool())
-    .await?;
+    sqlx::query("SELECT sp_update_chunk_processing($1, $2, $3)")
+        .bind(chunk_id)
+        .bind("extraction")
+        .bind(serde_json::json!({
+            "model": "haiku",
+            "at": chrono::Utc::now().to_rfc3339(),
+            "ms": duration_ms,
+            "entities_found": entity_count,
+            "relationships_found": result.relationships.len(),
+            "ingestion_id": ingestion_id,
+        }))
+        .execute(svc.repo.pool())
+        .await?;
 
     tracing::info!(
         chunk_id = %chunk_id,
@@ -1159,29 +1130,21 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
         return;
     }
 
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM retry_jobs \
-         WHERE kind = 'extract_chunk' \
-           AND status IN ('pending', 'running') \
-           AND payload->>'source_id' = $1",
-    )
-    .bind(sid.to_string())
-    .fetch_one(&mut *tx)
-    .await
-    .unwrap_or(1);
-
-    if remaining == 0 {
-        // Check for failed/dead extraction jobs (#170).
-        let failed: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM retry_jobs \
-             WHERE kind = 'extract_chunk' \
-               AND status IN ('dead', 'failed') \
-               AND payload->>'source_id' = $1",
-        )
+    let remaining: i64 = sqlx::query_scalar("SELECT sp_count_pending_jobs_for_source($1, $2)")
+        .bind("extract_chunk")
         .bind(sid.to_string())
         .fetch_one(&mut *tx)
         .await
-        .unwrap_or(0);
+        .unwrap_or(1);
+
+    if remaining == 0 {
+        // Check for failed/dead extraction jobs (#170).
+        let failed: i64 = sqlx::query_scalar("SELECT sp_count_failed_jobs_for_source($1, $2)")
+            .bind("extract_chunk")
+            .bind(sid.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(0);
 
         if failed > 0 {
             tracing::warn!(
@@ -1190,27 +1153,18 @@ async fn try_advance_to_summarize(pool: &sqlx::PgPool, source_id: SourceId) {
                 "fan-in: extraction partially failed — proceeding with degraded coverage"
             );
             // Mark source as partial so downstream knows.
-            let _ = sqlx::query("UPDATE sources SET status = 'partial' WHERE id = $1")
+            let _ = sqlx::query("SELECT sp_update_source_status($1, $2)")
                 .bind(sid)
+                .bind("partial")
                 .execute(&mut *tx)
                 .await;
         }
-        let entities: Vec<(uuid::Uuid,)> = sqlx::query_as(
-            "SELECT DISTINCT n.id \
-             FROM nodes n \
-             JOIN extractions ex ON ex.entity_id = n.id AND ex.entity_type = 'node' \
-             JOIN chunks c ON c.id = ex.chunk_id \
-             WHERE c.source_id = $1 \
-               AND n.entity_class = 'code' \
-               AND (n.properties->>'semantic_summary' IS NULL \
-                    OR n.properties->>'semantic_summary' = '') \
-               AND n.node_type != 'code_test' \
-               AND n.canonical_name NOT LIKE 'test_%'",
-        )
-        .bind(sid)
-        .fetch_all(&mut *tx)
-        .await
-        .unwrap_or_default();
+        let entities: Vec<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT * FROM sp_get_unsummarized_entities_by_source($1)")
+                .bind(sid)
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap_or_default();
 
         let mut enqueued = 0usize;
         for (node_id,) in &entities {
@@ -1258,24 +1212,12 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
     })?;
 
     // Collect entity summaries for this source.
-    let summaries: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT canonical_name, node_type, \
-                COALESCE(properties->>'semantic_summary', \
-                         description, canonical_name) \
-         FROM nodes n \
-         JOIN extractions ex ON ex.entity_id = n.id \
-           AND ex.entity_type = 'node' \
-         JOIN chunks c ON c.id = ex.chunk_id \
-         WHERE c.source_id = $1 \
-           AND n.entity_class = 'code' \
-         GROUP BY n.id, canonical_name, node_type, \
-                  properties, description \
-         ORDER BY n.node_type, n.canonical_name",
-    )
-    .bind(source_id)
-    .fetch_all(svc.repo.pool())
-    .await
-    .unwrap_or_default();
+    let summaries: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT * FROM sp_get_entity_summaries_by_source($1)")
+            .bind(source_id)
+            .fetch_all(svc.repo.pool())
+            .await
+            .unwrap_or_default();
 
     if summaries.is_empty() {
         return Ok(());
@@ -1326,21 +1268,18 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
     }
 
     // Record processing metadata.
-    sqlx::query(
-        "UPDATE sources SET processing = jsonb_set(\
-           COALESCE(processing, '{}'), '{compose}', $2::jsonb\
-         ) WHERE id = $1",
-    )
-    .bind(source_id)
-    .bind(serde_json::json!({
-        "model": "haiku",
-        "provider": provider,
-        "at": chrono::Utc::now().to_rfc3339(),
-        "ms": duration_ms,
-        "entities_composed": summaries.len(),
-    }))
-    .execute(svc.repo.pool())
-    .await?;
+    sqlx::query("SELECT sp_update_source_processing($1, $2, $3)")
+        .bind(source_id)
+        .bind("compose")
+        .bind(serde_json::json!({
+            "model": "haiku",
+            "provider": provider,
+            "at": chrono::Utc::now().to_rfc3339(),
+            "ms": duration_ms,
+            "entities_composed": summaries.len(),
+        }))
+        .execute(svc.repo.pool())
+        .await?;
 
     tracing::info!(
         source_id = %source_id,
@@ -1351,13 +1290,12 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
 
     // Mark source as complete — unless upstream set it to 'partial'
     // due to failed extraction/summarization jobs (#170).
-    sqlx::query(
-        "UPDATE sources SET status = 'complete' \
-         WHERE id = $1 AND status != 'partial'",
-    )
-    .bind(source_id)
-    .execute(svc.repo.pool())
-    .await?;
+    sqlx::query("SELECT sp_update_source_status_conditional($1, $2, $3)")
+        .bind(source_id)
+        .bind("complete")
+        .bind("partial")
+        .execute(svc.repo.pool())
+        .await?;
 
     // Wire edge synthesis into the DAG (#173): enqueue after each
     // source completes so co-occurrence edges are built on fresh data
