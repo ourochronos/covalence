@@ -226,9 +226,28 @@ pub struct CorefMutation {
     pub mutated_token: String,
 }
 
+/// Convert a character offset to a byte offset in a UTF-8 string.
+/// Returns `None` if the character offset exceeds the string length.
+fn char_to_byte_offset(text: &str, char_offset: usize) -> Option<usize> {
+    text.char_indices()
+        .nth(char_offset)
+        .map(|(byte_idx, _)| byte_idx)
+        .or_else(|| {
+            // char_offset == text.chars().count() → end of string
+            if char_offset == text.chars().count() {
+                Some(text.len())
+            } else {
+                None
+            }
+        })
+}
+
 /// Compute mutations from the sidecar's cluster_spans and the
 /// original text. Each non-antecedent mention in a cluster becomes
 /// a mutation replacing it with the antecedent (first mention).
+///
+/// The sidecar returns character-based offsets, but we need byte
+/// offsets for the offset projection ledger. This function converts.
 fn mutations_from_spans(text: &str, cluster_spans: &[Vec<[usize; 2]>]) -> Vec<CorefMutation> {
     // Collect replacements: (canonical_start, canonical_end, antecedent_text)
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
@@ -237,15 +256,23 @@ fn mutations_from_spans(text: &str, cluster_spans: &[Vec<[usize; 2]>]) -> Vec<Co
             continue;
         }
         let antecedent_span = &cluster[0];
-        let antecedent_text = &text[antecedent_span[0]..antecedent_span[1]];
+        let Some(ant_start) = char_to_byte_offset(text, antecedent_span[0]) else {
+            continue;
+        };
+        let Some(ant_end) = char_to_byte_offset(text, antecedent_span[1]) else {
+            continue;
+        };
+        let antecedent_text = &text[ant_start..ant_end];
         for mention_span in &cluster[1..] {
-            let mention_text = &text[mention_span[0]..mention_span[1]];
+            let Some(m_start) = char_to_byte_offset(text, mention_span[0]) else {
+                continue;
+            };
+            let Some(m_end) = char_to_byte_offset(text, mention_span[1]) else {
+                continue;
+            };
+            let mention_text = &text[m_start..m_end];
             if mention_text != antecedent_text {
-                replacements.push((
-                    mention_span[0],
-                    mention_span[1],
-                    antecedent_text.to_string(),
-                ));
+                replacements.push((m_start, m_end, antecedent_text.to_string()));
             }
         }
     }
