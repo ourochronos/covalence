@@ -78,6 +78,8 @@ pub struct CreateSourceRequest {
 pub struct CreateSourceResponse {
     /// ID of the created (or deduplicated) source.
     pub id: Uuid,
+    /// Processing status: accepted (processing enqueued), complete (dedup match).
+    pub status: String,
 }
 
 /// Response for a source entity.

@@ -26,10 +26,13 @@ POST /api/v1/sources
     metadata: Object?,       // arbitrary metadata
     format_origin: String?,  // original format (e.g., "pdf", "html")
   }
-  → Accepts a source and kicks off the ingestion pipeline
+  → Accepts a source, stores it, and enqueues async pipeline processing
+  → Returns immediately with { id, status: "accepted" }
   → Provide either content (base64) or url — at least one required
   → source_type required when using content directly
-  → Returns: { id }
+  → Processing runs asynchronously via ProcessSource queue job
+  → Status queryable via GET /sources/{id} (accepted → processing → complete → failed)
+  → Dedup matches return { id, status: "complete" } immediately
 
 GET /api/v1/sources
   Query: { limit?, offset? }

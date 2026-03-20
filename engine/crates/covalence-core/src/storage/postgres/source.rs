@@ -21,7 +21,7 @@ impl SourceRepo for PgRepo {
                 trust_alpha, trust_beta, reliability_score,
                 clearance_level, update_class, supersedes_id,
                 content_version, normalized_content, normalized_hash,
-                summary
+                summary, status
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7,
@@ -30,7 +30,7 @@ impl SourceRepo for PgRepo {
                 $13, $14, $15,
                 $16, $17, $18,
                 $19, $20, $21,
-                $22
+                $22, $23
             )",
         )
         .bind(source.id)
@@ -55,6 +55,7 @@ impl SourceRepo for PgRepo {
         .bind(&source.normalized_content)
         .bind(&source.normalized_hash)
         .bind(&source.summary)
+        .bind(&source.status)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -68,7 +69,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash, summary
+                    normalized_content, normalized_hash, summary, status
              FROM sources WHERE id = $1",
         )
         .bind(id)
@@ -86,7 +87,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash, summary
+                    normalized_content, normalized_hash, summary, status
              FROM sources WHERE content_hash = $1",
         )
         .bind(hash)
@@ -104,7 +105,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash, summary
+                    normalized_content, normalized_hash, summary, status
              FROM sources WHERE normalized_hash = $1",
         )
         .bind(hash)
@@ -172,7 +173,7 @@ impl SourceRepo for PgRepo {
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
                     supersedes_id, content_version,
-                    normalized_content, normalized_hash, summary
+                    normalized_content, normalized_hash, summary, status
              FROM sources
              ORDER BY ingested_at DESC
              LIMIT $1 OFFSET $2",
@@ -257,5 +258,6 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
         normalized_content: row.get("normalized_content"),
         normalized_hash: row.get("normalized_hash"),
         summary: row.get("summary"),
+        status: row.try_get("status").unwrap_or_else(|_| "complete".to_string()),
     }
 }

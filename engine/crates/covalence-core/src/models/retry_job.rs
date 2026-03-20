@@ -38,6 +38,8 @@ pub struct RetryJob {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
+    /// Process a newly accepted source (chunk, embed, extract, resolve).
+    ProcessSource,
     /// Reprocess a source (re-chunk, re-extract, re-embed).
     ReprocessSource,
     /// Extract statements from a source's chunks.
@@ -60,6 +62,7 @@ impl JobKind {
     /// Convert to the PostgreSQL enum string representation.
     pub fn as_pg_str(&self) -> &'static str {
         match self {
+            Self::ProcessSource => "process_source",
             Self::ReprocessSource => "reprocess_source",
             Self::ExtractStatements => "extract_statements",
             Self::ExtractEntities => "extract_entities",
@@ -74,6 +77,7 @@ impl JobKind {
     /// Parse from PostgreSQL enum string.
     pub fn from_pg_str(s: &str) -> Option<Self> {
         match s {
+            "process_source" => Some(Self::ProcessSource),
             "reprocess_source" => Some(Self::ReprocessSource),
             "extract_statements" => Some(Self::ExtractStatements),
             "extract_entities" => Some(Self::ExtractEntities),

@@ -430,14 +430,16 @@ impl SourceService {
 
     /// Ingest new content through the full pipeline.
     ///
-    /// Stages: hash, dedup/supersede, parse, normalize, chunk, embed,
-    /// extract, resolve, embed nodes.
+    /// Accept a new source and enqueue it for async processing.
+    ///
+    /// Returns immediately after storing the source record.
+    /// The pipeline (chunk → embed → extract → resolve → summarize)
+    /// runs asynchronously via a `ProcessSource` queue job.
     ///
     /// **Source update classes**: When a URI is provided and an
     /// existing source shares that URI, the system detects the
-    /// update class (correction, versioned, refactor) based on
-    /// content overlap, marks the old source as superseded, and
-    /// links the new source via `supersedes_id`.
+    /// update class and stores supersession info for the queue
+    /// worker to handle after the pipeline succeeds.
     pub async fn ingest(
         &self,
         content: &[u8],
@@ -526,54 +528,137 @@ impl SourceService {
 
         SourceRepo::create(&*self.repo, &source).await?;
 
-        // Run shared pipeline (chunk → embed → extract → resolve).
-        // This runs BEFORE supersede cleanup so that if the pipeline
-        // fails, the old source's data is still intact (#113).
+        // Store supersession info in the source metadata so the
+        // queue worker can handle cleanup after the pipeline succeeds.
+        if let Some(ref info) = supersedes_info {
+            sqlx::query(
+                "UPDATE sources SET metadata = jsonb_set(\
+                   COALESCE(metadata, '{}'), '{_supersession}', $2::jsonb\
+                 ) WHERE id = $1",
+            )
+            .bind(source.id)
+            .bind(serde_json::json!({
+                "old_source_id": info.old_source_id.to_string(),
+                "update_class": info.update_class.as_str(),
+            }))
+            .execute(self.repo.pool())
+            .await?;
+        }
+
+        // Enqueue async processing via the retry queue.
+        let payload = serde_json::json!({
+            "source_id": source.id.to_string(),
+        });
+        let key = format!("process:{}", source.id);
+        use crate::storage::traits::JobQueueRepo;
+        JobQueueRepo::enqueue(
+            &*self.repo,
+            crate::models::retry_job::JobKind::ProcessSource,
+            payload,
+            5,
+            Some(&key),
+        )
+        .await?;
+
+        tracing::info!(
+            source_id = %source.id,
+            uri = uri.unwrap_or("-"),
+            "source accepted, processing enqueued"
+        );
+
+        Ok(source.id)
+    }
+
+    /// Process an accepted source through the full pipeline.
+    ///
+    /// Called by the queue worker after a `ProcessSource` job is
+    /// claimed. Runs chunk → embed → extract → resolve → summarize,
+    /// then handles supersession cleanup and the statement pipeline.
+    pub(crate) async fn process_accepted(&self, source_id: SourceId) -> Result<()> {
+        // Update status to processing.
+        sqlx::query("UPDATE sources SET status = 'processing' WHERE id = $1")
+            .bind(source_id)
+            .execute(self.repo.pool())
+            .await?;
+
+        let source =
+            SourceRepo::get(&*self.repo, source_id)
+                .await?
+                .ok_or_else(|| Error::NotFound {
+                    entity_type: "source",
+                    id: source_id.to_string(),
+                })?;
+
+        let normalized = source.normalized_content.as_ref().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "source {} has no normalized_content",
+                source_id
+            ))
+        })?;
+
+        let source_type = &source.source_type;
+        let is_code = crate::ingestion::code_chunker::detect_code_language(
+            "application/octet-stream",
+            source.uri.as_deref(),
+        )
+        .is_some()
+            || source_type == "code";
+
+        // Run the shared pipeline.
         self.run_pipeline(&PipelineInput {
-            source_id: source.id,
+            source_id,
             source_type,
-            source_uri: uri.map(|u| u.to_string()),
+            source_uri: source.uri.clone(),
             source_title: source.title.clone(),
             source_domain: source.domain.clone(),
-            normalized: &prepared.normalized,
-            is_code: prepared.is_code,
+            normalized,
+            is_code,
         })
         .await?;
 
-        // Clean up superseded source AFTER the new pipeline succeeds.
-        // This ensures old data is preserved if the new pipeline fails (#113).
-        if let Some(ref info) = supersedes_info {
-            self.mark_superseded(info.old_source_id, source.id, &info.update_class)
-                .await?;
-            // FK ordering: extractions → statements → sections → chunks.
-            // extractions.statement_id FK → statements, statements.section_id FK → sections.
-            let ext_deleted =
-                ExtractionRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
-            let stmts_deleted =
-                StatementRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
-            let sects_deleted =
-                SectionRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
-            UnresolvedEntityRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
-            let aliases_cleared =
-                NodeAliasRepo::clear_source_chunks(&*self.repo, info.old_source_id).await?;
-            let chunks_deleted =
-                ChunkRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
-            let ledger_deleted =
-                LedgerRepo::delete_by_source(&*self.repo, info.old_source_id).await?;
-            SourceRepo::clear_embedding(&*self.repo, info.old_source_id).await?;
-            tracing::info!(
-                old_source = %info.old_source_id,
-                ext_deleted, stmts_deleted, sects_deleted,
-                aliases_cleared, chunks_deleted, ledger_deleted,
-                "cleaned up superseded source"
-            );
+        // Handle supersession cleanup if this source replaces another.
+        if let Some(supersession) = source
+            .metadata
+            .get("_supersession")
+        {
+            if let (Some(old_id_str), Some(update_class_str)) = (
+                supersession.get("old_source_id").and_then(|v| v.as_str()),
+                supersession.get("update_class").and_then(|v| v.as_str()),
+            ) {
+                if let Ok(old_uuid) = old_id_str.parse::<uuid::Uuid>() {
+                    let old_id = SourceId::from_uuid(old_uuid);
+                    let update_class = crate::models::source::UpdateClass::from_str_opt(
+                        update_class_str,
+                    )
+                    .unwrap_or(crate::models::source::UpdateClass::Versioned);
+                    self.mark_superseded(old_id, source_id, &update_class)
+                        .await?;
+                    let ext_deleted =
+                        ExtractionRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let stmts_deleted =
+                        StatementRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let sects_deleted =
+                        SectionRepo::delete_by_source(&*self.repo, old_id).await?;
+                    UnresolvedEntityRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let aliases_cleared =
+                        NodeAliasRepo::clear_source_chunks(&*self.repo, old_id).await?;
+                    let chunks_deleted =
+                        ChunkRepo::delete_by_source(&*self.repo, old_id).await?;
+                    let ledger_deleted =
+                        LedgerRepo::delete_by_source(&*self.repo, old_id).await?;
+                    SourceRepo::clear_embedding(&*self.repo, old_id).await?;
+                    tracing::info!(
+                        old_source = %old_id,
+                        ext_deleted, stmts_deleted, sects_deleted,
+                        aliases_cleared, chunks_deleted, ledger_deleted,
+                        "cleaned up superseded source"
+                    );
+                }
+            }
         }
 
-        // Run statement pipeline for prose sources (parallel, opt-in).
-        // Statement failures are non-fatal: chunks and embeddings are
-        // already persisted, so the source is still searchable.
-        // Code sources skip statements — they use AST extraction instead.
-        if self.pipeline.statement_enabled && !prepared.is_code {
+        // Statement pipeline for prose sources.
+        if self.pipeline.statement_enabled && !is_code {
             if let Some(ref stmt_extractor) = self.statement_extractor {
                 use super::statement_pipeline::{StatementPipelineInput, run_statement_pipeline};
                 match run_statement_pipeline(
@@ -582,8 +667,8 @@ impl SourceService {
                     self.embedder.as_ref(),
                     &self.table_dims,
                     &StatementPipelineInput {
-                        source_id: source.id,
-                        normalized_text: &prepared.normalized,
+                        source_id,
+                        normalized_text: normalized,
                         source_title: source.title.as_deref(),
                         window_chars: self.pipeline.statement_window_chars,
                         window_overlap: self.pipeline.statement_window_overlap,
@@ -594,13 +679,15 @@ impl SourceService {
                 .await
                 {
                     Ok(_result) => {
-                        // Extract entities from statements (Phase 4, ADR-0015).
                         if let Err(e) = self
-                            .extract_entities_from_statements(source.id, source.domain.as_deref())
+                            .extract_entities_from_statements(
+                                source_id,
+                                source.domain.as_deref(),
+                            )
                             .await
                         {
                             tracing::warn!(
-                                source_id = %source.id,
+                                source_id = %source_id,
                                 error = %e,
                                 "statement entity extraction failed (non-fatal)"
                             );
@@ -608,16 +695,23 @@ impl SourceService {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            source_id = %source.id,
+                            source_id = %source_id,
                             error = %e,
-                            "statement pipeline failed (non-fatal, chunks still persisted)"
+                            "statement pipeline failed (non-fatal)"
                         );
                     }
                 }
             }
         }
 
-        Ok(source.id)
+        // Mark complete.
+        sqlx::query("UPDATE sources SET status = 'complete' WHERE id = $1")
+            .bind(source_id)
+            .execute(self.repo.pool())
+            .await?;
+
+        tracing::info!(source_id = %source_id, "source processing complete");
+        Ok(())
     }
 
     /// Detect whether an existing source with the same URI exists

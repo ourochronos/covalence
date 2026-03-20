@@ -222,6 +222,8 @@ pub struct Source {
     pub normalized_hash: Option<Vec<u8>>,
     /// LLM-compiled summary of the source (statement pipeline).
     pub summary: Option<String>,
+    /// Processing status: accepted → processing → complete → failed.
+    pub status: String,
 }
 
 impl Source {
@@ -253,6 +255,7 @@ impl Source {
             normalized_content: None,
             normalized_hash: None,
             summary: None,
+            status: "accepted".to_string(),
         }
     }
 

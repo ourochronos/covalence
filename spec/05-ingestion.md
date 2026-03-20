@@ -43,9 +43,13 @@ The ingestion pipeline has two paths that share the same front-end stages (Accep
                                          └────────────────────┘                └────────────────────┘
 ```
 
-### Stage 1: Accept Source
+### Stage 1: Accept Source (Sync — returns immediately)
 
-Input: Raw content + metadata envelope.
+Input: Raw content + metadata envelope. The accept phase is **synchronous and fast** (milliseconds): hash, dedup check, parse, normalize, store the source record with `status = "accepted"`, and enqueue a `ProcessSource` job. The API returns the source ID immediately. All slow processing (chunking, embedding, extraction, resolution) runs **asynchronously** via the retry queue.
+
+Source status lifecycle: `accepted` → `processing` → `complete` (or `failed`).
+
+Input:
 
 ```rust
 struct SourceInput {

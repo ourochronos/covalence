@@ -441,6 +441,7 @@ impl RetryQueueService {
     /// Returns `true` if any work was found.
     async fn poll_once(&self) -> bool {
         let reprocess_kinds = [
+            JobKind::ProcessSource,
             JobKind::ReprocessSource,
             JobKind::ExtractStatements,
             JobKind::ExtractEntities,
@@ -600,6 +601,24 @@ async fn execute_job(
     use crate::models::retry_job::*;
 
     match job.kind {
+        JobKind::ProcessSource => {
+            let p: SourcePayload = parse_payload(job)?;
+            let source_id = SourceId::from_uuid(parse_uuid(&p.source_id, "source_id")?);
+            let svc = require_svc(source_service, "source_service")?;
+            match svc.process_accepted(source_id).await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    // Mark the source as failed so status is queryable.
+                    let _ = sqlx::query(
+                        "UPDATE sources SET status = 'failed' WHERE id = $1",
+                    )
+                    .bind(source_id)
+                    .execute(svc.repo.pool())
+                    .await;
+                    Err(e)
+                }
+            }
+        }
         JobKind::ReprocessSource => {
             let p: SourcePayload = parse_payload(job)?;
             let source_id = SourceId::from_uuid(parse_uuid(&p.source_id, "source_id")?);

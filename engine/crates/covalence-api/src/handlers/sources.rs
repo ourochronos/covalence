@@ -95,9 +95,25 @@ pub async fn create_source(
     // is immediately visible in search results.
     let _ = state.search_service.clear_cache().await;
 
+    // For dedup matches, the source is already complete.
+    // For new sources, status is "accepted" (processing enqueued).
+    let status = if let Some(src) = covalence_core::storage::traits::SourceRepo::get(
+        &*state.repo,
+        id,
+    )
+    .await?
+    {
+        src.status
+    } else {
+        "accepted".to_string()
+    };
+
     Ok((
         axum::http::StatusCode::CREATED,
-        Json(CreateSourceResponse { id: id.into_uuid() }),
+        Json(CreateSourceResponse {
+            id: id.into_uuid(),
+            status,
+        }),
     ))
 }
 
