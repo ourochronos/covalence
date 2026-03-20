@@ -30,14 +30,18 @@ RETURNS TABLE(
     rel_type TEXT, canonical_rel_type TEXT,
     confidence FLOAT8, weight FLOAT8,
     is_synthetic BOOLEAN, has_valid_from BOOLEAN,
-    causal_level INT, clearance_level INT
+    causal_level_int INT, clearance_level INT
 ) AS $$
     SELECT id, source_node_id, target_node_id,
            rel_type, COALESCE(canonical_rel_type, rel_type),
            confidence, COALESCE(weight, 1.0),
            (properties->>'synthetic')::boolean IS TRUE,
            valid_from IS NOT NULL,
-           COALESCE(causal_level, 0),
+           CASE causal_level
+             WHEN 'intervention' THEN 1
+             WHEN 'counterfactual' THEN 2
+             ELSE 0
+           END,
            clearance_level
     FROM edges
     WHERE invalid_at IS NULL;
