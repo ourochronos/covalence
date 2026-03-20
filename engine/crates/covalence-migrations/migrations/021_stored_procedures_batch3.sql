@@ -145,47 +145,9 @@ CREATE OR REPLACE FUNCTION sp_evict_old_cache_entries(
     SELECT COUNT(*) FROM deleted;
 $$ LANGUAGE sql;
 
--- ================================================================
--- Graph sync
--- ================================================================
-
-CREATE OR REPLACE FUNCTION sp_poll_outbox_events(
-    p_after_seq BIGINT,
-    p_limit INT DEFAULT 1000
-) RETURNS TABLE(seq_id BIGINT, event_type TEXT, entity_id UUID) AS $$
-    SELECT seq_id, event_type, entity_id
-    FROM outbox_events
-    WHERE seq_id > p_after_seq
-    ORDER BY seq_id
-    LIMIT p_limit;
-$$ LANGUAGE sql STABLE;
-
-CREATE OR REPLACE FUNCTION sp_load_all_nodes()
-RETURNS TABLE(
-    id UUID, canonical_name TEXT, node_type TEXT,
-    clearance_level INT, entity_class TEXT
-) AS $$
-    SELECT id, COALESCE(canonical_type, node_type),
-           node_type, clearance_level,
-           entity_class
-    FROM nodes;
-$$ LANGUAGE sql STABLE;
-
-CREATE OR REPLACE FUNCTION sp_load_all_edges()
-RETURNS TABLE(
-    id UUID, source_node_id UUID, target_node_id UUID,
-    rel_type TEXT, confidence FLOAT8, is_synthetic BOOLEAN,
-    has_valid_from BOOLEAN, clearance_level INT
-) AS $$
-    SELECT id, source_node_id, target_node_id,
-           COALESCE(canonical_rel_type, rel_type),
-           confidence,
-           properties->>'synthetic' = 'true',
-           valid_from IS NOT NULL,
-           clearance_level
-    FROM edges
-    WHERE invalid_at IS NULL;
-$$ LANGUAGE sql STABLE;
+-- Graph sync SPs (sp_poll_outbox_events, sp_load_all_nodes,
+-- sp_load_all_edges) are defined in migration 022 with correct
+-- column names matching the actual prod schema.
 
 -- ================================================================
 -- Entity resolution (pg_resolver)
