@@ -499,6 +499,27 @@ Update specifications to match implementation reality.
 
 **Note:** 1,394 tests passing (1,324 core + 21 api + 49 eval), clippy clean, fmt clean.
 
+## Wave 18 — Coref + PDF + Defense (#160, #125) *(complete)*
+
+Fix silent failures, add PDF support, wire neural coref into entity resolution.
+
+- [x] FastcorefClient API mismatch fixed (was silently broken for weeks)
+- [x] Pre-resolution coref substitution in entity resolution (#160)
+- [x] PDF sidecar (pymupdf4llm) deployed on port 8434 (#125)
+- [x] Startup validation for all HTTP sidecars (Lesson 20)
+- [x] UTF-8 panic fix in coref mutations_from_spans
+
+## Wave 19 — Async Ingestion + Research Campaign (#162) *(complete)*
+
+Accept-then-process pattern for source ingestion, research paper scoring.
+
+- [x] POST /sources returns immediately with {id, status: "accepted"} (#162)
+- [x] ProcessSource queue job handles pipeline async
+- [x] Source status lifecycle: accepted → processing → complete → failed
+- [x] Migration 018: status field + process_source job kind
+- [x] 85 research papers scored across 10 categories (target: 400)
+- [x] "Build the right solution" directive added to CLAUDE.md
+
 ## Future
 
 - Federation protocol (clearance-based egress, ZK edges)
