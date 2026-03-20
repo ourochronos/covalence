@@ -160,6 +160,42 @@ impl CliChatBackend {
     }
 }
 
+/// Build the combined prompt for CLI backends.
+///
+/// CLI tools don't have separate system/user prompt channels,
+/// so we combine them with a separator. Uses "====" instead of
+/// "---" to avoid CLI argument parsing issues.
+fn build_cli_prompt(
+    system_prompt: &str,
+    user_prompt: &str,
+    json_mode: bool,
+    temperature: f64,
+) -> String {
+    let mut prompt = if system_prompt.trim().is_empty() {
+        user_prompt.to_string()
+    } else {
+        format!("{system_prompt}\n\n====\n\n{user_prompt}")
+    };
+
+    // Ensure the prompt never starts with a dash — CLI tools may
+    // interpret it as a flag.
+    if prompt.starts_with('-') {
+        prompt.insert(0, '\n');
+    }
+
+    if json_mode {
+        prompt.push_str(
+            "\n\nIMPORTANT: Return ONLY valid JSON. No markdown fences, no explanation, no extra text.",
+        );
+    }
+
+    if temperature < 0.1 {
+        prompt.push_str("\n\nBe precise and deterministic in your response.");
+    }
+
+    prompt
+}
+
 #[async_trait::async_trait]
 impl ChatBackend for CliChatBackend {
     async fn chat(
@@ -171,28 +207,7 @@ impl ChatBackend for CliChatBackend {
     ) -> Result<ChatResponse> {
         use tokio::process::Command;
 
-        // Build the prompt. The CLI doesn't have a separate system
-        // prompt channel, so we combine them. Use "====" as separator
-        // instead of "---" to avoid CLI argument parsing issues (both
-        // Claude and Gemini CLIs can misinterpret leading dashes).
-        let mut prompt = if system_prompt.is_empty() {
-            user_prompt.to_string()
-        } else {
-            format!("{system_prompt}\n\n====\n\n{user_prompt}")
-        };
-
-        // For JSON mode, reinforce the instruction since there's no
-        // response_format parameter.
-        if json_mode {
-            prompt.push_str("\n\nIMPORTANT: Return ONLY valid JSON. No markdown fences, no explanation, no extra text.");
-        }
-
-        // Temperature hint (CLI may or may not support it — Gemini
-        // CLI doesn't expose temperature, so we just note it in the
-        // prompt for very low values).
-        if temperature < 0.1 {
-            prompt.push_str("\n\nBe precise and deterministic in your response.");
-        }
+        let prompt = build_cli_prompt(system_prompt, user_prompt, json_mode, temperature);
 
         // Build CLI arguments based on the command. Each CLI tool
         // has different flags for non-interactive prompt mode:
@@ -500,5 +515,62 @@ mod tests {
         );
         let err = fb.chat("sys", "user", false, 0.0).await.unwrap_err();
         assert!(err.to_string().contains("secondary failed"));
+    }
+
+    #[test]
+    fn cli_prompt_no_dashes_separator() {
+        let prompt = build_cli_prompt("system", "user", false, 0.5);
+        assert!(
+            !prompt.contains("\n---\n"),
+            "separator must not contain dashes (breaks CLI arg parsing)"
+        );
+        assert!(prompt.contains("===="), "should use ==== separator");
+    }
+
+    #[test]
+    fn cli_prompt_empty_system_no_separator() {
+        let prompt = build_cli_prompt("", "user prompt here", false, 0.5);
+        assert_eq!(prompt, "user prompt here");
+        assert!(
+            !prompt.contains("===="),
+            "no separator when system prompt is empty"
+        );
+    }
+
+    #[test]
+    fn cli_prompt_never_starts_with_dash() {
+        // Empty system prompt — prompt is just user text
+        let p1 = build_cli_prompt("", "hello", false, 0.5);
+        assert!(!p1.starts_with('-'), "prompt must not start with dash");
+
+        // System prompt present — starts with system text
+        let p2 = build_cli_prompt("You are helpful.", "hello", false, 0.5);
+        assert!(!p2.starts_with('-'), "prompt must not start with dash");
+
+        // Edge case: system prompt is just whitespace (treated as empty)
+        let p3 = build_cli_prompt("   ", "hello", false, 0.5);
+        assert!(
+            !p3.contains("===="),
+            "whitespace-only system prompt should skip separator"
+        );
+
+        // Edge case: user prompt starts with dash
+        let p4 = build_cli_prompt("", "- list item", false, 0.5);
+        assert!(
+            !p4.starts_with('-'),
+            "prompt starting with dash must be guarded"
+        );
+    }
+
+    #[test]
+    fn cli_prompt_json_mode_appends_instruction() {
+        let prompt = build_cli_prompt("sys", "user", true, 0.5);
+        assert!(prompt.contains("Return ONLY valid JSON"));
+    }
+
+    #[test]
+    fn cli_prompt_low_temperature_appends_hint() {
+        let prompt = build_cli_prompt("sys", "user", false, 0.05);
+        assert!(prompt.contains("precise and deterministic"));
     }
 }
