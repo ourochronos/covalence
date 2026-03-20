@@ -1359,6 +1359,31 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
     .execute(svc.repo.pool())
     .await?;
 
+    // Wire edge synthesis into the DAG (#173): enqueue after each
+    // source completes so co-occurrence edges are built on fresh data
+    // rather than relying on the blind 6h timer.
+    use crate::storage::traits::JobQueueRepo;
+    let synth_payload = serde_json::json!({
+        "min_cooccurrences": 1,
+        "max_degree": 500,
+    });
+    let synth_key = format!("synthesize:post:{}", source_id);
+    if let Err(e) = JobQueueRepo::enqueue(
+        &*svc.repo,
+        crate::models::retry_job::JobKind::SynthesizeEdges,
+        synth_payload,
+        3,
+        Some(synth_key.as_str()),
+    )
+    .await
+    {
+        tracing::warn!(
+            source_id = %source_id,
+            error = %e,
+            "failed to enqueue post-compose edge synthesis (non-fatal)"
+        );
+    }
+
     Ok(())
 }
 

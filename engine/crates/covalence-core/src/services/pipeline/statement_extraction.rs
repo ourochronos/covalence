@@ -88,10 +88,17 @@ impl SourceService {
                 }
             };
 
-            for entity in &extraction.entities {
-                if is_noise_entity(&entity.name, &entity.entity_type) {
-                    continue;
-                }
+            // Dedup entities by name to prevent advisory lock contention (#171).
+            // Note: sequential resolution is correct here because the
+            // relationship loop below depends on name_to_node being
+            // fully populated. Parallelism would break edge creation.
+            let mut seen = std::collections::HashSet::new();
+            for entity in extraction
+                .entities
+                .iter()
+                .filter(|e| !is_noise_entity(&e.name, &e.entity_type))
+                .filter(|e| seen.insert(e.name.to_lowercase()))
+            {
                 let node_id = self
                     .resolve_and_store_entity(
                         entity,
@@ -102,7 +109,7 @@ impl SourceService {
                     )
                     .await?;
                 let Some(node_id) = node_id else {
-                    continue; // Deferred to Tier 5
+                    continue;
                 };
                 name_to_node.insert(entity.name.to_lowercase(), node_id);
                 entity_count += 1;
