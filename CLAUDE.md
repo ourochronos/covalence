@@ -262,6 +262,8 @@ Use `make ingest-codebase` for bulk re-ingestion, or `cove source add` for indiv
 ### Engineering Discipline
 
 Autonomous sessions should proactively maintain engineering quality:
+- **Build the right solution.** Prefer architecturally sound approaches over quick fixes. If the right solution requires more upfront work but produces a better system, do it. Synchronous where async is needed, heuristics where models exist, scripts where APIs should be — these are smells. When you notice one, fix the architecture rather than working around it. The system should get better with every change, not accrue workarounds.
+- **Async by default.** Operations that involve external services (LLM calls, embedding, sidecar requests) should be non-blocking. Accept input immediately, enqueue processing, return a handle. The retry queue exists for this — use it. Synchronous pipelines are acceptable only for simple, fast operations.
 - **Use feature branches.** Never commit directly to `main`. Always create a new feature branch (e.g., `git checkout -b feature/issue-106`) before starting work.
 - **Refactor when you see the need.** If code is duplicated, poorly structured, or violating patterns documented here, fix it. Don't ask — just do it and explain in the commit.
 - **Use issues.** Every non-trivial piece of work gets an issue. Reference it in commits. Close it when done. This is how Chris tracks what happened between sessions.
