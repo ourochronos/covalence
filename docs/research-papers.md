@@ -136,9 +136,39 @@ Status: `[ ]` = not ingested, `[x]` = ingested, `[~]` = partially ingested
 | 64 | [Uncertainty Reasoning Survey for LLMs](https://arxiv.org/abs/2206.05675) | 2022 | 4 | 1 | 3 | 4 | 5 | 17 | [ ] |
 | 65 | [Imprecise Probabilistic ML (Belief Functions)](https://arxiv.org/abs/2505.16156) | 2025 | 4 | 4 | 3 | 4 | 3 | 18 | [ ] |
 
+## Batch 9: Observability, Monitoring & Operations (10 papers)
+
+| # | Paper | Year | R | C | A | G | I | Total | Status |
+|---|-------|------|---|---|---|---|---|-------|--------|
+| 66 | [Tracing & Metrics Design Patterns](https://arxiv.org/abs/2510.02991) | 2025 | 5 | 4 | 5 | 5 | 4 | 23 | [ ] |
+| 67 | [Beyond Black-Box: Observability of Agentic Systems](https://arxiv.org/abs/2503.06745) | 2025 | 5 | 4 | 5 | 5 | 4 | 23 | [ ] |
+| 68 | [Self-Healing ML: Autonomous Adaptation](https://arxiv.org/abs/2411.00186) | 2024 | 4 | 3 | 4 | 5 | 4 | 20 | [ ] |
+| 69 | [Self-Healing Software: Lessons from Nature](https://arxiv.org/abs/2504.20093) | 2025 | 4 | 4 | 4 | 4 | 3 | 19 | [ ] |
+| 70 | [AIOpsLab: AI Agents for Operations](https://arxiv.org/abs/2501.06706) | 2025 | 4 | 4 | 4 | 4 | 4 | 20 | [ ] |
+| 71 | [DevOps-Gym: Benchmarking AI Agents](https://arxiv.org/abs/2601.20882) | 2026 | 3 | 5 | 3 | 3 | 4 | 18 | [ ] |
+| 72 | [Monitoring ML Systems: Multivocal Review](https://arxiv.org/abs/2509.14294) | 2025 | 4 | 4 | 3 | 4 | 4 | 19 | [ ] |
+| 73 | [Monitoring Monitorability](https://arxiv.org/abs/2512.18311) | 2025 | 3 | 4 | 3 | 3 | 3 | 16 | [ ] |
+| 74 | [Intelligent Fault Self-Healing for Cloud AI](https://arxiv.org/abs/2506.07411) | 2025 | 4 | 4 | 4 | 4 | 3 | 19 | [ ] |
+| 75 | [Observability Design Decisions (Microservices)](https://arxiv.org/abs/2403.00633) | 2024 | 4 | 3 | 4 | 4 | 4 | 19 | [ ] |
+
+## Batch 10: Data Pipeline & Event-Driven Architecture (10 papers)
+
+| # | Paper | Year | R | C | A | G | I | Total | Status |
+|---|-------|------|---|---|---|---|---|-------|--------|
+| 76 | [Next-Gen Event-Driven Architectures](https://arxiv.org/abs/2510.04404) | 2025 | 5 | 4 | 5 | 5 | 4 | 23 | [ ] |
+| 77 | [ETLT/ELTL Design Patterns](https://arxiv.org/abs/2511.03393) | 2025 | 4 | 4 | 4 | 4 | 3 | 19 | [ ] |
+| 78 | [FlowETL: Autonomous Data Pipeline](https://arxiv.org/abs/2507.23118) | 2025 | 4 | 4 | 4 | 4 | 3 | 19 | [ ] |
+| 79 | [Cloud Infrastructure via AI Agents](https://arxiv.org/abs/2506.12270) | 2025 | 3 | 4 | 3 | 3 | 4 | 17 | [ ] |
+| 80 | [Declarative Data Pipeline for ML](https://arxiv.org/abs/2508.15105) | 2025 | 4 | 4 | 4 | 4 | 3 | 19 | [ ] |
+| 81 | [LLM-Driven IaC Generation](https://arxiv.org/abs/2506.05623) | 2025 | 3 | 4 | 3 | 3 | 4 | 17 | [ ] |
+| 82 | [Emerging Trends in Software Architecture](https://arxiv.org/abs/2507.14554) | 2025 | 4 | 4 | 3 | 4 | 4 | 19 | [ ] |
+| 83 | [RESTful API Design Rules Impact](https://arxiv.org/abs/2108.00033) | 2021 | 4 | 1 | 4 | 3 | 5 | 17 | [ ] |
+| 84 | [LLM-based REST API Spec Generation](https://arxiv.org/abs/2504.16833) | 2025 | 3 | 4 | 3 | 3 | 3 | 16 | [ ] |
+| 85 | [Data Pipeline Quality: Root Causes](https://arxiv.org/abs/2309.07067) | 2023 | 4 | 2 | 4 | 4 | 4 | 18 | [ ] |
+
 ---
 
-## Scoring Summary (All batches, top 20 by total)
+## Scoring Summary (All batches, top 25 by total)
 
 | Rank | Paper | Total | Category |
 |------|-------|-------|----------|
@@ -153,17 +183,32 @@ Status: `[ ]` = not ingested, `[x]` = ingested, `[~]` = partially ingested
 | 9 | Memory in the Age of AI Agents | 23 | Agent Memory |
 | 10 | Mem0: Production-Ready Agent Memory | 23 | Agent Memory |
 | 11 | StepChain GraphRAG Multi-Hop QA | 23 | Multi-Hop |
-| 12 | Ontology Learning vs KG for RAG | 22 | GraphRAG |
-| 13 | LINK-KG: Coref-Resolved KGs | 22 | Entity Resolution |
-| 14 | Coref Resolution Impact on RAG | 22 | Entity Resolution |
-| 15 | RAGAS: Automated Evaluation of RAG | 22 | Evaluation |
-| 16 | Balancing Hybrid Search Trade-offs | 22 | Retrieval |
-| 17 | Advanced Chunking for RAG | 22 | Chunking |
-| 18 | Reasoning Bottleneck in Graph-RAG | 22 | Multi-Hop |
-| 19 | Decompositional Reasoning for Graph Retrieval | 22 | Multi-Hop |
-| 20 | Memoria: Scalable Agentic Memory | 22 | Agent Memory |
+| 12 | Tracing & Metrics Design Patterns | 23 | Observability |
+| 13 | Observability of Agentic Systems | 23 | Observability |
+| 14 | Next-Gen Event-Driven Architectures | 23 | Architecture |
+| 15 | Ontology Learning vs KG for RAG | 22 | GraphRAG |
+| 16 | LINK-KG: Coref-Resolved KGs | 22 | Entity Resolution |
+| 17 | Coref Resolution Impact on RAG | 22 | Entity Resolution |
+| 18 | RAGAS: Automated Evaluation of RAG | 22 | Evaluation |
+| 19 | Balancing Hybrid Search Trade-offs | 22 | Retrieval |
+| 20 | Advanced Chunking for RAG | 22 | Chunking |
+| 21 | Reasoning Bottleneck in Graph-RAG | 22 | Multi-Hop |
+| 22 | Decompositional Reasoning for Graph Retrieval | 22 | Multi-Hop |
+| 23 | Memoria: Scalable Agentic Memory | 22 | Agent Memory |
+| 24 | Hierarchical Text Segmentation Chunking | 21 | Chunking |
+| 25 | Epistemic Wrapping for Uncertainty | 21 | Epistemic |
+
+## Progress
+
+- **85 papers scored** across 10 categories
+- **~7 papers ingested** (server-side success, client timeouts)
+- **Target:** 400 papers total
+- **Blocker:** #162 — sync ingestion makes batch processing impractical
 
 ## Future Batches (to be searched)
 
-- Batch 9: Confidence calibration, hallucination detection, factual consistency
-- Batch 10: Late interaction models, ColBERT, learned sparse retrieval
+- Batch 11-12: Hallucination detection, factual consistency, grounding
+- Batch 13-14: Late interaction models, ColBERT, learned sparse retrieval
+- Batch 15-16: Prompt engineering, in-context learning, few-shot patterns
+- Batch 17-18: Database internals, query optimization, PostgreSQL extensions
+- Batch 19-20: Testing strategies, property-based testing, fuzzing
