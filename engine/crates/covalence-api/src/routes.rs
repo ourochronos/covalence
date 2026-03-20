@@ -139,6 +139,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             require_api_key,
         ))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .with_state(state)
 }
