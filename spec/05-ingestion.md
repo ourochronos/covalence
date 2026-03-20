@@ -90,7 +90,7 @@ After normalization (Stage 4), the prose pipeline takes over for all non-code so
 
 ### Stage 5: Coreference Resolution & Offset Projection Ledger
 
-A dedicated fastcoref sidecar model processes the canonical Markdown text. It resolves all pronouns and anaphora to their explicit referents.
+A dedicated fastcoref sidecar model processes the canonical Markdown text. It resolves all pronouns and anaphora to their explicit referents. The sidecar is validated at engine startup via `FastcorefClient::validate()` — if the sidecar is unreachable or returns an unexpected format, coref is disabled with an error log rather than silently failing during ingestion. All HTTP sidecars (fastcoref, PDF converter) follow this validate-on-startup pattern.
 
 Because modifying the text destroys the absolute coordinate system of the original document, this stage generates an **Offset Projection Ledger** alongside the `mutated_text`.
 

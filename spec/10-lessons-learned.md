@@ -235,3 +235,10 @@ When research papers vastly outnumber spec/design docs (e.g., 148 research sourc
 **Source:** Covalence production data management
 
 Old source versions and orphan nodes are observations, not garbage. Never auto-delete. The instinct to "clean up" stale data destroys temporal provenance and makes it impossible to answer "what did the system believe at time T?" Manual GC with preview (showing what would be deleted and why) preserves epistemic integrity while still allowing intentional cleanup. Automated eviction should only occur through the BMR forgetting pipeline (spec 07), which has mathematical guarantees about what's safe to prune.
+
+## Lesson 20: Silent Sidecar Failures
+
+**Date:** 2026-03-19
+**Source:** FastcorefClient API mismatch (Session 41)
+
+HTTP sidecars (fastcoref, PDF converter, future extractors) can silently fail when their API contract drifts from the client. The FastcorefClient was sending `{"texts": [...]}` but the sidecar expected `{"text": "..."}` — every coref call failed silently for weeks because errors were caught and warned but processing continued without coref. The fix is two-fold: (1) validate backends at startup by sending a test request and verifying the response parses correctly, and (2) disable the backend loudly (error log) rather than letting it silently degrade. Every new sidecar integration must include a `validate()` method called at engine startup.

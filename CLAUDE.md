@@ -325,7 +325,7 @@ See `VISION.md` for the full vision. In short: Covalence solves both an academic
 1. **PG is the source of truth.** The petgraph sidecar is a derived, rebuildable cache. If it diverges, PG wins.
 2. **Every fact has pristine canonical provenance.** No node or edge exists without a provenance link pointing exactly to the immutable byte offsets in the canonical source text. We do not store noisy chunks. All mutated text (e.g. from fastcoref) MUST be mathematically reverse-projected through the Offset Projection Ledger before being stored in PostgreSQL.
 3. **No attention dilution in extraction.** The pipeline relies on a strict Two-Pass LLM extraction model (Statements -> Triples). Do not attempt to merge statement generation and entity extraction into a single prompt.
-4. **LLM selection is deliberate.** Use Gemini Flash 3.0 for windowed extraction and synthesis due to its extreme throughput and context window.
+4. **LLM selection is deliberate.** Use the `ChatBackend` abstraction with `ChainChatBackend` for multi-provider failover. Default chain: Claude Haiku → Copilot → Gemini Flash. Every call records the provider in processing metadata.
 5. **No Graph Algorithms in SQL.** Graph traversal strictly goes through the in-memory petgraph sidecar. PostgreSQL Recursive CTEs are forbidden.
 6. **Uncertainty ≠ disbelief.** The system uses Subjective Logic opinion tuples (b, d, u, a). "Unknown" is not "50% likely."
 7. **Secure by default.** All data defaults to `clearance_level = 0` (local_strict). Promotion to federated requires explicit action.
@@ -362,6 +362,7 @@ These patterns come from the existing Covalence and should be maintained:
 - **Environment-driven config** — `dotenvy` loads `.env`, config struct reads from env vars with defaults.
 - **Embedding dimension discipline** — Embeddings flow through a consistent pipeline: (1) embedder generates at max dimension (e.g., 2048), (2) `truncate_and_validate()` truncates + L2-renormalizes to the target per-table dimension, (3) validated vector is stored. All storage call sites (`source.rs`, `pg_resolver.rs`) and search queries (`vector.rs`) must go through `truncate_and_validate`. When adding new embedding storage paths, always validate dimensions before the INSERT/UPDATE.
 - **Run migrations after schema changes** — After adding new migrations, run `make migrate` (or `make reset-db` for a clean slate). The DB schema must match what the code expects — dimension mismatches between column definitions and stored vectors cause silent failures.
+- **Validate sidecars at startup** — Every HTTP sidecar integration (fastcoref, PDF converter, future extractors) must include a `validate()` method that sends a test request and verifies the response format. Call `validate()` at engine startup. If it fails, disable the backend with an ERROR log — never silently degrade. See Lesson 20 in spec/10.
 
 ## Testing
 
