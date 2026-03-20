@@ -82,44 +82,33 @@ impl QueryCache {
                 .join(",")
         );
 
-        let ttl_secs = self.config.ttl_seconds as f64;
+        let ttl_secs = self.config.ttl_seconds as i32;
         let max_dist = self.config.max_distance;
 
         // Find the closest cached embedding within TTL and
         // distance threshold, matching strategy.
-        let sql = "\
-            SELECT id, response, \
-                   (query_embedding <=> $1::halfvec)::float8 AS dist \
-            FROM query_cache \
-            WHERE strategy_used = $2 \
-              AND created_at > NOW() - ($3::float8 || ' seconds')::interval \
-              AND (query_embedding <=> $1::halfvec)::float8 < $4 \
-            ORDER BY query_embedding <=> $1::halfvec \
-            LIMIT 1";
+        let row: Option<(Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT id, results \
+             FROM sp_lookup_query_cache($1::halfvec, $2, $3, $4)",
+        )
+        .bind(&pgvec)
+        .bind(strategy)
+        .bind(max_dist)
+        .bind(ttl_secs)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        let row: Option<(Uuid, serde_json::Value, f64)> = sqlx::query_as(sql)
-            .bind(&pgvec)
-            .bind(strategy)
-            .bind(ttl_secs)
-            .bind(max_dist)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        let Some((id, response, _dist)) = row else {
+        let Some((id, response)) = row else {
             return Ok(None);
         };
 
         // Bump hit count asynchronously (best-effort).
         let pool = self.pool.clone();
         tokio::spawn(async move {
-            let _ = sqlx::query(
-                "UPDATE query_cache \
-                 SET hit_count = hit_count + 1 \
-                 WHERE id = $1",
-            )
-            .bind(id)
-            .execute(&pool)
-            .await;
+            let _ = sqlx::query("SELECT sp_bump_cache_hit_count($1)")
+                .bind(id)
+                .execute(&pool)
+                .await;
         });
 
         let results: Vec<FusedResult> = serde_json::from_value(response)
@@ -130,10 +119,10 @@ impl QueryCache {
 
     /// Clear all cached entries.
     pub async fn clear(&self) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM query_cache")
-            .execute(&self.pool)
+        let row: (i64,) = sqlx::query_as("SELECT sp_clear_query_cache()")
+            .fetch_one(&self.pool)
             .await?;
-        Ok(result.rows_affected())
+        Ok(row.0 as u64)
     }
 
     /// Store search results in the cache.
@@ -162,35 +151,23 @@ impl QueryCache {
 
         let id = Uuid::new_v4();
 
-        sqlx::query(
-            "INSERT INTO query_cache \
-             (id, query_text, query_embedding, strategy_used, \
-              response, hit_count, created_at) \
-             VALUES ($1, $2, $3::halfvec, $4, $5, 0, NOW())",
-        )
-        .bind(id)
-        .bind(query_text)
-        .bind(&pgvec)
-        .bind(strategy)
-        .bind(&response)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("SELECT sp_store_query_cache($1, $2::halfvec, $3, $4, $5)")
+            .bind(id)
+            .bind(&pgvec)
+            .bind(strategy)
+            .bind(&response)
+            .bind(query_text)
+            .execute(&self.pool)
+            .await?;
 
         // Evict oldest entries beyond max_entries (best-effort).
-        let max = self.config.max_entries as i64;
+        let max = self.config.max_entries as i32;
         let pool = self.pool.clone();
         tokio::spawn(async move {
-            let _ = sqlx::query(
-                "DELETE FROM query_cache \
-                 WHERE id IN ( \
-                     SELECT id FROM query_cache \
-                     ORDER BY created_at DESC \
-                     OFFSET $1 \
-                 )",
-            )
-            .bind(max)
-            .execute(&pool)
-            .await;
+            let _ = sqlx::query("SELECT sp_evict_old_cache_entries($1)")
+                .bind(max)
+                .execute(&pool)
+                .await;
         });
 
         Ok(())

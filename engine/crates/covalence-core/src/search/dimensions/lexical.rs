@@ -42,16 +42,11 @@ impl LexicalDimension {
     /// Search nodes via `name_tsv` (canonical name + description).
     async fn search_nodes(&self, query: &SearchQuery) -> Result<Vec<(Uuid, f64)>> {
         let rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-                    ts_rank_cd(name_tsv, query)::float8 AS score \
-             FROM nodes, \
-                  plainto_tsquery('english', $1) query \
-             WHERE name_tsv @@ query \
-             ORDER BY score DESC \
-             LIMIT $2",
+            "SELECT id, rank::float8 AS score \
+             FROM sp_search_nodes_lexical($1, $2)",
         )
         .bind(&query.text)
-        .bind(query.limit as i64)
+        .bind(query.limit as i32)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -78,22 +73,11 @@ impl LexicalDimension {
     /// Search statements via `content_tsv` with ts_headline snippets.
     async fn search_statements(&self, query: &SearchQuery) -> Result<Vec<SearchResult>> {
         let rows = sqlx::query_as::<_, (Uuid, f64, String)>(
-            "SELECT s.id, \
-                    ts_rank_cd(s.content_tsv, q)::float8 AS score, \
-                    ts_headline('english', s.content, q, \
-                        'MaxWords=' || $3 || \
-                        ', MinWords=15, ShortWord=3') \
-                        AS snippet \
-             FROM statements s, \
-                  plainto_tsquery('english', $1) q \
-             WHERE s.content_tsv @@ q \
-               AND NOT s.is_evicted \
-             ORDER BY score DESC \
-             LIMIT $2",
+            "SELECT id, rank::float8 AS score, snippet \
+             FROM sp_search_statements_lexical($1, $2)",
         )
         .bind(&query.text)
-        .bind(query.limit as i64)
-        .bind(SNIPPET_MAX_WORDS)
+        .bind(query.limit as i32)
         .fetch_all(&self.pool)
         .await?;
 
@@ -114,16 +98,11 @@ impl LexicalDimension {
     /// Search sections via `body_tsv` (title + summary).
     async fn search_sections(&self, query: &SearchQuery) -> Result<Vec<(Uuid, f64)>> {
         let rows = sqlx::query_as::<_, (Uuid, f64)>(
-            "SELECT id, \
-                    ts_rank_cd(body_tsv, query)::float8 AS score \
-             FROM sections, \
-                  plainto_tsquery('english', $1) query \
-             WHERE body_tsv @@ query \
-             ORDER BY score DESC \
-             LIMIT $2",
+            "SELECT id, rank::float8 AS score \
+             FROM sp_search_sections_lexical($1, $2)",
         )
         .bind(&query.text)
-        .bind(query.limit as i64)
+        .bind(query.limit as i32)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -135,23 +114,13 @@ impl LexicalDimension {
     /// the tsvector strategies. Trigram fallback returns a truncated
     /// content prefix instead.
     async fn search_chunks(&self, query: &SearchQuery) -> Result<Vec<SearchResult>> {
-        // Primary: plainto_tsquery with ts_headline snippets.
+        // Primary: plainto_tsquery with ts_headline snippets via SP.
         let rows = sqlx::query_as::<_, (Uuid, f64, String)>(
-            "SELECT c.id, \
-                    ts_rank_cd(c.content_tsv, q)::float8 AS score, \
-                    ts_headline('english', c.content, q, \
-                        'MaxWords=' || $3 || \
-                        ', MinWords=15, ShortWord=3') \
-                        AS snippet \
-             FROM chunks c, \
-                  plainto_tsquery('english', $1) q \
-             WHERE c.content_tsv @@ q \
-             ORDER BY score DESC \
-             LIMIT $2",
+            "SELECT id, rank::float8 AS score, snippet \
+             FROM sp_search_chunks_lexical($1, $2)",
         )
         .bind(&query.text)
-        .bind(query.limit as i64)
-        .bind(SNIPPET_MAX_WORDS)
+        .bind(query.limit as i32)
         .fetch_all(&self.pool)
         .await?;
 

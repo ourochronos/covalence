@@ -17,6 +17,7 @@
 use std::sync::Arc;
 
 use sqlx::Row;
+use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::graph::SharedGraph;
@@ -218,32 +219,26 @@ impl PgResolver {
             .map_err(|e| Error::EntityResolution(format!("node dimension mismatch: {e}")))?;
         let embedding_f32: Vec<f32> = truncated.iter().map(|&v| v as f32).collect();
 
-        // Query closest node by cosine distance, filtering to
-        // nodes that have embeddings.
-        let row = sqlx::query(
-            "SELECT id, canonical_name, \
-                    1.0 - (embedding <=> $1::halfvec) AS sim \
-             FROM nodes \
-             WHERE embedding IS NOT NULL \
-             ORDER BY embedding <=> $1::halfvec \
-             LIMIT 1",
-        )
-        .bind(&embedding_f32)
-        .fetch_optional(self.repo.pool())
-        .await
-        .map_err(|e| Error::EntityResolution(format!("vector match query failed: {e}")))?;
+        // Query closest node by cosine distance via stored procedure.
+        // Convert similarity threshold to distance threshold for the SP
+        // (distance = 1.0 - similarity).
+        let distance_threshold = 1.0 - self.vector_threshold as f64;
+        let row: Option<(Uuid, String, String, f64)> =
+            sqlx::query_as("SELECT * FROM sp_find_closest_node_embedding($1::halfvec, $2, $3)")
+                .bind(&embedding_f32)
+                .bind(distance_threshold)
+                .bind(1_i32)
+                .fetch_optional(self.repo.pool())
+                .await
+                .map_err(|e| Error::EntityResolution(format!("vector match query failed: {e}")))?;
 
-        if let Some(r) = row {
-            let sim: f64 = r.get("sim");
-            if sim >= self.vector_threshold as f64 {
-                let id: NodeId = r.get("id");
-                let canonical_name: String = r.get("canonical_name");
-                return Ok(Some(ResolvedEntity {
-                    node_id: Some(id),
-                    canonical_name,
-                    match_type: MatchType::Vector,
-                }));
-            }
+        if let Some((id, canonical_name, _node_type, _distance)) = row {
+            let id = NodeId::from(id);
+            return Ok(Some(ResolvedEntity {
+                node_id: Some(id),
+                canonical_name,
+                match_type: MatchType::Vector,
+            }));
         }
 
         Ok(None)

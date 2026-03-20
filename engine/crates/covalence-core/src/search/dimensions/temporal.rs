@@ -44,16 +44,17 @@ impl SearchDimension for TemporalDimension {
         let half = (query.limit as i64 / 2).max(2);
 
         // Query chunks and statements concurrently.
+        // Chunk queries use SPs; statement queries remain inline
+        // (no temporal statement SPs defined yet).
         let (chunk_rows, stmt_rows) = if let Some((start, end)) = query.time_range {
             tokio::join!(
                 sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
-                    "SELECT id, created_at FROM chunks \
-                     WHERE created_at >= $1 AND created_at <= $2 \
-                     ORDER BY created_at DESC LIMIT $3",
+                    "SELECT id, created_at \
+                     FROM sp_search_chunks_temporal($1, $2, $3)",
                 )
                 .bind(start)
                 .bind(end)
-                .bind(half)
+                .bind(half as i32)
                 .fetch_all(&self.pool),
                 sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
                     "SELECT id, created_at FROM statements \
@@ -69,10 +70,10 @@ impl SearchDimension for TemporalDimension {
         } else {
             tokio::join!(
                 sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
-                    "SELECT id, created_at FROM chunks \
-                     ORDER BY created_at DESC LIMIT $1",
+                    "SELECT id, created_at \
+                     FROM sp_search_chunks_recent($1)",
                 )
-                .bind(half)
+                .bind(half as i32)
                 .fetch_all(&self.pool),
                 sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
                     "SELECT id, created_at FROM statements \
