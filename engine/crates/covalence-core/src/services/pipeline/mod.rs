@@ -449,9 +449,30 @@ impl SourceService {
                         );
                         continue;
                     }
+
+                    // Pre-resolution coref: if this entity name is a
+                    // coreferent mention (abbreviation, partial name),
+                    // resolve to the canonical form BEFORE the 5-tier
+                    // cascade. This prevents duplicate nodes for
+                    // "NLP" vs "Natural Language Processing" etc.
+                    let (resolve_entity, original_name) =
+                        if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
+                            let mut coref_entity = entity.clone();
+                            let original = entity.name.clone();
+                            coref_entity.name = referent.clone();
+                            tracing::debug!(
+                                mention = %original,
+                                referent = %referent,
+                                "coref: resolving mention as referent"
+                            );
+                            (std::borrow::Cow::Owned(coref_entity), Some(original))
+                        } else {
+                            (std::borrow::Cow::Borrowed(entity), None)
+                        };
+
                     let node_id = self
                         .resolve_and_store_entity(
-                            entity,
+                            &resolve_entity,
                             ExtractionProvenance::Chunk(chunk_id),
                             extraction_method,
                             input.source_id,
@@ -461,11 +482,13 @@ impl SourceService {
                     let Some(node_id) = node_id else {
                         continue; // Deferred to Tier 5
                     };
-                    name_to_node.insert(entity.name.to_lowercase(), node_id);
+                    name_to_node.insert(resolve_entity.name.to_lowercase(), node_id);
 
-                    if let Some(referent) = coref_map.get(&entity.name.to_lowercase()) {
-                        name_to_node.entry(referent.clone()).or_insert(node_id);
-                        self.ensure_alias(&entity.name, node_id, chunk_id).await?;
+                    // Create alias from original mention → resolved node
+                    // so future lookups of the mention find the right node.
+                    if let Some(ref original) = original_name {
+                        name_to_node.insert(original.to_lowercase(), node_id);
+                        self.ensure_alias(original, node_id, chunk_id).await?;
                     }
                 }
 

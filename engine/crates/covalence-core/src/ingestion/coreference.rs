@@ -194,27 +194,23 @@ const COREF_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Serialize)]
 struct CorefRequest<'a> {
-    texts: Vec<&'a str>,
+    text: &'a str,
 }
 
+/// Raw response from the fastcoref sidecar.
 #[derive(Debug, Deserialize)]
-struct CorefResultData {
-    #[allow(dead_code)]
-    original: String,
-    resolved: String,
+struct CorefSidecarResponse {
+    resolved_text: String,
     #[allow(dead_code)]
     clusters: Vec<Vec<String>>,
-    /// Byte offset mutations from coreference replacement.
-    /// Each mutation records the canonical (original) and mutated
-    /// (resolved) byte spans plus the token strings. Used to build
-    /// the offset projection ledger.
-    #[serde(default)]
-    mutations: Vec<CorefMutation>,
+    cluster_spans: Vec<Vec<[usize; 2]>>,
+    #[allow(dead_code)]
+    processing_time_ms: Option<f64>,
 }
 
 /// A single coreference replacement with byte offsets in both the
 /// canonical (original) and mutated (resolved) texts.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CorefMutation {
     /// Start byte offset in the original text.
     pub canonical_start: usize,
@@ -230,9 +226,51 @@ pub struct CorefMutation {
     pub mutated_token: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct CorefResponse {
-    results: Vec<CorefResultData>,
+/// Compute mutations from the sidecar's cluster_spans and the
+/// original text. Each non-antecedent mention in a cluster becomes
+/// a mutation replacing it with the antecedent (first mention).
+fn mutations_from_spans(text: &str, cluster_spans: &[Vec<[usize; 2]>]) -> Vec<CorefMutation> {
+    // Collect replacements: (canonical_start, canonical_end, antecedent_text)
+    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+    for cluster in cluster_spans {
+        if cluster.len() < 2 {
+            continue;
+        }
+        let antecedent_span = &cluster[0];
+        let antecedent_text = &text[antecedent_span[0]..antecedent_span[1]];
+        for mention_span in &cluster[1..] {
+            let mention_text = &text[mention_span[0]..mention_span[1]];
+            if mention_text != antecedent_text {
+                replacements.push((
+                    mention_span[0],
+                    mention_span[1],
+                    antecedent_text.to_string(),
+                ));
+            }
+        }
+    }
+
+    // Sort by position ascending to compute mutated offsets.
+    replacements.sort_by_key(|(start, _, _)| *start);
+
+    let mut mutations = Vec::new();
+    let mut offset_delta: isize = 0;
+    for (canonical_start, canonical_end, antecedent) in &replacements {
+        let canonical_token = text[*canonical_start..*canonical_end].to_string();
+        let mutated_start = (*canonical_start as isize + offset_delta) as usize;
+        let mutated_end = mutated_start + antecedent.len();
+        mutations.push(CorefMutation {
+            canonical_start: *canonical_start,
+            canonical_end: *canonical_end,
+            mutated_start,
+            mutated_end,
+            canonical_token,
+            mutated_token: antecedent.clone(),
+        });
+        offset_delta += antecedent.len() as isize - (*canonical_end - *canonical_start) as isize;
+    }
+
+    mutations
 }
 
 /// HTTP client for the Fastcoref neural coreference resolution sidecar.
@@ -372,7 +410,7 @@ impl FastcorefClient {
 
     /// Call `/coref` for a single text.
     async fn resolve_single(&self, text: &str) -> Result<CorefResult> {
-        let body = CorefRequest { texts: vec![text] };
+        let body = CorefRequest { text };
         let resp = self
             .client
             .post(format!("{}/coref", self.base_url))
@@ -389,21 +427,17 @@ impl FastcorefClient {
             )));
         }
 
-        let parsed: CorefResponse = resp
+        let parsed: CorefSidecarResponse = resp
             .json()
             .await
             .map_err(|e| Error::Ingestion(format!("failed to parse coref response: {e}")))?;
 
-        match parsed.results.into_iter().next() {
-            Some(r) => Ok(CorefResult {
-                resolved: r.resolved,
-                mutations: r.mutations,
-            }),
-            None => Ok(CorefResult {
-                resolved: text.to_string(),
-                mutations: Vec::new(),
-            }),
-        }
+        let mutations = mutations_from_spans(text, &parsed.cluster_spans);
+
+        Ok(CorefResult {
+            resolved: parsed.resolved_text,
+            mutations,
+        })
     }
 }
 
@@ -703,53 +737,40 @@ mod tests {
     // --- FastcorefClient tests ---
 
     #[test]
-    fn coref_response_deserialization_without_mutations() {
-        // Backward compatible: no mutations field.
+    fn coref_sidecar_response_deserialization() {
         let json = serde_json::json!({
-            "results": [{
-                "original": "He went home.",
-                "resolved": "John went home.",
-                "clusters": [["John", "He"]]
-            }]
+            "resolved_text": "John went to the store. John bought milk.",
+            "clusters": [["John", "He"]],
+            "cluster_spans": [[[0, 4], [24, 26]]],
+            "processing_time_ms": 42.5
         });
-        let resp: CorefResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.results.len(), 1);
-        assert_eq!(resp.results[0].resolved, "John went home.");
-        assert!(resp.results[0].mutations.is_empty());
+        let resp: CorefSidecarResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.resolved_text, "John went to the store. John bought milk.");
+        assert_eq!(resp.clusters.len(), 1);
+        assert_eq!(resp.cluster_spans.len(), 1);
     }
 
     #[test]
-    fn coref_response_deserialization_with_mutations() {
-        let json = serde_json::json!({
-            "results": [{
-                "original": "Einstein published his theory. He won.",
-                "resolved": "Einstein published Einstein's theory. Einstein won.",
-                "clusters": [["Einstein", "his", "He"]],
-                "mutations": [
-                    {
-                        "canonical_start": 20,
-                        "canonical_end": 23,
-                        "mutated_start": 20,
-                        "mutated_end": 30,
-                        "canonical_token": "his",
-                        "mutated_token": "Einstein's"
-                    },
-                    {
-                        "canonical_start": 32,
-                        "canonical_end": 34,
-                        "mutated_start": 39,
-                        "mutated_end": 47,
-                        "canonical_token": "He",
-                        "mutated_token": "Einstein"
-                    }
-                ]
-            }]
-        });
-        let resp: CorefResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.results[0].mutations.len(), 2);
-        assert_eq!(resp.results[0].mutations[0].canonical_token, "his");
-        assert_eq!(resp.results[0].mutations[0].mutated_token, "Einstein's");
-        assert_eq!(resp.results[0].mutations[1].canonical_start, 32);
+    fn mutations_from_spans_computes_offsets() {
+        let text = "Einstein published his theory. He won a prize.";
+        // Cluster: Einstein (0..8), his (19..22), He (31..33)
+        let spans = vec![vec![[0, 8], [19, 22], [31, 33]]];
+
+        let mutations = mutations_from_spans(text, &spans);
+        assert_eq!(mutations.len(), 2);
+
+        // "his" → "Einstein"
+        assert_eq!(mutations[0].canonical_token, "his");
+        assert_eq!(mutations[0].mutated_token, "Einstein");
+        assert_eq!(mutations[0].canonical_start, 19);
+        assert_eq!(mutations[0].canonical_end, 22);
+
+        // "He" → "Einstein" (offset shifted by prior replacement)
+        assert_eq!(mutations[1].canonical_token, "He");
+        assert_eq!(mutations[1].mutated_token, "Einstein");
+        assert_eq!(mutations[1].canonical_start, 31);
+        // mutated_start accounts for "his"(3) → "Einstein"(8) = +5 shift
+        assert_eq!(mutations[1].mutated_start, 36);
     }
 
     #[tokio::test]
@@ -863,5 +884,48 @@ mod tests {
         }];
         // overlap=50: straddling mutation is skipped → still 50
         assert_eq!(compute_resolved_overlap(50, &mutations), 50);
+    }
+
+    /// Integration test: fastcoref sidecar resolves pronouns,
+    /// producing mutations that feed into coref_map for
+    /// pre-resolution entity name substitution.
+    ///
+    /// Requires fastcoref sidecar running on localhost:8432.
+    #[tokio::test]
+    #[ignore]
+    async fn fastcoref_produces_coref_map_for_entity_resolution() {
+        let client = FastcorefClient::new("http://localhost:8432".to_string());
+        let text = "Albert Einstein developed the theory of relativity. \
+                     He received the Nobel Prize in Physics in 1921.";
+
+        let result = client.resolve(text).await.expect("fastcoref should respond");
+
+        // Neural coref should resolve "He" → "Albert Einstein"
+        assert_ne!(
+            result.resolved, text,
+            "resolved text should differ (pronouns replaced)"
+        );
+        assert!(
+            result.resolved.contains("Albert Einstein"),
+            "resolved text should contain the antecedent"
+        );
+        assert!(
+            !result.mutations.is_empty(),
+            "should have at least one mutation"
+        );
+
+        // The mutation records how "He" became "Albert Einstein".
+        let he_mutation = result
+            .mutations
+            .iter()
+            .find(|m| m.canonical_token == "He");
+        assert!(
+            he_mutation.is_some(),
+            "should have a mutation for the pronoun 'He'"
+        );
+        assert_eq!(
+            he_mutation.unwrap().mutated_token, "Albert Einstein",
+            "mutation should map 'He' → 'Albert Einstein'"
+        );
     }
 }

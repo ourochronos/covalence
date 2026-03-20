@@ -150,6 +150,8 @@ Before committing to the database, the `mutated_byte_start`/`end` indices of eve
 
 ### Stage 11: Entity Resolution & Store
 
+**Pre-resolution coreference substitution:** Before entering the 5-tier cascade, each extracted entity name is checked against the `coref_map` built in Stage 5. If the entity name is a coreferent mention (abbreviation, pronoun artifact, partial name), the canonical referent name is substituted. This prevents duplicate nodes — e.g., "NLP" resolves as "Natural Language Processing" from the start, rather than creating a separate node that later needs deduplication. The original mention is preserved as an alias.
+
 Match extracted entities against existing nodes in the graph using a 5-Tier Resolution cascade:
 
 1. **Exact canonical name** — Case-insensitive lookup on `nodes.canonical_name`.
