@@ -572,6 +572,16 @@ pub trait JobQueueRepo: Send + Sync {
         idempotency_key: Option<&str>,
     ) -> impl Future<Output = Result<Option<RetryJob>>> + Send;
 
+    /// Enqueue multiple jobs in a single database round-trip.
+    ///
+    /// Uses UNNEST arrays to insert all jobs at once. Jobs with
+    /// duplicate idempotency keys are silently skipped (ON CONFLICT
+    /// DO NOTHING). Returns the number of jobs actually inserted.
+    fn enqueue_batch(
+        &self,
+        jobs: Vec<crate::models::retry_job::EnqueueJob>,
+    ) -> impl Future<Output = Result<u64>> + Send;
+
     /// Claim the next pending job of the given kinds.
     ///
     /// Uses `SELECT FOR UPDATE SKIP LOCKED` so that concurrent

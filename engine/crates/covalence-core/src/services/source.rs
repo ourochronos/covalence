@@ -623,40 +623,30 @@ impl SourceService {
                 .fetch_all(self.repo.pool())
                 .await?;
 
-        let mut enqueued = 0u64;
-        for (chunk_id,) in &chunks {
-            let payload = serde_json::json!({
-                "chunk_id": chunk_id.to_string(),
-                "source_id": source_id.into_uuid().to_string(),
-            });
-            let key = format!("extract_chunk:{chunk_id}");
-            use crate::storage::traits::JobQueueRepo;
-            match JobQueueRepo::enqueue(
-                &*self.repo,
-                crate::models::retry_job::JobKind::ExtractChunk,
-                payload,
-                5,
-                Some(&key),
-            )
-            .await
-            {
-                Ok(Some(_)) => enqueued += 1,
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        chunk_id = %chunk_id,
-                        error = %e,
-                        "failed to enqueue extract job"
-                    );
-                }
-            }
-        }
+        // Batch enqueue all extract_chunk jobs in a single query
+        // instead of N sequential INSERTs (#168).
+        use crate::models::retry_job::EnqueueJob;
+        use crate::storage::traits::JobQueueRepo;
+        let jobs: Vec<EnqueueJob> = chunks
+            .iter()
+            .map(|(chunk_id,)| EnqueueJob {
+                kind: crate::models::retry_job::JobKind::ExtractChunk,
+                payload: serde_json::json!({
+                    "chunk_id": chunk_id.to_string(),
+                    "source_id": source_id.into_uuid().to_string(),
+                }),
+                max_attempts: 5, // TODO: source from RetryQueueConfig
+                idempotency_key: Some(format!("extract_chunk:{chunk_id}")),
+            })
+            .collect();
+
+        let enqueued = JobQueueRepo::enqueue_batch(&*self.repo, jobs).await?;
 
         tracing::info!(
             source_id = %source_id,
             chunks = chunks.len(),
             enqueued,
-            "fanned out extraction to per-chunk jobs"
+            "fanned out extraction to per-chunk jobs (batch)"
         );
 
         // Handle supersession cleanup if this source replaces another.

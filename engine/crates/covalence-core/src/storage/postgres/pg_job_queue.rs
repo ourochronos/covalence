@@ -38,6 +38,42 @@ impl JobQueueRepo for PgRepo {
         Ok(row.map(|r| job_from_row(&r)))
     }
 
+    async fn enqueue_batch(&self, jobs: Vec<crate::models::retry_job::EnqueueJob>) -> Result<u64> {
+        if jobs.is_empty() {
+            return Ok(0);
+        }
+
+        // Build arrays for UNNEST-based bulk insert.
+        let mut ids: Vec<uuid::Uuid> = Vec::with_capacity(jobs.len());
+        let mut kinds: Vec<String> = Vec::with_capacity(jobs.len());
+        let mut payloads: Vec<serde_json::Value> = Vec::with_capacity(jobs.len());
+        let mut max_attempts_arr: Vec<i32> = Vec::with_capacity(jobs.len());
+        let mut keys: Vec<Option<String>> = Vec::with_capacity(jobs.len());
+
+        for job in jobs {
+            ids.push(JobId::new().into_uuid());
+            kinds.push(job.kind.as_pg_str().to_string());
+            payloads.push(job.payload);
+            max_attempts_arr.push(job.max_attempts);
+            keys.push(job.idempotency_key);
+        }
+
+        let result = sqlx::query(
+            "INSERT INTO retry_jobs (id, kind, payload, max_attempts, idempotency_key)
+             SELECT * FROM UNNEST($1::uuid[], $2::job_kind[], $3::jsonb[], $4::int[], $5::text[])
+             ON CONFLICT (idempotency_key) DO NOTHING",
+        )
+        .bind(&ids)
+        .bind(&kinds)
+        .bind(&payloads)
+        .bind(&max_attempts_arr)
+        .bind(&keys)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn claim_next(&self, kinds: &[JobKind]) -> Result<Option<RetryJob>> {
         let kind_strs: Vec<&str> = kinds.iter().map(JobKind::as_pg_str).collect();
         let row = sqlx::query(

@@ -1183,3 +1183,320 @@ Addressed 3 findings from thorough code review:
 - **Engine startup must source `.env.prod`** — manually specifying only DATABASE_URL and BIND_ADDR drops the Voyage API key, disabling vector search and the reranker. The `make run-prod` target handles this correctly.
 - **Reranker document construction matters more than fusion weights** for search quality. Snippets are optimized for display (highlighting matched terms), not for semantic evaluation. Sending full content to the reranker is always the right call.
 - **CC fusion coverage multiplier is working as designed** — single-dimension results are penalized 25-50% depending on active dimensions. The remaining noise is from lexical matches in topically adjacent content (e.g., domain examples in methodology papers).
+
+---
+
+## Session 36 — 2026-03-15
+
+### Assessment
+- Active plan: Quality measurement and improvement (meta loop Assess→Evaluate)
+- Prior state: Session 35 completed Wave 9, fixed search quality (#130), 1,241 tests
+- Quality gates: Entity precision unmeasured, Search P@5 unmeasured
+
+### Executed
+**Branch:** main (4 commits)
+
+1. **Established search precision@5 baseline** (#131)
+   - 20 curated queries spanning all knowledge domains
+   - Binary relevance judgments per result (97 total judged, 85 relevant)
+   - **P@5 = 0.86** — passes >0.80 quality gate
+   - Saved as `covalence-eval/fixtures/search_precision_baseline.json`
+   - Closed #131
+
+2. **Fixed post-granularity quality filter scope** (#130)
+   - Handler-level quality filter was applying bibliography/reference checks to ALL result types
+   - Section and statement results from research papers naturally contain citations ("et al.", "(2023)")
+   - Scoped filter to `result_type == "chunk"` only — sections, statements, and nodes pass through
+   - This was causing some queries to return 0 results
+
+3. **Measured entity precision: 68%** (32 noise in 100 random sample)
+   - Categories: generic words (10), paper titles (4), generic phrases (3), code/metadata (8), questions-as-entities (3), ArXiv labels (2), math/dates (2)
+
+4. **Expanded noise filter from 43 to 57 tests** (#130)
+   - Generic words: +12 (clear, home, false, true, dimensions, etc.)
+   - Generic phrases: +14 (new system, color attributes, overall quality, etc.)
+   - Questions as entities: "what currency needed in scotland" → filtered
+   - Title-case 5+ word exception: "What You See Is All There Is" → kept
+   - HTTP methods: GET/POST/PUT/DELETE/PATCH endpoints
+   - URL schemes: anything with `://`
+   - Email addresses: `@` + `.` without spaces
+   - Dot+underscore code paths: `config.extract_url`, `data.total_memories`
+   - ArXiv category labels: `physics.soc-ph`
+   - Boolean literals as "other" type
+   - Subtitle-year detection: colon + >35 chars + 19xx/20xx year (excludes ADR-)
+   - Paper title threshold: >55 chars for concepts
+   - False positive fixes: reverted threshold from 50→55 (caught "emergent ontology"), excluded ADR- prefix from subtitle-year
+
+5. **Executed admin cleanup** — 94 total noise entities removed (33 + 61 in two passes), 1,845 edges, 28 aliases
+
+6. **Re-measured entity precision: 96%** — passes >90% quality gate
+   - Remaining 4%: paper comparison placeholders ("Ours"), quantities ("10,000 entries"), math variables ("d_{i-1}"), function signatures with arguments
+
+### Commits
+```
+7dd44b65 Fix post-granularity quality filter scope, add search eval baseline (#130, #131)
+4bb78fec Expand entity noise filter for 68% → ~90% precision (#130)
+2b00b787 Fix noise filter false positives: revert concept threshold to 55, refine subtitle-year detection (#130)
+d39d228b Add noise filter rules for emails, URLs, HTTP methods, dot-underscore paths (#130)
+```
+
+### Quality
+- 1,255 tests passing (21 api + 1,187 core + 47 eval), 0 failures
+- Zero clippy warnings, fmt clean
+- Prod graph: 5,474 nodes, 76,062 edges (down from 5,568/77,688 — 94 noise entities cleaned)
+
+### Insights
+- **Post-granularity promotion is a quality trap**: when paragraph chunks get promoted to section content, the section may be a bibliography or author list. The quality filter catches this, but it must be scoped to chunk-type results only — sections and statements have different content characteristics.
+- **Entity noise is bimodal**: the easy wins (code syntax, generic words) get 68→90%, but the last 10% requires understanding extraction context (is "Ours" a technology? is a function signature with arguments a concept?). Diminishing returns.
+- **Title-case is a reliable signal** for named concepts vs questions: "What You See Is All There Is" (all words capitalized, 7 words) is a cognitive bias name; "what currency needed in scotland" (lowercase) is a question. The 5-word minimum prevents short headings like "Who Can See It" from being falsely kept.
+- **Admin cleanup is safe with dry-run**: the two-pass approach (dry-run → review → execute) caught zero false positives across 94 entities. The filter rules are conservative enough for autonomous cleanup.
+
+### What Worked
+- Formal evaluation before building: measuring P@5 and entity precision gave concrete targets
+- Iterative filter development: add rules → test → deploy → measure → fix false positives → repeat
+- The quality gate framework (P@5 >0.80, entity precision >90%) from VISION.md is actionable and passes
+
+### What Could Be Better
+- The noise filter is now ~900 lines of heuristics. At some point, a small classifier (logistic regression on features like length, dot count, underscore count, entity type) might be more maintainable.
+- No automated regression test for entity precision — the 100-entity sample is manual. Could add an eval fixture like the search baseline.
+
+---
+
+## Session 37 — 2026-03-15 — Flywheel: Self-Evaluation Closing the Loop
+
+### Starting State
+- 1,255 tests, P@5 = 0.86, entity precision 96%, search regression 20/20
+- Cross-domain: coverage 7.8%, whitespace 50%, 178 orphan code nodes, 306 bridge edges
+- The search regression harness was just built (Session 36) but cross-domain analysis had major gaps
+
+### What Was Done
+
+**1. Expanded MODULE_PATH_MAPPINGS (coverage fix)**
+- Analyzed orphan code nodes via SQL join on extractions → chunks → sources
+- Found 178 code nodes unlinked due to missing path patterns
+- Added 27 new mappings: all ingestion submodules, models/, types/, storage/, error.rs, config.rs, eval crate, migrations, covalence-api crate, covalence:// URI scheme
+- Result: orphan code nodes 178 → 31
+
+**2. Fixed THEORETICAL_BASIS bridging (whitespace fix)**
+- Discovered that merged entities (e.g., "Subjective Logic" appearing in both spec and research) were excluded from research bridging
+- Root cause: the query used `NOT EXISTS (spec source)` which excluded entities with ANY spec extraction, even if they also had research provenance
+- Fix: changed to `EXISTS (non-spec, non-code source)` — entities must have at least one research/document extraction to qualify
+- Result: whitespace 50% → 0% (all 50 research sources bridged), 303 new THEORETICAL_BASIS edges
+
+**3. Increased semantic bridge budget**
+- Ran linking with `max_edges_per_component=50` (was 5)
+- Created 183 IMPLEMENTS_INTENT + 176 THEORETICAL_BASIS edges (first pass) + 303 THEORETICAL_BASIS (after fix)
+- Total bridge edges: 467 PART_OF_COMPONENT + 225+ IMPLEMENTS_INTENT + 548+ THEORETICAL_BASIS = 1,280+
+
+**4. Added trivial code chunk filter**
+- Found `mod tests {` and `if regressed {` chunks appearing at positions 7-8 in search results
+- Added `is_trivial_code_chunk()` to `chunk_quality.rs` — filters chunks <25 chars or single-line <40 chars
+- Applied in post-reranking quality filter alongside bibliography/boilerplate filters
+- 10 new tests
+
+**5. Re-ingested changed code files**
+- analysis.rs, chunk_quality.rs, search.rs → 119 new edges from synthesis
+- Re-linked: 21 new PART_OF_COMPONENT edges
+
+### Metrics Before/After
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Coverage | 7.8% | 45.1% |
+| Whitespace | 50% (25 gaps) | 0% (0 gaps) |
+| Orphan code | 178 | 31 |
+| Bridge edges | 306 | 1,280+ |
+| Search regression | 20/20 | 20/20 |
+| Tests | 1,255 | 1,267 |
+
+### Flywheel Evidence
+This session demonstrated the self-evaluation loop working:
+1. Used Covalence's whitespace analysis → found 2 unlinked papers (Epistemic Uncertainty, BMR)
+2. Traced root cause through the code → discovered merged entity exclusion bug
+3. Fixed the bug → whitespace went to 0%
+4. Used Covalence's coverage analysis → found 178 orphan code nodes
+5. Analyzed via SQL → identified missing MODULE_PATH_MAPPINGS
+6. Fixed mappings → orphans dropped to 31
+7. Search regression stayed 20/20 through all changes
+
+The system identified its own weaknesses, the weaknesses were fixed, and the system verified the fix. The flywheel completed one full turn.
+
+### Commits
+- `051bb443` — Expand MODULE_PATH_MAPPINGS for comprehensive cross-domain linking
+- `d701d146` — Add trivial code chunk filter to post-search quality check
+- `f7bc7ecc` — Fix THEORETICAL_BASIS bridging to include cross-domain entities
+
+### Insights
+- **Entity resolution creates blind spots in bridging**: when entities from different domains are merged, domain-specific queries can exclude them. The fix is to check for provenance from the target domain, not absence from the source domain.
+- **Coverage metric is dominated by spec concepts**: 200 "unimplemented" spec items are mostly vocabulary, not actionable implementation gaps. The metric needs refinement — perhaps weight by entity importance or only count top-level concepts.
+- **Whitespace is a powerful diagnostic**: going from 25 gaps to 0 in one session shows the analysis is actionable. The 2 remaining gaps pointed directly at the bridging bug.
+- **MODULE_PATH_MAPPINGS is a maintenance burden**: adding new source files requires updating the mapping table. A fallback heuristic (e.g., any code node extracted from a source with `engine/` in its URI gets mapped to a component by directory) would reduce this.
+
+### What Could Be Better
+- RAGAS metrics are all stubs — replacing even one (context precision) would enable measuring whether bridge edges improve retrieval context quality.
+- The 31 remaining orphan code nodes are entities from research papers with code-like names (e.g., "Opinion", "PgResolver") — they're not actually orphaned code, they're mistyped entities. Entity type refinement during ingestion would eliminate this.
+- Coverage formula treats all spec concepts equally. A weighted version using node degree or extraction confidence would better reflect actual implementation coverage.
+
+---
+
+## Session 38 — 2026-03-15 (continued)
+
+**Focus:** Data cleanup, coverage breakthrough, batch reprocessing
+
+### State at Session Start
+- 5,510 nodes, 77,409 edges, 44 components
+- 22,228 statements (6,303 from code sources = noise)
+- Coverage: 45.5% (up from 7.8% in S37)
+- 133 document sources without statements
+
+### Work Completed
+
+**1. Code-source statement cleanup**
+Discovered 6,303 statements from code sources — legacy noise from when code files were ingested as `source_type=document`. These were extracted by the statement pipeline, which now correctly skips code sources via a guard in `source.rs:511`. Deleted:
+- 20,698 extractions (from code-source statements)
+- 6,303 statements
+- 1,578 sections
+- 2,973 orphaned aliases
+- 9 fully orphaned nodes (no edges, no extractions remaining)
+
+Statement count dropped from 22,228 → 15,925 (all noise removed). Search regression: 20/20 stable.
+
+**2. Coverage breakthrough: 45.5% → 83.9%**
+The `max_edges_per_component` default was 5 — far too conservative with 9 components and 386 spec concepts. Raised to 100, which created 900 new IMPLEMENTS_INTENT and THEORETICAL_BASIS bridge edges.
+
+Coverage surpassed the 80% VISION target for the first time.
+
+Committed as `ab39278c` — Increase default max_edges_per_component from 5 to 100.
+
+**3. Batch reprocessing**
+Submitted 27 document sources for statement extraction across 3 batches:
+- Batch 1: 5 ADRs (14-19 statements each)
+- Batch 2: 12 specs/ADRs (processing)
+- Batch 3: 10 largest web sources (168-204 statements each)
+- Bonus: 12 zero-entity web sources (papers with chunks but no extractions)
+
+18+ sources completed during session. Sources with statements: 75 → 93/208.
+
+**4. Edge synthesis**
+789 new synthetic edges from reprocessed sources. Total edges: 77,409 → 91,534.
+
+**5. Wave 9 endpoint verification**
+All analysis endpoints tested and functional:
+- `/analysis/coverage` — 83.9% coverage, 31 orphan code, 62 unimplemented spec
+- `/analysis/erosion` — 8/9 components above 0.3 drift (expected for v1)
+- `/analysis/whitespace` — 0% whitespace, 50 research sources all bridged
+- `/analysis/verify` — returns research+code alignment (Search Fusion: 0.76)
+- `/analysis/blast-radius` — BFS traversal working
+- `/analysis/critique` — returns research/spec/code evidence for proposals
+
+### Metrics Before/After
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Coverage | 45.5% | 83.9% |
+| Whitespace | 0% | 0% |
+| Orphan code | 31 | 31 |
+| Statements | 22,228 (6,303 noise) | 17,811 (clean) |
+| Docs w/ statements | 75/208 | 93/208 |
+| Nodes | 5,510 | 5,589 |
+| Edges | 77,409 | 91,534 |
+| Bridge edges | 1,280+ | 2,600+ |
+| Search regression | 20/20 | 20/20 |
+| Tests | 1,267 | 1,267 |
+
+### Insights
+- **Default values matter enormously**: `max_edges_per_component=5` was the single biggest bottleneck for coverage. The graph had the data; we just weren't creating enough bridges. This is a general lesson — check if conservative defaults are the bottleneck before building new features.
+- **Data cleanup has outsized impact**: removing 6K noise statements didn't degrade search (20/20 stable) but cleaned the signal-to-noise ratio. The noise was invisible because it was mixed into a 22K pool.
+- **Reprocessing at scale needs orchestration**: manually submitting batches of 5-12 is tedious. The `make reprocess-statements` target works but is sequential per source. A parallel reprocessor with rate limiting would be valuable.
+- **Entity Resolution has 0 PART_OF_COMPONENT edges**: resolver code nodes exist in PG but have zero extractions. The AST extractor may need to be re-run on those files, or the extraction provenance chain is broken.
+
+### Commits
+- `ab39278c` — Increase default max_edges_per_component from 5 to 100
+
+### Next Steps
+- Continue batch reprocessing: ~115 document sources still need statements
+- Run edge synthesis periodically as reprocessing completes
+- Investigate Entity Resolution component having 0 PART_OF_COMPONENT edges
+- Consider a parallel reprocessor with rate limiting for bulk statement extraction
+- Re-run cross-domain linking after reprocessing completes to update coverage
+
+---
+
+## Session 39 — 2026-03-15
+
+### Assessment
+- **Before:** 103/208 doc sources with statements, 5,682 nodes, 95,554 edges, 30 orphan code, 84.1% coverage
+- **Blocker discovered:** Both LLM backends (copilot CLI + OpenRouter) are failing — copilot OAuth expired, OpenRouter credits exhausted. Statement reprocessing silently creates chunks but no statements. Filed #134.
+
+### Work Completed
+
+#### Cross-Domain Analysis Precision Improvements
+1. **Added missing MODULE_PATH_MAPPINGS**: `accept.rs`, `pii.rs`, `takedown.rs` → Ingestion Pipeline; `article.rs` → Consolidation
+2. **Fixed covalence:// URI normalization**: `covalence://engine/services/search.rs` now normalized to `src/services/search.rs` before pattern matching — was silently failing for 5 nodes
+3. **Code-source filtering**: Coverage and orphan-code queries now require provenance to `source_type='code'` sources — eliminates noise from function/struct names mentioned in papers/specs
+4. **Fixed path resolution priority**: URI subquery now `ORDER BY CASE WHEN source_type='code' THEN 0 ELSE 1 END` — prevents non-deterministic `LIMIT 1` from returning spec/paper URI instead of code URI
+
+Result: orphan code 30 → 0, coverage stable at 84.1%, 10 new PART_OF_COMPONENT edges
+
+#### Search Quality Assessment (#130)
+- Tested bibliography noise queries from original issue report
+- **No bibliography noise in top results** for any test query
+- Statements and sections dominate results (30% vector budget)
+- Updated issue #130 with findings — noise problem substantially resolved
+
+#### Metrics
+- **1,267 tests** (21 api + 1,197 core + 49 eval), 0 failures, clippy clean
+- **Search regression: 20/20 stable**, 0 regressions
+- **Coverage: 84.1%**, orphan code: 0, unimplemented specs: 60
+- **Whitespace: 0%** (all research bridged)
+- **Erosion: 8/9 components** (0.37-0.48 drift)
+
+### Commits
+- `cb81bdd2` — Fix cross-domain coverage precision with code-source filtering and URI normalization
+
+### Insights
+- **Non-deterministic SQL is insidious**: `LIMIT 1` without `ORDER BY` returned different results depending on which extraction was inserted first. For multi-domain entities (appear in both code and papers), this caused 8 code nodes to resolve to paper/spec URIs instead of their actual code files. Always add explicit ordering to correlated subqueries.
+- **Source-type filtering at query time is essential**: Code node types (`function`, `struct`) are extracted from any domain — a paper discussing a function creates the same node type as the actual function definition. Without source-type filtering, coverage analysis conflated code entities with paper mentions.
+
+### Blockers
+- **#134**: Both LLM backends unavailable. Copilot CLI needs `copilot login` (browser OAuth). OpenRouter needs credit reload. 105 doc sources can't get statements.
+
+### Next Steps
+- Fix LLM auth (#134) — run `copilot login`
+- Continue batch reprocessing of remaining 105 doc sources once auth is restored
+- Run edge synthesis after reprocessing completes
+- Consider splitting analysis.rs (2,082 lines) into sub-modules
+
+---
+
+## Session 39b — 2026-03-15 (continued)
+
+### Work Completed
+
+**Boot Persistence:** Added `restart: unless-stopped` to Docker containers, launchd plist for engine auto-start, startup script that waits for PG. Engine now survives reboots.
+
+**CLI Chat Backend Fix:** Set `current_dir("/tmp")` to prevent gemini/copilot from entering agentic mode when run from repo root. Added `COVALENCE_STATEMENT_MODEL=gemini-2.5-flash` for native model name.
+
+**Ollama Benchmarking (derptop):** Tested 7 models — qwen3:8b best quality (10 stmts), gemma3:12b fastest (4.6 tok/s). All CPU-only (ROCm broken), 15-45x slower than API. Need to retest after fix.
+
+**analysis.rs Decomposition:** Split 2,082-line monolith into 6 files: mod.rs (91), constants.rs (117), bootstrap.rs (485), health.rs (520), intelligence.rs (771), tests.rs (197). All 1,267 tests pass.
+
+**Dashboard Enhancement:** Added cross-domain analysis card (coverage, orphan code, unimpl specs, whitespace, erosion). Added `apiPost()` and `setText()` helpers.
+
+**Edge Synthesis:** 955 new synthetic edges, 241 THEORETICAL_BASIS bridge edges.
+
+### Commits
+- `089b05fb` — Boot persistence + CLI chat backend cwd fix
+- `650de8ee` — Split analysis.rs into modular directory
+- `4f188ac3` — Add cross-domain analysis card to dashboard
+
+### Metrics
+- Coverage: 84.2%, search: 20/20, whitespace: 0%, orphan code: 0
+- 5,840 nodes, 98,985 edges, 24,750 statements, 7,141 sections
+- 122/208 doc sources with statements (86 remaining, blocked on LLM quota)
+
+### Next Steps
+- Reprocessing: submit batches as gemini quota resets
+- Re-test Ollama after ROCm fix
+- Wire up Ollama as tertiary fallback
+- Continue SE source ingestion (#132)

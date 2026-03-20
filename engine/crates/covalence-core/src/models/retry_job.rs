@@ -91,6 +91,19 @@ impl JobKind {
     }
 }
 
+/// Parameters for enqueueing a batch of jobs.
+#[derive(Debug)]
+pub struct EnqueueJob {
+    /// Job kind.
+    pub kind: JobKind,
+    /// Arbitrary JSON payload.
+    pub payload: serde_json::Value,
+    /// Max retry attempts.
+    pub max_attempts: i32,
+    /// Optional idempotency key for dedup.
+    pub idempotency_key: Option<String>,
+}
+
 // ── Typed job payloads ─────────────────────────────────────────
 
 /// Payload for ReprocessSource and ComposeSourceSummary jobs.
