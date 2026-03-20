@@ -91,8 +91,79 @@ Status: `[ ]` = not ingested, `[x]` = ingested, `[~]` = partially ingested
 | 12 | Balancing Hybrid Search Trade-offs | 22 | Retrieval |
 | 13 | Memoria: Scalable Agentic Memory | 22 | Agent Memory |
 
+## Batch 5: Chunking & Document Segmentation (10 papers)
+
+| # | Paper | Year | R | C | A | G | I | Total | Status |
+|---|-------|------|---|---|---|---|---|-------|--------|
+| 41 | [Evaluating Advanced Chunking for RAG](https://arxiv.org/abs/2504.19754) | 2025 | 5 | 4 | 5 | 4 | 4 | 22 | [ ] |
+| 42 | [Cross-Document Topic-Aligned Chunking](https://arxiv.org/abs/2601.05265) | 2026 | 5 | 5 | 5 | 5 | 4 | 24 | [ ] |
+| 43 | [Hierarchical Text Segmentation Chunking](https://arxiv.org/abs/2507.09935) | 2025 | 5 | 4 | 5 | 4 | 3 | 21 | [ ] |
+| 44 | [Vision-Guided Chunking for RAG](https://arxiv.org/abs/2506.16035) | 2025 | 3 | 4 | 3 | 3 | 3 | 16 | [ ] |
+| 45 | [Chunk Twice Embed Once (Chemistry RAG)](https://arxiv.org/abs/2506.17277) | 2025 | 3 | 4 | 3 | 2 | 3 | 15 | [ ] |
+
+## Batch 6: Multi-Hop Reasoning & Query Decomposition (10 papers)
+
+| # | Paper | Year | R | C | A | G | I | Total | Status |
+|---|-------|------|---|---|---|---|---|-------|--------|
+| 46 | [RT-RAG: Tree Decomposition for Multi-Hop QA](https://arxiv.org/abs/2601.11255) | 2026 | 5 | 5 | 5 | 5 | 4 | 24 | [ ] |
+| 47 | [StepChain GraphRAG Multi-Hop QA](https://arxiv.org/abs/2510.02827) | 2025 | 5 | 4 | 5 | 5 | 4 | 23 | [ ] |
+| 48 | [Reasoning Bottleneck in Graph-RAG](https://arxiv.org/abs/2603.14045) | 2026 | 5 | 5 | 4 | 4 | 4 | 22 | [ ] |
+| 49 | [Decompositional Reasoning for Graph Retrieval](https://arxiv.org/abs/2506.13380) | 2025 | 5 | 4 | 5 | 4 | 4 | 22 | [ ] |
+| 50 | [PAR-RAG: Plan-Driven Multi-Hop QA](https://arxiv.org/abs/2504.16787) | 2025 | 4 | 4 | 4 | 4 | 3 | 19 | [ ] |
+| 51 | [PRoH: Planning over Knowledge Hypergraphs](https://arxiv.org/abs/2510.12434) | 2025 | 4 | 4 | 4 | 4 | 3 | 19 | [ ] |
+| 52 | [LLMs Meet KGs for QA: Survey](https://arxiv.org/abs/2505.20099) | 2025 | 4 | 4 | 3 | 3 | 4 | 18 | [ ] |
+| 53 | [Multi-Hop Reasoning with Hyperbolic Representations](https://arxiv.org/abs/2507.03612) | 2025 | 3 | 4 | 3 | 3 | 3 | 16 | [ ] |
+
+## Batch 7: Software Engineering & Architecture Knowledge (10 papers)
+
+| # | Paper | Year | R | C | A | G | I | Total | Status |
+|---|-------|------|---|---|---|---|---|-------|--------|
+| 54 | [Automating Architectural Knowledge Management](https://arxiv.org/abs/2601.19548) | 2026 | 5 | 5 | 5 | 5 | 4 | 24 | [ ] |
+| 55 | [GenAI-Induced Self-Admitted Technical Debt](https://arxiv.org/abs/2601.07786) | 2026 | 4 | 5 | 3 | 4 | 4 | 20 | [ ] |
+| 56 | [Reframing Technical Debt](https://arxiv.org/abs/2505.13009) | 2025 | 3 | 4 | 3 | 3 | 4 | 17 | [ ] |
+| 57 | [Architecture Technical Debt Lifecycle](https://arxiv.org/abs/2501.15387) | 2025 | 4 | 4 | 3 | 4 | 4 | 19 | [ ] |
+| 58 | [Technical Debt in Microservices](https://arxiv.org/abs/2506.16214) | 2025 | 3 | 4 | 3 | 3 | 3 | 16 | [ ] |
+| 59 | [CodeGlance: Code Reasoning Challenges](https://arxiv.org/abs/2602.13962) | 2026 | 4 | 5 | 3 | 3 | 3 | 18 | [ ] |
+| 60 | [LLMs for Source Code Analysis Survey](https://arxiv.org/abs/2503.17502) | 2025 | 4 | 4 | 3 | 3 | 4 | 18 | [ ] |
+
+## Batch 8: Epistemic Uncertainty & Belief Functions (5 papers)
+
+| # | Paper | Year | R | C | A | G | I | Total | Status |
+|---|-------|------|---|---|---|---|---|-------|--------|
+| 61 | [Epistemic Wrapping for Uncertainty](https://arxiv.org/abs/2505.02277) | 2025 | 5 | 4 | 4 | 5 | 3 | 21 | [ ] |
+| 62 | [Rethinking Aleatoric and Epistemic Uncertainty](https://arxiv.org/abs/2412.20892) | 2024 | 4 | 3 | 3 | 4 | 4 | 18 | [ ] |
+| 63 | [Subjective Uncertainty in NLG](https://arxiv.org/abs/2406.05213) | 2024 | 4 | 3 | 4 | 4 | 3 | 18 | [ ] |
+| 64 | [Uncertainty Reasoning Survey for LLMs](https://arxiv.org/abs/2206.05675) | 2022 | 4 | 1 | 3 | 4 | 5 | 17 | [ ] |
+| 65 | [Imprecise Probabilistic ML (Belief Functions)](https://arxiv.org/abs/2505.16156) | 2025 | 4 | 4 | 3 | 4 | 3 | 18 | [ ] |
+
+---
+
+## Scoring Summary (All batches, top 20 by total)
+
+| Rank | Paper | Total | Category |
+|------|-------|-------|----------|
+| 1 | Agentic Memory: Unified LTM/STM | 24 | Agent Memory |
+| 2 | MAGMA: Multi-Graph Agentic Memory | 24 | Agent Memory |
+| 3 | Cross-Document Topic-Aligned Chunking | 24 | Chunking |
+| 4 | RT-RAG: Tree Decomposition Multi-Hop | 24 | Multi-Hop |
+| 5 | Automating Architectural Knowledge Mgmt | 24 | Software Eng |
+| 6 | CORE-KG: Structured Prompting + Coref | 23 | Entity Resolution |
+| 7 | Cross-Document Contextual Coref in KGs | 23 | Entity Resolution |
+| 8 | SMEC: Matryoshka Embedding Compression | 23 | Embeddings |
+| 9 | Memory in the Age of AI Agents | 23 | Agent Memory |
+| 10 | Mem0: Production-Ready Agent Memory | 23 | Agent Memory |
+| 11 | StepChain GraphRAG Multi-Hop QA | 23 | Multi-Hop |
+| 12 | Ontology Learning vs KG for RAG | 22 | GraphRAG |
+| 13 | LINK-KG: Coref-Resolved KGs | 22 | Entity Resolution |
+| 14 | Coref Resolution Impact on RAG | 22 | Entity Resolution |
+| 15 | RAGAS: Automated Evaluation of RAG | 22 | Evaluation |
+| 16 | Balancing Hybrid Search Trade-offs | 22 | Retrieval |
+| 17 | Advanced Chunking for RAG | 22 | Chunking |
+| 18 | Reasoning Bottleneck in Graph-RAG | 22 | Multi-Hop |
+| 19 | Decompositional Reasoning for Graph Retrieval | 22 | Multi-Hop |
+| 20 | Memoria: Scalable Agentic Memory | 22 | Agent Memory |
+
 ## Future Batches (to be searched)
 
-- Batch 5-6: Epistemic uncertainty, Dempster-Shafer, Subjective Logic
-- Batch 7-8: Software engineering patterns, code quality, refactoring
-- Batch 9-10: Query decomposition, multi-hop reasoning, chain-of-thought
+- Batch 9: Confidence calibration, hallucination detection, factual consistency
+- Batch 10: Late interaction models, ColBERT, learned sparse retrieval
