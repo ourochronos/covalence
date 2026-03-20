@@ -30,7 +30,7 @@ RETURNS TABLE(
     rel_type TEXT, canonical_rel_type TEXT,
     confidence FLOAT8, weight FLOAT8,
     is_synthetic BOOLEAN, has_valid_from BOOLEAN,
-    causal_level_int INT, clearance_level INT
+    causal_level INT, clearance_level INT
 ) AS $$
     SELECT id, source_node_id, target_node_id,
            rel_type, COALESCE(canonical_rel_type, rel_type),
