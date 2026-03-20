@@ -241,4 +241,11 @@ Old source versions and orphan nodes are observations, not garbage. Never auto-d
 **Date:** 2026-03-19
 **Source:** FastcorefClient API mismatch (Session 41)
 
-HTTP sidecars (fastcoref, PDF converter, future extractors) can silently fail when their API contract drifts from the client. The FastcorefClient was sending `{"texts": [...]}` but the sidecar expected `{"text": "..."}` — every coref call failed silently for weeks because errors were caught and warned but processing continued without coref. The fix is two-fold: (1) validate backends at startup by sending a test request and verifying the response parses correctly, and (2) disable the backend loudly (error log) rather than letting it silently degrade. Every new sidecar integration must include a `validate()` method called at engine startup.
+HTTP sidecars (fastcoref, PDF converter, future extractors) can silently fail when their API contract drifts from the client. The FastcorefClient was sending `{"texts": [...]}` but the sidecar expected `{"text": "..."}` — every coref call failed silently for weeks because errors were caught and warned but processing continued without coref. The fix is two-fold: (1) validate backends at startup by sending a test request and verifying the response parses correctly, and (2) if a sidecar URL was *explicitly configured* via environment variable, crash the engine on validation failure (fail-fast) so the orchestrator knows it's broken. Auto-derived URLs degrade gracefully. Every new sidecar integration must include a `validate()` method called at engine startup.
+
+## Lesson 21: Incremental Flushing for Unbounded Collections
+
+**Date:** 2026-03-19
+**Source:** Gemini SRE review of coref ledger (Session 41)
+
+Never accumulate unbounded data in memory when it can be flushed incrementally. The neural coref stage collected all byte-offset mutations for an entire document into a single `Vec`, then flushed to Postgres in one `batch_create` at the end. For large documents with thousands of pronoun mutations, this risks OOM and exceeds Postgres' 65,535 parameter limit per query. The fix: flush ledger entries per-chunk rather than per-document. This pattern applies anywhere a pipeline stage accumulates results — flush at natural batch boundaries rather than holding everything until the end.

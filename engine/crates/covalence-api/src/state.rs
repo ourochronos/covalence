@@ -267,10 +267,10 @@ impl AppState {
                     converter_registry.register(Box::new(pdf_conv));
                 }
                 Err(e) => {
-                    tracing::error!(
-                        url = %url,
-                        error = %e,
-                        "PDF sidecar validation FAILED — PDF ingestion disabled"
+                    // Explicitly configured → required dependency → fail fast.
+                    anyhow::bail!(
+                        "PDF sidecar at {url} is unreachable: {e}. \
+                         Either start the sidecar or remove COVALENCE_PDF_URL."
                     );
                 }
             }
@@ -338,12 +338,22 @@ impl AppState {
                     source_svc = source_svc.with_coref_client(coref_client);
                 }
                 Err(e) => {
-                    tracing::error!(
-                        url = %url,
-                        error = %e,
-                        "fastcoref sidecar validation FAILED — coref disabled. \
-                         Fix the sidecar and restart the engine."
-                    );
+                    // Distinguish explicit config from auto-derived.
+                    if config.coref_url.is_some() {
+                        // Explicitly configured → required → fail fast.
+                        anyhow::bail!(
+                            "fastcoref sidecar at {url} is unreachable: {e}. \
+                             Either start the sidecar or remove COVALENCE_COREF_URL."
+                        );
+                    } else {
+                        // Auto-derived from extractor URL → degrade gracefully.
+                        tracing::warn!(
+                            url = %url,
+                            error = %e,
+                            "fastcoref sidecar unavailable — coref disabled \
+                             (auto-derived URL, not explicitly configured)"
+                        );
+                    }
                 }
             }
         }

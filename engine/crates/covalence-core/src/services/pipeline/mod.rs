@@ -271,8 +271,7 @@ impl SourceService {
                 let extractable_indices: Vec<usize> = (0..chunk_outputs.len()).collect();
 
                 let mut resolved = std::collections::HashMap::new();
-                let mut all_ledger_entries: Vec<crate::models::projection::LedgerEntry> =
-                    Vec::new();
+                let mut total_ledger_entries = 0usize;
 
                 for &idx in &extractable_indices {
                     let co = &chunk_outputs[idx];
@@ -286,20 +285,18 @@ impl SourceService {
                                 "neural coref resolved"
                             );
                             // Record mutations as ledger entries for offset projection.
-                            // Mutation offsets from the coref client are
-                            // chunk-relative. Shift by the chunk's
-                            // byte_start to make them source-absolute.
-                            // Skip mutations entirely within the overlap
-                            // prefix (context_prefix_len) to avoid
-                            // double-counting — those were already
-                            // recorded for the previous chunk.
+                            // Flush incrementally per chunk to avoid OOM on
+                            // large documents and to stay within Postgres'
+                            // 65,535 parameter limit per query.
                             let base = co.byte_start;
                             let prefix = co.context_prefix_len;
+                            let mut chunk_entries: Vec<crate::models::projection::LedgerEntry> =
+                                Vec::new();
                             for m in &result.mutations {
                                 if m.canonical_start < prefix {
                                     continue;
                                 }
-                                all_ledger_entries.push(
+                                chunk_entries.push(
                                     crate::models::projection::LedgerEntry::new(
                                         input.source_id,
                                         (base + m.canonical_start, base + m.canonical_end),
@@ -308,6 +305,23 @@ impl SourceService {
                                         m.mutated_token.clone(),
                                     ),
                                 );
+                            }
+                            if !chunk_entries.is_empty() {
+                                use crate::storage::traits::LedgerRepo;
+                                let count = chunk_entries.len();
+                                if let Err(e) = LedgerRepo::create_batch(
+                                    self.repo.as_ref(),
+                                    &chunk_entries,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        chunk_index = idx,
+                                        error = %e,
+                                        "failed to flush ledger entries for chunk"
+                                    );
+                                }
+                                total_ledger_entries += count;
                             }
                             resolved.insert(co.id, result.resolved);
                         }
@@ -321,27 +335,12 @@ impl SourceService {
                     }
                 }
 
-                // Store ledger entries in the database for later
-                // reverse projection of entity byte spans.
-                if !all_ledger_entries.is_empty() {
-                    use crate::storage::traits::LedgerRepo;
-                    let entry_count = all_ledger_entries.len();
-                    match LedgerRepo::create_batch(self.repo.as_ref(), &all_ledger_entries).await {
-                        Ok(()) => {
-                            tracing::info!(
-                                source_id = %input.source_id,
-                                entries = entry_count,
-                                "stored offset projection ledger"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                source_id = %input.source_id,
-                                error = %e,
-                                "failed to store projection ledger"
-                            );
-                        }
-                    }
+                if total_ledger_entries > 0 {
+                    tracing::info!(
+                        source_id = %input.source_id,
+                        entries = total_ledger_entries,
+                        "stored offset projection ledger (flushed incrementally)"
+                    );
                 }
 
                 if resolved.is_empty() {
