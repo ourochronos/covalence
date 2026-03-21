@@ -162,7 +162,8 @@ impl AnalysisService {
             .map(|(name, ntype, mentions)| AlignmentItem {
                 check: "spec_ahead".to_string(),
                 reason: format!(
-                    "Spec concept mentioned {mentions} times with no IMPLEMENTS_INTENT edge"
+                    "Spec concept mentioned {mentions} times with no {} edge",
+                    self.bridges.implements_intent
                 ),
                 name,
                 domain: "spec".to_string(),

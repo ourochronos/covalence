@@ -133,7 +133,10 @@ impl AnalysisService {
                 name,
                 node_type: ntype,
                 file_path: if path.is_empty() { None } else { Some(path) },
-                reason: "No PART_OF_COMPONENT edge to any Component".to_string(),
+                reason: format!(
+                    "No {} edge to any Component",
+                    self.bridges.part_of_component
+                ),
             })
             .collect();
 
@@ -154,7 +157,10 @@ impl AnalysisService {
                 name,
                 node_type: ntype,
                 file_path: None,
-                reason: "Spec concept with no IMPLEMENTS_INTENT edge".to_string(),
+                reason: format!(
+                    "Spec concept with no {} edge",
+                    self.bridges.implements_intent
+                ),
             })
             .collect();
 
@@ -220,11 +226,12 @@ impl AnalysisService {
                  FROM nodes n \
                  JOIN edges e ON e.source_node_id = n.id \
                  WHERE e.target_node_id = $1 \
-                   AND e.rel_type = 'PART_OF_COMPONENT' \
+                   AND e.rel_type = $2 \
                    AND n.embedding IS NOT NULL \
                  ORDER BY dist DESC",
             )
             .bind(comp_id)
+            .bind(&self.bridges.part_of_component)
             .fetch_all(self.repo.pool())
             .await?;
 
@@ -341,7 +348,7 @@ impl AnalysisService {
                 "SELECT DISTINCT comp.canonical_name \
                  FROM nodes comp \
                  JOIN edges e ON e.source_node_id = comp.id \
-                 WHERE e.rel_type = 'IMPLEMENTS_INTENT' \
+                 WHERE e.rel_type = $2 \
                    AND comp.node_type = 'component' \
                    AND e.target_node_id IN ( \
                      SELECT n.id FROM nodes n \
@@ -351,6 +358,7 @@ impl AnalysisService {
                    )",
             )
             .bind(source_id)
+            .bind(&self.bridges.implements_intent)
             .fetch_all(self.repo.pool())
             .await?;
 
@@ -360,7 +368,7 @@ impl AnalysisService {
                 "SELECT DISTINCT comp.canonical_name \
                  FROM nodes comp \
                  JOIN edges e ON e.source_node_id = comp.id \
-                 WHERE e.rel_type = 'THEORETICAL_BASIS' \
+                 WHERE e.rel_type = $2 \
                    AND comp.node_type = 'component' \
                    AND e.target_node_id IN ( \
                      SELECT n.id FROM nodes n \
@@ -370,6 +378,7 @@ impl AnalysisService {
                    )",
             )
             .bind(source_id)
+            .bind(&self.bridges.theoretical_basis)
             .fetch_all(self.repo.pool())
             .await?;
 
@@ -390,8 +399,8 @@ impl AnalysisService {
                 assessment: if *node_count > 10 {
                     format!(
                         "Dense research cluster ({} entities) with zero \
-                         THEORETICAL_BASIS bridge edges to any component.",
-                        node_count
+                         {} bridge edges to any component.",
+                        node_count, self.bridges.theoretical_basis
                     )
                 } else {
                     format!(

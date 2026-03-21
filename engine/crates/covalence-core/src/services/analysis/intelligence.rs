@@ -397,10 +397,11 @@ impl AnalysisService {
              FROM nodes comp \
              JOIN edges e ON e.source_node_id = comp.id \
              WHERE comp.entity_class = 'analysis' \
-               AND e.rel_type = 'THEORETICAL_BASIS' \
+               AND e.rel_type = $2 \
                AND e.target_node_id = ANY($1)",
         )
         .bind(&research_ids)
+        .bind(&self.bridges.theoretical_basis)
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -431,7 +432,7 @@ impl AnalysisService {
                         (n.embedding <=> $1::vector) AS dist \
                  FROM nodes n \
                  JOIN edges e ON e.source_node_id = n.id \
-                 WHERE e.rel_type = 'PART_OF_COMPONENT' \
+                 WHERE e.rel_type = $4 \
                    AND e.target_node_id = ANY($2) \
                    AND n.embedding IS NOT NULL \
                  ORDER BY dist ASC \
@@ -440,6 +441,7 @@ impl AnalysisService {
                 .bind(&query_truncated)
                 .bind(&comp_ids)
                 .bind(Self::MAX_VERIFY_CODE_NODES)
+                .bind(&self.bridges.part_of_component)
                 .fetch_all(self.repo.pool())
                 .await?
             };

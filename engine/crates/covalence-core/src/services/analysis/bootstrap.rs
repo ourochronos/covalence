@@ -247,7 +247,7 @@ impl AnalysisService {
             let exists: bool = sqlx::query_scalar("SELECT sp_check_edge_exists($1, $2, $3)")
                 .bind(code_id)
                 .bind(comp_id)
-                .bind("PART_OF_COMPONENT")
+                .bind(&self.bridges.part_of_component)
                 .fetch_one(self.repo.pool())
                 .await?;
 
@@ -258,7 +258,7 @@ impl AnalysisService {
 
             let code_nid = NodeId::from_uuid(*code_id);
             let comp_nid = NodeId::from_uuid(comp_id);
-            let mut edge = Edge::new(code_nid, comp_nid, "PART_OF_COMPONENT".to_string());
+            let mut edge = Edge::new(code_nid, comp_nid, self.bridges.part_of_component.clone());
             edge.properties = serde_json::json!({
                 "bridge_type": "module_path",
                 "file_path": file_path,
@@ -333,7 +333,7 @@ impl AnalysisService {
                     comp_name,
                     &spec_matches,
                     threshold,
-                    "IMPLEMENTS_INTENT",
+                    &self.bridges.implements_intent,
                     "spec_to_component",
                 )
                 .await?;
@@ -373,7 +373,7 @@ impl AnalysisService {
                     comp_name,
                     &research_matches,
                     threshold,
-                    "THEORETICAL_BASIS",
+                    &self.bridges.theoretical_basis,
                     "research_to_component",
                 )
                 .await?;

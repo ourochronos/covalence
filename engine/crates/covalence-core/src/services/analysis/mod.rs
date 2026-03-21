@@ -54,12 +54,39 @@ pub struct LinkingResult {
 }
 
 /// Cross-domain analysis service.
+/// Configurable bridge relationship types for cross-domain analysis.
+///
+/// These define how domains are connected in the knowledge graph.
+/// Defaults match the current Covalence ontology but can be
+/// overridden per-project via the ontology tables.
+#[derive(Debug, Clone)]
+pub struct BridgeConfig {
+    /// Edge type linking code entities to components.
+    pub part_of_component: String,
+    /// Edge type linking components to spec concepts.
+    pub implements_intent: String,
+    /// Edge type linking components to research concepts.
+    pub theoretical_basis: String,
+}
+
+impl Default for BridgeConfig {
+    fn default() -> Self {
+        Self {
+            part_of_component: "PART_OF_COMPONENT".to_string(),
+            implements_intent: "IMPLEMENTS_INTENT".to_string(),
+            theoretical_basis: "THEORETICAL_BASIS".to_string(),
+        }
+    }
+}
+
 pub struct AnalysisService {
     repo: Arc<PgRepo>,
     graph: Arc<dyn GraphEngine>,
     embedder: Option<Arc<dyn Embedder>>,
     chat_backend: Option<Arc<dyn ChatBackend>>,
     node_embed_dim: usize,
+    /// Configurable bridge relationship types.
+    pub(crate) bridges: BridgeConfig,
 }
 
 impl AnalysisService {
@@ -71,7 +98,14 @@ impl AnalysisService {
             embedder: None,
             chat_backend: None,
             node_embed_dim: 256,
+            bridges: BridgeConfig::default(),
         }
+    }
+
+    /// Set bridge relationship types from the ontology.
+    pub fn with_bridges(mut self, bridges: BridgeConfig) -> Self {
+        self.bridges = bridges;
+        self
     }
 
     /// Set the embedder for component description embedding.
