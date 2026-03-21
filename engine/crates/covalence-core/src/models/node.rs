@@ -45,25 +45,52 @@ impl EntityClass {
             _ => None,
         }
     }
+
+    /// Map from ontology category to EntityClass.
+    ///
+    /// Ontology categories (concept, process, artifact, agent,
+    /// property, collection) are more granular than EntityClass.
+    /// This provides the backward-compatible mapping.
+    pub fn from_category(category: &str) -> Self {
+        match category {
+            "agent" => Self::Actor,
+            _ => Self::Domain, // concept, process, artifact, property, collection
+        }
+    }
 }
 
 /// Derive entity class from a node_type string.
 ///
-/// This is the canonical mapping from the dynamic `node_type` values
-/// produced by LLM extraction to the controlled `entity_class`
-/// vocabulary. Must be kept in sync with the backfill SQL in
-/// migration 014.
+/// Uses the ontology category mapping when available (passed as
+/// a HashMap from type → category). Falls back to hardcoded
+/// defaults for backward compatibility.
 pub fn derive_entity_class(node_type: &str) -> EntityClass {
+    derive_entity_class_with_ontology(node_type, None)
+}
+
+/// Derive entity class using an optional ontology type→category map.
+///
+/// When `type_to_category` is provided, looks up the node_type in
+/// the ontology. When not provided (or type not found), falls back
+/// to hardcoded defaults.
+pub fn derive_entity_class_with_ontology(
+    node_type: &str,
+    type_to_category: Option<&std::collections::HashMap<String, String>>,
+) -> EntityClass {
+    // Try ontology lookup first.
+    if let Some(map) = type_to_category {
+        if let Some(category) = map.get(node_type) {
+            return EntityClass::from_category(category);
+        }
+    }
+
+    // Hardcoded fallback (backward compatibility).
     match node_type {
-        // Code entities
         "function" | "struct" | "trait" | "enum" | "impl_block" | "constant" | "module"
         | "class" | "macro" | "code_function" | "code_struct" | "code_trait" | "code_module"
         | "code_impl" | "code_type" | "code_test" => EntityClass::Code,
-        // Actor entities
         "person" | "organization" | "location" | "role" => EntityClass::Actor,
-        // Analysis entities
         "component" => EntityClass::Analysis,
-        // Everything else is a domain concept
         _ => EntityClass::Domain,
     }
 }
