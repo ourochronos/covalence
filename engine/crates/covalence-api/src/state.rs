@@ -60,6 +60,8 @@ pub struct AppState {
     pub queue_service: Arc<RetryQueueService>,
     /// Runtime configuration service.
     pub config_service: Arc<covalence_core::services::ConfigService>,
+    /// Ontology service (configurable knowledge schema).
+    pub ontology_service: Arc<covalence_core::services::OntologyService>,
 }
 
 impl AppState {
@@ -582,6 +584,15 @@ impl AppState {
         }
         config_service.spawn_refresh_loop(30);
 
+        // Ontology service — configurable knowledge schema.
+        let ontology_service = Arc::new(covalence_core::services::OntologyService::new(
+            Arc::clone(&repo),
+        ));
+        if let Err(e) = ontology_service.refresh().await {
+            tracing::warn!(error = %e, "initial ontology load failed (will retry)");
+        }
+        ontology_service.spawn_refresh_loop(60);
+
         Ok(Self {
             config,
             repo,
@@ -597,6 +608,7 @@ impl AppState {
             ask_service,
             queue_service,
             config_service,
+            ontology_service,
         })
     }
 }

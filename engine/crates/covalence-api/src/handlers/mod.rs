@@ -10,5 +10,6 @@ pub mod edges;
 pub mod mcp;
 pub mod memory;
 pub mod nodes;
+pub mod ontology;
 pub mod search;
 pub mod sources;
