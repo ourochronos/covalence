@@ -186,13 +186,13 @@ impl AnalysisService {
                        JOIN chunks c ON ex.chunk_id = c.id \
                        JOIN sources s ON c.source_id = s.id \
                        WHERE ex.entity_id = n.id \
-                       ORDER BY CASE WHEN s.domain = 'code' \
+                       ORDER BY CASE WHEN s.domain = $2 \
                                      THEN 0 ELSE 1 END \
                        LIMIT 1), \
                       '' \
                     ) AS path \
              FROM nodes n \
-             WHERE n.entity_class = 'code' \
+             WHERE n.entity_class = $1 \
                AND n.node_type != 'code_test' \
                AND n.canonical_name NOT LIKE 'test_%' \
                AND EXISTS ( \
@@ -200,9 +200,11 @@ impl AnalysisService {
                  JOIN chunks c ON ex.chunk_id = c.id \
                  JOIN sources s ON c.source_id = s.id \
                  WHERE ex.entity_id = n.id \
-                   AND s.domain = 'code' \
+                   AND s.domain = $2 \
                )",
         )
+        .bind(&self.domains.code_entity_class)
+        .bind(&self.domains.code_domain)
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -317,13 +319,14 @@ impl AnalysisService {
                      JOIN chunks c ON ex.chunk_id = c.id \
                      JOIN sources s ON c.source_id = s.id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain IN ('spec', 'design') \
+                       AND s.domain = ANY($3) \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
             )
             .bind(comp_id)
             .bind(max_edges)
+            .bind(&self.domains.spec_domains)
             .fetch_all(self.repo.pool())
             .await?;
 
@@ -357,13 +360,14 @@ impl AnalysisService {
                      JOIN chunks c ON ex.chunk_id = c.id \
                      JOIN sources s ON c.source_id = s.id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain IN ('research', 'external') \
+                       AND s.domain = ANY($3) \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
             )
             .bind(comp_id)
             .bind(max_edges)
+            .bind(&self.domains.research_domains)
             .fetch_all(self.repo.pool())
             .await?;
 

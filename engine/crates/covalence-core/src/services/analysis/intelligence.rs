@@ -370,12 +370,13 @@ impl AnalysisService {
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain IN ('research', 'external') \
+                       AND s.domain = ANY($2) \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT 10",
             )
             .bind(&query_truncated)
+            .bind(&self.domains.research_domains)
             .fetch_all(self.repo.pool())
             .await?;
 
@@ -541,13 +542,14 @@ impl AnalysisService {
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain IN ('research', 'external') \
+                       AND s.domain = ANY($3) \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
             )
             .bind(&proposal_truncated)
             .bind(Self::MAX_CRITIQUE_EVIDENCE)
+            .bind(&self.domains.research_domains)
             .fetch_all(self.repo.pool())
             .await?;
 
@@ -564,13 +566,14 @@ impl AnalysisService {
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain IN ('spec', 'design') \
+                       AND s.domain = ANY($3) \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
         )
         .bind(&proposal_truncated)
         .bind(Self::MAX_CRITIQUE_EVIDENCE)
+        .bind(&self.domains.spec_domains)
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -582,19 +585,21 @@ impl AnalysisService {
                         (n.embedding <=> $1::vector) AS dist \
                  FROM nodes n \
                  WHERE n.embedding IS NOT NULL \
-                   AND n.entity_class = 'code' \
+                   AND n.entity_class = $3 \
                    AND EXISTS ( \
                      SELECT 1 FROM extractions ex \
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain = 'code' \
+                       AND s.domain = $4 \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
         )
         .bind(&proposal_truncated)
         .bind(Self::MAX_CRITIQUE_EVIDENCE)
+        .bind(&self.domains.code_entity_class)
+        .bind(&self.domains.code_domain)
         .fetch_all(self.repo.pool())
         .await?;
 

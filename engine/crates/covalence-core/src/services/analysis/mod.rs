@@ -54,6 +54,33 @@ pub struct LinkingResult {
 }
 
 /// Cross-domain analysis service.
+/// Configurable domain groupings for cross-domain analysis.
+///
+/// Defines which domains are "internal" (spec-like) vs "external"
+/// (research-like) and which entity class represents code entities.
+#[derive(Debug, Clone)]
+pub struct DomainConfig {
+    /// Entity class for code entities.
+    pub code_entity_class: String,
+    /// Domains that contain specification/design intent.
+    pub spec_domains: Vec<String>,
+    /// Domains that contain research/external knowledge.
+    pub research_domains: Vec<String>,
+    /// Domain for code sources.
+    pub code_domain: String,
+}
+
+impl Default for DomainConfig {
+    fn default() -> Self {
+        Self {
+            code_entity_class: "code".to_string(),
+            spec_domains: vec!["spec".to_string(), "design".to_string()],
+            research_domains: vec!["research".to_string(), "external".to_string()],
+            code_domain: "code".to_string(),
+        }
+    }
+}
+
 /// Configurable bridge relationship types for cross-domain analysis.
 ///
 /// These define how domains are connected in the knowledge graph.
@@ -87,6 +114,8 @@ pub struct AnalysisService {
     node_embed_dim: usize,
     /// Configurable bridge relationship types.
     pub(crate) bridges: BridgeConfig,
+    /// Configurable domain groupings.
+    pub(crate) domains: DomainConfig,
 }
 
 impl AnalysisService {
@@ -99,12 +128,19 @@ impl AnalysisService {
             chat_backend: None,
             node_embed_dim: 256,
             bridges: BridgeConfig::default(),
+            domains: DomainConfig::default(),
         }
     }
 
     /// Set bridge relationship types from the ontology.
     pub fn with_bridges(mut self, bridges: BridgeConfig) -> Self {
         self.bridges = bridges;
+        self
+    }
+
+    /// Set domain groupings from the ontology.
+    pub fn with_domains(mut self, domains: DomainConfig) -> Self {
+        self.domains = domains;
         self
     }
 
