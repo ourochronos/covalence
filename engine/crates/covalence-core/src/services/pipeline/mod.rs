@@ -801,12 +801,13 @@ impl SourceService {
                        AND ex.entity_type = 'node' \
                      JOIN chunks c ON c.id = ex.chunk_id \
                      WHERE c.source_id = $1 \
-                       AND n.entity_class = 'code' \
+                       AND n.entity_class = $2 \
                      GROUP BY n.id, canonical_name, node_type, \
                               properties, description \
                      ORDER BY n.node_type, n.canonical_name",
                 )
                 .bind(input.source_id)
+                .bind(&self.pipeline.code_entity_class)
                 .fetch_all(self.repo.pool())
                 .await
                 .unwrap_or_default();

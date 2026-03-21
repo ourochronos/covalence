@@ -1530,24 +1530,18 @@ impl AdminService {
         min_similarity: f64,
         max_edges_per_node: i64,
     ) -> Result<BridgeResult> {
-        let code_types = [
-            "struct",
-            "function",
-            "trait",
-            "enum",
-            "impl_block",
-            "constant",
-            "macro",
-            "module",
-            "class",
-        ];
+        let code_types: Vec<String> = self
+            .config
+            .as_ref()
+            .map(|c| c.pipeline.code_node_types.clone())
+            .unwrap_or_else(crate::config::PipelineConfig::default_code_node_types);
 
         // Fetch code nodes that have embeddings.
         let code_nodes: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             "SELECT id, canonical_name, node_type FROM nodes \
              WHERE node_type = ANY($1) AND embedding IS NOT NULL",
         )
-        .bind(&code_types[..])
+        .bind(&code_types)
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -1572,8 +1566,7 @@ impl AdminService {
                 "SELECT n.id, n.canonical_name, \
                         (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
                  FROM nodes n \
-                 WHERE n.node_type NOT IN ('struct','function','trait','enum', \
-                       'impl_block','constant','macro','module','class') \
+                 WHERE n.node_type != ALL($3) \
                    AND n.embedding IS NOT NULL \
                    AND n.id != $1 \
                  ORDER BY dist ASC \
@@ -1581,6 +1574,7 @@ impl AdminService {
             )
             .bind(code_id)
             .bind(max_edges_per_node)
+            .bind(&code_types)
             .fetch_all(self.repo.pool())
             .await?;
 

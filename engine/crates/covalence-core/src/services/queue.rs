@@ -72,6 +72,26 @@ impl RetryQueueService {
         let _ = self.admin_service.set(svc);
     }
 
+    /// Get the configured code entity class from the source service's
+    /// pipeline config, falling back to `"code"` if the service is
+    /// not yet wired.
+    fn code_entity_class(&self) -> String {
+        self.source_service
+            .get()
+            .map(|svc| svc.pipeline.code_entity_class.clone())
+            .unwrap_or_else(|| "code".to_string())
+    }
+
+    /// Get the configured code domain from the source service's
+    /// pipeline config, falling back to `"code"` if the service is
+    /// not yet wired.
+    fn code_domain(&self) -> String {
+        self.source_service
+            .get()
+            .map(|svc| svc.pipeline.code_domain.clone())
+            .unwrap_or_else(|| "code".to_string())
+    }
+
     /// Enqueue a source reprocess job.
     ///
     /// Idempotent: returns `None` if a pending job for this source
@@ -139,6 +159,8 @@ impl RetryQueueService {
     ///
     /// Returns the number of jobs enqueued.
     pub async fn enqueue_summarize_all(&self) -> Result<u64> {
+        let code_class = self.code_entity_class();
+
         // Find code entities that need summaries.
         let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
             "SELECT DISTINCT n.id, COALESCE( \
@@ -149,12 +171,13 @@ impl RetryQueueService {
                '00000000-0000-0000-0000-000000000000'::uuid \
              ) as source_id \
              FROM nodes n \
-             WHERE n.entity_class = 'code' \
+             WHERE n.entity_class = $1 \
                AND (n.properties->>'semantic_summary' IS NULL \
                     OR n.properties->>'semantic_summary' = '') \
                AND n.node_type != 'code_test' \
                AND n.canonical_name NOT LIKE 'test_%'",
         )
+        .bind(&code_class)
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -193,20 +216,25 @@ impl RetryQueueService {
     /// Enqueue source summary composition jobs for code sources that
     /// have entity summaries but no file-level summary yet.
     pub async fn enqueue_compose_all(&self) -> Result<u64> {
+        let code_domain = self.code_domain();
+        let code_class = self.code_entity_class();
+
         let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT DISTINCT s.id \
              FROM sources s \
-             WHERE s.domain = 'code' \
+             WHERE s.domain = $1 \
                AND s.summary IS NULL \
                AND EXISTS ( \
                  SELECT 1 FROM nodes n \
                  JOIN extractions ex ON ex.entity_id = n.id AND ex.entity_type = 'node' \
                  JOIN chunks c ON c.id = ex.chunk_id \
                  WHERE c.source_id = s.id \
-                   AND n.entity_class = 'code' \
+                   AND n.entity_class = $2 \
                    AND n.properties->>'semantic_summary' IS NOT NULL \
                )",
         )
+        .bind(&code_domain)
+        .bind(&code_class)
         .fetch_all(self.repo.pool())
         .await?;
 
@@ -265,6 +293,8 @@ impl RetryQueueService {
     pub fn spawn_watchdog(self: &Arc<Self>) {
         let repo = Arc::clone(&self.repo);
         let interval = std::time::Duration::from_secs(120); // every 2 minutes
+        let code_domain = self.code_domain();
+        let code_class = self.code_entity_class();
 
         tokio::spawn(async move {
             loop {
@@ -274,14 +304,14 @@ impl RetryQueueService {
                 // and no pending compose job — these are stalled.
                 let stalled: Vec<(uuid::Uuid,)> = sqlx::query_as(
                     "SELECT s.id FROM sources s \
-                     WHERE s.domain = 'code' \
+                     WHERE s.domain = $1 \
                        AND s.summary IS NULL \
                        AND EXISTS ( \
                          SELECT 1 FROM nodes n \
                          JOIN extractions ex ON ex.entity_id = n.id \
                          JOIN chunks c ON c.id = ex.chunk_id \
                          WHERE c.source_id = s.id \
-                           AND n.entity_class = 'code' \
+                           AND n.entity_class = $2 \
                            AND n.properties->>'semantic_summary' IS NOT NULL \
                        ) \
                        AND NOT EXISTS ( \
@@ -292,6 +322,8 @@ impl RetryQueueService {
                        ) \
                      LIMIT 20",
                 )
+                .bind(&code_domain)
+                .bind(&code_class)
                 .fetch_all(repo.pool())
                 .await
                 .unwrap_or_default();

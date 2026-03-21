@@ -368,6 +368,20 @@ pub struct PipelineConfig {
     /// Env: `COVALENCE_STATEMENT_WINDOW_OVERLAP`. Default: `1000`.
     pub statement_window_overlap: usize,
 
+    /// Entity class for code entities (ontology-configurable).
+    /// Env: `COVALENCE_CODE_ENTITY_CLASS`. Default: `code`.
+    pub code_entity_class: String,
+
+    /// Domain for code sources (ontology-configurable).
+    /// Env: `COVALENCE_CODE_DOMAIN`. Default: `code`.
+    pub code_domain: String,
+
+    /// Node types considered "code" for bridge queries and summary
+    /// composition. Comma-separated when set via env var.
+    /// Env: `COVALENCE_CODE_NODE_TYPES`. Default:
+    /// `struct,function,trait,enum,impl_block,constant,macro,module,class`.
+    pub code_node_types: Vec<String>,
+
     /// Model override for the statement pipeline. When set, the
     /// statement extractor and section compiler use this model
     /// instead of `chat_model`. Useful when the statement pipeline
@@ -395,7 +409,27 @@ impl Default for PipelineConfig {
             statement_window_chars: 8_000,
             statement_window_overlap: 1_000,
             statement_model: None,
+            code_entity_class: "code".to_string(),
+            code_domain: "code".to_string(),
+            code_node_types: Self::default_code_node_types(),
         }
+    }
+}
+
+impl PipelineConfig {
+    /// Default list of node types considered "code" entities.
+    pub fn default_code_node_types() -> Vec<String> {
+        vec![
+            "struct".to_string(),
+            "function".to_string(),
+            "trait".to_string(),
+            "enum".to_string(),
+            "impl_block".to_string(),
+            "constant".to_string(),
+            "macro".to_string(),
+            "module".to_string(),
+            "class".to_string(),
+        ]
     }
 }
 
@@ -599,6 +633,12 @@ impl Config {
                 statement_window_chars: env_parse("COVALENCE_STATEMENT_WINDOW_CHARS", 8_000)?,
                 statement_window_overlap: env_parse("COVALENCE_STATEMENT_WINDOW_OVERLAP", 1_000)?,
                 statement_model: optional_env("COVALENCE_STATEMENT_MODEL"),
+                code_entity_class: env_or("COVALENCE_CODE_ENTITY_CLASS", "code"),
+                code_domain: env_or("COVALENCE_CODE_DOMAIN", "code"),
+                code_node_types: match optional_env("COVALENCE_CODE_NODE_TYPES") {
+                    Some(s) => s.split(',').map(|t| t.trim().to_string()).collect(),
+                    None => PipelineConfig::default_code_node_types(),
+                },
             },
             coref_url: optional_env("COVALENCE_COREF_URL"),
             pdf_url: optional_env("COVALENCE_PDF_URL"),
