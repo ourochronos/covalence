@@ -62,57 +62,73 @@ const ENTITY_REL_TYPES: &[&str] = &[
 /// The returned closure inspects an [`EdgeMeta`] reference and
 /// returns `true` if the edge should be traversed. Bibliographic
 /// and synthetic edges are always excluded regardless of view.
-fn view_predicate(view: &GraphView) -> Box<dyn Fn(&EdgeMeta) -> bool + Send + Sync> {
+///
+/// When `view_edges` is provided, uses ontology-driven edge sets.
+/// Falls back to hardcoded constants otherwise.
+fn view_predicate(
+    view: &GraphView,
+    view_edges: &Option<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+) -> Box<dyn Fn(&EdgeMeta) -> bool + Send + Sync> {
+    // Clone the relevant edge set for the closure.
+    let causal_set: std::collections::HashSet<String> = view_edges
+        .as_ref()
+        .and_then(|ve| ve.get("causal").cloned())
+        .unwrap_or_else(|| CAUSAL_REL_TYPES.iter().map(|s| s.to_string()).collect());
+    let entity_set: std::collections::HashSet<String> = view_edges
+        .as_ref()
+        .and_then(|ve| ve.get("entity").or(ve.get("structural")).cloned())
+        .unwrap_or_else(|| ENTITY_REL_TYPES.iter().map(|s| s.to_string()).collect());
+    let bib_set: std::collections::HashSet<String> =
+        BIBLIOGRAPHIC_DENY.iter().map(|s| s.to_string()).collect();
     match view {
-        GraphView::Causal => Box::new(|m: &EdgeMeta| {
-            if m.is_synthetic {
-                return false;
-            }
-            if BIBLIOGRAPHIC_DENY
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
-            {
-                return false;
-            }
-            m.causal_level.is_some()
-                || CAUSAL_REL_TYPES
-                    .iter()
-                    .any(|r| r.eq_ignore_ascii_case(&m.rel_type))
-        }),
-        GraphView::Temporal => Box::new(|m: &EdgeMeta| {
-            if m.is_synthetic {
-                return false;
-            }
-            if BIBLIOGRAPHIC_DENY
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
-            {
-                return false;
-            }
-            m.has_valid_from
-        }),
-        GraphView::Entity | GraphView::Structural => Box::new(|m: &EdgeMeta| {
-            if m.is_synthetic {
-                return false;
-            }
-            if BIBLIOGRAPHIC_DENY
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
-            {
-                return false;
-            }
-            ENTITY_REL_TYPES
-                .iter()
-                .any(|r| r.eq_ignore_ascii_case(&m.rel_type))
-        }),
-        GraphView::All => Box::new(|m: &EdgeMeta| {
-            if m.is_synthetic {
-                return false;
-            }
-            !BIBLIOGRAPHIC_DENY
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(&m.rel_type))
-        }),
+        GraphView::Causal => {
+            let causal = causal_set;
+            let bib = bib_set;
+            Box::new(move |m: &EdgeMeta| {
+                if m.is_synthetic {
+                    return false;
+                }
+                if bib.iter().any(|d| d.eq_ignore_ascii_case(&m.rel_type)) {
+                    return false;
+                }
+                m.causal_level.is_some()
+                    || causal.iter().any(|r| r.eq_ignore_ascii_case(&m.rel_type))
+            })
+        }
+        GraphView::Temporal => {
+            let bib = bib_set;
+            Box::new(move |m: &EdgeMeta| {
+                if m.is_synthetic {
+                    return false;
+                }
+                if bib.iter().any(|d| d.eq_ignore_ascii_case(&m.rel_type)) {
+                    return false;
+                }
+                m.has_valid_from
+            })
+        }
+        GraphView::Entity | GraphView::Structural => {
+            let entity = entity_set;
+            let bib = bib_set;
+            Box::new(move |m: &EdgeMeta| {
+                if m.is_synthetic {
+                    return false;
+                }
+                if bib.iter().any(|d| d.eq_ignore_ascii_case(&m.rel_type)) {
+                    return false;
+                }
+                entity.iter().any(|r| r.eq_ignore_ascii_case(&m.rel_type))
+            })
+        }
+        GraphView::All => {
+            let bib = bib_set;
+            Box::new(move |m: &EdgeMeta| {
+                if m.is_synthetic {
+                    return false;
+                }
+                !bib.iter().any(|d| d.eq_ignore_ascii_case(&m.rel_type))
+            })
+        }
     }
 }
 
@@ -127,6 +143,9 @@ fn view_predicate(view: &GraphView) -> Box<dyn Fn(&EdgeMeta) -> bool + Send + Sy
 /// canonical names (case-insensitive substring match).
 pub struct GraphDimension {
     graph: SharedGraph,
+    /// Configurable edge sets per view (from ontology).
+    /// When set, these override the hardcoded constants.
+    view_edges: Option<std::collections::HashMap<String, std::collections::HashSet<String>>>,
 }
 
 /// Default maximum BFS hops.
@@ -138,7 +157,19 @@ const MAX_AUTO_SEEDS: usize = 10;
 impl GraphDimension {
     /// Create a new graph search dimension.
     pub fn new(graph: SharedGraph) -> Self {
-        Self { graph }
+        Self {
+            graph,
+            view_edges: None,
+        }
+    }
+
+    /// Set view → edge type mappings from the ontology.
+    pub fn with_view_edges(
+        mut self,
+        view_edges: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    ) -> Self {
+        self.view_edges = Some(view_edges);
+        self
     }
 }
 
@@ -204,7 +235,7 @@ impl SearchDimension for GraphDimension {
         // When no view is set (or All), use the default
         // bibliographic-deny + skip-synthetic filter.
         let effective_view = query.graph_view.unwrap_or(GraphView::All);
-        let pred = view_predicate(&effective_view);
+        let pred = view_predicate(&effective_view, &self.view_edges);
 
         // Merge results from all seeds, keeping best score per node.
         let mut best: HashMap<Uuid, f64> = HashMap::new();

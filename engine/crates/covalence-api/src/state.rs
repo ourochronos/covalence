@@ -539,6 +539,25 @@ impl AppState {
             search
         };
 
+        // Wire view → edge type mappings from ontology.
+        let view_rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT view_name, rel_type FROM ontology_view_edges")
+                .fetch_all(repo.pool())
+                .await
+                .unwrap_or_default();
+        let search = if !view_rows.is_empty() {
+            let mut view_edges: std::collections::HashMap<
+                String,
+                std::collections::HashSet<String>,
+            > = std::collections::HashMap::new();
+            for (view, rel) in view_rows {
+                view_edges.entry(view).or_default().insert(rel);
+            }
+            search.with_view_edges(view_edges)
+        } else {
+            search
+        };
+
         let search_service = Arc::new(match reranker {
             Some(rnk) => search.with_reranker(rnk),
             None => search,

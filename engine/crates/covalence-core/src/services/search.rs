@@ -166,6 +166,15 @@ impl SearchService {
         self
     }
 
+    /// Set view → edge type mappings from the ontology.
+    pub fn with_view_edges(
+        mut self,
+        view_edges: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    ) -> Self {
+        self.graph_dim = self.graph_dim.with_view_edges(view_edges);
+        self
+    }
+
     /// Use Convex Combination fusion instead of RRF.
     ///
     /// CC preserves score magnitude information that RRF discards
