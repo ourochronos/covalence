@@ -50,15 +50,22 @@ Remove the hierarchical summary pipeline. Keep statements and chunks as the prim
 
 **Open question:** What's the best strategy for embedding large sources without LLM-compiled summaries?
 
-Options to research:
-1. **Concatenate first N statements** — cheap, captures the document's opening themes
-2. **Mean-pool chunk embeddings** — aggregate all chunk vectors into one. Preserves breadth but loses specificity.
-3. **Late chunking** (contextual embeddings) — embed the full document at token level, then pool. Voyage supports this.
-4. **Matryoshka reduction** — embed at max dim, store truncated version for source-level coarse search
-5. **Weighted statement embedding** — weight by position (earlier = more representative) or by confidence
-6. **Skip source embedding entirely** — search on chunks and statements only. Source identity comes from provenance, not embedding.
+**Decision: MaxSim — no pre-computed source embeddings.**
 
-This decision should be informed by empirical testing, not theoretical preference.
+Source relevance is determined at query time by the maximum similarity of any chunk or statement in the source to the query vector:
+
+```sql
+SELECT s.id, s.title, MIN(st.embedding <=> $1) as best_distance
+FROM statements st
+JOIN sources s ON s.id = st.source_id
+GROUP BY s.id, s.title
+ORDER BY best_distance
+LIMIT $2
+```
+
+The source is as relevant as its best-matching content. No pre-computation, no LLM cost, no staleness, query-dependent (multi-topic sources surface the right facet).
+
+If MaxSim proves insufficient, density-weighted variants can be explored (e.g., `max_sim * (1 + α * ln(count))`), but start simple.
 
 ### The /ask Upgrade
 
