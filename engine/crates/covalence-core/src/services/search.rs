@@ -107,6 +107,8 @@ pub struct SearchService {
     /// Use Convex Combination fusion instead of RRF.
     /// CC preserves score magnitude; RRF uses only rank.
     use_cc_fusion: bool,
+    /// Internal domains for DDSS boost (from ontology).
+    internal_domains: std::collections::HashSet<String>,
 }
 
 impl SearchService {
@@ -151,7 +153,17 @@ impl SearchService {
             cache: None,
             abstention_config: AbstentionConfig::default(),
             use_cc_fusion: true,
+            internal_domains: ["code", "spec", "design"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
+    }
+
+    /// Set internal domains from the ontology (replaces hardcoded INTERNAL_DOMAINS).
+    pub fn with_internal_domains(mut self, domains: std::collections::HashSet<String>) -> Self {
+        self.internal_domains = domains;
+        self
     }
 
     /// Use Convex Combination fusion instead of RRF.
@@ -1010,7 +1022,6 @@ impl SearchService {
         // (research/external). If internal content scores well relative
         // to external, boost all internal results to surface them.
         {
-            const INTERNAL_DOMAINS: &[&str] = &["spec", "design", "code"];
             const BOOST_THRESHOLD: f64 = 0.7; // ratio above which we boost
             const BOOST_FACTOR: f64 = 1.5; // multiplier for internal results
 
@@ -1019,7 +1030,7 @@ impl SearchService {
                 .filter(|r| {
                     r.source_domain
                         .as_deref()
-                        .is_some_and(|d| INTERNAL_DOMAINS.contains(&d))
+                        .is_some_and(|d| self.internal_domains.contains(d))
                 })
                 .map(|r| r.fused_score)
                 .fold(0.0_f64, f64::max);
@@ -1029,7 +1040,7 @@ impl SearchService {
                 .filter(|r| {
                     r.source_domain
                         .as_deref()
-                        .is_some_and(|d| !INTERNAL_DOMAINS.contains(&d))
+                        .is_some_and(|d| !self.internal_domains.contains(d))
                 })
                 .map(|r| r.fused_score)
                 .fold(0.0_f64, f64::max);
@@ -1060,7 +1071,7 @@ impl SearchService {
                         if result
                             .source_domain
                             .as_deref()
-                            .is_some_and(|d| INTERNAL_DOMAINS.contains(&d))
+                            .is_some_and(|d| self.internal_domains.contains(d))
                         {
                             result.fused_score *= BOOST_FACTOR;
                             boosted += 1;

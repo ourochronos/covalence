@@ -523,6 +523,22 @@ impl AppState {
         if !use_cc {
             tracing::info!("using RRF fusion instead of CC (COVALENCE_CC_FUSION=false)");
         }
+        // Wire internal domains from ontology for DDSS boost.
+        // Load synchronously here since ontology_service hasn't been
+        // created yet — use a one-shot query.
+        let internal_domains: std::collections::HashSet<String> =
+            sqlx::query_scalar("SELECT id FROM ontology_domains WHERE is_internal = true")
+                .fetch_all(repo.pool())
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+        let search = if !internal_domains.is_empty() {
+            search.with_internal_domains(internal_domains)
+        } else {
+            search
+        };
+
         let search_service = Arc::new(match reranker {
             Some(rnk) => search.with_reranker(rnk),
             None => search,
