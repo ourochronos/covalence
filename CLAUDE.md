@@ -372,7 +372,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 1,399 passing tests (1,329 core + 21 api + 49 eval), 17 ignored integration tests
+# Current: 1,405 passing tests (1,335 core + 21 api + 49 eval), 18 ignored integration tests
 
 # Integration tests (requires running PG on port 5435)
 cd engine && cargo test --workspace -- --ignored
@@ -491,4 +491,4 @@ The dashboard is served by the existing Axum engine (alongside the API and Swagg
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–20 complete.** 1,399 tests passing (1,329 core + 21 api + 49 eval). See `MILESTONES.md` for the full wave history. Recent waves: architecture evolution (multi-binary split, 75 SPs, per-kind concurrency, source adapters, config management, WebUI dashboard).
+Current phase: **M0-M11 + Waves 1–20 complete.** 1,405 tests passing (1,335 core + 21 api + 49 eval). See `MILESTONES.md` for the full wave history. Recent waves: architecture evolution (multi-binary split, 67 SPs, per-kind concurrency, source adapters, config management, WebUI dashboard, codebase cleanup).

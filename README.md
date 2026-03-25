@@ -25,7 +25,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 |--------|------|---------|
 | Search precision@5 | >0.80 | 0.86 |
 | Entity precision | >90% | 96% |
-| Tests passing | — | 1,399 (1,329 core + 21 api + 49 eval) |
+| Tests passing | — | 1,405 (1,335 core + 21 api + 49 eval) |
 
 ## Architecture
 
