@@ -174,7 +174,7 @@ impl AskService {
                     source_info.domain
                 },
                 snippet,
-                fused_score: result.fused_score,
+                _fused_score: result.fused_score,
                 graph_edges: None,
             });
         }
@@ -308,8 +308,7 @@ struct ContextBlock {
     source_domain: String,
     snippet: String,
     /// Retained for potential ranking/filtering use.
-    #[allow(dead_code)]
-    fused_score: f64,
+    _fused_score: f64,
     /// Structural graph edges for code entities (calls, uses_type,
     /// contains, called_by, contained_by).
     graph_edges: Option<GraphEdgeContext>,
@@ -614,7 +613,7 @@ mod tests {
                 source_uri: "file://spec/05-ingestion.md".to_string(),
                 source_domain: "spec".to_string(),
                 snippet: "Entity resolution uses 5 tiers.".to_string(),
-                fused_score: 0.85,
+                _fused_score: 0.85,
                 graph_edges: None,
             },
             ContextBlock {
@@ -625,7 +624,7 @@ mod tests {
                 source_uri: String::new(),
                 source_domain: String::new(),
                 snippet: "HDBSCAN clustering approach.".to_string(),
-                fused_score: 0.6,
+                _fused_score: 0.6,
                 graph_edges: None,
             },
         ];
@@ -666,7 +665,7 @@ mod tests {
             source_uri: "file://test.md".to_string(),
             source_domain: "external".to_string(),
             snippet: "test content".to_string(),
-            fused_score: 0.9,
+            _fused_score: 0.9,
             graph_edges: None,
         }];
         let citations = build_citations(&results, &blocks);
@@ -704,7 +703,7 @@ mod tests {
             source_uri: String::new(),
             source_domain: String::new(),
             snippet: String::new(),
-            fused_score: 0.5,
+            _fused_score: 0.5,
             graph_edges: None,
         }];
         let citations = build_citations(&results, &blocks);
@@ -839,7 +838,7 @@ mod tests {
             source_uri: String::new(),
             source_domain: "code".to_string(),
             snippet: "Multi-dimensional fused search.".to_string(),
-            fused_score: 0.8,
+            _fused_score: 0.8,
             graph_edges: Some(GraphEdgeContext {
                 entity_name: "SearchService".to_string(),
                 edges: vec![
@@ -875,7 +874,7 @@ mod tests {
             source_uri: "https://example.com".to_string(),
             source_domain: "research".to_string(),
             snippet: "Some research content.".to_string(),
-            fused_score: 0.8,
+            _fused_score: 0.8,
             graph_edges: None,
         }];
         let prompt = build_user_prompt("What is RRF?", &blocks);

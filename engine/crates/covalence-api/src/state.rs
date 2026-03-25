@@ -20,25 +20,20 @@ use covalence_core::ingestion::{
 };
 use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use covalence_core::services::{
-    AdminService, AnalysisService, ArticleService, AskService, EdgeService, NodeService,
-    RetryQueueService, SearchService, SourceService,
+    AdminService, AnalysisService, AskService, EdgeService, NodeService, RetryQueueService,
+    SearchService, SourceService,
 };
 use covalence_core::storage::postgres::PgRepo;
 
 /// Shared application state for Axum handlers.
 #[derive(Clone)]
 pub struct AppState {
-    /// Application configuration.
-    #[allow(dead_code)]
+    /// Application configuration (used by API key middleware).
     pub config: Config,
     /// Shared database repository.
-    #[allow(dead_code)]
     pub repo: Arc<PgRepo>,
     /// Graph engine trait object for read-path operations.
     pub graph_engine: Arc<dyn GraphEngine>,
-    /// Raw shared graph for write-path services (sync, node, source).
-    #[allow(dead_code)]
-    pub shared_graph: SharedGraph,
     /// Source ingestion and management.
     pub source_service: Arc<SourceService>,
     /// Multi-dimensional fused search.
@@ -47,9 +42,6 @@ pub struct AppState {
     pub node_service: Arc<NodeService>,
     /// Graph edge operations.
     pub edge_service: Arc<EdgeService>,
-    /// Compiled article operations.
-    #[allow(dead_code)]
-    pub article_service: Arc<ArticleService>,
     /// Administrative operations.
     pub admin_service: Arc<AdminService>,
     /// Cross-domain analysis.
@@ -564,7 +556,6 @@ impl AppState {
         });
         let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
-        let article_service = Arc::new(ArticleService::new(Arc::clone(&repo)));
         let analysis_service = Arc::new(
             AnalysisService::new(Arc::clone(&repo), Arc::clone(&graph_engine))
                 .with_embedder(embedder.clone())
@@ -632,12 +623,10 @@ impl AppState {
             config,
             repo,
             graph_engine,
-            shared_graph: graph,
             source_service,
             search_service,
             node_service,
             edge_service,
-            article_service,
             admin_service,
             analysis_service,
             ask_service,

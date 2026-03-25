@@ -25,7 +25,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 |--------|------|---------|
 | Search precision@5 | >0.80 | 0.86 |
 | Entity precision | >90% | 96% |
-| Tests passing | — | 1,394 (1,324 core + 21 api + 49 eval) |
+| Tests passing | — | 1,399 (1,329 core + 21 api + 49 eval) |
 
 ## Architecture
 
@@ -35,7 +35,7 @@ Three layers:
 - **Engine** — Rust (Axum + petgraph/AGE). Search fusion, graph sidecar, ingestion pipeline, consolidation, epistemic model.
 - **API** — HTTP REST + MCP. Thin routing, OpenAPI via utoipa, Swagger UI at `/docs`.
 
-See `spec/` for 14 design specifications, `docs/adr/` for 18 architectural decision records.
+See `spec/` for 14 design specifications, `docs/adr/` for 22 architectural decision records.
 
 ## Quick Start
 
@@ -82,6 +82,7 @@ engine/                    Rust workspace
     covalence-api/         Binary: Axum server, OpenAPI, routes
     covalence-migrations/  Binary: sqlx migration runner
     covalence-eval/        Binary: layer-by-layer evaluation harness
+    covalence-worker/      Binary: async queue worker (per-kind concurrency)
 cli/                       Go CLI (Cobra) — binary name: cove
 mcp-server/                MCP server for Claude Code integration (Node.js)
 dashboard/                 Web dashboard (stats, observability)

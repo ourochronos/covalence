@@ -201,11 +201,13 @@ struct CorefRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct CorefSidecarResponse {
     resolved_text: String,
-    #[allow(dead_code)]
-    clusters: Vec<Vec<String>>,
+    /// Cluster membership groups (deserialized for completeness but unused).
+    #[serde(rename = "clusters")]
+    _clusters: Vec<Vec<String>>,
     cluster_spans: Vec<Vec<[usize; 2]>>,
-    #[allow(dead_code)]
-    processing_time_ms: Option<f64>,
+    /// Sidecar timing metric (deserialized for completeness but unused).
+    #[serde(rename = "processing_time_ms")]
+    _processing_time_ms: Option<f64>,
 }
 
 /// A single coreference replacement with byte offsets in both the
@@ -802,7 +804,7 @@ mod tests {
             resp.resolved_text,
             "John went to the store. John bought milk."
         );
-        assert_eq!(resp.clusters.len(), 1);
+        assert_eq!(resp._clusters.len(), 1);
         assert_eq!(resp.cluster_spans.len(), 1);
     }
 

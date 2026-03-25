@@ -1,6 +1,6 @@
 # ADR-0022: Knowledge Primitives
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-03-20
 **Deciders:** Chris Jacobs, Claude Opus
 

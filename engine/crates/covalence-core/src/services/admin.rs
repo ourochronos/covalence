@@ -1,10 +1,8 @@
 //! Admin service — health checks, graph reload, consolidation, metrics.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use petgraph::stable_graph::NodeIndex;
-use petgraph::visit::EdgeRef;
 use sqlx::Row;
 
 use crate::consolidation::batch::BatchJob;
@@ -114,47 +112,6 @@ pub struct DataHealthReport {
     pub unsummarized_code_entities: u64,
     /// Sources missing summaries.
     pub unsummarized_sources: u64,
-}
-
-/// Count weakly connected components in a `StableDiGraph`.
-///
-/// `petgraph::algo::connected_components` requires `NodeCompactIndexable`
-/// which `StableDiGraph` does not implement (indices may be sparse after
-/// removals). This BFS-based implementation works with any graph that
-/// supports `node_indices()` and directed edge iteration.
-#[allow(dead_code)]
-fn count_weak_components(
-    graph: &petgraph::stable_graph::StableDiGraph<
-        crate::graph::sidecar::NodeMeta,
-        crate::graph::sidecar::EdgeMeta,
-    >,
-) -> usize {
-    let mut visited: HashSet<NodeIndex> = HashSet::with_capacity(graph.node_count());
-    let mut components = 0usize;
-
-    for start in graph.node_indices() {
-        if !visited.insert(start) {
-            continue;
-        }
-        components += 1;
-        let mut stack = vec![start];
-        while let Some(v) = stack.pop() {
-            // Outgoing neighbours
-            for edge in graph.edges(v) {
-                if visited.insert(edge.target()) {
-                    stack.push(edge.target());
-                }
-            }
-            // Incoming neighbours (weak connectivity)
-            for edge in graph.edges_directed(v, petgraph::Direction::Incoming) {
-                if visited.insert(edge.source()) {
-                    stack.push(edge.source());
-                }
-            }
-        }
-    }
-
-    components
 }
 
 /// A knowledge gap — an entity frequently referenced but never explained.

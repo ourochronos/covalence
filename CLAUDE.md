@@ -36,12 +36,13 @@ engine/crates/covalence-core/       Library crate — all domain logic
 engine/crates/covalence-api/        Binary crate — Axum server, utoipa OpenAPI
 engine/crates/covalence-migrations/ Binary crate — sqlx migration runner
 engine/crates/covalence-eval/       Binary crate — layer-by-layer evaluation harness
+engine/crates/covalence-worker/     Binary crate — async queue worker (per-kind concurrency)
 cli/                                Go CLI (Cobra) — binary name: cove
   cmd/                              Subcommands: source, search, node, admin
   internal/                         HTTP client + output helpers
 dashboard/                          Web dashboard (stats, observability, future interaction)
-spec/                               Design specs (12 specs + README)
-docs/adr/                           Architecture Decision Records (17 ADRs)
+spec/                               Design specs (13 specs + README)
+docs/adr/                           Architecture Decision Records (22 ADRs)
 ```
 
 ### Key Dependencies

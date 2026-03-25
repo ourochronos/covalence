@@ -1,6 +1,6 @@
 # ADR-0020: Domain-Agnostic Core with Configurable Ontology
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-03-20
 **Deciders:** Chris Jacobs, Claude Opus
 

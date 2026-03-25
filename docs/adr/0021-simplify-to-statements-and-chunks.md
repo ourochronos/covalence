@@ -1,6 +1,6 @@
 # ADR-0021: Simplify Pipeline to Statements and Chunks
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-03-20
 **Deciders:** Chris Jacobs, Claude Opus
 
