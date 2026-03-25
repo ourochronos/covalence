@@ -9,11 +9,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use sqlx::Row;
 use tokio::sync::RwLock;
 
 use crate::error::Result;
 use crate::storage::postgres::PgRepo;
+use crate::storage::traits::OntologyRepo;
 
 /// A universal entity category.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -99,95 +99,68 @@ impl OntologyService {
         let mut cache = OntologyCache::default();
 
         // Categories
-        let rows = sqlx::query(
-            "SELECT id, label, description FROM ontology_categories ORDER BY sort_order",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
-        cache.categories = rows
-            .iter()
-            .map(|r| EntityCategory {
-                id: r.get("id"),
-                label: r.get("label"),
-                description: r.get("description"),
+        let cat_rows = OntologyRepo::list_categories(&*self.repo).await?;
+        cache.categories = cat_rows
+            .into_iter()
+            .map(|(id, label, description)| EntityCategory {
+                id,
+                label,
+                description,
             })
             .collect();
 
         // Entity types
-        let rows = sqlx::query(
-            "SELECT id, category, label, description FROM ontology_entity_types WHERE is_active = true",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
-        for r in &rows {
-            let id: String = r.get("id");
-            let cat: String = r.get("category");
-            cache.type_to_category.insert(id.clone(), cat.clone());
+        let et_rows = OntologyRepo::list_entity_types(&*self.repo).await?;
+        for (id, category, label, description) in et_rows {
+            cache.type_to_category.insert(id.clone(), category.clone());
             cache.entity_types.push(EntityType {
                 id,
-                category: cat,
-                label: r.get("label"),
-                description: r.get("description"),
+                category,
+                label,
+                description,
             });
         }
 
         // Universal relationship types
-        let rows = sqlx::query("SELECT id, label, is_symmetric FROM ontology_rel_universals")
-            .fetch_all(self.repo.pool())
-            .await?;
-        cache.rel_universals = rows
-            .iter()
-            .map(|r| RelUniversal {
-                id: r.get("id"),
-                label: r.get("label"),
-                is_symmetric: r.get("is_symmetric"),
+        let ru_rows = OntologyRepo::list_rel_universals(&*self.repo).await?;
+        cache.rel_universals = ru_rows
+            .into_iter()
+            .map(|(id, label, is_symmetric)| RelUniversal {
+                id,
+                label,
+                is_symmetric,
             })
             .collect();
 
         // Relationship types
-        let rows = sqlx::query(
-            "SELECT id, universal, label FROM ontology_rel_types WHERE is_active = true",
-        )
-        .fetch_all(self.repo.pool())
-        .await?;
-        for r in &rows {
-            let id: String = r.get("id");
-            let universal: Option<String> = r.get("universal");
+        let rt_rows = OntologyRepo::list_rel_types(&*self.repo).await?;
+        for (id, universal, label) in rt_rows {
             if let Some(ref u) = universal {
                 cache.rel_to_universal.insert(id.clone(), u.clone());
             }
             cache.rel_types.push(RelType {
                 id,
                 universal,
-                label: r.get("label"),
+                label,
             });
         }
 
         // Domains
-        let rows =
-            sqlx::query("SELECT id, label, is_internal FROM ontology_domains ORDER BY sort_order")
-                .fetch_all(self.repo.pool())
-                .await?;
-        for r in &rows {
-            let id: String = r.get("id");
-            let is_internal: bool = r.get("is_internal");
+        let dom_rows = OntologyRepo::list_domains(&*self.repo).await?;
+        for (id, label, is_internal) in dom_rows {
             if is_internal {
                 cache.internal_domains.insert(id.clone());
             }
             cache.domains.push(Domain {
                 id,
-                label: r.get("label"),
+                label,
                 is_internal,
             });
         }
 
         // View → edge type mappings
-        let rows = sqlx::query("SELECT view_name, rel_type FROM ontology_view_edges")
-            .fetch_all(self.repo.pool())
-            .await?;
-        for r in &rows {
-            let view: String = r.get("view_name");
-            let rel: String = r.get("rel_type");
+        let ve_rows = OntologyRepo::list_view_edges(&*self.repo).await?;
+        for (view, rel) in ve_rows {
             cache.view_edges.entry(view).or_default().insert(rel);
         }
 

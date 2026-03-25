@@ -127,13 +127,11 @@ impl NodeService {
         // stored procedure. Only select the two node-ID columns we
         // need to avoid a clippy type-complexity warning.
         if include_invalidated {
-            let inv_edges: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-                "SELECT source_node_id, target_node_id \
-                 FROM sp_get_invalidated_edges_for_node($1, $2)",
+            let inv_edges = crate::storage::traits::AdminRepo::get_invalidated_edges_for_node(
+                &*self.repo,
+                id.into_uuid(),
+                200,
             )
-            .bind(id.into_uuid())
-            .bind(200_i32)
-            .fetch_all(self.repo.pool())
             .await?;
 
             let node_uuid = id.into_uuid();
@@ -295,10 +293,7 @@ impl NodeService {
 
             // Soft-delete source node (clearance -1 marks it as merged)
             // via stored procedure.
-            sqlx::query("SELECT sp_tombstone_node($1)")
-                .bind(*source_id)
-                .execute(self.repo.pool())
-                .await?;
+            crate::storage::traits::AdminRepo::tombstone_node(&*self.repo, *source_id).await?;
         }
 
         // Save updated target
@@ -578,10 +573,7 @@ impl NodeService {
         }
 
         // Soft-delete original node via stored procedure.
-        sqlx::query("SELECT sp_tombstone_node($1)")
-            .bind(id)
-            .execute(self.repo.pool())
-            .await?;
+        crate::storage::traits::AdminRepo::tombstone_node(&*self.repo, id).await?;
 
         // Remove original from sidecar and re-add edges for new nodes
         {

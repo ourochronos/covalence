@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::models::audit::{AuditAction, AuditLog};
-use crate::storage::traits::{AuditLogRepo, EdgeRepo};
+use crate::storage::traits::{AdminRepo, AuditLogRepo, EdgeRepo};
 
 use super::AdminService;
 
@@ -46,12 +46,12 @@ impl AdminService {
     ) -> Result<CooccurrenceResult> {
         // Find co-occurring entity pairs via SP. The SP filters by
         // min co-occurrences, max degree, and excludes existing edges.
-        let rows: Vec<(uuid::Uuid, uuid::Uuid, i64)> =
-            sqlx::query_as("SELECT * FROM sp_find_cooccurrence_pairs($1, $2)")
-                .bind(min_cooccurrences as i32)
-                .bind(max_degree as i32)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AdminRepo::find_cooccurrence_pairs(
+            &*self.repo,
+            min_cooccurrences as i32,
+            max_degree as i32,
+        )
+        .await?;
 
         let total_candidates = rows.len() as u64;
         let mut edges_created: u64 = 0;
@@ -134,14 +134,8 @@ impl AdminService {
             .unwrap_or_else(crate::config::PipelineConfig::default_code_node_types);
 
         // Fetch code nodes that have embeddings.
-        let code_nodes: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-            "SELECT id, canonical_name, node_type FROM nodes \
-                 WHERE node_type = ANY($1) \
-                   AND embedding IS NOT NULL",
-        )
-        .bind(&code_types)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let code_nodes =
+            AdminRepo::list_code_nodes_with_embeddings(&*self.repo, &code_types).await?;
 
         if code_nodes.is_empty() {
             return Ok(BridgeResult {
@@ -160,21 +154,12 @@ impl AdminService {
 
         for (code_id, code_name, _code_type) in &code_nodes {
             // Find nearest non-code concept nodes by embedding similarity.
-            let matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
-                "SELECT n.id, n.canonical_name, \
-                        (n.embedding <=> (SELECT embedding \
-                         FROM nodes WHERE id = $1)) AS dist \
-                 FROM nodes n \
-                 WHERE n.node_type != ALL($3) \
-                   AND n.embedding IS NOT NULL \
-                   AND n.id != $1 \
-                 ORDER BY dist ASC \
-                 LIMIT $2",
+            let matches = AdminRepo::find_nearest_non_code_nodes(
+                &*self.repo,
+                *code_id,
+                &code_types,
+                max_edges_per_node,
             )
-            .bind(code_id)
-            .bind(max_edges_per_node)
-            .bind(&code_types)
-            .fetch_all(self.repo.pool())
             .await?;
 
             for (concept_id, concept_name, dist) in &matches {
@@ -183,16 +168,9 @@ impl AdminService {
                 }
 
                 // Check if an edge already exists between these nodes.
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM edges \
-                     WHERE source_node_id = $1 \
-                       AND target_node_id = $2 \
-                       AND rel_type = 'implements')",
-                )
-                .bind(code_id)
-                .bind(concept_id)
-                .fetch_one(self.repo.pool())
-                .await?;
+                let exists =
+                    AdminRepo::check_edge_exists(&*self.repo, *code_id, *concept_id, "implements")
+                        .await?;
 
                 if exists {
                     skipped_existing += 1;

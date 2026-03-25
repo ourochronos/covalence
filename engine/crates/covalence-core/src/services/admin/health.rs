@@ -1,6 +1,7 @@
 //! Health checks and data health reporting.
 
 use crate::error::{Error, Result};
+use crate::storage::traits::AdminRepo;
 
 use super::AdminService;
 
@@ -40,10 +41,7 @@ pub struct DataHealthReport {
 impl AdminService {
     /// Check system health.
     pub async fn health(&self) -> HealthStatus {
-        let pg_healthy = sqlx::query("SELECT 1")
-            .execute(self.repo.pool())
-            .await
-            .is_ok();
+        let pg_healthy = AdminRepo::ping(&*self.repo).await.unwrap_or(false);
 
         let sidecar_node_count = self.graph.node_count().await.unwrap_or(0);
         let sidecar_edge_count = self.graph.edge_count().await.unwrap_or(0);
@@ -70,10 +68,7 @@ impl AdminService {
     /// Preview data health — shows what's stale, orphaned, or
     /// duplicated without modifying anything.
     pub async fn data_health_report(&self) -> Result<DataHealthReport> {
-        let row: (i64, i64, i64, i64, i64, i64, i64, i64) =
-            sqlx::query_as("SELECT * FROM sp_data_health_report()")
-                .fetch_one(self.repo.pool())
-                .await?;
+        let row = AdminRepo::data_health_report(&*self.repo).await?;
 
         Ok(DataHealthReport {
             superseded_sources: row.0 as u64,

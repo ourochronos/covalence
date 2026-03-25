@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::error::Result;
@@ -250,6 +249,8 @@ impl AskService {
     /// This is a lightweight SQL query — no graph algorithms, just
     /// direct edge lookups with a JOIN for the neighbor's name.
     async fn lookup_graph_edges(&self, node_id: Uuid) -> Result<Vec<GraphEdge>> {
+        use crate::storage::traits::AskRepo;
+
         let outgoing_types: Vec<String> = OUTGOING_REL_TYPES
             .iter()
             .map(|s| (*s).to_string())
@@ -260,33 +261,31 @@ impl AskService {
             .collect();
 
         // Outgoing: node --rel_type--> target
-        let out_rows = sqlx::query("SELECT * FROM sp_get_outgoing_edges($1, $2, $3)")
-            .bind(node_id)
-            .bind(&outgoing_types)
-            .bind(MAX_EDGES_PER_DIRECTION as i64)
-            .fetch_all(self.repo.pool())
-            .await?;
+        let out_rows = AskRepo::get_outgoing_edges(
+            &*self.repo,
+            node_id,
+            &outgoing_types,
+            MAX_EDGES_PER_DIRECTION as i64,
+        )
+        .await?;
 
         // Incoming: source --rel_type--> node (displayed as rel_type_by)
-        let in_rows = sqlx::query("SELECT * FROM sp_get_incoming_edges($1, $2, $3)")
-            .bind(node_id)
-            .bind(&incoming_types)
-            .bind(MAX_EDGES_PER_DIRECTION as i64)
-            .fetch_all(self.repo.pool())
-            .await?;
+        let in_rows = AskRepo::get_incoming_edges(
+            &*self.repo,
+            node_id,
+            &incoming_types,
+            MAX_EDGES_PER_DIRECTION as i64,
+        )
+        .await?;
 
         let mut edges = Vec::with_capacity(out_rows.len() + in_rows.len());
-        for row in &out_rows {
-            let name: String = row.get("canonical_name");
-            let rel: String = row.get("rel_type");
+        for (name, rel) in out_rows {
             edges.push(GraphEdge {
                 neighbor_name: name,
                 rel_type: rel,
             });
         }
-        for row in &in_rows {
-            let name: String = row.get("canonical_name");
-            let rel: String = row.get("rel_type");
+        for (name, rel) in in_rows {
             edges.push(GraphEdge {
                 neighbor_name: name,
                 rel_type: format!("{rel}_by"),
