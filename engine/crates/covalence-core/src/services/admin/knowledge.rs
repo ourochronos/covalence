@@ -60,12 +60,9 @@ impl AdminService {
 
         // Phase 2: batch-fetch source URIs for the gap nodes via SP.
         let node_ids: Vec<uuid::Uuid> = candidates.iter().map(|c| c.0).collect();
-        let rows = sqlx::query_as::<_, (uuid::Uuid, Option<String>, Option<String>)>(
-            "SELECT * FROM sp_get_node_provenance_sources($1)",
-        )
-        .bind(&node_ids)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let rows =
+            crate::storage::traits::AdminRepo::get_node_provenance_sources(&*self.repo, &node_ids)
+                .await?;
 
         let mut refs_map: HashMap<uuid::Uuid, Vec<String>> = HashMap::new();
         for (node_id, uri, title) in rows {

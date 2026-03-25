@@ -1,6 +1,7 @@
 //! Graph sidecar operations: stats, reload, invalidated edge analysis.
 
 use crate::error::Result;
+use crate::storage::traits::AdminRepo;
 
 use super::AdminService;
 
@@ -100,44 +101,16 @@ impl AdminService {
         node_limit: usize,
     ) -> Result<InvalidatedEdgeStats> {
         // Total invalidated + valid via SP.
-        let stats_row: (i64, i64) = sqlx::query_as("SELECT * FROM sp_invalidated_edge_stats()")
-            .fetch_one(self.repo.pool())
-            .await?;
-        let total_invalidated = stats_row.0;
-        let total_valid = stats_row.1;
+        let (total_invalidated, total_valid) =
+            AdminRepo::invalidated_edge_stats(&*self.repo).await?;
 
         // Top invalidated edge types via SP.
-        let top_types: Vec<(String, i64)> =
-            sqlx::query_as("SELECT * FROM sp_top_invalidated_rel_types($1)")
-                .bind(type_limit as i32)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let top_types =
+            AdminRepo::top_invalidated_rel_types(&*self.repo, type_limit as i32).await?;
 
         // Nodes with the highest invalidated-edge count.
-        //
-        // We UNION source and target sides so a node touching many
-        // invalidated edges on either direction is surfaced.
-        let top_nodes: Vec<(uuid::Uuid, String, String, i64)> = sqlx::query_as(
-            "SELECT n.id, n.canonical_name, n.node_type, cnt \
-             FROM ( \
-                 SELECT node_id, SUM(c) AS cnt FROM ( \
-                     SELECT source_node_id AS node_id, COUNT(*) AS c \
-                     FROM edges WHERE invalid_at IS NOT NULL \
-                     GROUP BY 1 \
-                     UNION ALL \
-                     SELECT target_node_id AS node_id, COUNT(*) AS c \
-                     FROM edges WHERE invalid_at IS NOT NULL \
-                     GROUP BY 1 \
-                 ) sub \
-                 GROUP BY node_id \
-             ) agg \
-             JOIN nodes n ON n.id = agg.node_id \
-             ORDER BY cnt DESC \
-             LIMIT $1",
-        )
-        .bind(node_limit as i64)
-        .fetch_all(self.repo.pool())
-        .await?;
+        let top_nodes =
+            AdminRepo::top_invalidated_edge_nodes(&*self.repo, node_limit as i64).await?;
 
         Ok(InvalidatedEdgeStats {
             total_invalidated,

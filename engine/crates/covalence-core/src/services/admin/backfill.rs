@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::models::audit::{AuditAction, AuditLog};
-use crate::storage::traits::{AuditLogRepo, EdgeRepo, NodeAliasRepo, NodeRepo};
+use crate::storage::traits::{AdminRepo, AuditLogRepo, EdgeRepo, NodeAliasRepo, NodeRepo};
 
 use super::AdminService;
 
@@ -147,10 +147,7 @@ impl AdminService {
         use super::super::noise_filter::is_noise_entity;
 
         // Fetch all nodes (id, canonical_name, node_type).
-        let rows: Vec<(uuid::Uuid, String, String)> =
-            sqlx::query_as("SELECT id, canonical_name, node_type FROM nodes")
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AdminRepo::list_all_nodes(&*self.repo).await?;
 
         // Identify noise entities.
         let mut noise: Vec<(uuid::Uuid, String, String)> = Vec::new();
@@ -181,14 +178,7 @@ impl AdminService {
         // Count edges per noise node for reporting.
         let mut entities: Vec<NoiseEntityInfo> = Vec::new();
         for (id, name, ntype) in &noise {
-            let edge_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM edges \
-                 WHERE source_node_id = $1 \
-                    OR target_node_id = $1",
-            )
-            .bind(id)
-            .fetch_one(self.repo.pool())
-            .await?;
+            let edge_count = AdminRepo::count_edges_for_node(&*self.repo, *id).await?;
 
             entities.push(NoiseEntityInfo {
                 node_id: *id,
@@ -228,17 +218,7 @@ impl AdminService {
 
             // Nullify invalidated_by FK references pointing at edges
             // we are about to delete, to avoid FK violation.
-            sqlx::query(
-                "UPDATE edges SET invalidated_by = NULL \
-                 WHERE invalidated_by IN ( \
-                     SELECT id FROM edges \
-                     WHERE source_node_id = $1 \
-                        OR target_node_id = $1 \
-                 )",
-            )
-            .bind(entity.node_id)
-            .execute(self.repo.pool())
-            .await?;
+            AdminRepo::nullify_invalidated_by_for_node(&*self.repo, entity.node_id).await?;
 
             edges_removed += EdgeRepo::delete_by_node(
                 &*self.repo,
@@ -248,14 +228,7 @@ impl AdminService {
 
             // Clear unresolved_entities FK references before deletion
             // to avoid FK violation if this node was a Tier 5 target.
-            sqlx::query(
-                "UPDATE unresolved_entities \
-                 SET resolved_node_id = NULL \
-                 WHERE resolved_node_id = $1",
-            )
-            .bind(entity.node_id)
-            .execute(self.repo.pool())
-            .await?;
+            AdminRepo::clear_unresolved_for_node(&*self.repo, entity.node_id).await?;
 
             if NodeRepo::delete(
                 &*self.repo,
@@ -351,11 +324,7 @@ impl AdminService {
             .unwrap_or(256);
 
         // Fetch nodes missing embeddings via SP.
-        let rows: Vec<(uuid::Uuid, String, Option<String>)> =
-            sqlx::query_as("SELECT * FROM sp_list_nodes_without_embeddings($1)")
-                .bind(i32::MAX)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AdminRepo::list_nodes_without_embeddings(&*self.repo, i32::MAX).await?;
 
         if rows.is_empty() {
             return Ok(BackfillResult {
@@ -451,16 +420,11 @@ impl AdminService {
         use crate::types::ids::{EdgeId, NodeId};
 
         // Fetch all node IDs.
-        let node_uuids: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM nodes")
-            .fetch_all(self.repo.pool())
-            .await?;
+        let node_uuids = AdminRepo::list_all_node_ids(&*self.repo).await?;
         let node_ids: Vec<NodeId> = node_uuids.iter().map(|u| NodeId::from_uuid(*u)).collect();
 
         // Fetch all edge IDs.
-        let edge_uuids: Vec<uuid::Uuid> =
-            sqlx::query_scalar("SELECT id FROM edges WHERE NOT is_synthetic")
-                .fetch_all(self.repo.pool())
-                .await?;
+        let edge_uuids = AdminRepo::list_all_nonsynthetic_edge_ids(&*self.repo).await?;
         let edge_ids: Vec<EdgeId> = edge_uuids.iter().map(|u| EdgeId::from_uuid(*u)).collect();
 
         tracing::info!(
@@ -552,25 +516,7 @@ impl AdminService {
         ];
 
         // Fetch code nodes without semantic summaries.
-        type CodeNodeRow = (
-            uuid::Uuid,
-            String,
-            String,
-            Option<String>,
-            Option<serde_json::Value>,
-        );
-        let rows: Vec<CodeNodeRow> = sqlx::query_as(
-            "SELECT id, canonical_name, node_type, \
-                    description, properties \
-                 FROM nodes \
-                 WHERE node_type = ANY($1) \
-                   AND (properties IS NULL \
-                        OR properties->>'semantic_summary' \
-                           IS NULL)",
-        )
-        .bind(&code_types[..])
-        .fetch_all(self.repo.pool())
-        .await?;
+        let rows = AdminRepo::list_unsummarized_code_nodes(&*self.repo, &code_types).await?;
 
         if rows.is_empty() {
             return Ok(CodeSummaryResult {
@@ -614,14 +560,7 @@ impl AdminService {
                     let mut new_props = props.clone().unwrap_or(serde_json::json!({}));
                     new_props["semantic_summary"] = serde_json::json!(&summary);
 
-                    sqlx::query(
-                        "UPDATE nodes SET properties = $2 \
-                         WHERE id = $1",
-                    )
-                    .bind(id)
-                    .bind(&new_props)
-                    .execute(self.repo.pool())
-                    .await?;
+                    AdminRepo::update_node_properties(&*self.repo, *id, &new_props).await?;
 
                     // Re-embed using the summary text.
                     let embed_text = format!("{name}: {summary}");

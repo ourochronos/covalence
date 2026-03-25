@@ -2,13 +2,11 @@
 
 use std::sync::Arc;
 
-use sqlx::Row;
-
 use crate::consolidation::batch::BatchJob;
 use crate::consolidation::graph_batch::GraphBatchConsolidator;
 use crate::consolidation::{BatchConsolidator, BatchStatus};
 use crate::error::{Error, Result};
-use crate::storage::traits::SourceRepo;
+use crate::storage::traits::{AdminRepo, SourceRepo};
 
 use super::AdminService;
 
@@ -128,28 +126,8 @@ impl AdminService {
         let stats = self.graph_stats().await;
         let source_count = SourceRepo::count(&*self.repo).await?;
 
-        let chunk_row = sqlx::query("SELECT COUNT(*) as count FROM chunks")
-            .fetch_one(self.repo.pool())
-            .await?;
-        let chunk_count: i64 = chunk_row.get("count");
-
-        let article_row = sqlx::query("SELECT COUNT(*) as count FROM articles")
-            .fetch_one(self.repo.pool())
-            .await?;
-        let article_count: i64 = article_row.get("count");
-
-        let trace_row = sqlx::query("SELECT COUNT(*) as count FROM search_traces")
-            .fetch_one(self.repo.pool())
-            .await?;
-        let search_trace_count: i64 = trace_row.get("count");
-
-        let summary_row = sqlx::query(
-            "SELECT COUNT(*) as count FROM chunks \
-             WHERE level LIKE 'summary_%'",
-        )
-        .fetch_one(self.repo.pool())
-        .await?;
-        let summary_chunk_count: i64 = summary_row.get("count");
+        let (chunk_count, article_count, search_trace_count, summary_chunk_count) =
+            AdminRepo::metrics_counts(&*self.repo).await?;
 
         Ok(Metrics {
             graph_nodes: stats.node_count,
