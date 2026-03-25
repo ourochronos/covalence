@@ -8,6 +8,7 @@ pub mod config;
 pub mod consolidation;
 pub mod epistemic;
 pub mod error;
+pub mod factory;
 pub mod graph;
 pub mod ingestion;
 pub mod models;

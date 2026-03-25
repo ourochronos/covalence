@@ -3,22 +3,12 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::RwLock;
 
 use covalence_core::config::Config;
+use covalence_core::factory::ServiceFactory;
 use covalence_core::graph::engine::GraphEngine;
 use covalence_core::graph::sync::full_reload;
-use covalence_core::graph::{GraphSidecar, PetgraphEngine, SharedGraph};
-use covalence_core::ingestion::embedder::Embedder;
-use covalence_core::ingestion::extractor::Extractor;
-use covalence_core::ingestion::resolver::EntityResolver;
-use covalence_core::ingestion::{
-    ChainChatBackend, ChatBackend, ChatBackendExtractor, CliChatBackend, ConverterRegistry,
-    FastcorefClient, GlinerExtractor, HttpChatBackend, LlmExtractor, LlmSectionCompiler,
-    LlmStatementExtractor, OpenAiEmbedder, PdfConverter, PgResolver, ReaderLmConverter,
-    SidecarExtractor, TwoPassExtractor, VoyageConfig, VoyageEmbedder, fingerprint_config_from,
-};
-use covalence_core::search::rerank::{HttpReranker, RerankConfig, Reranker};
+use covalence_core::graph::{AgeEngine, PetgraphEngine};
 use covalence_core::services::{
     AdminService, AnalysisService, AskService, EdgeService, NodeService, RetryQueueService,
     SearchService, SourceService,
@@ -58,15 +48,24 @@ pub struct AppState {
 
 impl AppState {
     /// Initialize application state from configuration.
+    ///
+    /// Delegates shared service construction to [`ServiceFactory`],
+    /// then applies API-specific concerns: graph sidecar loading,
+    /// graph engine selection (petgraph vs AGE), and wiring the
+    /// chosen graph engine into the analysis and admin services.
     pub async fn new(config: Config) -> Result<Self> {
         let repo = Arc::new(PgRepo::new(&config.database_url).await?);
-        let graph: SharedGraph = Arc::new(RwLock::new(GraphSidecar::new()));
+
+        // Build all shared services via the factory.
+        let factory = ServiceFactory::new(&config, Arc::clone(&repo))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         // Load the graph sidecar from PG on startup so graph and
         // structural search dimensions have data immediately.
-        match full_reload(repo.pool(), Arc::clone(&graph)).await {
+        match full_reload(repo.pool(), Arc::clone(&factory.graph)).await {
             Ok(()) => {
-                let g = graph.read().await;
+                let g = factory.graph.read().await;
                 tracing::info!(
                     nodes = g.node_count(),
                     edges = g.edge_count(),
@@ -74,18 +73,18 @@ impl AppState {
                 );
             }
             Err(e) => {
-                tracing::warn!(error = %e, "failed to load graph sidecar on startup");
+                tracing::warn!(
+                    error = %e,
+                    "failed to load graph sidecar on startup"
+                );
             }
         }
 
         // Create the graph engine based on configuration.
+        // This is API-specific: the worker always uses petgraph.
         let graph_engine: Arc<dyn GraphEngine> = if config.graph_engine == "age" {
             tracing::info!("using Apache AGE graph engine");
-            let age = covalence_core::graph::AgeEngine::new(
-                repo.pool().clone(),
-                "covalence_graph".to_string(),
-            );
-            // Load the AGE graph from PG tables on startup.
+            let age = AgeEngine::new(repo.pool().clone(), "covalence_graph".to_string());
             match age.reload(repo.pool()).await {
                 Ok(result) => {
                     tracing::info!(
@@ -95,558 +94,63 @@ impl AppState {
                     );
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to load AGE graph on startup");
+                    tracing::warn!(
+                        error = %e,
+                        "failed to load AGE graph on startup"
+                    );
                 }
             }
             Arc::new(age)
         } else {
             tracing::info!("using petgraph in-memory graph engine");
-            Arc::new(PetgraphEngine::new(Arc::clone(&graph)))
+            Arc::new(PetgraphEngine::new(Arc::clone(&factory.graph)))
         };
 
-        // Determine the embedding provider. Voyage is used when
-        // explicitly configured or when a Voyage API key is present.
-        let use_voyage = config.embed_provider == "voyage" || config.voyage_api_key.is_some();
-
-        #[allow(clippy::type_complexity)]
-        let (embedder, reranker): (Option<Arc<dyn Embedder>>, Option<Arc<dyn Reranker>>) =
-            if use_voyage {
-                let emb = config.voyage_api_key.as_ref().map(|key| {
-                    let voyage_cfg = VoyageConfig {
-                        api_key: key.clone(),
-                        base_url: config
-                            .voyage_base_url
-                            .clone()
-                            .unwrap_or_else(|| "https://api.voyageai.com/v1".to_string()),
-                        model: config.embed_model.clone(),
-                        dimensions: config.embedding.max_dim(),
-                        input_type: "document".to_string(),
-                        ..VoyageConfig::default()
-                    };
-                    Arc::new(VoyageEmbedder::new(voyage_cfg)) as Arc<dyn Embedder>
-                });
-
-                // Auto-activate the HTTP reranker with Voyage credentials.
-                let rnk = config.voyage_api_key.as_ref().map(|key| {
-                    let rerank_cfg = RerankConfig {
-                        api_key: key.clone(),
-                        base_url: config
-                            .voyage_base_url
-                            .clone()
-                            .unwrap_or_else(|| "https://api.voyageai.com/v1".to_string()),
-                        model: "rerank-2.5".to_string(),
-                        ..RerankConfig::default()
-                    };
-                    Arc::new(HttpReranker::new(rerank_cfg)) as Arc<dyn Reranker>
-                });
-
-                (emb, rnk)
-            } else {
-                let emb = config.openai_api_key.as_ref().map(|key| {
-                    Arc::new(OpenAiEmbedder::new(
-                        &config.embedding,
-                        key.clone(),
-                        config.openai_base_url.clone(),
-                    )) as Arc<dyn Embedder>
-                });
-                (emb, None)
-            };
-
-        let extractor: Option<Arc<dyn Extractor>> = if config.entity_extractor == "sidecar" {
-            // Unified sidecar: NER + relationships with Rust-side
-            // windowing. Coref is handled separately by
-            // FastcorefClient.
-            let base_url = config
-                .extract_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:8433".to_string());
-            tracing::info!(
-                url = %base_url,
-                "using unified extraction sidecar"
-            );
-            Some(Arc::new(SidecarExtractor::with_windowing(
-                base_url,
-                config.gliner_threshold,
-                config.pipeline.ner_window_chars,
-                config.pipeline.ner_window_overlap,
-                config.pipeline.re_window_chars,
-                config.pipeline.re_window_overlap,
-            )) as Arc<dyn Extractor>)
-        } else if config.entity_extractor == "gliner2" {
-            let base_url = config
-                .extract_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:8432".to_string());
-            Some(
-                Arc::new(GlinerExtractor::new(base_url, config.gliner_threshold))
-                    as Arc<dyn Extractor>,
-            )
-        } else if config.entity_extractor == "two_pass" {
-            // Two-pass: GLiNER for entities, LLM for relationships.
-            let gliner_url = config
-                .extract_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:8432".to_string());
-            let gliner = Arc::new(GlinerExtractor::new(gliner_url, config.gliner_threshold));
-
-            let chat_key = config
-                .chat_api_key
-                .as_ref()
-                .or(config.openai_api_key.as_ref());
-            let chat_base = config.chat_base_url.clone();
-
-            tracing::info!(
-                has_chat_key = chat_key.is_some(),
-                entity_extractor = %config.entity_extractor,
-                chat_model = %config.chat_model,
-                "two_pass extractor init"
-            );
-
-            chat_key.map(|key| {
-                let llm = Arc::new(LlmExtractor::new(
-                    config.chat_model.clone(),
-                    key.clone(),
-                    chat_base,
-                ));
-                Arc::new(TwoPassExtractor::new(gliner, llm)) as Arc<dyn Extractor>
-            })
-        } else if config.chat_model.is_empty() {
-            None
-        } else {
-            // Use dedicated chat API key/URL, falling back to the shared OpenAI config.
-            let chat_key = config
-                .chat_api_key
-                .as_ref()
-                .or(config.openai_api_key.as_ref());
-            // Chat base URL: use dedicated, else None (LlmExtractor defaults to OpenAI).
-            // Do NOT fall back to OPENAI_BASE_URL since it may be a non-chat provider (e.g. Voyage).
-            let chat_base = config.chat_base_url.clone();
-            chat_key.map(|key| {
-                Arc::new(LlmExtractor::new(
-                    config.chat_model.clone(),
-                    key.clone(),
-                    chat_base,
-                )) as Arc<dyn Extractor>
-            })
-        };
-
-        let pg_resolver = Arc::new(match embedder.clone() {
-            Some(emb) => PgResolver::with_embedder(
-                Arc::clone(&repo),
-                config.resolve_trigram_threshold,
-                emb,
-                config.resolve_vector_threshold,
-            )
-            .with_node_embed_dim(config.embedding.table_dims.node)
-            .with_graph(Arc::clone(&graph))
-            .with_tier5(config.pipeline.tier5_enabled),
-            None => PgResolver::with_threshold(Arc::clone(&repo), config.resolve_trigram_threshold),
-        });
-
-        let resolver: Option<Arc<dyn EntityResolver>> =
-            Some(Arc::clone(&pg_resolver) as Arc<dyn EntityResolver>);
-
-        // Build the converter registry. When a ReaderLM sidecar URL is
-        // configured, HTML gets converted to clean Markdown via the MLX
-        // model before parsing. The converter falls back to the built-in
-        // tag stripper if the sidecar is unavailable.
-        let mut converter_registry = ConverterRegistry::new();
-        if let Some(ref url) = config.readerlm_url {
-            tracing::info!(url = %url, "ReaderLM HTML converter enabled");
-            converter_registry.register_front(Box::new(ReaderLmConverter::new(url.clone())));
-        }
-        if let Some(ref url) = config.pdf_url {
-            let pdf_conv = PdfConverter::new(url.clone());
-            match pdf_conv.validate().await {
-                Ok(()) => {
-                    tracing::info!(url = %url, "PDF converter validated and enabled");
-                    converter_registry.register(Box::new(pdf_conv));
-                }
-                Err(e) => {
-                    // Explicitly configured → required dependency → fail fast.
-                    anyhow::bail!(
-                        "PDF sidecar at {url} is unreachable: {e}. \
-                         Either start the sidecar or remove COVALENCE_PDF_URL."
-                    );
-                }
-            }
-        }
-
-        // Determine the Fastcoref sidecar URL for neural coref
-        // preprocessing. Explicit COVALENCE_COREF_URL takes priority.
-        // When using the unified sidecar extractor, auto-enable
-        // coref using the same base URL (coref endpoint lives on
-        // the same sidecar).
-        let coref_url = config.coref_url.clone().or_else(|| {
-            if config.entity_extractor == "sidecar" {
-                config
-                    .extract_url
-                    .clone()
-                    .or_else(|| Some("http://localhost:8433".to_string()))
-            } else {
-                None
-            }
-        });
-
-        let has_http_extractor = extractor.is_some();
-        let mut source_svc = SourceService::with_full_pipeline(
-            Arc::clone(&repo),
-            embedder.clone(),
-            extractor,
-            resolver,
-            Some(pg_resolver),
-        )
-        .with_converter_registry(converter_registry)
-        .with_table_dims(config.embedding.table_dims.clone())
-        .with_chunk_config(config.chunk_size, config.chunk_overlap)
-        .with_min_section_size(config.min_section_size)
-        .with_extract_concurrency(config.extract_concurrency)
-        .with_extract_batch_config(config.min_extract_tokens, config.extract_batch_tokens)
-        .with_pipeline_config(config.pipeline.clone())
-        .with_fingerprint_config(fingerprint_config_from(
-            &config.pipeline,
-            config.chunk_size,
-            config.chunk_overlap,
-            &config.entity_extractor,
-            &config.chat_model,
-            config.min_extract_tokens,
-            config.extract_batch_tokens,
-            config.resolve_trigram_threshold,
-            config.resolve_vector_threshold,
-            &config.embed_model,
-            config.readerlm_url.is_some(),
-            config.pdf_url.is_some(),
-            coref_url.is_some(),
-        ));
-
-        if let Some(ref url) = coref_url {
-            let coref_client = Arc::new(FastcorefClient::with_windowing(
-                url.clone(),
-                config.pipeline.coref_window_chars,
-                config.pipeline.coref_window_overlap,
-            ));
-            // Validate sidecar connectivity at startup — catch API
-            // mismatches immediately rather than failing silently
-            // during ingestion.
-            match coref_client.validate().await {
-                Ok(()) => {
-                    tracing::info!(url = %url, "fastcoref sidecar validated and enabled");
-                    source_svc = source_svc.with_coref_client(coref_client);
-                }
-                Err(e) => {
-                    // Distinguish explicit config from auto-derived.
-                    if config.coref_url.is_some() {
-                        // Explicitly configured → required → fail fast.
-                        anyhow::bail!(
-                            "fastcoref sidecar at {url} is unreachable: {e}. \
-                             Either start the sidecar or remove COVALENCE_COREF_URL."
-                        );
-                    } else {
-                        // Auto-derived from extractor URL → degrade gracefully.
-                        tracing::warn!(
-                            url = %url,
-                            error = %e,
-                            "fastcoref sidecar unavailable — coref disabled \
-                             (auto-derived URL, not explicitly configured)"
-                        );
-                    }
-                }
-            }
-        }
-
-        // Build the chat backend (shared by statement pipeline + admin endpoints).
-        //
-        // When "cli" is selected, a ChainChatBackend tries multiple
-        // providers in order: primary CLI → fallback CLIs → HTTP.
-        let chat_backend: Option<Arc<dyn ChatBackend>> = {
-            let chat_model = config
-                .pipeline
-                .statement_model
-                .clone()
-                .unwrap_or_else(|| config.chat_model.clone());
-
-            let http_key = config
-                .chat_api_key
-                .as_ref()
-                .or(config.openai_api_key.as_ref())
-                .cloned();
-
-            if config.chat_backend == "cli" {
-                // Build a multi-provider chain: primary CLI → other CLIs → HTTP
-                let mut chain: Vec<(String, Box<dyn ChatBackend>)> = Vec::new();
-
-                // Primary: configured CLI command + model
-                chain.push((
-                    format!("{}({})", config.chat_cli_command, chat_model),
-                    Box::new(CliChatBackend::new(
-                        config.chat_cli_command.clone(),
-                        chat_model.clone(),
-                    )),
-                ));
-
-                // Fallback CLIs: add the ones NOT already primary
-                let fallbacks: &[(&str, &str)] = &[
-                    ("claude", "haiku"),
-                    ("copilot", "claude-haiku-4.5"),
-                    ("gemini", "gemini-3-flash-preview"),
-                ];
-                for &(cmd, model) in fallbacks {
-                    if cmd != config.chat_cli_command {
-                        chain.push((
-                            format!("{cmd}({model})"),
-                            Box::new(CliChatBackend::new(cmd.to_string(), model.to_string())),
-                        ));
-                    }
-                }
-
-                // HTTP fallback (OpenRouter) if API key is available
-                if let Some(key) = http_key {
-                    chain.push((
-                        format!("http({})", config.chat_model),
-                        Box::new(HttpChatBackend::new(
-                            config.chat_model.clone(),
-                            key,
-                            config.chat_base_url.clone(),
-                        )),
-                    ));
-                }
-
-                let labels: Vec<&str> = chain.iter().map(|(l, _)| l.as_str()).collect();
-                tracing::info!(
-                    chain = ?labels,
-                    "using multi-provider chat backend chain"
-                );
-                Some(Arc::new(ChainChatBackend::new(chain)) as Arc<dyn ChatBackend>)
-            } else {
-                http_key.map(|key| {
-                    Arc::new(HttpChatBackend::new(
-                        chat_model,
-                        key,
-                        config.chat_base_url.clone(),
-                    )) as Arc<dyn ChatBackend>
-                })
-            }
-        };
-
-        // Wire statement extractor when statement pipeline is enabled.
-        if config.pipeline.statement_enabled {
-            if let Some(ref backend) = chat_backend {
-                let stmt_extractor =
-                    Arc::new(LlmStatementExtractor::with_backend(Arc::clone(backend)));
-                source_svc = source_svc.with_statement_extractor(
-                    stmt_extractor as Arc<dyn covalence_core::ingestion::StatementExtractor>,
-                );
-
-                // Wire section compiler + source summary compiler
-                // (same LlmSectionCompiler implements both traits).
-                let section_compiler =
-                    Arc::new(LlmSectionCompiler::with_backend(Arc::clone(backend)));
-                source_svc = source_svc
-                    .with_section_compiler(Arc::clone(&section_compiler)
-                        as Arc<dyn covalence_core::ingestion::SectionCompiler>)
-                    .with_source_summary_compiler(
-                        section_compiler
-                            as Arc<dyn covalence_core::ingestion::SourceSummaryCompiler>,
-                    );
-
-                tracing::info!(
-                    backend = %config.chat_backend,
-                    model = %config.chat_model,
-                    window_chars = config.pipeline.statement_window_chars,
-                    window_overlap = config.pipeline.statement_window_overlap,
-                    "statement-first extraction pipeline enabled (with clustering + compilation)"
-                );
-            }
-        }
-
-        // When a CLI chat backend is available and the entity extractor
-        // is the default LLM (HTTP-based), replace it with a
-        // ChatBackendExtractor that routes through the CLI — more
-        // reliable when HTTP API credits are exhausted. Don't replace
-        // sidecar/gliner2/two_pass which are intentionally configured.
-        if config.chat_backend == "cli"
-            && !matches!(
-                config.entity_extractor.as_str(),
-                "sidecar" | "gliner2" | "two_pass"
-            )
-        {
-            if let Some(ref backend) = chat_backend {
-                tracing::info!("using chat backend for entity extraction (CLI mode)");
-                source_svc = source_svc
-                    .with_extractor(Arc::new(ChatBackendExtractor::new(Arc::clone(backend)))
-                        as Arc<dyn Extractor>);
-            }
-        } else if !has_http_extractor {
-            if let Some(ref backend) = chat_backend {
-                tracing::info!(
-                    "no HTTP entity extractor available; \
-                     using chat backend for entity extraction"
-                );
-                source_svc = source_svc
-                    .with_extractor(Arc::new(ChatBackendExtractor::new(Arc::clone(backend)))
-                        as Arc<dyn Extractor>);
-            }
-        }
-
-        // Wire chat backend for semantic code summaries (Spec 12, Stage 2)
-        if let Some(ref backend) = chat_backend {
-            source_svc = source_svc.with_chat_backend(Arc::clone(backend));
-        }
-
-        let source_service = Arc::new(source_svc);
-        let abstention_config = covalence_core::search::abstention::AbstentionConfig {
-            min_relevance_score: config.search.abstention_threshold,
-            ..Default::default()
-        };
-        let search = SearchService::with_config(
-            Arc::clone(&repo),
-            Arc::clone(&graph),
-            embedder.clone(),
-            config.embedding.table_dims.clone(),
-        )
-        .with_abstention_config(abstention_config)
-        .with_cache(covalence_core::search::cache::CacheConfig::default());
-        // CC fusion is the default (outperforms RRF in A/B testing).
-        // Set COVALENCE_CC_FUSION=false to revert to RRF.
-        let use_cc = std::env::var("COVALENCE_CC_FUSION")
-            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-            .unwrap_or(true);
-        let search = search.with_cc_fusion(use_cc);
-        if !use_cc {
-            tracing::info!("using RRF fusion instead of CC (COVALENCE_CC_FUSION=false)");
-        }
-        // Wire internal domains from ontology for DDSS boost.
-        // Load synchronously here since ontology_service hasn't been
-        // created yet — use a one-shot query.
-        let internal_domains: std::collections::HashSet<String> =
-            sqlx::query_scalar("SELECT id FROM ontology_domains WHERE is_internal = true")
-                .fetch_all(repo.pool())
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-        let search = if !internal_domains.is_empty() {
-            search.with_internal_domains(internal_domains)
-        } else {
-            search
-        };
-
-        // Wire view → edge type mappings from ontology.
-        let view_rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT view_name, rel_type FROM ontology_view_edges")
-                .fetch_all(repo.pool())
-                .await
-                .unwrap_or_default();
-        let search = if !view_rows.is_empty() {
-            let mut view_edges: std::collections::HashMap<
-                String,
-                std::collections::HashSet<String>,
-            > = std::collections::HashMap::new();
-            for (view, rel) in view_rows {
-                view_edges.entry(view).or_default().insert(rel);
-            }
-            search.with_view_edges(view_edges)
-        } else {
-            search
-        };
-
-        let search_service = Arc::new(match reranker {
-            Some(rnk) => search.with_reranker(rnk),
-            None => search,
-        });
-        let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
-        let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
-        let analysis_service = Arc::new(
-            AnalysisService::new(Arc::clone(&repo), Arc::clone(&graph_engine))
-                .with_embedder(embedder.clone())
-                .with_chat_backend(chat_backend.clone())
+        // Rebuild analysis and admin services with the real graph
+        // engine when AGE is selected (factory defaults to petgraph).
+        let analysis_service = if config.graph_engine == "age" {
+            Arc::new(
+                covalence_core::services::AnalysisService::new(
+                    Arc::clone(&repo),
+                    Arc::clone(&graph_engine),
+                )
+                .with_embedder(factory.embedder.clone())
+                .with_chat_backend(factory.chat_backend.clone())
                 .with_node_embed_dim(config.embedding.table_dims.node),
-        );
-
-        // Build the ask service with a dedicated chat backend.
-        //
-        // Synthesis benefits from deeper reasoning than extraction, so
-        // the ask endpoint uses a separate model (default: sonnet) instead
-        // of sharing the extraction backend (default: haiku).
-        let ask_service = {
-            let ask_model = &config.ask_model;
-            let ask_backend: Arc<dyn ChatBackend> = Arc::new(resolve_ask_backend(ask_model));
-            tracing::info!(
-                model = %ask_model,
-                "ask service using dedicated synthesis backend"
-            );
-            Some(Arc::new(AskService::new(
-                Arc::clone(&search_service),
-                ask_backend,
-                Arc::clone(&repo),
-            )))
+            )
+        } else {
+            factory.analysis_service
         };
 
-        let admin_service = Arc::new(
-            AdminService::new(
-                Arc::clone(&repo),
-                Arc::clone(&graph_engine),
-                Arc::clone(&graph),
+        let admin_service = if config.graph_engine == "age" {
+            Arc::new(
+                covalence_core::services::AdminService::new(
+                    Arc::clone(&repo),
+                    Arc::clone(&graph_engine),
+                    Arc::clone(&factory.graph),
+                )
+                .with_embedder(factory.embedder.clone())
+                .with_chat_backend(factory.chat_backend.clone())
+                .with_config(config.clone()),
             )
-            .with_embedder(embedder)
-            .with_chat_backend(chat_backend)
-            .with_config(config.clone()),
-        );
-
-        // Queue service: used by API to enqueue jobs (POST /sources,
-        // reprocess, etc.). The queue WORKER runs as a separate binary
-        // (covalence-worker) — the API does NOT poll for jobs.
-        let queue_service = Arc::new(RetryQueueService::new(
-            Arc::clone(&repo),
-            config.queue.clone(),
-        ));
-
-        // Runtime config service — polls DB every 30s.
-        let config_service = Arc::new(covalence_core::services::ConfigService::new(Arc::clone(
-            &repo,
-        )));
-        if let Err(e) = config_service.refresh().await {
-            tracing::warn!(error = %e, "initial config load failed (will retry)");
-        }
-        config_service.spawn_refresh_loop(30);
-
-        // Ontology service — configurable knowledge schema.
-        let ontology_service = Arc::new(covalence_core::services::OntologyService::new(
-            Arc::clone(&repo),
-        ));
-        if let Err(e) = ontology_service.refresh().await {
-            tracing::warn!(error = %e, "initial ontology load failed (will retry)");
-        }
-        ontology_service.spawn_refresh_loop(60);
+        } else {
+            factory.admin_service
+        };
 
         Ok(Self {
             config,
             repo,
             graph_engine,
-            source_service,
-            search_service,
-            node_service,
-            edge_service,
+            source_service: factory.source_service,
+            search_service: factory.search_service,
+            node_service: factory.node_service,
+            edge_service: factory.edge_service,
             admin_service,
             analysis_service,
-            ask_service,
-            queue_service,
-            config_service,
-            ontology_service,
+            ask_service: factory.ask_service,
+            queue_service: factory.queue_service,
+            config_service: factory.config_service,
+            ontology_service: factory.ontology_service,
         })
-    }
-}
-
-/// Resolve a model name to a [`CliChatBackend`] for the ask service.
-///
-/// Uses the same mapping as [`covalence_core::services::ask::resolve_model_backend`]
-/// so that the default and per-request overrides use the same logic.
-fn resolve_ask_backend(model: &str) -> CliChatBackend {
-    match model {
-        "haiku" | "sonnet" | "opus" => CliChatBackend::new("claude".to_string(), model.to_string()),
-        "gemini" => CliChatBackend::new("gemini".to_string(), "gemini-2.5-flash".to_string()),
-        "copilot" => CliChatBackend::new("copilot".to_string(), "claude-haiku-4.5".to_string()),
-        // Default: treat as a claude model name.
-        other => CliChatBackend::new("claude".to_string(), other.to_string()),
     }
 }
