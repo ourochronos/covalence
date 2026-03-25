@@ -1,22 +1,40 @@
--- Migration 025: Ontology Schema
+-- 008: Configuration table and seed data
 --
--- Configurable knowledge schema per ADR-0022. Entity types,
--- relationship types, entity categories, domains, and view
--- mappings are stored in the database instead of hardcoded.
---
--- The "default" ontology is seeded with current Covalence values
--- so existing behavior is preserved.
+-- Runtime config table, ontology seed data (categories, entity types,
+-- relationship types, domains, view edges, noise patterns), and
+-- default source adapter seeds.
 
 -- ================================================================
--- Entity categories (Level 1 universals from ADR-0022)
+-- Config table (runtime-adjustable settings)
 -- ================================================================
 
-CREATE TABLE IF NOT EXISTS ontology_categories (
-    id          TEXT PRIMARY KEY,  -- 'concept', 'process', etc.
-    label       TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS config (
+    key         TEXT PRIMARY KEY,
+    value       JSONB NOT NULL,
     description TEXT,
-    sort_order  INT DEFAULT 0
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Seed with current defaults
+INSERT INTO config (key, value, description) VALUES
+    ('queue.process_concurrency', '4', 'Max concurrent process_source/reprocess jobs'),
+    ('queue.extract_concurrency', '24', 'Max concurrent extract_chunk jobs (I/O bound)'),
+    ('queue.summarize_concurrency', '10', 'Max concurrent summarize_entity jobs'),
+    ('queue.compose_concurrency', '5', 'Max concurrent compose_source_summary jobs'),
+    ('queue.edge_concurrency', '1', 'Max concurrent synthesize_edges jobs'),
+    ('queue.embed_concurrency', '4', 'Max concurrent embed_batch jobs'),
+    ('queue.job_timeout_secs', '900', 'Max seconds per job before timeout'),
+    ('pipeline.coref_enabled', 'true', 'Enable neural coreference resolution'),
+    ('pipeline.statement_enabled', 'true', 'Enable statement extraction pipeline'),
+    ('pipeline.tier5_enabled', 'true', 'Enable HDBSCAN Tier 5 entity resolution'),
+    ('search.cache_ttl_secs', '3600', 'Search cache TTL in seconds'),
+    ('search.cache_max_entries', '10000', 'Max entries in search cache'),
+    ('search.rerank_weight', '0.6', 'Reranker weight in CC fusion (0-1)')
+ON CONFLICT (key) DO NOTHING;
+
+-- ================================================================
+-- Ontology: Entity categories
+-- ================================================================
 
 INSERT INTO ontology_categories (id, label, description, sort_order) VALUES
     ('concept',    'Concept',    'An abstract idea, definition, or named thing', 1),
@@ -28,18 +46,9 @@ INSERT INTO ontology_categories (id, label, description, sort_order) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- ================================================================
--- Entity types (Level 2 domain-specific, maps to categories)
+-- Ontology: Entity types
 -- ================================================================
 
-CREATE TABLE IF NOT EXISTS ontology_entity_types (
-    id          TEXT PRIMARY KEY,  -- 'function', 'theorem', etc.
-    category    TEXT NOT NULL REFERENCES ontology_categories(id),
-    label       TEXT NOT NULL,
-    description TEXT,
-    is_active   BOOLEAN NOT NULL DEFAULT true
-);
-
--- Seed with current Covalence entity types
 INSERT INTO ontology_entity_types (id, category, label) VALUES
     -- Code (process)
     ('function',   'process',    'Function'),
@@ -70,15 +79,8 @@ INSERT INTO ontology_entity_types (id, category, label) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- ================================================================
--- Universal relationship types (Level 1 from ADR-0022)
+-- Ontology: Universal relationship types
 -- ================================================================
-
-CREATE TABLE IF NOT EXISTS ontology_rel_universals (
-    id          TEXT PRIMARY KEY,  -- 'is_a', 'part_of', etc.
-    label       TEXT NOT NULL,
-    description TEXT,
-    is_symmetric BOOLEAN DEFAULT false
-);
 
 INSERT INTO ontology_rel_universals (id, label, description, is_symmetric) VALUES
     ('is_a',         'Is A',          'Classification, taxonomy', false),
@@ -92,18 +94,9 @@ INSERT INTO ontology_rel_universals (id, label, description, is_symmetric) VALUE
 ON CONFLICT (id) DO NOTHING;
 
 -- ================================================================
--- Relationship types (Level 2 domain-specific, maps to universals)
+-- Ontology: Relationship types
 -- ================================================================
 
-CREATE TABLE IF NOT EXISTS ontology_rel_types (
-    id          TEXT PRIMARY KEY,  -- 'calls', 'IMPLEMENTS_INTENT', etc.
-    universal   TEXT REFERENCES ontology_rel_universals(id),
-    label       TEXT NOT NULL,
-    description TEXT,
-    is_active   BOOLEAN NOT NULL DEFAULT true
-);
-
--- Seed with current Covalence relationship types
 INSERT INTO ontology_rel_types (id, universal, label) VALUES
     -- Code structural
     ('calls',              'uses',         'Calls'),
@@ -132,16 +125,8 @@ INSERT INTO ontology_rel_types (id, universal, label) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- ================================================================
--- Domain classification
+-- Ontology: Domains
 -- ================================================================
-
-CREATE TABLE IF NOT EXISTS ontology_domains (
-    id          TEXT PRIMARY KEY,  -- 'code', 'research', etc.
-    label       TEXT NOT NULL,
-    description TEXT,
-    is_internal BOOLEAN DEFAULT false,  -- for DDSS self-referential boost
-    sort_order  INT DEFAULT 0
-);
 
 INSERT INTO ontology_domains (id, label, is_internal, sort_order) VALUES
     ('code',     'Code',     true,  1),
@@ -152,14 +137,8 @@ INSERT INTO ontology_domains (id, label, is_internal, sort_order) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- ================================================================
--- View → edge type mappings (which edges appear in which view)
+-- Ontology: View-to-edge-type mappings
 -- ================================================================
-
-CREATE TABLE IF NOT EXISTS ontology_view_edges (
-    view_name   TEXT NOT NULL,     -- 'causal', 'temporal', 'entity', 'structural'
-    rel_type    TEXT NOT NULL REFERENCES ontology_rel_types(id),
-    PRIMARY KEY (view_name, rel_type)
-);
 
 -- Causal view edges
 INSERT INTO ontology_view_edges (view_name, rel_type) VALUES
@@ -187,19 +166,9 @@ INSERT INTO ontology_view_edges (view_name, rel_type) VALUES
 ON CONFLICT DO NOTHING;
 
 -- ================================================================
--- Noise patterns (domain-specific, replaces hardcoded noise_filter)
+-- Ontology: Noise patterns
 -- ================================================================
 
-CREATE TABLE IF NOT EXISTS ontology_noise_patterns (
-    id          SERIAL PRIMARY KEY,
-    pattern     TEXT NOT NULL,          -- regex or literal
-    pattern_type TEXT NOT NULL DEFAULT 'literal', -- 'literal', 'regex', 'prefix', 'suffix'
-    description TEXT,
-    is_active   BOOLEAN NOT NULL DEFAULT true
-);
-
--- Seed with a few representative patterns (the full 57-test noise
--- filter will be migrated incrementally)
 INSERT INTO ontology_noise_patterns (pattern, pattern_type, description) VALUES
     ('the', 'literal', 'Common article'),
     ('this', 'literal', 'Common demonstrative'),
@@ -210,3 +179,19 @@ INSERT INTO ontology_noise_patterns (pattern, pattern_type, description) VALUES
     ('PUT', 'literal', 'HTTP method'),
     ('DELETE', 'literal', 'HTTP method')
 ON CONFLICT DO NOTHING;
+
+-- ================================================================
+-- Source adapter seeds
+-- ================================================================
+
+INSERT INTO source_adapters (name, description, match_domain, match_mime, converter, default_source_type, default_domain) VALUES
+    ('arxiv-pdf', 'ArXiv research papers (PDF)', 'arxiv.org', 'application/pdf', 'pdf', 'document', 'research'),
+    ('arxiv-html', 'ArXiv research papers (HTML)', 'arxiv.org', 'text/html', 'passthrough', 'document', 'research'),
+    ('github-code', 'GitHub source code files', 'github.com', NULL, 'code', 'code', 'code'),
+    ('markdown', 'Markdown documents', NULL, 'text/markdown', 'passthrough', 'document', NULL),
+    ('html-web', 'Web pages (HTML)', NULL, 'text/html', 'readerlm', 'document', 'external'),
+    ('pdf-generic', 'PDF documents', NULL, 'application/pdf', 'pdf', 'document', NULL),
+    ('code-rust', 'Rust source files', NULL, 'text/x-rust', 'code', 'code', 'code'),
+    ('code-go', 'Go source files', NULL, 'text/x-go', 'code', 'code', 'code'),
+    ('code-python', 'Python source files', NULL, 'text/x-python', 'code', 'code', 'code')
+ON CONFLICT (name) DO NOTHING;
