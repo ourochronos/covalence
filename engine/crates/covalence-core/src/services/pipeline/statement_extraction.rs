@@ -158,14 +158,14 @@ impl SourceService {
         if !name_to_node.is_empty() {
             if let Some(ref embedder) = self.embedder {
                 let node_ids: Vec<NodeId> = name_to_node.values().copied().collect();
-                let has_embedding_ids: Vec<uuid::Uuid> = sqlx::query_scalar::<_, uuid::Uuid>(
-                    "SELECT id FROM nodes \
-                     WHERE id = ANY($1) AND embedding IS NOT NULL",
-                )
-                .bind(node_ids.iter().map(|n| n.into_uuid()).collect::<Vec<_>>())
-                .fetch_all(self.repo.pool())
-                .await
-                .unwrap_or_default();
+                use crate::storage::traits::PipelineRepo;
+                let has_embedding_ids: Vec<uuid::Uuid> =
+                    PipelineRepo::list_node_ids_with_embeddings(
+                        &*self.repo,
+                        &node_ids.iter().map(|n| n.into_uuid()).collect::<Vec<_>>(),
+                    )
+                    .await
+                    .unwrap_or_default();
 
                 let mut texts = Vec::new();
                 let mut valid_ids = Vec::new();

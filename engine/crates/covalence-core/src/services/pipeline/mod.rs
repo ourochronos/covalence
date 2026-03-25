@@ -30,7 +30,9 @@ use crate::models::chunk::Chunk;
 use crate::models::chunk::ChunkLevel as ModelChunkLevel;
 use crate::models::edge::Edge;
 use crate::models::extraction::{ExtractedEntityType, Extraction};
-use crate::storage::traits::{ChunkRepo, EdgeRepo, ExtractionRepo, NodeRepo, SourceRepo};
+use crate::storage::traits::{
+    ChunkRepo, EdgeRepo, ExtractionRepo, NodeRepo, PipelineRepo, SourceRepo,
+};
 use crate::types::ids::{ChunkId, NodeId};
 
 use super::chunk_quality::{
@@ -596,37 +598,26 @@ impl SourceService {
 
                         // First try: extraction-linked chunks with
                         // definition pattern match.
-                        let mut chunk_content: Option<String> = sqlx::query_scalar(
-                            "SELECT c.content FROM extractions ex \
-                             JOIN chunks c ON c.id = ex.chunk_id \
-                             WHERE ex.entity_id = $1 AND ex.entity_type = 'node' \
-                               AND ex.chunk_id IS NOT NULL \
-                               AND c.content LIKE '%' || $2 || '%' \
-                             ORDER BY ex.confidence DESC \
-                             LIMIT 1",
-                        )
-                        .bind(nid)
-                        .bind(&def_pattern)
-                        .fetch_optional(self.repo.pool())
-                        .await
-                        .ok()
-                        .flatten();
+                        let mut chunk_content: Option<String> =
+                            PipelineRepo::find_extraction_chunk_content(
+                                &*self.repo,
+                                nid,
+                                &def_pattern,
+                            )
+                            .await
+                            .ok()
+                            .flatten();
 
                         // Fallback: search ALL chunks from the same source
                         // for the definition pattern. Handles cases where
                         // the entity was resolved to an existing node but
                         // the extraction points to a different chunk.
                         if chunk_content.is_none() {
-                            chunk_content = sqlx::query_scalar(
-                                "SELECT c.content FROM chunks c \
-                                 WHERE c.source_id = $1 \
-                                   AND c.content LIKE '%' || $2 || '%' \
-                                 ORDER BY LENGTH(c.content) ASC \
-                                 LIMIT 1",
+                            chunk_content = PipelineRepo::find_source_chunk_content(
+                                &*self.repo,
+                                input.source_id,
+                                &def_pattern,
                             )
-                            .bind(input.source_id)
-                            .bind(&def_pattern)
-                            .fetch_optional(self.repo.pool())
                             .await
                             .ok()
                             .flatten();
@@ -661,21 +652,12 @@ impl SourceService {
                                 let summary = resp.text.trim().to_string();
                                 // Store summary in properties and update
                                 // description for embedding.
-                                sqlx::query(
-                                    "UPDATE nodes SET \
-                                       properties = jsonb_set(\
-                                         COALESCE(properties, '{}'), \
-                                         '{semantic_summary}', \
-                                         $2::jsonb\
-                                       ), \
-                                       description = $3, \
-                                       embedding = NULL \
-                                     WHERE id = $1",
+                                PipelineRepo::update_node_summary_inline(
+                                    &*self.repo,
+                                    nid,
+                                    &serde_json::json!(summary),
+                                    &summary,
                                 )
-                                .bind(nid)
-                                .bind(serde_json::json!(summary))
-                                .bind(&summary)
-                                .execute(self.repo.pool())
                                 .await?;
                                 summarized += 1;
                             }
@@ -715,15 +697,13 @@ impl SourceService {
                     let mut valid_ids: Vec<NodeId> = Vec::with_capacity(node_ids.len());
 
                     // Skip nodes that already have embeddings.
-                    let has_embedding_ids: Vec<uuid::Uuid> = sqlx::query_scalar::<_, uuid::Uuid>(
-                        "SELECT id FROM nodes \
-                             WHERE id = ANY($1) \
-                             AND embedding IS NOT NULL",
-                    )
-                    .bind(node_ids.iter().map(|n| n.into_uuid()).collect::<Vec<_>>())
-                    .fetch_all(self.repo.pool())
-                    .await
-                    .unwrap_or_default();
+                    let has_embedding_ids: Vec<uuid::Uuid> =
+                        PipelineRepo::list_node_ids_with_embeddings(
+                            &*self.repo,
+                            &node_ids.iter().map(|n| n.into_uuid()).collect::<Vec<_>>(),
+                        )
+                        .await
+                        .unwrap_or_default();
 
                     for &nid in &node_ids {
                         if has_embedding_ids.contains(&nid.into_uuid()) {
@@ -792,25 +772,14 @@ impl SourceService {
         if input.is_code {
             if let Some(ref summary_compiler) = self.source_summary_compiler {
                 // Collect entity summaries grouped by type
-                let summaries: Vec<(String, String, String)> = sqlx::query_as(
-                    "SELECT canonical_name, node_type, \
-                            COALESCE(properties->>'semantic_summary', \
-                                     description, canonical_name) \
-                     FROM nodes n \
-                     JOIN extractions ex ON ex.entity_id = n.id \
-                       AND ex.entity_type = 'node' \
-                     JOIN chunks c ON c.id = ex.chunk_id \
-                     WHERE c.source_id = $1 \
-                       AND n.entity_class = $2 \
-                     GROUP BY n.id, canonical_name, node_type, \
-                              properties, description \
-                     ORDER BY n.node_type, n.canonical_name",
-                )
-                .bind(input.source_id)
-                .bind(&self.pipeline.code_entity_class)
-                .fetch_all(self.repo.pool())
-                .await
-                .unwrap_or_default();
+                let summaries: Vec<(String, String, String)> =
+                    PipelineRepo::get_code_entity_summaries(
+                        &*self.repo,
+                        input.source_id,
+                        &self.pipeline.code_entity_class,
+                    )
+                    .await
+                    .unwrap_or_default();
 
                 if !summaries.is_empty() {
                     use crate::ingestion::section_compiler::{

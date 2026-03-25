@@ -1,6 +1,7 @@
 //! Coverage analysis, erosion detection, and whitespace roadmap.
 
 use crate::error::Result;
+use crate::storage::traits::AnalysisRepo;
 
 use super::AnalysisService;
 
@@ -121,10 +122,7 @@ impl AnalysisService {
         // Orphan code: code-class nodes from code-domain sources with no
         // PART_OF_COMPONENT edge. Uses entity_class and domain fields
         // instead of hardcoded type lists and source_type checks.
-        let orphan_rows: Vec<(uuid::Uuid, String, String, String)> =
-            sqlx::query_as("SELECT * FROM sp_get_orphan_code_nodes()")
-                .fetch_all(self.repo.pool())
-                .await?;
+        let orphan_rows = AnalysisRepo::get_orphan_code_nodes(&*self.repo).await?;
 
         let orphan_code: Vec<CoverageItem> = orphan_rows
             .into_iter()
@@ -145,10 +143,7 @@ impl AnalysisService {
         // Uses primary_domain (from domain_entropy computation) to avoid
         // counting cross-cutting concepts that happen to be mentioned in
         // specs (e.g., "gpt-4o-mini", "MRL-E" are primarily research).
-        let unimpl_rows: Vec<(uuid::Uuid, String, String)> =
-            sqlx::query_as("SELECT * FROM sp_get_unimplemented_specs()")
-                .fetch_all(self.repo.pool())
-                .await?;
+        let unimpl_rows = AnalysisRepo::get_unimplemented_specs(&*self.repo).await?;
 
         let unimplemented_specs: Vec<CoverageItem> = unimpl_rows
             .into_iter()
@@ -166,13 +161,9 @@ impl AnalysisService {
 
         // Coverage score: (spec concepts with implementation / total spec
         // concepts).
-        let total_spec: i64 = sqlx::query_scalar("SELECT sp_count_spec_concepts()")
-            .fetch_one(self.repo.pool())
-            .await?;
+        let total_spec: i64 = AnalysisRepo::count_spec_concepts(&*self.repo).await?;
 
-        let implemented: i64 = sqlx::query_scalar("SELECT sp_count_implemented_specs()")
-            .fetch_one(self.repo.pool())
-            .await?;
+        let implemented: i64 = AnalysisRepo::count_implemented_specs(&*self.repo).await?;
 
         let coverage_score = if total_spec > 0 {
             implemented as f64 / total_spec as f64
@@ -208,10 +199,7 @@ impl AnalysisService {
     /// flagged.
     pub async fn detect_erosion(&self, threshold: f64) -> Result<ErosionResult> {
         // Fetch all component nodes with embeddings.
-        let components: Vec<(uuid::Uuid, String, String)> =
-            sqlx::query_as("SELECT * FROM sp_list_component_nodes()")
-                .fetch_all(self.repo.pool())
-                .await?;
+        let components = AnalysisRepo::list_component_nodes(&*self.repo).await?;
 
         let total_components = components.len() as u64;
         let mut eroded = Vec::new();
@@ -219,20 +207,11 @@ impl AnalysisService {
         for (comp_id, comp_name, description) in &components {
             // Find all code nodes linked to this component via
             // PART_OF_COMPONENT that have embeddings.
-            let code_nodes: Vec<(uuid::Uuid, String, Option<String>, f64)> = sqlx::query_as(
-                "SELECT n.id, n.canonical_name, \
-                        n.properties->>'semantic_summary', \
-                        (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
-                 FROM nodes n \
-                 JOIN edges e ON e.source_node_id = n.id \
-                 WHERE e.target_node_id = $1 \
-                   AND e.rel_type = $2 \
-                   AND n.embedding IS NOT NULL \
-                 ORDER BY dist DESC",
+            let code_nodes = AnalysisRepo::find_component_code_nodes(
+                &*self.repo,
+                *comp_id,
+                &self.bridges.part_of_component,
             )
-            .bind(comp_id)
-            .bind(&self.bridges.part_of_component)
-            .fetch_all(self.repo.pool())
             .await?;
 
             if code_nodes.is_empty() {
@@ -306,13 +285,13 @@ impl AnalysisService {
         domain_filter: Option<&str>,
     ) -> Result<WhitespaceResult> {
         // Find research sources using the domain field instead of URI heuristics.
-        let rows: Vec<(uuid::Uuid, String, Option<String>, i64, i64)> =
-            sqlx::query_as("SELECT * FROM sp_get_research_source_bridges($1, $2, $3)")
-                .bind(min_cluster_size as i64)
-                .bind(Self::MAX_WHITESPACE_GAPS as i64)
-                .bind(domain_filter)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AnalysisRepo::get_research_source_bridges(
+            &*self.repo,
+            min_cluster_size as i64,
+            Self::MAX_WHITESPACE_GAPS as i64,
+            domain_filter,
+        )
+        .await?;
 
         let mut gaps = Vec::new();
         let mut total_research = 0u64;
@@ -330,56 +309,24 @@ impl AnalysisService {
             total_unbridged += 1;
 
             // Fetch representative node names for this source.
-            let node_names: Vec<(String, String)> = sqlx::query_as(
-                "SELECT DISTINCT n.canonical_name, n.node_type \
-                 FROM nodes n \
-                 JOIN extractions ex ON ex.entity_id = n.id \
-                 JOIN chunks c ON c.id = ex.chunk_id \
-                 WHERE c.source_id = $1 \
-                 ORDER BY n.canonical_name \
-                 LIMIT 10",
-            )
-            .bind(source_id)
-            .fetch_all(self.repo.pool())
-            .await?;
+            let node_names =
+                AnalysisRepo::list_source_representative_nodes(&*self.repo, *source_id).await?;
 
             // Check for IMPLEMENTS_INTENT connections (spec coverage).
-            let spec_connected: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT comp.canonical_name \
-                 FROM nodes comp \
-                 JOIN edges e ON e.source_node_id = comp.id \
-                 WHERE e.rel_type = $2 \
-                   AND comp.node_type = 'component' \
-                   AND e.target_node_id IN ( \
-                     SELECT n.id FROM nodes n \
-                     JOIN extractions ex ON ex.entity_id = n.id \
-                     JOIN chunks c ON c.id = ex.chunk_id \
-                     WHERE c.source_id = $1 \
-                   )",
+            let spec_connected = AnalysisRepo::find_connected_components(
+                &*self.repo,
+                *source_id,
+                &self.bridges.implements_intent,
             )
-            .bind(source_id)
-            .bind(&self.bridges.implements_intent)
-            .fetch_all(self.repo.pool())
             .await?;
 
             // Find Component nodes connected via THEORETICAL_BASIS
             // to any entity extracted from this source.
-            let comp_connected: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT comp.canonical_name \
-                 FROM nodes comp \
-                 JOIN edges e ON e.source_node_id = comp.id \
-                 WHERE e.rel_type = $2 \
-                   AND comp.node_type = 'component' \
-                   AND e.target_node_id IN ( \
-                     SELECT n.id FROM nodes n \
-                     JOIN extractions ex ON ex.entity_id = n.id \
-                     JOIN chunks c ON c.id = ex.chunk_id \
-                     WHERE c.source_id = $1 \
-                   )",
+            let comp_connected = AnalysisRepo::find_connected_components(
+                &*self.repo,
+                *source_id,
+                &self.bridges.theoretical_basis,
             )
-            .bind(source_id)
-            .bind(&self.bridges.theoretical_basis)
-            .fetch_all(self.repo.pool())
             .await?;
 
             gaps.push(WhitespaceGap {

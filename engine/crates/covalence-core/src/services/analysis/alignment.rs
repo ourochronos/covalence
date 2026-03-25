@@ -9,6 +9,7 @@
 //! spec/design/code/research domains.
 
 use crate::error::Result;
+use crate::storage::traits::AnalysisRepo;
 
 use super::AnalysisService;
 
@@ -115,15 +116,7 @@ impl AnalysisService {
         distance_threshold: f64,
         limit: i64,
     ) -> Result<Vec<AlignmentItem>> {
-        // Code entities with embeddings that have no close match
-        // in the spec domain.
-        #[allow(clippy::type_complexity)]
-        let rows: Vec<(String, String, String, Option<f64>, Option<String>)> =
-            sqlx::query_as("SELECT * FROM sp_find_code_ahead($1, $2)")
-                .bind(distance_threshold)
-                .bind(limit)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AnalysisRepo::find_code_ahead(&*self.repo, distance_threshold, limit).await?;
 
         Ok(rows
             .into_iter()
@@ -151,11 +144,7 @@ impl AnalysisService {
     /// Uses primary_domain to identify true spec concepts (not
     /// cross-cutting entities that happen to be mentioned in specs).
     async fn check_spec_ahead(&self, limit: i64) -> Result<Vec<AlignmentItem>> {
-        let rows: Vec<(String, String, i32)> =
-            sqlx::query_as("SELECT * FROM sp_check_spec_ahead($1)")
-                .bind(limit)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AnalysisRepo::check_spec_ahead(&*self.repo, limit).await?;
 
         Ok(rows
             .into_iter()
@@ -185,15 +174,8 @@ impl AnalysisService {
         distance_threshold: f64,
         limit: i64,
     ) -> Result<Vec<AlignmentItem>> {
-        // Find design entities that have close research matches —
-        // these are candidates for contradiction (same topic,
-        // potentially different conclusion).
-        let rows: Vec<(String, String, f64, String)> =
-            sqlx::query_as("SELECT * FROM sp_find_design_contradictions($1, $2)")
-                .bind(distance_threshold)
-                .bind(limit)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AnalysisRepo::find_design_contradictions(&*self.repo, distance_threshold, limit)
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -223,14 +205,7 @@ impl AnalysisService {
         _distance_threshold: f64,
         limit: i64,
     ) -> Result<Vec<AlignmentItem>> {
-        // Design sources linked to code entities via extractions.
-        // Flag when the newest linked code entity was updated after
-        // the design source (code evolved, design didn't).
-        let rows: Vec<(String, String, f64, String)> =
-            sqlx::query_as("SELECT * FROM sp_find_stale_design($1)")
-                .bind(limit)
-                .fetch_all(self.repo.pool())
-                .await?;
+        let rows = AnalysisRepo::find_stale_design(&*self.repo, limit).await?;
 
         Ok(rows
             .into_iter()

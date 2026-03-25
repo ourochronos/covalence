@@ -48,11 +48,9 @@ pub(crate) async fn execute_job(
                 Ok(()) => Ok(()),
                 Err(e) => {
                     // Mark the source as failed so status is queryable.
-                    let _ = sqlx::query("SELECT sp_update_source_status($1, $2)")
-                        .bind(source_id)
-                        .bind("failed")
-                        .execute(svc.repo.pool())
-                        .await;
+                    use crate::storage::traits::PipelineRepo;
+                    let _ =
+                        PipelineRepo::update_source_status(&*svc.repo, source_id, "failed").await;
                     Err(e)
                 }
             }
@@ -168,24 +166,20 @@ async fn summarize_single_entity(
     };
 
     // Find the chunk containing this entity's definition.
+    use crate::storage::traits::PipelineRepo;
     let mut chunk_content: Option<String> =
-        sqlx::query_scalar("SELECT sp_get_chunk_content_for_entity($1, $2)")
-            .bind(node_id)
-            .bind(&def_pattern)
-            .fetch_optional(svc.repo.pool())
+        PipelineRepo::get_chunk_content_for_entity(&*svc.repo, node_id, &def_pattern)
             .await
             .ok()
             .flatten();
 
     // Fallback: search all chunks from the same source.
     if chunk_content.is_none() {
-        chunk_content = sqlx::query_scalar("SELECT sp_get_chunk_by_source_pattern($1, $2)")
-            .bind(source_id)
-            .bind(&def_pattern)
-            .fetch_optional(svc.repo.pool())
-            .await
-            .ok()
-            .flatten();
+        chunk_content =
+            PipelineRepo::get_chunk_by_source_pattern(&*svc.repo, source_id, &def_pattern)
+                .await
+                .ok()
+                .flatten();
     }
 
     let raw = chunk_content
@@ -222,29 +216,22 @@ async fn summarize_single_entity(
     }
 
     // Store summary on the node (properties, description, clear embedding).
-    sqlx::query("SELECT sp_update_node_semantic_summary($1, $2)")
-        .bind(node_id)
-        .bind(summary)
-        .execute(svc.repo.pool())
-        .await?;
+    PipelineRepo::update_node_semantic_summary(&*svc.repo, node_id, summary).await?;
 
     // Record processing metadata on the node.
-    sqlx::query(
-        "UPDATE nodes SET processing = jsonb_set(\
-           COALESCE(processing, '{}'), '{summary}', $2::jsonb\
-         ) WHERE id = $1",
+    PipelineRepo::update_node_processing(
+        &*svc.repo,
+        node_id,
+        &serde_json::json!({
+            "model": "haiku",
+            "provider": provider,
+            "at": chrono::Utc::now().to_rfc3339(),
+            "ms": duration_ms,
+            "prompt_version": crate::services::prompts::SUMMARY_PROMPT_VERSION,
+            "input_chars": raw.len().min(3000),
+            "output_chars": summary.len(),
+        }),
     )
-    .bind(node_id)
-    .bind(serde_json::json!({
-        "model": "haiku",
-        "provider": provider,
-        "at": chrono::Utc::now().to_rfc3339(),
-        "ms": duration_ms,
-        "prompt_version": crate::services::prompts::SUMMARY_PROMPT_VERSION,
-        "input_chars": raw.len().min(3000),
-        "output_chars": summary.len(),
-    }))
-    .execute(svc.repo.pool())
     .await?;
 
     tracing::info!(
@@ -257,7 +244,7 @@ async fn summarize_single_entity(
     // If so, auto-enqueue ComposeSourceSummary.
     let nil = uuid::Uuid::nil();
     if source_id.into_uuid() != nil {
-        try_advance_to_compose(svc.repo.pool(), source_id).await;
+        try_advance_to_compose(&svc.repo, source_id).await;
     }
 
     Ok(())
@@ -355,19 +342,21 @@ async fn extract_single_chunk(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    sqlx::query("SELECT sp_update_chunk_processing($1, $2, $3)")
-        .bind(chunk_id)
-        .bind("extraction")
-        .bind(serde_json::json!({
+    use crate::storage::traits::PipelineRepo;
+    PipelineRepo::update_chunk_processing(
+        &*svc.repo,
+        chunk_id,
+        "extraction",
+        &serde_json::json!({
             "model": "haiku",
             "at": chrono::Utc::now().to_rfc3339(),
             "ms": duration_ms,
             "entities_found": entity_count,
             "relationships_found": result.relationships.len(),
             "ingestion_id": ingestion_id,
-        }))
-        .execute(svc.repo.pool())
-        .await?;
+        }),
+    )
+    .await?;
 
     tracing::info!(
         chunk_id = %chunk_id,
@@ -378,7 +367,7 @@ async fn extract_single_chunk(
 
     // Fan-in: check if all ExtractChunk jobs for this source are done.
     // If so, enqueue SummarizeEntity jobs for code entities.
-    try_advance_to_summarize(svc.repo.pool(), source_id).await;
+    try_advance_to_summarize(&svc.repo, source_id).await;
 
     Ok(())
 }
@@ -395,10 +384,9 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
     })?;
 
     // Collect entity summaries for this source.
+    use crate::storage::traits::PipelineRepo;
     let summaries: Vec<(String, String, String)> =
-        sqlx::query_as("SELECT * FROM sp_get_entity_summaries_by_source($1)")
-            .bind(source_id)
-            .fetch_all(svc.repo.pool())
+        PipelineRepo::get_entity_summaries_by_source(&*svc.repo, source_id)
             .await
             .unwrap_or_default();
 
@@ -451,18 +439,19 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
     }
 
     // Record processing metadata.
-    sqlx::query("SELECT sp_update_source_processing($1, $2, $3)")
-        .bind(source_id)
-        .bind("compose")
-        .bind(serde_json::json!({
+    PipelineRepo::update_source_processing(
+        &*svc.repo,
+        source_id,
+        "compose",
+        &serde_json::json!({
             "model": "haiku",
             "provider": provider,
             "at": chrono::Utc::now().to_rfc3339(),
             "ms": duration_ms,
             "entities_composed": summaries.len(),
-        }))
-        .execute(svc.repo.pool())
-        .await?;
+        }),
+    )
+    .await?;
 
     tracing::info!(
         source_id = %source_id,
@@ -473,11 +462,7 @@ async fn compose_source_summary_job(svc: &Arc<SourceService>, source_id: SourceI
 
     // Mark source as complete — unless upstream set it to 'partial'
     // due to failed extraction/summarization jobs (#170).
-    sqlx::query("SELECT sp_update_source_status_conditional($1, $2, $3)")
-        .bind(source_id)
-        .bind("complete")
-        .bind("partial")
-        .execute(svc.repo.pool())
+    PipelineRepo::update_source_status_conditional(&*svc.repo, source_id, "complete", "partial")
         .await?;
 
     // Wire edge synthesis into the DAG (#173): enqueue after each
@@ -534,12 +519,10 @@ async fn embed_batch_job(
                 let node_id = crate::types::ids::NodeId::from_uuid(id);
                 if let Ok(Some(node)) = NodeRepo::get(&*svc.repo, node_id).await {
                     // Skip nodes that already have embeddings.
-                    let has_emb: bool =
-                        sqlx::query_scalar("SELECT embedding IS NOT NULL FROM nodes WHERE id = $1")
-                            .bind(id)
-                            .fetch_one(svc.repo.pool())
-                            .await
-                            .unwrap_or(true);
+                    use crate::storage::traits::PipelineRepo;
+                    let has_emb: bool = PipelineRepo::node_has_embedding(&*svc.repo, id)
+                        .await
+                        .unwrap_or(true);
 
                     if has_emb {
                         continue;

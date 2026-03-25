@@ -7,7 +7,7 @@ use crate::ingestion::embedder::truncate_and_validate;
 use crate::models::audit::{AuditAction, AuditLog};
 use crate::models::edge::Edge;
 use crate::models::node::Node;
-use crate::storage::traits::{AuditLogRepo, EdgeRepo, NodeRepo};
+use crate::storage::traits::{AnalysisRepo, AuditLogRepo, EdgeRepo, NodeRepo};
 use crate::types::ids::NodeId;
 
 use super::constants::{COMPONENT_DEFS, MODULE_PATH_MAPPINGS};
@@ -30,14 +30,7 @@ impl AnalysisService {
 
         for (name, description) in COMPONENT_DEFS {
             // Check if a component with this name already exists.
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM nodes \
-                 WHERE LOWER(canonical_name) = LOWER($1) \
-                   AND node_type = 'component')",
-            )
-            .bind(name)
-            .fetch_one(self.repo.pool())
-            .await?;
+            let exists = AnalysisRepo::component_exists(&*self.repo, name).await?;
 
             if exists {
                 existing += 1;
@@ -175,48 +168,20 @@ impl AnalysisService {
     /// Since code nodes may not store `file_path` in their own properties,
     /// we trace back through extraction provenance to find the source URI.
     async fn link_part_of_component(&self) -> Result<(u64, u64)> {
-        // Fetch code nodes from actual code sources. Uses entity_class = 'code'
-        // (set at node creation by derive_entity_class) and domain = 'code'
-        // (set at ingestion by derive_domain) instead of hardcoded type lists.
-        let code_nodes: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-            "SELECT DISTINCT n.id, n.canonical_name, \
-                    COALESCE( \
-                      n.properties->>'file_path', \
-                      (SELECT s.uri FROM extractions ex \
-                       JOIN chunks c ON ex.chunk_id = c.id \
-                       JOIN sources s ON c.source_id = s.id \
-                       WHERE ex.entity_id = n.id \
-                       ORDER BY CASE WHEN s.domain = $2 \
-                                     THEN 0 ELSE 1 END \
-                       LIMIT 1), \
-                      '' \
-                    ) AS path \
-             FROM nodes n \
-             WHERE n.entity_class = $1 \
-               AND n.node_type != 'code_test' \
-               AND n.canonical_name NOT LIKE 'test_%' \
-               AND EXISTS ( \
-                 SELECT 1 FROM extractions ex \
-                 JOIN chunks c ON ex.chunk_id = c.id \
-                 JOIN sources s ON c.source_id = s.id \
-                 WHERE ex.entity_id = n.id \
-                   AND s.domain = $2 \
-               )",
+        // Fetch code nodes from actual code sources.
+        let code_nodes = AnalysisRepo::list_code_nodes_with_paths(
+            &*self.repo,
+            &self.domains.code_entity_class,
+            &self.domains.code_domain,
         )
-        .bind(&self.domains.code_entity_class)
-        .bind(&self.domains.code_domain)
-        .fetch_all(self.repo.pool())
         .await?;
 
         // Fetch all component nodes.
-        let components: Vec<(uuid::Uuid, String)> =
-            sqlx::query_as("SELECT id, canonical_name FROM sp_list_component_nodes()")
-                .fetch_all(self.repo.pool())
-                .await?;
+        let components = AnalysisRepo::list_component_nodes(&*self.repo).await?;
 
         let comp_map: HashMap<&str, uuid::Uuid> = components
             .iter()
-            .map(|(id, name)| (name.as_str(), *id))
+            .map(|(id, name, _)| (name.as_str(), *id))
             .collect();
 
         let mut created = 0u64;
@@ -246,12 +211,13 @@ impl AnalysisService {
             };
 
             // Check if edge already exists.
-            let exists: bool = sqlx::query_scalar("SELECT sp_check_edge_exists($1, $2, $3)")
-                .bind(code_id)
-                .bind(comp_id)
-                .bind(&self.bridges.part_of_component)
-                .fetch_one(self.repo.pool())
-                .await?;
+            let exists = AnalysisRepo::check_edge_exists_sp(
+                &*self.repo,
+                *code_id,
+                comp_id,
+                &self.bridges.part_of_component,
+            )
+            .await?;
 
             if exists {
                 skipped += 1;
@@ -287,10 +253,7 @@ impl AnalysisService {
         max_edges: i64,
     ) -> Result<(u64, u64, u64)> {
         // Fetch component nodes that have embeddings.
-        let components: Vec<(uuid::Uuid, String, String)> =
-            sqlx::query_as("SELECT * FROM sp_list_component_nodes()")
-                .fetch_all(self.repo.pool())
-                .await?;
+        let components = AnalysisRepo::list_component_nodes(&*self.repo).await?;
 
         if components.is_empty() {
             tracing::warn!("no embedded component nodes found — run bootstrap first");
@@ -306,28 +269,12 @@ impl AnalysisService {
         // (spec vs research) gets its own budget of `max_edges`.
         for (comp_id, comp_name, _desc) in &components {
             // --- IMPLEMENTS_INTENT: spec/design concepts ---
-            // Uses the domain field (set at ingestion) instead of URI heuristics.
-            let spec_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
-                "SELECT n.id, n.canonical_name, \
-                        (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
-                 FROM nodes n \
-                 WHERE n.entity_class = 'domain' \
-                   AND n.embedding IS NOT NULL \
-                   AND n.id != $1 \
-                   AND EXISTS ( \
-                     SELECT 1 FROM extractions ex \
-                     JOIN chunks c ON ex.chunk_id = c.id \
-                     JOIN sources s ON c.source_id = s.id \
-                     WHERE ex.entity_id = n.id \
-                       AND s.domain = ANY($3) \
-                   ) \
-                 ORDER BY dist ASC \
-                 LIMIT $2",
+            let spec_matches = AnalysisRepo::find_nearest_domain_nodes(
+                &*self.repo,
+                *comp_id,
+                &self.domains.spec_domains,
+                max_edges,
             )
-            .bind(comp_id)
-            .bind(max_edges)
-            .bind(&self.domains.spec_domains)
-            .fetch_all(self.repo.pool())
             .await?;
 
             let (i, s) = self
@@ -344,31 +291,12 @@ impl AnalysisService {
             skipped += s;
 
             // --- THEORETICAL_BASIS: research/theory concepts ---
-            // Include entities that appear in at least one research/external source.
-            // An entity merged across spec+research should be eligible for
-            // THEORETICAL_BASIS edges (the research provenance is real).
-            // Uses the domain field instead of URI NOT LIKE heuristics.
-            let research_matches: Vec<(uuid::Uuid, String, f64)> = sqlx::query_as(
-                "SELECT n.id, n.canonical_name, \
-                        (n.embedding <=> (SELECT embedding FROM nodes WHERE id = $1)) AS dist \
-                 FROM nodes n \
-                 WHERE n.entity_class = 'domain' \
-                   AND n.embedding IS NOT NULL \
-                   AND n.id != $1 \
-                   AND EXISTS ( \
-                     SELECT 1 FROM extractions ex \
-                     JOIN chunks c ON ex.chunk_id = c.id \
-                     JOIN sources s ON c.source_id = s.id \
-                     WHERE ex.entity_id = n.id \
-                       AND s.domain = ANY($3) \
-                   ) \
-                 ORDER BY dist ASC \
-                 LIMIT $2",
+            let research_matches = AnalysisRepo::find_nearest_domain_nodes(
+                &*self.repo,
+                *comp_id,
+                &self.domains.research_domains,
+                max_edges,
             )
-            .bind(comp_id)
-            .bind(max_edges)
-            .bind(&self.domains.research_domains)
-            .fetch_all(self.repo.pool())
             .await?;
 
             let (b, s) = self
@@ -416,12 +344,9 @@ impl AnalysisService {
                 break;
             }
 
-            let exists: bool = sqlx::query_scalar("SELECT sp_check_edge_exists($1, $2, $3)")
-                .bind(comp_id)
-                .bind(target_id)
-                .bind(rel_type)
-                .fetch_one(self.repo.pool())
-                .await?;
+            let exists =
+                AnalysisRepo::check_edge_exists_sp(&*self.repo, comp_id, *target_id, rel_type)
+                    .await?;
 
             if exists {
                 skipped += 1;

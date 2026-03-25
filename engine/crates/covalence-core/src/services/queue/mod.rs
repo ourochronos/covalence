@@ -125,11 +125,9 @@ impl RetryQueueService {
     /// The extraction → summary → compose pipeline then runs via
     /// the async job DAG with fan-in triggers.
     pub async fn enqueue_extract_chunks(&self, source_id: SourceId) -> Result<u64> {
+        use crate::storage::traits::QueueRepo;
         let chunks: Vec<(uuid::Uuid,)> =
-            sqlx::query_as("SELECT * FROM sp_get_chunks_by_source($1)")
-                .bind(source_id)
-                .fetch_all(self.repo.pool())
-                .await?;
+            QueueRepo::get_chunks_by_source(&*self.repo, source_id).await?;
 
         let mut enqueued = 0u64;
         for (chunk_id,) in &chunks {
@@ -171,24 +169,9 @@ impl RetryQueueService {
         let code_class = self.code_entity_class();
 
         // Find code entities that need summaries.
-        let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-            "SELECT DISTINCT n.id, COALESCE( \
-               (SELECT c.source_id FROM extractions ex \
-                JOIN chunks c ON c.id = ex.chunk_id \
-                WHERE ex.entity_id = n.id AND ex.entity_type = 'node' \
-                LIMIT 1), \
-               '00000000-0000-0000-0000-000000000000'::uuid \
-             ) as source_id \
-             FROM nodes n \
-             WHERE n.entity_class = $1 \
-               AND (n.properties->>'semantic_summary' IS NULL \
-                    OR n.properties->>'semantic_summary' = '') \
-               AND n.node_type != 'code_test' \
-               AND n.canonical_name NOT LIKE 'test_%'",
-        )
-        .bind(&code_class)
-        .fetch_all(self.repo.pool())
-        .await?;
+        use crate::storage::traits::QueueRepo;
+        let rows: Vec<(uuid::Uuid, uuid::Uuid)> =
+            QueueRepo::list_unsummarized_entities_for_summary(&*self.repo, &code_class).await?;
 
         let mut enqueued = 0u64;
         for (node_id, source_id) in &rows {
@@ -228,24 +211,9 @@ impl RetryQueueService {
         let code_domain = self.code_domain();
         let code_class = self.code_entity_class();
 
-        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
-            "SELECT DISTINCT s.id \
-             FROM sources s \
-             WHERE s.domain = $1 \
-               AND s.summary IS NULL \
-               AND EXISTS ( \
-                 SELECT 1 FROM nodes n \
-                 JOIN extractions ex ON ex.entity_id = n.id AND ex.entity_type = 'node' \
-                 JOIN chunks c ON c.id = ex.chunk_id \
-                 WHERE c.source_id = s.id \
-                   AND n.entity_class = $2 \
-                   AND n.properties->>'semantic_summary' IS NOT NULL \
-               )",
-        )
-        .bind(&code_domain)
-        .bind(&code_class)
-        .fetch_all(self.repo.pool())
-        .await?;
+        use crate::storage::traits::QueueRepo;
+        let rows: Vec<(uuid::Uuid,)> =
+            QueueRepo::list_sources_needing_compose(&*self.repo, &code_domain, &code_class).await?;
 
         let mut enqueued = 0u64;
         for (source_id,) in &rows {

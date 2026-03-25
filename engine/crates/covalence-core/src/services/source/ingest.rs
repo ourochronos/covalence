@@ -174,17 +174,15 @@ impl SourceService {
         // Store supersession info in the source metadata so the
         // queue worker can handle cleanup after the pipeline succeeds.
         if let Some(ref info) = supersedes_info {
-            sqlx::query(
-                "UPDATE sources SET metadata = jsonb_set(\
-                   COALESCE(metadata, '{}'), '{_supersession}', $2::jsonb\
-                 ) WHERE id = $1",
+            use crate::storage::traits::PipelineRepo;
+            PipelineRepo::update_source_supersession_metadata(
+                &*self.repo,
+                source.id,
+                &serde_json::json!({
+                    "old_source_id": info.old_source_id.to_string(),
+                    "update_class": info.update_class.as_str(),
+                }),
             )
-            .bind(source.id)
-            .bind(serde_json::json!({
-                "old_source_id": info.old_source_id.to_string(),
-                "update_class": info.update_class.as_str(),
-            }))
-            .execute(self.repo.pool())
             .await?;
         }
 
@@ -219,10 +217,8 @@ impl SourceService {
     /// then handles supersession cleanup and the statement pipeline.
     pub(crate) async fn process_accepted(&self, source_id: SourceId) -> Result<()> {
         // Update status to processing via SP.
-        sqlx::query("SELECT sp_update_source_status($1, 'processing')")
-            .bind(source_id)
-            .execute(self.repo.pool())
-            .await?;
+        use crate::storage::traits::PipelineRepo;
+        PipelineRepo::update_source_status(&*self.repo, source_id, "processing").await?;
 
         let source = SourceRepo::get(&*self.repo, source_id)
             .await?
@@ -261,10 +257,7 @@ impl SourceService {
         // The DAG: ExtractChunk → (fan-in) → SummarizeEntity
         //        → (fan-in) → ComposeSourceSummary → complete
         let chunks: Vec<(uuid::Uuid,)> =
-            sqlx::query_as("SELECT id FROM chunks WHERE source_id = $1")
-                .bind(source_id)
-                .fetch_all(self.repo.pool())
-                .await?;
+            PipelineRepo::list_chunk_ids_by_source(&*self.repo, source_id).await?;
 
         // Batch enqueue all extract_chunk jobs in a single query
         // instead of N sequential INSERTs (#168).
@@ -311,10 +304,7 @@ impl SourceService {
                     // unresolved entities, clears alias refs, deletes
                     // chunks, ledger, and clears source embedding.
                     let cascade: (i64, i64, i64, i64, i64, i64, i64) =
-                        sqlx::query_as("SELECT * FROM sp_delete_source_cascade($1)")
-                            .bind(old_id)
-                            .fetch_one(self.repo.pool())
-                            .await?;
+                        PipelineRepo::delete_source_cascade(&*self.repo, old_id).await?;
                     tracing::info!(
                         old_source = %old_id,
                         ext_deleted = cascade.0,
@@ -380,10 +370,7 @@ impl SourceService {
         // status = 'complete' when ComposeSourceSummary finishes.
         // If there are no chunks (empty source), mark complete now.
         if chunks.is_empty() {
-            sqlx::query("SELECT sp_update_source_status($1, 'complete')")
-                .bind(source_id)
-                .execute(self.repo.pool())
-                .await?;
+            PipelineRepo::update_source_status(&*self.repo, source_id, "complete").await?;
         }
 
         tracing::info!(source_id = %source_id, "source chunked, extraction fanned out");
@@ -397,27 +384,14 @@ impl SourceService {
         uri: &str,
         new_content: &[u8],
     ) -> Result<Option<SupersedesInfo>> {
-        use sqlx::Row;
+        use crate::storage::traits::PipelineRepo;
 
-        let row = sqlx::query(
-            "SELECT id, content_hash, raw_content, content_version \
-             FROM sources \
-             WHERE uri = $1 \
-             ORDER BY content_version DESC \
-             LIMIT 1",
-        )
-        .bind(uri)
-        .fetch_optional(self.repo.pool())
-        .await?;
+        let row = PipelineRepo::find_source_by_uri(&*self.repo, uri).await?;
 
-        let row = match row {
+        let (old_id, old_content, old_version) = match row {
             Some(r) => r,
             None => return Ok(None),
         };
-
-        let old_id: SourceId = row.get("id");
-        let old_content: Option<String> = row.get("raw_content");
-        let old_version: i32 = row.get("content_version");
 
         let new_text = String::from_utf8_lossy(new_content);
 
@@ -440,16 +414,9 @@ impl SourceService {
         new_id: SourceId,
         update_class: &UpdateClass,
     ) -> Result<()> {
-        sqlx::query(
-            "UPDATE sources \
-             SET update_class = $2, superseded_by = $3, superseded_at = NOW() \
-             WHERE id = $1",
-        )
-        .bind(old_id)
-        .bind(update_class.as_str())
-        .bind(new_id)
-        .execute(self.repo.pool())
-        .await?;
+        use crate::storage::traits::PipelineRepo;
+        PipelineRepo::mark_source_superseded(&*self.repo, old_id, new_id, update_class.as_str())
+            .await?;
         Ok(())
     }
 }

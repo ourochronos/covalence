@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::graph::engine::BfsOptions;
 use crate::ingestion::ChatBackend;
 use crate::ingestion::embedder::truncate_and_validate;
+use crate::storage::traits::AnalysisRepo;
 
 use super::AnalysisService;
 
@@ -168,23 +169,14 @@ impl AnalysisService {
     ///    row with the highest `mention_count`.
     async fn resolve_node_by_name(&self, name: &str) -> Result<(uuid::Uuid, String, String)> {
         // Step 1: exact case-insensitive match via stored procedure.
-        let exact: Option<(uuid::Uuid, String, String)> =
-            sqlx::query_as("SELECT * FROM sp_resolve_node_by_name($1)")
-                .bind(name)
-                .fetch_optional(self.repo.pool())
-                .await?;
+        let exact = AnalysisRepo::resolve_node_by_name(&*self.repo, name).await?;
 
         if let Some(row) = exact {
             return Ok(row);
         }
 
         // Step 2: substring match via stored procedure.
-        let fuzzy: Option<(uuid::Uuid, String, String)> =
-            sqlx::query_as("SELECT * FROM sp_resolve_node_fuzzy($1, $2)")
-                .bind(name)
-                .bind(1_i32)
-                .fetch_optional(self.repo.pool())
-                .await?;
+        let fuzzy = AnalysisRepo::resolve_node_fuzzy(&*self.repo, name, 1).await?;
 
         fuzzy.ok_or_else(|| Error::NotFound {
             entity_type: "node",
@@ -213,11 +205,7 @@ impl AnalysisService {
             self.resolve_node_by_name(target_name).await?;
 
         // Find the component this node belongs to via stored procedure.
-        let component: Option<(uuid::Uuid, String)> =
-            sqlx::query_as("SELECT * FROM sp_get_node_component($1)")
-                .bind(target_id)
-                .fetch_optional(self.repo.pool())
-                .await?;
+        let component = AnalysisRepo::get_node_component(&*self.repo, target_id).await?;
 
         // BFS through the graph engine trait.
         let bfs_opts = BfsOptions {
@@ -264,22 +252,9 @@ impl AnalysisService {
         // reachable through invalidated edges at hop distance 1.
         if include_invalidated && total_collected < Self::BLAST_RADIUS_NODE_CAP {
             let remaining = Self::BLAST_RADIUS_NODE_CAP - total_collected;
-            let invalidated_neighbors: Vec<(uuid::Uuid, String, String, String)> = sqlx::query_as(
-                "SELECT n.id, n.canonical_name, n.node_type, \
-                            e.rel_type \
-                     FROM edges e \
-                     JOIN nodes n ON n.id = CASE \
-                         WHEN e.source_node_id = $1 \
-                             THEN e.target_node_id \
-                         ELSE e.source_node_id END \
-                     WHERE e.invalid_at IS NOT NULL \
-                       AND (e.source_node_id = $1 OR e.target_node_id = $1) \
-                     LIMIT $2",
-            )
-            .bind(target_id)
-            .bind(remaining as i64)
-            .fetch_all(self.repo.pool())
-            .await?;
+            let invalidated_neighbors =
+                AnalysisRepo::get_invalidated_neighbors(&*self.repo, target_id, remaining as i64)
+                    .await?;
 
             let mut inv_nodes: Vec<AffectedNode> = Vec::new();
             for (id, name, node_type, relationship) in invalidated_neighbors {
@@ -357,28 +332,13 @@ impl AnalysisService {
         let query_truncated = truncate_and_validate(query_vec, self.node_embed_dim, "node")?;
 
         // Find research-domain nodes closest to the query.
-        let research_nodes: Vec<(uuid::Uuid, String, String, Option<String>, f64)> =
-            sqlx::query_as(
-                "SELECT n.id, n.canonical_name, n.node_type, \
-                        n.properties->>'semantic_summary', \
-                        (n.embedding <=> $1::vector) AS dist \
-                 FROM nodes n \
-                 WHERE n.embedding IS NOT NULL \
-                   AND n.node_type != 'component' \
-                   AND EXISTS ( \
-                     SELECT 1 FROM extractions ex \
-                     JOIN chunks c ON c.id = ex.chunk_id \
-                     JOIN sources s ON s.id = c.source_id \
-                     WHERE ex.entity_id = n.id \
-                       AND s.domain = ANY($2) \
-                   ) \
-                 ORDER BY dist ASC \
-                 LIMIT 10",
-            )
-            .bind(&query_truncated)
-            .bind(&self.domains.research_domains)
-            .fetch_all(self.repo.pool())
-            .await?;
+        let research_nodes = AnalysisRepo::find_nearest_research_nodes(
+            &*self.repo,
+            &query_truncated,
+            &self.domains.research_domains,
+            10,
+        )
+        .await?;
 
         if research_nodes.is_empty() {
             return Ok(VerificationResult {
@@ -393,17 +353,11 @@ impl AnalysisService {
         // Find which Components these research nodes connect to via
         // THEORETICAL_BASIS.
         let research_ids: Vec<uuid::Uuid> = research_nodes.iter().map(|(id, ..)| *id).collect();
-        let components: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-            "SELECT DISTINCT comp.id, comp.canonical_name \
-             FROM nodes comp \
-             JOIN edges e ON e.source_node_id = comp.id \
-             WHERE comp.entity_class = 'analysis' \
-               AND e.rel_type = $2 \
-               AND e.target_node_id = ANY($1)",
+        let components = AnalysisRepo::find_theoretical_components(
+            &*self.repo,
+            &research_ids,
+            &self.bridges.theoretical_basis,
         )
-        .bind(&research_ids)
-        .bind(&self.bridges.theoretical_basis)
-        .fetch_all(self.repo.pool())
         .await?;
 
         // Apply component filter if specified.
@@ -427,23 +381,13 @@ impl AnalysisService {
             if comp_ids.is_empty() {
                 Vec::new()
             } else {
-                sqlx::query_as(
-                    "SELECT n.id, n.canonical_name, n.node_type, \
-                        n.properties->>'semantic_summary', \
-                        (n.embedding <=> $1::vector) AS dist \
-                 FROM nodes n \
-                 JOIN edges e ON e.source_node_id = n.id \
-                 WHERE e.rel_type = $4 \
-                   AND e.target_node_id = ANY($2) \
-                   AND n.embedding IS NOT NULL \
-                 ORDER BY dist ASC \
-                 LIMIT $3",
+                AnalysisRepo::find_component_code_by_embedding(
+                    &*self.repo,
+                    &query_truncated,
+                    &comp_ids,
+                    &self.bridges.part_of_component,
+                    Self::MAX_VERIFY_CODE_NODES,
                 )
-                .bind(&query_truncated)
-                .bind(&comp_ids)
-                .bind(Self::MAX_VERIFY_CODE_NODES)
-                .bind(&self.bridges.part_of_component)
-                .fetch_all(self.repo.pool())
                 .await?
             };
 
@@ -529,78 +473,36 @@ impl AnalysisService {
 
         // Search for related evidence across all domains.
         // Research evidence (non-spec, non-code documents).
-        let research_evidence: Vec<(uuid::Uuid, String, String, Option<String>, f64)> =
-            sqlx::query_as(
-                "SELECT n.id, n.canonical_name, n.node_type, \
-                        n.description, \
-                        (n.embedding <=> $1::vector) AS dist \
-                 FROM nodes n \
-                 WHERE n.embedding IS NOT NULL \
-                   AND n.node_type NOT IN ('component') \
-                   AND EXISTS ( \
-                     SELECT 1 FROM extractions ex \
-                     JOIN chunks c ON c.id = ex.chunk_id \
-                     JOIN sources s ON s.id = c.source_id \
-                     WHERE ex.entity_id = n.id \
-                       AND s.domain = ANY($3) \
-                   ) \
-                 ORDER BY dist ASC \
-                 LIMIT $2",
-            )
-            .bind(&proposal_truncated)
-            .bind(Self::MAX_CRITIQUE_EVIDENCE)
-            .bind(&self.domains.research_domains)
-            .fetch_all(self.repo.pool())
-            .await?;
+        let research_evidence = AnalysisRepo::find_domain_evidence(
+            &*self.repo,
+            &proposal_truncated,
+            &self.domains.research_domains,
+            None,
+            None,
+            Self::MAX_CRITIQUE_EVIDENCE,
+        )
+        .await?;
 
         // Spec/design evidence.
-        let spec_evidence: Vec<(uuid::Uuid, String, String, Option<String>, f64)> = sqlx::query_as(
-            "SELECT n.id, n.canonical_name, n.node_type, \
-                        n.description, \
-                        (n.embedding <=> $1::vector) AS dist \
-                 FROM nodes n \
-                 WHERE n.embedding IS NOT NULL \
-                   AND n.entity_class = 'domain' \
-                   AND EXISTS ( \
-                     SELECT 1 FROM extractions ex \
-                     JOIN chunks c ON c.id = ex.chunk_id \
-                     JOIN sources s ON s.id = c.source_id \
-                     WHERE ex.entity_id = n.id \
-                       AND s.domain = ANY($3) \
-                   ) \
-                 ORDER BY dist ASC \
-                 LIMIT $2",
+        let spec_evidence = AnalysisRepo::find_domain_evidence(
+            &*self.repo,
+            &proposal_truncated,
+            &self.domains.spec_domains,
+            None,
+            None,
+            Self::MAX_CRITIQUE_EVIDENCE,
         )
-        .bind(&proposal_truncated)
-        .bind(Self::MAX_CRITIQUE_EVIDENCE)
-        .bind(&self.domains.spec_domains)
-        .fetch_all(self.repo.pool())
         .await?;
 
         // Code evidence.
-        let code_evidence: Vec<(uuid::Uuid, String, String, Option<String>, f64)> = sqlx::query_as(
-            "SELECT n.id, n.canonical_name, n.node_type, \
-                        COALESCE(n.properties->>'semantic_summary', \
-                                 n.description), \
-                        (n.embedding <=> $1::vector) AS dist \
-                 FROM nodes n \
-                 WHERE n.embedding IS NOT NULL \
-                   AND n.entity_class = $3 \
-                   AND EXISTS ( \
-                     SELECT 1 FROM extractions ex \
-                     JOIN chunks c ON c.id = ex.chunk_id \
-                     JOIN sources s ON s.id = c.source_id \
-                     WHERE ex.entity_id = n.id \
-                       AND s.domain = $4 \
-                   ) \
-                 ORDER BY dist ASC \
-                 LIMIT $2",
+        let code_evidence = AnalysisRepo::find_domain_evidence(
+            &*self.repo,
+            &proposal_truncated,
+            &[], // unused when entity_class + code_domain are set
+            Some(&self.domains.code_entity_class),
+            Some(&self.domains.code_domain),
+            Self::MAX_CRITIQUE_EVIDENCE,
         )
-        .bind(&proposal_truncated)
-        .bind(Self::MAX_CRITIQUE_EVIDENCE)
-        .bind(&self.domains.code_entity_class)
-        .bind(&self.domains.code_domain)
-        .fetch_all(self.repo.pool())
         .await?;
 
         let to_evidence = |rows: Vec<(uuid::Uuid, String, String, Option<String>, f64)>,

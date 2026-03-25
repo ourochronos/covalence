@@ -8,7 +8,7 @@
 use crate::error::Result;
 use crate::models::node::Node;
 use crate::models::node_alias::NodeAlias;
-use crate::storage::traits::NodeAliasRepo;
+use crate::storage::traits::{NodeAliasRepo, PipelineRepo};
 use crate::types::ids::{AliasId, ChunkId, NodeId, SourceId};
 
 use super::super::ingestion_helpers::entity_name_lock_key;
@@ -84,10 +84,7 @@ impl SourceService {
         let lock_key = entity_name_lock_key(&entity.name);
         let mut tx = self.repo.pool().begin().await?;
 
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(lock_key)
-            .execute(&mut *tx)
-            .await?;
+        PipelineRepo::advisory_xact_lock(&*self.repo, &mut tx, lock_key).await?;
 
         let (node_id, match_type) = if let Some(resolved) = pre_resolved {
             match resolved.match_type {
@@ -101,7 +98,7 @@ impl SourceService {
                 ref mt => {
                     let match_type = mt.clone();
                     if let Some(nid) = resolved.node_id {
-                        Self::bump_mention_in_tx(&mut tx, nid).await?;
+                        self.bump_mention_in_tx(&mut tx, nid).await?;
                         (nid, match_type)
                     } else {
                         let node = self
@@ -113,14 +110,11 @@ impl SourceService {
             }
         } else {
             // No resolver — simple exact-match fallback.
-            let existing: Option<NodeId> =
-                sqlx::query_scalar("SELECT sp_get_node_by_name_exact($1)")
-                    .bind(&entity.name)
-                    .fetch_one(&mut *tx)
-                    .await?;
+            let existing =
+                PipelineRepo::get_node_by_name_exact_tx(&*self.repo, &mut tx, &entity.name).await?;
 
             if let Some(nid) = existing {
-                Self::bump_mention_in_tx(&mut tx, nid).await?;
+                self.bump_mention_in_tx(&mut tx, nid).await?;
                 (nid, MatchType::Exact)
             } else {
                 let node = self
@@ -151,11 +145,8 @@ impl SourceService {
                 .and_then(|m| m.get("ast_hash"))
                 .and_then(|v| v.as_str())
             {
-                let (props_val,): (Option<serde_json::Value>,) =
-                    sqlx::query_as("SELECT sp_get_node_properties($1)")
-                        .bind(node_id)
-                        .fetch_one(&mut *tx)
-                        .await?;
+                let props_val =
+                    PipelineRepo::get_node_properties_tx(&*self.repo, &mut tx, node_id).await?;
                 let old_hash = props_val
                     .as_ref()
                     .and_then(|p| p.get("ast_hash"))
@@ -168,23 +159,27 @@ impl SourceService {
                     let mut props = props_val.unwrap_or_else(|| serde_json::json!({}));
                     props["ast_hash"] = serde_json::json!(new_hash);
                     props.as_object_mut().map(|o| o.remove("semantic_summary"));
-                    sqlx::query("SELECT sp_update_node_ast_hash($1, $2, $3)")
-                        .bind(node_id)
-                        .bind(&props)
-                        .bind(&entity.description)
-                        .execute(&mut *tx)
-                        .await?;
+                    PipelineRepo::update_node_ast_hash_tx(
+                        &*self.repo,
+                        &mut tx,
+                        node_id,
+                        &props,
+                        &entity.description,
+                    )
+                    .await?;
                     tracing::debug!(
                         node = %entity.name,
                         "ast_hash changed, cleared semantic_summary"
                     );
                 } else {
                     // Hash unchanged — just update ast_hash (idempotent).
-                    sqlx::query("SELECT sp_update_node_ast_hash_only($1, $2)")
-                        .bind(node_id)
-                        .bind(new_hash)
-                        .execute(&mut *tx)
-                        .await?;
+                    PipelineRepo::update_node_ast_hash_only_tx(
+                        &*self.repo,
+                        &mut tx,
+                        node_id,
+                        new_hash,
+                    )
+                    .await?;
                 }
             }
         }
@@ -192,24 +187,28 @@ impl SourceService {
         let ext_id = uuid::Uuid::new_v4();
         match provenance {
             ExtractionProvenance::Chunk(chunk_id) => {
-                sqlx::query("SELECT sp_create_extraction_from_chunk($1, $2, $3, $4, $5)")
-                    .bind(ext_id)
-                    .bind(chunk_id)
-                    .bind(node_id.into_uuid())
-                    .bind(extraction_method)
-                    .bind(entity.confidence)
-                    .execute(&mut *tx)
-                    .await?;
+                PipelineRepo::create_extraction_from_chunk_tx(
+                    &*self.repo,
+                    &mut tx,
+                    ext_id,
+                    chunk_id,
+                    node_id.into_uuid(),
+                    extraction_method,
+                    entity.confidence,
+                )
+                .await?;
             }
             ExtractionProvenance::Statement(stmt_id) => {
-                sqlx::query("SELECT sp_create_extraction_from_statement($1, $2, $3, $4, $5)")
-                    .bind(ext_id)
-                    .bind(stmt_id)
-                    .bind(node_id.into_uuid())
-                    .bind(extraction_method)
-                    .bind(entity.confidence)
-                    .execute(&mut *tx)
-                    .await?;
+                PipelineRepo::create_extraction_from_statement_tx(
+                    &*self.repo,
+                    &mut tx,
+                    ext_id,
+                    stmt_id,
+                    node_id.into_uuid(),
+                    extraction_method,
+                    entity.confidence,
+                )
+                .await?;
             }
         }
 
@@ -248,50 +247,18 @@ impl SourceService {
             }
         }
 
-        let confidence_json = node.confidence_breakdown.as_ref().map(|o| o.to_json());
-
-        sqlx::query(
-            "INSERT INTO nodes (
-                id, canonical_name, node_type, entity_class,
-                description,
-                properties, confidence_breakdown,
-                clearance_level, first_seen, last_seen,
-                mention_count
-            ) VALUES (
-                $1, $2, $3, $4,
-                $5,
-                $6, $7,
-                $8, $9, $10,
-                $11
-            )",
-        )
-        .bind(node.id)
-        .bind(&node.canonical_name)
-        .bind(&node.node_type)
-        .bind(&node.entity_class)
-        .bind(&node.description)
-        .bind(&node.properties)
-        .bind(&confidence_json)
-        .bind(node.clearance_level.as_i32())
-        .bind(node.first_seen)
-        .bind(node.last_seen)
-        .bind(node.mention_count)
-        .execute(&mut **tx)
-        .await?;
+        PipelineRepo::create_node_tx(&*self.repo, tx, &node).await?;
 
         Ok(node)
     }
 
     /// Bump `mention_count` and `last_seen` for an existing node.
     async fn bump_mention_in_tx(
+        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         node_id: NodeId,
     ) -> Result<()> {
-        sqlx::query("SELECT sp_bump_node_mention($1)")
-            .bind(node_id)
-            .execute(&mut **tx)
-            .await?;
-        Ok(())
+        PipelineRepo::bump_node_mention_tx(&*self.repo, tx, node_id).await
     }
 
     /// Minimum alias length to prevent short-name pollution (#122).
@@ -322,10 +289,7 @@ impl SourceService {
         }
 
         // Check if alias already exists (for any node).
-        let existing: Option<uuid::Uuid> = sqlx::query_scalar("SELECT sp_get_alias_by_text($1)")
-            .bind(alias_text)
-            .fetch_one(&mut **tx)
-            .await?;
+        let existing = PipelineRepo::get_alias_by_text_tx(&*self.repo, tx, alias_text).await?;
 
         match existing {
             Some(existing_node_id) if existing_node_id == node_id.into_uuid() => {
@@ -344,16 +308,14 @@ impl SourceService {
             None => {
                 // New alias — create it.
                 let alias_id = AliasId::new();
-                sqlx::query(
-                    "INSERT INTO node_aliases \
-                     (id, node_id, alias, source_chunk_id) \
-                     VALUES ($1, $2, $3, $4)",
+                PipelineRepo::create_alias_tx(
+                    &*self.repo,
+                    tx,
+                    alias_id,
+                    node_id,
+                    alias_text,
+                    chunk_id,
                 )
-                .bind(alias_id)
-                .bind(node_id)
-                .bind(alias_text)
-                .bind(chunk_id)
-                .execute(&mut **tx)
                 .await?;
             }
         }

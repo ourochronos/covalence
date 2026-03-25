@@ -33,31 +33,11 @@ impl RetryQueueService {
 
                 // Find code sources with entity summaries but no file summary
                 // and no pending compose job — these are stalled.
-                let stalled: Vec<(uuid::Uuid,)> = sqlx::query_as(
-                    "SELECT s.id FROM sources s \
-                     WHERE s.domain = $1 \
-                       AND s.summary IS NULL \
-                       AND EXISTS ( \
-                         SELECT 1 FROM nodes n \
-                         JOIN extractions ex ON ex.entity_id = n.id \
-                         JOIN chunks c ON c.id = ex.chunk_id \
-                         WHERE c.source_id = s.id \
-                           AND n.entity_class = $2 \
-                           AND n.properties->>'semantic_summary' IS NOT NULL \
-                       ) \
-                       AND NOT EXISTS ( \
-                         SELECT 1 FROM retry_jobs rj \
-                         WHERE rj.kind = 'compose_source_summary' \
-                           AND rj.payload->>'source_id' = s.id::text \
-                           AND rj.status IN ('pending', 'running') \
-                       ) \
-                     LIMIT 20",
-                )
-                .bind(&code_domain)
-                .bind(&code_class)
-                .fetch_all(repo.pool())
-                .await
-                .unwrap_or_default();
+                use crate::storage::traits::QueueRepo;
+                let stalled: Vec<(uuid::Uuid,)> =
+                    QueueRepo::list_stalled_sources(&*repo, &code_domain, &code_class)
+                        .await
+                        .unwrap_or_default();
 
                 if !stalled.is_empty() {
                     tracing::info!(
@@ -67,14 +47,13 @@ impl RetryQueueService {
                     for (sid,) in &stalled {
                         let payload = serde_json::json!({ "source_id": sid.to_string() });
                         let key = format!("compose:{sid}");
-                        let _ = sqlx::query(
-                            "INSERT INTO retry_jobs (kind, payload, idempotency_key, max_attempts) \
-                             VALUES ('compose_source_summary', $1, $2, 5) \
-                             ON CONFLICT (idempotency_key) DO NOTHING",
+                        let _ = QueueRepo::insert_retry_job_direct(
+                            &*repo,
+                            "compose_source_summary",
+                            &payload,
+                            &key,
+                            5,
                         )
-                        .bind(&payload)
-                        .bind(&key)
-                        .execute(repo.pool())
                         .await;
                     }
                 }
@@ -157,17 +136,8 @@ impl RetryQueueService {
 
     /// Recovery pass: reset orphaned `running` jobs back to `pending`.
     pub(super) async fn recover_orphaned_jobs(&self) -> crate::error::Result<()> {
-        let result = sqlx::query(
-            "UPDATE retry_jobs
-             SET status = 'pending'::job_status,
-                 next_due = now(),
-                 updated_at = now()
-             WHERE status = 'running'::job_status",
-        )
-        .execute(self.repo.pool())
-        .await?;
-
-        let recovered = result.rows_affected();
+        use crate::storage::traits::QueueRepo;
+        let recovered = QueueRepo::recover_orphaned_jobs(&*self.repo).await?;
         if recovered > 0 {
             tracing::info!(recovered, "recovered orphaned running jobs");
         }
