@@ -24,6 +24,7 @@ use crate::ingestion::pg_resolver::PgResolver;
 use crate::ingestion::resolver::EntityResolver;
 use crate::ingestion::section_compiler::{SectionCompiler, SourceSummaryCompiler};
 use crate::ingestion::statement_extractor::StatementExtractor;
+use crate::services::adapter_service::AdapterService;
 use crate::storage::postgres::PgRepo;
 
 pub use crud::DeleteResult;
@@ -102,6 +103,8 @@ pub struct SourceService {
     pub(crate) source_summary_compiler: Option<Arc<dyn SourceSummaryCompiler>>,
     /// Chat backend for generating semantic summaries of code entities.
     pub(crate) chat_backend: Option<Arc<dyn ChatBackend>>,
+    /// Adapter service for config-driven domain classification.
+    pub(crate) adapter_service: Option<Arc<AdapterService>>,
 }
 
 impl SourceService {
@@ -142,6 +145,7 @@ impl SourceService {
             section_compiler: None,
             chat_backend: None,
             source_summary_compiler: None,
+            adapter_service: None,
         }
     }
 
@@ -172,6 +176,7 @@ impl SourceService {
             section_compiler: None,
             chat_backend: None,
             source_summary_compiler: None,
+            adapter_service: None,
         }
     }
 
@@ -204,6 +209,7 @@ impl SourceService {
             section_compiler: None,
             chat_backend: None,
             source_summary_compiler: None,
+            adapter_service: None,
         }
     }
 
@@ -309,6 +315,55 @@ impl SourceService {
     pub fn with_chat_backend(mut self, backend: Arc<dyn ChatBackend>) -> Self {
         self.chat_backend = Some(backend);
         self
+    }
+
+    /// Set the adapter service for config-driven domain classification.
+    ///
+    /// When present, [`derive_domain_via_adapter`](Self::derive_domain_via_adapter)
+    /// queries adapter configs before falling back to hardcoded
+    /// pattern matching.
+    pub fn with_adapter_service(mut self, svc: Arc<AdapterService>) -> Self {
+        self.adapter_service = Some(svc);
+        self
+    }
+
+    /// Derive the knowledge domain using adapters first, then
+    /// hardcoded patterns as fallback.
+    ///
+    /// Priority:
+    /// 1. Adapter match (domain → MIME → URI regex) — uses
+    ///    `default_domain` from the matching adapter.
+    /// 2. Hardcoded [`derive_domain()`] patterns.
+    pub(crate) async fn derive_domain_via_adapter(
+        &self,
+        source_type: &str,
+        uri: Option<&str>,
+        mime: Option<&str>,
+    ) -> Option<String> {
+        if let Some(ref adapter_svc) = self.adapter_service {
+            match adapter_svc.match_adapter(uri, mime).await {
+                Ok(Some(adapter)) => {
+                    if let Some(ref domain) = adapter.default_domain {
+                        tracing::debug!(
+                            adapter = %adapter.name,
+                            domain = %domain,
+                            uri = uri.unwrap_or("-"),
+                            "domain derived via adapter"
+                        );
+                        return Some(domain.clone());
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "adapter lookup failed, falling back to \
+                         hardcoded patterns"
+                    );
+                }
+            }
+        }
+        derive_domain(source_type, uri)
     }
 
     /// Compute the current pipeline fingerprint (if configured).

@@ -65,6 +65,17 @@ impl AdapterRepo for PgRepo {
         Ok(rows.iter().map(adapter_from_row).collect())
     }
 
+    async fn find_all_with_uri_regex(&self) -> Result<Vec<SourceAdapter>> {
+        let rows = sqlx::query(
+            "SELECT * FROM source_adapters \
+             WHERE match_uri_regex IS NOT NULL AND is_active = true \
+             ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(adapter_from_row).collect())
+    }
+
     async fn upsert(&self, adapter: &SourceAdapter) -> Result<()> {
         sqlx::query(
             "INSERT INTO source_adapters (

@@ -134,6 +134,80 @@ fn delete_result_zero_counts_when_nothing_found() {
     assert_eq!(result.edges_recalculated, 0);
 }
 
+// --- Adapter-aware domain derivation tests ---
+
+/// Verify that `derive_domain` still returns correct results — this
+/// is the fallback path used by `derive_domain_via_adapter` when no
+/// adapter service is wired or when no adapter matches.
+#[test]
+fn derive_domain_fallback_path_still_works() {
+    // Code source type takes priority regardless of URI.
+    assert_eq!(
+        derive_domain("code", Some("file://engine/src/main.rs")).as_deref(),
+        Some("code"),
+    );
+    // Spec URI pattern.
+    assert_eq!(
+        derive_domain("document", Some("file://spec/01.md")).as_deref(),
+        Some("spec"),
+    );
+    // ArXiv URI pattern.
+    assert_eq!(
+        derive_domain("document", Some("https://arxiv.org/abs/1234")).as_deref(),
+        Some("research"),
+    );
+    // Unknown document with no URI.
+    assert_eq!(derive_domain("document", None).as_deref(), None);
+}
+
+/// Verify that adapter regex validation catches malformed patterns.
+#[test]
+fn adapter_regex_validation_catches_invalid_patterns() {
+    use crate::services::adapter_service::SourceAdapter;
+
+    let adapter = SourceAdapter {
+        id: uuid::Uuid::new_v4(),
+        name: "test-bad-regex".to_string(),
+        description: None,
+        match_domain: None,
+        match_mime: None,
+        match_uri_regex: Some("[invalid((".to_string()),
+        converter: None,
+        normalization: "default".to_string(),
+        prompt_template: None,
+        default_source_type: "document".to_string(),
+        default_domain: Some("research".to_string()),
+        webhook_url: None,
+        coref_enabled: true,
+        statement_enabled: true,
+        is_active: true,
+    };
+
+    // Regex::new should reject the pattern.
+    let result = regex::Regex::new(adapter.match_uri_regex.as_ref().unwrap());
+    assert!(result.is_err(), "should reject invalid regex");
+}
+
+/// Verify that valid adapter regex patterns compile successfully.
+#[test]
+fn adapter_regex_validation_accepts_valid_patterns() {
+    let patterns = &[
+        r"^file://spec/",
+        r"^https://arxiv\.org/",
+        r"^file://engine/.*\.rs$",
+        r"^https?://",
+    ];
+    for pattern in patterns {
+        let result = regex::Regex::new(pattern);
+        assert!(
+            result.is_ok(),
+            "pattern '{}' should be valid: {:?}",
+            pattern,
+            result.err()
+        );
+    }
+}
+
 // --- Code source pipeline tests ---
 
 #[test]
