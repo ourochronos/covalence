@@ -244,6 +244,42 @@ impl SourceService {
         .is_some()
             || source_type == "code";
 
+        // Fire pre_ingest hooks (can skip extraction or override domain).
+        let mut effective_domain = source.domain.clone();
+        let mut skip_extraction = false;
+        if let Some(ref hook_svc) = self.hook_service {
+            match hook_svc
+                .fire_pre_ingest(&source_id, source_type, effective_domain.as_deref())
+                .await
+            {
+                Ok(resp) => {
+                    if resp.skip_extraction == Some(true) {
+                        skip_extraction = true;
+                        tracing::info!(
+                            source_id = %source_id,
+                            "pre_ingest hook requested skip_extraction"
+                        );
+                    }
+                    if let Some(domain) = resp.override_domain {
+                        tracing::info!(
+                            source_id = %source_id,
+                            old_domain = ?effective_domain,
+                            new_domain = %domain,
+                            "pre_ingest hook overrode domain"
+                        );
+                        effective_domain = Some(domain);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        source_id = %source_id,
+                        error = %e,
+                        "pre_ingest hook failed (continuing)"
+                    );
+                }
+            }
+        }
+
         // Run chunking + embedding only. Extraction fans out to
         // per-chunk queue jobs via the async DAG.
         self.run_pipeline(&PipelineInput {
@@ -251,7 +287,7 @@ impl SourceService {
             source_type,
             source_uri: source.uri.clone(),
             source_title: source.title.clone(),
-            source_domain: source.domain.clone(),
+            source_domain: effective_domain.clone(),
             normalized,
             is_code,
             chunk_only: true,
@@ -264,31 +300,41 @@ impl SourceService {
         let chunks: Vec<(uuid::Uuid,)> =
             PipelineRepo::list_chunk_ids_by_source(&*self.repo, source_id).await?;
 
-        // Batch enqueue all extract_chunk jobs in a single query
-        // instead of N sequential INSERTs (#168).
-        use crate::models::retry_job::EnqueueJob;
-        use crate::storage::traits::JobQueueRepo;
-        let jobs: Vec<EnqueueJob> = chunks
-            .iter()
-            .map(|(chunk_id,)| EnqueueJob {
-                kind: crate::models::retry_job::JobKind::ExtractChunk,
-                payload: serde_json::json!({
-                    "chunk_id": chunk_id.to_string(),
-                    "source_id": source_id.into_uuid().to_string(),
-                }),
-                max_attempts: 5,
-                idempotency_key: Some(format!("extract_chunk:{chunk_id}")),
-            })
-            .collect();
+        let _enqueued = if skip_extraction {
+            tracing::info!(
+                source_id = %source_id,
+                chunks = chunks.len(),
+                "skipping extraction fan-out (pre_ingest hook)"
+            );
+            0
+        } else {
+            // Batch enqueue all extract_chunk jobs in a single query
+            // instead of N sequential INSERTs (#168).
+            use crate::models::retry_job::EnqueueJob;
+            use crate::storage::traits::JobQueueRepo;
+            let jobs: Vec<EnqueueJob> = chunks
+                .iter()
+                .map(|(chunk_id,)| EnqueueJob {
+                    kind: crate::models::retry_job::JobKind::ExtractChunk,
+                    payload: serde_json::json!({
+                        "chunk_id": chunk_id.to_string(),
+                        "source_id": source_id.into_uuid().to_string(),
+                    }),
+                    max_attempts: 5,
+                    idempotency_key: Some(format!("extract_chunk:{chunk_id}")),
+                })
+                .collect();
 
-        let enqueued = JobQueueRepo::enqueue_batch(&*self.repo, jobs).await?;
+            let enqueued = JobQueueRepo::enqueue_batch(&*self.repo, jobs).await?;
 
-        tracing::info!(
-            source_id = %source_id,
-            chunks = chunks.len(),
-            enqueued,
-            "fanned out extraction to per-chunk jobs (batch)"
-        );
+            tracing::info!(
+                source_id = %source_id,
+                chunks = chunks.len(),
+                enqueued,
+                "fanned out extraction to per-chunk jobs (batch)"
+            );
+            enqueued
+        };
 
         // Handle supersession cleanup if this source replaces another.
         if let Some(supersession) = source.metadata.get("_supersession") {
@@ -373,8 +419,9 @@ impl SourceService {
 
         // Don't mark complete here — the fan-out DAG will set
         // status = 'complete' when ComposeSourceSummary finishes.
-        // If there are no chunks (empty source), mark complete now.
-        if chunks.is_empty() {
+        // If there are no chunks (empty source) or extraction was
+        // skipped by a hook, mark complete now.
+        if chunks.is_empty() || skip_extraction {
             PipelineRepo::update_source_status(&*self.repo, source_id, "complete").await?;
         }
 

@@ -135,3 +135,16 @@ config_schema:
     type: integer
     default: 10
     description: "Maximum call-graph depth for structural analysis"
+
+# Service definition (optional).
+# When `extractor_for` is set, the service receives extraction
+# requests for sources in that domain.  The built-in AstExtractor
+# handles code extraction by default — uncomment and point to a
+# custom service to override.
+#
+# service:
+#   name: code-ast-extractor
+#   transport: stdio
+#   command: "my-code-extractor"
+#   args: ["--format", "json"]
+#   extractor_for: code

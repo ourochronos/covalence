@@ -15,7 +15,11 @@ use crate::error::{Error, Result};
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::HookRepo;
 
-/// Hook execution phase in the /ask pipeline.
+/// Hook execution phase in the pipeline.
+///
+/// Covers both the `/ask` synthesis pipeline (pre_search,
+/// post_search, post_synthesis) and the ingestion pipeline
+/// (pre_ingest, post_extract, post_resolve).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookPhase {
@@ -25,6 +29,12 @@ pub enum HookPhase {
     PostSearch,
     /// After LLM synthesis (fire-and-forget).
     PostSynthesis,
+    /// Before extraction begins for a source.
+    PreIngest,
+    /// After entity/relationship extraction completes.
+    PostExtract,
+    /// After entity resolution completes.
+    PostResolve,
 }
 
 impl HookPhase {
@@ -34,6 +44,9 @@ impl HookPhase {
             Self::PreSearch => "pre_search",
             Self::PostSearch => "post_search",
             Self::PostSynthesis => "post_synthesis",
+            Self::PreIngest => "pre_ingest",
+            Self::PostExtract => "post_extract",
+            Self::PostResolve => "post_resolve",
         }
     }
 
@@ -43,6 +56,9 @@ impl HookPhase {
             "pre_search" => Some(Self::PreSearch),
             "post_search" => Some(Self::PostSearch),
             "post_synthesis" => Some(Self::PostSynthesis),
+            "pre_ingest" => Some(Self::PreIngest),
+            "post_extract" => Some(Self::PostExtract),
+            "post_resolve" => Some(Self::PostResolve),
             _ => None,
         }
     }
@@ -117,6 +133,40 @@ struct PostSynthesisPayload<'a> {
     answer: &'a str,
     citations: &'a [serde_json::Value],
     adapter_id: Option<Uuid>,
+}
+
+/// Response from a pre_ingest hook.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PreIngestHookResponse {
+    /// If true, skip the extraction stage entirely.
+    #[serde(default)]
+    pub skip_extraction: Option<bool>,
+    /// Override the detected domain for this source.
+    #[serde(default)]
+    pub override_domain: Option<String>,
+}
+
+/// Request body sent to pre_ingest hooks.
+#[derive(Debug, Serialize)]
+struct PreIngestPayload {
+    source_id: String,
+    source_type: String,
+    domain: Option<String>,
+}
+
+/// Request body sent to post_extract hooks.
+#[derive(Debug, Serialize)]
+struct PostExtractPayload {
+    source_id: String,
+    entities_count: usize,
+    relationships_count: usize,
+}
+
+/// Request body sent to post_resolve hooks.
+#[derive(Debug, Serialize)]
+struct PostResolvePayload {
+    source_id: String,
+    nodes_created: usize,
 }
 
 /// Service for firing lifecycle hooks at pipeline phases.
@@ -324,6 +374,215 @@ impl HookService {
         });
     }
 
+    // ── Ingestion hooks ──────────────────────────────────────────
+
+    /// Fire pre_ingest hooks and merge responses.
+    ///
+    /// Returns a [`PreIngestHookResponse`] whose fields can override
+    /// pipeline behaviour (skip extraction, change domain).
+    pub async fn fire_pre_ingest(
+        &self,
+        source_id: &crate::types::ids::SourceId,
+        source_type: &str,
+        domain: Option<&str>,
+    ) -> Result<PreIngestHookResponse> {
+        let hooks = self.active_hooks(HookPhase::PreIngest, None).await?;
+        if hooks.is_empty() {
+            return Ok(PreIngestHookResponse::default());
+        }
+
+        let payload = PreIngestPayload {
+            source_id: source_id.to_string(),
+            source_type: source_type.to_string(),
+            domain: domain.map(|s| s.to_string()),
+        };
+        let body = serde_json::to_value(&payload)?;
+
+        let mut merged = PreIngestHookResponse::default();
+        let results = self.fire_all(&hooks, &body).await;
+
+        for (hook, result) in hooks.iter().zip(results) {
+            match result {
+                Ok(val) => {
+                    if let Ok(resp) = serde_json::from_value::<PreIngestHookResponse>(val) {
+                        if resp.skip_extraction.is_some() {
+                            merged.skip_extraction = resp.skip_extraction;
+                        }
+                        if resp.override_domain.is_some() {
+                            merged.override_domain = resp.override_domain;
+                        }
+                    }
+                }
+                Err(e) => {
+                    if !hook.fail_open {
+                        return Err(Error::Hook(format!("hook '{}' failed: {e}", hook.name)));
+                    }
+                    tracing::warn!(
+                        hook = %hook.name,
+                        error = %e,
+                        "pre_ingest hook failed (fail_open)"
+                    );
+                }
+            }
+        }
+
+        Ok(merged)
+    }
+
+    /// Fire post_extract hooks (fire-and-forget).
+    ///
+    /// Called after entity/relationship extraction completes for a
+    /// source. Spawns a background task and returns immediately.
+    pub fn fire_post_extract(
+        &self,
+        source_id: crate::types::ids::SourceId,
+        entities_count: usize,
+        relationships_count: usize,
+    ) {
+        let client = self.client.clone();
+        let repo = Arc::clone(&self.repo);
+        tokio::spawn(async move {
+            let hooks = match HookRepo::list_by_phase(&*repo, HookPhase::PostExtract.as_str()).await
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to load post_extract hooks"
+                    );
+                    return;
+                }
+            };
+
+            let active: Vec<_> = hooks.into_iter().filter(|h| h.is_active).collect();
+            if active.is_empty() {
+                return;
+            }
+
+            let payload = PostExtractPayload {
+                source_id: source_id.to_string(),
+                entities_count,
+                relationships_count,
+            };
+            let body = match serde_json::to_value(&payload) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to serialize post_extract payload"
+                    );
+                    return;
+                }
+            };
+
+            for hook in &active {
+                let timeout = std::time::Duration::from_millis(hook.timeout_ms as u64);
+                match client
+                    .post(&hook.hook_url)
+                    .json(&body)
+                    .timeout(timeout)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        tracing::debug!(
+                            hook = %hook.name,
+                            "post_extract hook succeeded"
+                        );
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(
+                            hook = %hook.name,
+                            status = %resp.status(),
+                            "post_extract hook returned non-success"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            hook = %hook.name,
+                            error = %e,
+                            "post_extract hook failed"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// Fire post_resolve hooks (fire-and-forget).
+    ///
+    /// Called after entity resolution completes for a source.
+    /// Spawns a background task and returns immediately.
+    pub fn fire_post_resolve(&self, source_id: crate::types::ids::SourceId, nodes_created: usize) {
+        let client = self.client.clone();
+        let repo = Arc::clone(&self.repo);
+        tokio::spawn(async move {
+            let hooks = match HookRepo::list_by_phase(&*repo, HookPhase::PostResolve.as_str()).await
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to load post_resolve hooks"
+                    );
+                    return;
+                }
+            };
+
+            let active: Vec<_> = hooks.into_iter().filter(|h| h.is_active).collect();
+            if active.is_empty() {
+                return;
+            }
+
+            let payload = PostResolvePayload {
+                source_id: source_id.to_string(),
+                nodes_created,
+            };
+            let body = match serde_json::to_value(&payload) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to serialize post_resolve payload"
+                    );
+                    return;
+                }
+            };
+
+            for hook in &active {
+                let timeout = std::time::Duration::from_millis(hook.timeout_ms as u64);
+                match client
+                    .post(&hook.hook_url)
+                    .json(&body)
+                    .timeout(timeout)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        tracing::debug!(
+                            hook = %hook.name,
+                            "post_resolve hook succeeded"
+                        );
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(
+                            hook = %hook.name,
+                            status = %resp.status(),
+                            "post_resolve hook returned non-success"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            hook = %hook.name,
+                            error = %e,
+                            "post_resolve hook failed"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     // ── Private helpers ─────────────────────────────────────────
 
     /// Load active hooks for a phase, optionally filtered by adapter.
@@ -408,6 +667,15 @@ mod tests {
 
         let json = serde_json::to_string(&HookPhase::PostSynthesis).unwrap();
         assert_eq!(json, "\"post_synthesis\"");
+
+        let json = serde_json::to_string(&HookPhase::PreIngest).unwrap();
+        assert_eq!(json, "\"pre_ingest\"");
+
+        let json = serde_json::to_string(&HookPhase::PostExtract).unwrap();
+        assert_eq!(json, "\"post_extract\"");
+
+        let json = serde_json::to_string(&HookPhase::PostResolve).unwrap();
+        assert_eq!(json, "\"post_resolve\"");
     }
 
     #[test]
@@ -420,6 +688,15 @@ mod tests {
 
         let phase: HookPhase = serde_json::from_str("\"post_synthesis\"").unwrap();
         assert_eq!(phase, HookPhase::PostSynthesis);
+
+        let phase: HookPhase = serde_json::from_str("\"pre_ingest\"").unwrap();
+        assert_eq!(phase, HookPhase::PreIngest);
+
+        let phase: HookPhase = serde_json::from_str("\"post_extract\"").unwrap();
+        assert_eq!(phase, HookPhase::PostExtract);
+
+        let phase: HookPhase = serde_json::from_str("\"post_resolve\"").unwrap();
+        assert_eq!(phase, HookPhase::PostResolve);
     }
 
     #[test]
@@ -427,6 +704,9 @@ mod tests {
         assert_eq!(HookPhase::PreSearch.as_str(), "pre_search");
         assert_eq!(HookPhase::PostSearch.as_str(), "post_search");
         assert_eq!(HookPhase::PostSynthesis.as_str(), "post_synthesis");
+        assert_eq!(HookPhase::PreIngest.as_str(), "pre_ingest");
+        assert_eq!(HookPhase::PostExtract.as_str(), "post_extract");
+        assert_eq!(HookPhase::PostResolve.as_str(), "post_resolve");
     }
 
     #[test]
@@ -437,6 +717,15 @@ mod tests {
             HookPhase::parse("post_synthesis"),
             Some(HookPhase::PostSynthesis)
         );
+        assert_eq!(HookPhase::parse("pre_ingest"), Some(HookPhase::PreIngest));
+        assert_eq!(
+            HookPhase::parse("post_extract"),
+            Some(HookPhase::PostExtract)
+        );
+        assert_eq!(
+            HookPhase::parse("post_resolve"),
+            Some(HookPhase::PostResolve)
+        );
         assert_eq!(HookPhase::parse("invalid"), None);
     }
 
@@ -445,6 +734,40 @@ mod tests {
         assert_eq!(format!("{}", HookPhase::PreSearch), "pre_search");
         assert_eq!(format!("{}", HookPhase::PostSearch), "post_search");
         assert_eq!(format!("{}", HookPhase::PostSynthesis), "post_synthesis");
+        assert_eq!(format!("{}", HookPhase::PreIngest), "pre_ingest");
+        assert_eq!(format!("{}", HookPhase::PostExtract), "post_extract");
+        assert_eq!(format!("{}", HookPhase::PostResolve), "post_resolve");
+    }
+
+    #[test]
+    fn pre_ingest_response_default() {
+        let resp = PreIngestHookResponse::default();
+        assert!(resp.skip_extraction.is_none());
+        assert!(resp.override_domain.is_none());
+    }
+
+    #[test]
+    fn pre_ingest_response_deserializes_skip() {
+        let json = r#"{"skip_extraction": true}"#;
+        let resp: PreIngestHookResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.skip_extraction, Some(true));
+        assert!(resp.override_domain.is_none());
+    }
+
+    #[test]
+    fn pre_ingest_response_deserializes_override_domain() {
+        let json = r#"{"override_domain": "research"}"#;
+        let resp: PreIngestHookResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.skip_extraction.is_none());
+        assert_eq!(resp.override_domain.as_deref(), Some("research"));
+    }
+
+    #[test]
+    fn pre_ingest_response_deserializes_empty() {
+        let json = "{}";
+        let resp: PreIngestHookResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.skip_extraction.is_none());
+        assert!(resp.override_domain.is_none());
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub mod pii;
 pub mod projection;
 pub mod resolver;
 pub mod section_compiler;
+pub mod service_extractor;
 pub mod service_registry;
 pub mod source_profile;
 pub mod statement_cluster;
@@ -77,6 +78,7 @@ pub use section_compiler::{
     SectionCompilationOutput, SectionCompiler, SectionSummaryEntry, SourceSummaryCompiler,
     SourceSummaryInput,
 };
+pub use service_extractor::ServiceExtractor;
 pub use service_registry::ServiceRegistry;
 pub use source_profile::{ProfileRegistry, SourceProfile};
 pub use statement_cluster::{ClusterAssignments, ClusterConfig, cluster_statements};

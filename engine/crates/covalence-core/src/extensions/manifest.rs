@@ -221,6 +221,14 @@ pub struct ServiceDef {
     /// URL for http transport.
     #[serde(default)]
     pub url: Option<String>,
+
+    /// Domain name this service extracts for (e.g. "code").
+    ///
+    /// When set, the pipeline will route extraction requests for
+    /// sources in this domain to this service instead of the
+    /// default extractor.
+    #[serde(default)]
+    pub extractor_for: Option<String>,
 }
 
 /// A lifecycle hook definition.
@@ -361,6 +369,7 @@ service:
   name: test-svc
   transport: http
   url: "http://localhost:9999"
+  extractor_for: testdom
 
 hooks:
   - phase: pre_search
@@ -397,6 +406,8 @@ config_schema:
         assert_eq!(manifest.domain_groups.len(), 1);
         assert_eq!(manifest.alignment_rules.len(), 1);
         assert!(manifest.service.is_some());
+        let svc = manifest.service.as_ref().unwrap();
+        assert_eq!(svc.extractor_for, Some("testdom".to_string()));
         assert_eq!(manifest.hooks.len(), 1);
         assert!(!manifest.hooks[0].fail_open);
         assert_eq!(manifest.config_schema.len(), 1);

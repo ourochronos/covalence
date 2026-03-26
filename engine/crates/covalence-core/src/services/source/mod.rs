@@ -11,6 +11,7 @@ mod reprocess;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::{PipelineConfig, TableDimensions};
@@ -25,6 +26,7 @@ use crate::ingestion::resolver::EntityResolver;
 use crate::ingestion::section_compiler::{SectionCompiler, SourceSummaryCompiler};
 use crate::ingestion::statement_extractor::StatementExtractor;
 use crate::services::adapter_service::AdapterService;
+use crate::services::hooks::HookService;
 use crate::storage::postgres::PgRepo;
 
 pub use crud::DeleteResult;
@@ -122,6 +124,13 @@ pub struct SourceService {
     pub(crate) chat_backend: Option<Arc<dyn ChatBackend>>,
     /// Adapter service for config-driven domain classification.
     pub(crate) adapter_service: Option<Arc<AdapterService>>,
+    /// Domain-specific extractors registered by extensions.
+    ///
+    /// Key is the domain name (e.g. "code"), value is an extractor
+    /// that handles sources in that domain.
+    pub(crate) domain_extractors: HashMap<String, Arc<dyn Extractor>>,
+    /// Lifecycle hook service for pipeline extensibility.
+    pub(crate) hook_service: Option<Arc<HookService>>,
 }
 
 impl SourceService {
@@ -163,6 +172,8 @@ impl SourceService {
             chat_backend: None,
             source_summary_compiler: None,
             adapter_service: None,
+            domain_extractors: HashMap::new(),
+            hook_service: None,
         }
     }
 
@@ -194,6 +205,8 @@ impl SourceService {
             chat_backend: None,
             source_summary_compiler: None,
             adapter_service: None,
+            domain_extractors: HashMap::new(),
+            hook_service: None,
         }
     }
 
@@ -227,6 +240,8 @@ impl SourceService {
             chat_backend: None,
             source_summary_compiler: None,
             adapter_service: None,
+            domain_extractors: HashMap::new(),
+            hook_service: None,
         }
     }
 
@@ -341,6 +356,22 @@ impl SourceService {
     /// pattern matching.
     pub fn with_adapter_service(mut self, svc: Arc<AdapterService>) -> Self {
         self.adapter_service = Some(svc);
+        self
+    }
+
+    /// Register a domain-specific extractor.
+    ///
+    /// Sources whose domain matches `domain` will use this extractor
+    /// instead of the default. Registered by extensions via
+    /// `ServiceDef.extractor_for`.
+    pub fn with_domain_extractor(mut self, domain: String, extractor: Arc<dyn Extractor>) -> Self {
+        self.domain_extractors.insert(domain, extractor);
+        self
+    }
+
+    /// Set the lifecycle hook service for pipeline extensibility.
+    pub fn with_hook_service(mut self, svc: Arc<HookService>) -> Self {
+        self.hook_service = Some(svc);
         self
     }
 
