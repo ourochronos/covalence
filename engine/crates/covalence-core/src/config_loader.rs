@@ -72,6 +72,7 @@ struct RawConfig {
     pipeline: RawPipelineConfig,
     queue: RawQueueConfig,
     ask_model: String,
+    metadata_enforcement: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -302,6 +303,7 @@ impl Default for RawConfig {
             pipeline: RawPipelineConfig::default(),
             queue: RawQueueConfig::default(),
             ask_model: "sonnet".to_string(),
+            metadata_enforcement: "warn".to_string(),
         }
     }
 }
@@ -428,6 +430,7 @@ impl RawConfig {
             // (COVALENCE_SERVICE_<NAME>_COMMAND). The figment loader
             // does not model them in YAML — they remain env-only.
             external_services: parse_service_configs_from_env(),
+            metadata_enforcement: self.metadata_enforcement,
         })
     }
 }

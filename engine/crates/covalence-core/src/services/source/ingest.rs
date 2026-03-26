@@ -158,6 +158,17 @@ impl SourceService {
             })
             .or_else(|| prepared.parsed_metadata.get("author").cloned());
 
+        // Validate source metadata against extension-declared schemas.
+        if let Some(ref ontology) = self.ontology_service {
+            let cache = ontology.get().await;
+            crate::extensions::metadata::validate_source_metadata(
+                &source.domains,
+                &metadata,
+                &cache.source_metadata_schemas,
+                self.metadata_enforcement,
+            )?;
+        }
+
         source.metadata = metadata;
         source.raw_content = String::from_utf8(content.to_vec()).ok();
         source.normalized_content = Some(prepared.normalized.clone());

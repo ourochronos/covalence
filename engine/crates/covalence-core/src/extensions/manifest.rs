@@ -70,6 +70,14 @@ pub struct ExtensionManifest {
     /// Config schema: `{ key: { type, default, description } }`.
     #[serde(default)]
     pub config_schema: HashMap<String, ConfigFieldDef>,
+
+    /// Metadata schemas for sources, keyed by domain or source type.
+    ///
+    /// Each value is a JSON Schema that source metadata is validated
+    /// against during ingestion. The key is a domain ID (e.g.
+    /// `"code"`) or source type (e.g. `"document"`).
+    #[serde(default)]
+    pub source_schemas: HashMap<String, serde_json::Value>,
 }
 
 impl ExtensionManifest {
@@ -121,6 +129,14 @@ pub struct EntityTypeDef {
     /// Optional description.
     #[serde(default)]
     pub description: Option<String>,
+
+    /// Optional JSON Schema for validating entity metadata.
+    ///
+    /// When present, entities of this type have their metadata
+    /// validated against this schema during ingestion. Enforcement
+    /// level is controlled by the `metadata_enforcement` config.
+    #[serde(default)]
+    pub metadata_schema: Option<serde_json::Value>,
 }
 
 /// A relationship type definition.
@@ -325,7 +341,8 @@ fn manifest_schema() -> serde_json::Value {
                         "id": { "type": "string" },
                         "category": { "type": "string" },
                         "label": { "type": "string" },
-                        "description": { "type": "string" }
+                        "description": { "type": "string" },
+                        "metadata_schema": { "type": "object" }
                     }
                 }
             },
@@ -467,6 +484,12 @@ fn manifest_schema() -> serde_json::Value {
                         "description": { "type": "string" }
                     }
                 }
+            },
+            "source_schemas": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object"
+                }
             }
         }
     })
@@ -525,6 +548,7 @@ version: "1.0.0"
         assert!(manifest.services.is_empty());
         assert!(manifest.hooks.is_empty());
         assert!(manifest.config_schema.is_empty());
+        assert!(manifest.source_schemas.is_empty());
         assert!(manifest.merged_services().is_empty());
     }
 
@@ -545,6 +569,10 @@ entity_types:
     category: concept
     label: Widget
     description: "A test widget"
+    metadata_schema:
+      type: object
+      properties:
+        color: { type: string }
 
 relationship_types:
   - id: uses_widget
@@ -590,6 +618,12 @@ hooks:
     timeout_ms: 3000
     fail_open: false
 
+source_schemas:
+  testdom:
+    type: object
+    properties:
+      color: { type: string }
+
 config_schema:
   test.threshold:
     type: float
@@ -606,6 +640,7 @@ config_schema:
         assert!(manifest.domains[0].is_internal);
         assert_eq!(manifest.entity_types.len(), 1);
         assert_eq!(manifest.entity_types[0].id, "widget");
+        assert!(manifest.entity_types[0].metadata_schema.is_some());
         assert_eq!(manifest.relationship_types.len(), 1);
         assert_eq!(
             manifest.relationship_types[0].universal,
@@ -624,6 +659,8 @@ config_schema:
         assert_eq!(manifest.hooks.len(), 1);
         assert!(!manifest.hooks[0].fail_open);
         assert_eq!(manifest.config_schema.len(), 1);
+        assert_eq!(manifest.source_schemas.len(), 1);
+        assert!(manifest.source_schemas.contains_key("testdom"));
     }
 
     #[test]

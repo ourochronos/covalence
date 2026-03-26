@@ -79,6 +79,10 @@ pub struct OntologyCache {
     pub rel_universals: Vec<RelUniversal>,
     /// Named domain groups (e.g. "specification" → ["spec", "design"]).
     pub domain_groups: HashMap<String, Vec<String>>,
+    /// Entity type → JSON Schema for metadata validation.
+    pub entity_metadata_schemas: HashMap<String, serde_json::Value>,
+    /// Source domain → JSON Schema for metadata validation.
+    pub source_metadata_schemas: HashMap<String, serde_json::Value>,
 }
 
 /// Ontology service with cached lookups.
@@ -186,9 +190,67 @@ impl OntologyService {
             }
         }
 
+        // Metadata schemas
+        match self.load_metadata_schemas().await {
+            Ok((entity_schemas, source_schemas)) => {
+                cache.entity_metadata_schemas = entity_schemas;
+                cache.source_metadata_schemas = source_schemas;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to load metadata schemas \
+                     (table may not exist yet)"
+                );
+            }
+        }
+
         let mut guard = self.cache.write().await;
         *guard = cache;
         Ok(())
+    }
+
+    /// Load metadata schemas from the `metadata_schemas` table.
+    ///
+    /// Returns `(entity_schemas, source_schemas)` maps.
+    async fn load_metadata_schemas(
+        &self,
+    ) -> std::result::Result<
+        (
+            HashMap<String, serde_json::Value>,
+            HashMap<String, serde_json::Value>,
+        ),
+        crate::error::Error,
+    > {
+        let rows: Vec<(String, String, serde_json::Value)> = sqlx::query_as(
+            "SELECT scope, scope_id, schema \
+                 FROM metadata_schemas",
+        )
+        .fetch_all(self.repo.pool())
+        .await?;
+
+        let mut entity_schemas = HashMap::new();
+        let mut source_schemas = HashMap::new();
+
+        for (scope, scope_id, schema) in rows {
+            match scope.as_str() {
+                "entity_type" => {
+                    entity_schemas.insert(scope_id, schema);
+                }
+                "source_domain" => {
+                    source_schemas.insert(scope_id, schema);
+                }
+                _ => {
+                    tracing::warn!(
+                        scope = %scope,
+                        scope_id = %scope_id,
+                        "unknown metadata schema scope"
+                    );
+                }
+            }
+        }
+
+        Ok((entity_schemas, source_schemas))
     }
 
     /// Get the cached ontology (read lock).

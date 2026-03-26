@@ -303,6 +303,7 @@ mod tests {
             queue: RetryQueueConfig::default(),
             ask_model: "sonnet".to_string(),
             external_services: vec![],
+            metadata_enforcement: "warn".to_string(),
         }
     }
 

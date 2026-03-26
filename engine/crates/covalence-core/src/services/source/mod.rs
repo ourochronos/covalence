@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::{PipelineConfig, TableDimensions};
+use crate::extensions::metadata::EnforcementLevel;
 use crate::ingestion::ChatBackend;
 use crate::ingestion::converter::ConverterRegistry;
 use crate::ingestion::coreference::FastcorefClient;
@@ -27,6 +28,7 @@ use crate::ingestion::section_compiler::{SectionCompiler, SourceSummaryCompiler}
 use crate::ingestion::statement_extractor::StatementExtractor;
 use crate::services::adapter_service::AdapterService;
 use crate::services::hooks::HookService;
+use crate::services::ontology_service::OntologyService;
 use crate::storage::postgres::PgRepo;
 
 pub use crud::DeleteResult;
@@ -64,6 +66,10 @@ pub struct SourceService {
     pub(crate) domain_extractors: HashMap<String, Arc<dyn Extractor>>,
     /// Lifecycle hook service for pipeline extensibility.
     pub(crate) hook_service: Option<Arc<HookService>>,
+    /// Ontology service for metadata schema lookups.
+    pub(crate) ontology_service: Option<Arc<OntologyService>>,
+    /// Metadata schema enforcement level.
+    pub(crate) metadata_enforcement: EnforcementLevel,
 }
 
 impl SourceService {
@@ -107,6 +113,8 @@ impl SourceService {
             adapter_service: None,
             domain_extractors: HashMap::new(),
             hook_service: None,
+            ontology_service: None,
+            metadata_enforcement: EnforcementLevel::default(),
         }
     }
 
@@ -140,6 +148,8 @@ impl SourceService {
             adapter_service: None,
             domain_extractors: HashMap::new(),
             hook_service: None,
+            ontology_service: None,
+            metadata_enforcement: EnforcementLevel::default(),
         }
     }
 
@@ -175,6 +185,8 @@ impl SourceService {
             adapter_service: None,
             domain_extractors: HashMap::new(),
             hook_service: None,
+            ontology_service: None,
+            metadata_enforcement: EnforcementLevel::default(),
         }
     }
 
@@ -304,6 +316,21 @@ impl SourceService {
     /// Set the lifecycle hook service for pipeline extensibility.
     pub fn with_hook_service(mut self, svc: Arc<HookService>) -> Self {
         self.hook_service = Some(svc);
+        self
+    }
+
+    /// Set the ontology service for metadata schema lookups.
+    pub fn with_ontology(mut self, svc: Arc<OntologyService>) -> Self {
+        self.ontology_service = Some(svc);
+        self
+    }
+
+    /// Set the metadata schema enforcement level from a string.
+    ///
+    /// Unrecognized values default to `Warn`.
+    pub fn with_metadata_enforcement(mut self, level: &str) -> Self {
+        self.metadata_enforcement =
+            EnforcementLevel::from_str_opt(level).unwrap_or(EnforcementLevel::Warn);
         self
     }
 

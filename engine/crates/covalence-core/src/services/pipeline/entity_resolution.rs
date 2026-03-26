@@ -247,6 +247,22 @@ impl SourceService {
             }
         }
 
+        // Validate entity metadata against extension-declared schemas.
+        if let Some(ref ontology) = self.ontology_service {
+            let metadata = entity
+                .metadata
+                .as_ref()
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            let cache = ontology.get().await;
+            crate::extensions::metadata::validate_entity_metadata(
+                &entity.entity_type,
+                &metadata,
+                &cache.entity_metadata_schemas,
+                self.metadata_enforcement,
+            )?;
+        }
+
         PipelineRepo::create_node_tx(&*self.repo, tx, &node).await?;
 
         Ok(node)

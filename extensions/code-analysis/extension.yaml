@@ -23,10 +23,24 @@ entity_types:
     category: process
     label: Function
     description: "A named function"
+    metadata_schema:
+      type: object
+      properties:
+        signature: { type: string }
+        visibility: { type: string }
+        parameters: { type: array, items: { type: string } }
+        return_type: { type: string }
   - id: method
     category: process
     label: Method
     description: "A method on a type"
+    metadata_schema:
+      type: object
+      properties:
+        signature: { type: string }
+        visibility: { type: string }
+        parameters: { type: array, items: { type: string } }
+        return_type: { type: string }
   - id: macro
     category: process
     label: Macro
@@ -35,14 +49,29 @@ entity_types:
     category: concept
     label: Struct
     description: "A struct or data type"
+    metadata_schema:
+      type: object
+      properties:
+        fields: { type: array }
+        visibility: { type: string }
   - id: enum
     category: concept
     label: Enum
     description: "An enumeration type"
+    metadata_schema:
+      type: object
+      properties:
+        variants: { type: array }
+        visibility: { type: string }
   - id: trait
     category: concept
     label: Trait
     description: "A trait or interface"
+    metadata_schema:
+      type: object
+      properties:
+        methods: { type: array }
+        visibility: { type: string }
   - id: constant
     category: concept
     label: Constant
@@ -125,6 +154,13 @@ alignment_rules:
     source_group: implementation
     target_group: specification
     description: "Code entities with no matching spec concept"
+
+source_schemas:
+  code:
+    type: object
+    properties:
+      language: { type: string }
+      file_path: { type: string }
 
 config_schema:
   languages:

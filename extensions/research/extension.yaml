@@ -85,6 +85,14 @@ view_edges:
     - applies_to
     - used_in
 
+source_schemas:
+  research:
+    type: object
+    properties:
+      authors: { type: array, items: { type: string } }
+      year: { type: integer }
+      doi: { type: string }
+
 domain_rules:
   - match_type: uri_prefix
     match_value: "https://arxiv"

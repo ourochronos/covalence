@@ -282,9 +282,22 @@ impl ServiceFactory {
             }
         }
 
+        // ── Ontology service (polls DB every 60s) ───────────────
+        // Created early so source_service can reference it.
+        let ontology_service = Arc::new(OntologyService::new(Arc::clone(&repo)));
+        if let Err(e) = ontology_service.refresh().await {
+            tracing::warn!(
+                error = %e,
+                "initial ontology load failed (will retry)"
+            );
+        }
+
         // ── Hook service (early, so source_svc can reference it) ─
         let hook_service = Arc::new(HookService::new(Arc::clone(&repo)));
-        source_svc = source_svc.with_hook_service(Arc::clone(&hook_service));
+        source_svc = source_svc
+            .with_hook_service(Arc::clone(&hook_service))
+            .with_ontology(Arc::clone(&ontology_service))
+            .with_metadata_enforcement(&config.metadata_enforcement);
 
         let source_service = Arc::new(source_svc);
 
@@ -296,16 +309,6 @@ impl ServiceFactory {
         // ── Simple services ─────────────────────────────────────
         let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
-
-        // ── Ontology service (polls DB every 60s) ───────────────
-        // Created early so other services can reference it.
-        let ontology_service = Arc::new(OntologyService::new(Arc::clone(&repo)));
-        if let Err(e) = ontology_service.refresh().await {
-            tracing::warn!(
-                error = %e,
-                "initial ontology load failed (will retry)"
-            );
-        }
         // ── Extension loader ──────────────────────────────────────
         let extension_loader = ExtensionLoader::new(Arc::clone(&repo));
         let extensions_dir =
@@ -963,6 +966,7 @@ mod tests {
             queue: RetryQueueConfig::default(),
             ask_model: "sonnet".into(),
             external_services: vec![],
+            metadata_enforcement: "warn".into(),
         }
     }
 

@@ -387,7 +387,42 @@ impl ExtensionLoader {
             }
         }
 
-        // 11. Service entity nodes — create nodes for declared
+        // 11. Metadata schemas — seed into the metadata_schemas table.
+        for et in &manifest.entity_types {
+            if let Some(ref schema) = et.metadata_schema {
+                sqlx::query(
+                    "INSERT INTO metadata_schemas \
+                         (scope, scope_id, schema, extension) \
+                     VALUES ('entity_type', $1, $2, $3) \
+                     ON CONFLICT (scope, scope_id) DO UPDATE \
+                     SET schema = EXCLUDED.schema, \
+                         extension = EXCLUDED.extension",
+                )
+                .bind(&et.id)
+                .bind(schema)
+                .bind(&manifest.name)
+                .execute(pool)
+                .await?;
+            }
+        }
+
+        for (domain, schema) in &manifest.source_schemas {
+            sqlx::query(
+                "INSERT INTO metadata_schemas \
+                     (scope, scope_id, schema, extension) \
+                 VALUES ('source_domain', $1, $2, $3) \
+                 ON CONFLICT (scope, scope_id) DO UPDATE \
+                 SET schema = EXCLUDED.schema, \
+                     extension = EXCLUDED.extension",
+            )
+            .bind(domain)
+            .bind(schema)
+            .bind(&manifest.name)
+            .execute(pool)
+            .await?;
+        }
+
+        // 12. Service entity nodes — create nodes for declared
         //     services so they are queryable in the knowledge graph.
         let merged_services: Vec<ServiceDef> =
             manifest.merged_services().into_iter().cloned().collect();

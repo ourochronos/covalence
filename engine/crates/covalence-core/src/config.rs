@@ -188,6 +188,13 @@ pub struct Config {
     /// the legacy `COVALENCE_SIDECAR_<NAME>_COMMAND` (fallback),
     /// plus the optional `_ARGS` suffix (comma-separated).
     pub external_services: Vec<ExternalServiceConfig>,
+
+    /// Metadata schema enforcement level for ingestion.
+    ///
+    /// Controls how metadata is validated against schemas declared
+    /// by extensions. Values: "ignore", "warn" (default), "strict".
+    /// Env: `COVALENCE_METADATA_ENFORCEMENT`. Default: `"warn"`.
+    pub metadata_enforcement: String,
 }
 
 /// Configuration for the embedding subsystem.
@@ -564,6 +571,7 @@ impl std::fmt::Debug for Config {
             .field("queue", &self.queue)
             .field("ask_model", &self.ask_model)
             .field("external_services", &self.external_services)
+            .field("metadata_enforcement", &self.metadata_enforcement)
             .finish()
     }
 }
@@ -693,6 +701,7 @@ impl Config {
             },
             ask_model: env_or("COVALENCE_ASK_MODEL", "sonnet"),
             external_services: parse_service_configs(),
+            metadata_enforcement: env_or("COVALENCE_METADATA_ENFORCEMENT", "warn"),
         })
     }
 }
@@ -1076,6 +1085,7 @@ mod tests {
                 queue: RetryQueueConfig::default(),
                 ask_model: "sonnet".into(),
                 external_services: vec![],
+                metadata_enforcement: "warn".into(),
             }
         );
         assert!(debug_out.contains("[REDACTED]"));

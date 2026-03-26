@@ -13,6 +13,8 @@
 
 pub mod loader;
 pub mod manifest;
+pub mod metadata;
 
 pub use loader::{ExtensionLoader, LoadResult};
 pub use manifest::ExtensionManifest;
+pub use metadata::EnforcementLevel;
