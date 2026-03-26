@@ -13,6 +13,7 @@ use crate::types::ids::SourceId;
 /// Uses an advisory lock on the source_id to prevent two concurrent
 /// completions from both triggering the compose stage.
 pub(crate) async fn try_advance_to_compose(repo: &PgRepo, source_id: SourceId) {
+    let start = std::time::Instant::now();
     let sid = source_id.into_uuid();
     let lock_key = (sid.as_u128() & 0x7FFF_FFFF_FFFF_FFFF) as i64;
 
@@ -27,7 +28,13 @@ pub(crate) async fn try_advance_to_compose(repo: &PgRepo, source_id: SourceId) {
         .await
         .unwrap_or(false);
 
+    tracing::debug!(source_id = %sid, acquired, "fan-in advisory lock");
+
     if !acquired {
+        tracing::debug!(
+            source_id = %sid,
+            "fan-in: lock held by another worker"
+        );
         return; // Another worker is handling this fan-in.
     }
 
@@ -55,7 +62,8 @@ pub(crate) async fn try_advance_to_compose(repo: &PgRepo, source_id: SourceId) {
         if failed > 0 {
             tracing::warn!(
                 source_id = %sid,
-                failed_summaries = failed,
+                failed = failed,
+                remaining,
                 "fan-in: summarization partially failed — composing with available summaries"
             );
             let _ = QueueRepo::update_source_status_tx(repo, &mut tx, sid, "partial").await;
@@ -64,7 +72,12 @@ pub(crate) async fn try_advance_to_compose(repo: &PgRepo, source_id: SourceId) {
             .await
             .unwrap_or(true);
 
-        if !has_summary {
+        if has_summary {
+            tracing::debug!(
+                source_id = %sid,
+                "source already has summary, skipping compose"
+            );
+        } else {
             let payload = serde_json::json!({ "source_id": sid.to_string() });
             let key = format!("compose:{sid}");
             let _ = QueueRepo::insert_retry_job_tx(
@@ -86,11 +99,18 @@ pub(crate) async fn try_advance_to_compose(repo: &PgRepo, source_id: SourceId) {
 
     // Lock auto-releases on commit.
     let _ = tx.commit().await;
+
+    tracing::debug!(
+        source_id = %sid,
+        elapsed_ms = %start.elapsed().as_millis(),
+        "fan-in check complete"
+    );
 }
 
 /// Fan-in trigger: when all ExtractChunk jobs for a source complete,
 /// enqueue SummarizeEntity jobs for the code entities extracted.
 pub(crate) async fn try_advance_to_summarize(repo: &PgRepo, source_id: SourceId) {
+    let start = std::time::Instant::now();
     let sid = source_id.into_uuid();
     let lock_key = ((sid.as_u128() >> 1) & 0x7FFF_FFFF_FFFF_FFFF) as i64;
 
@@ -102,7 +122,13 @@ pub(crate) async fn try_advance_to_summarize(repo: &PgRepo, source_id: SourceId)
         .await
         .unwrap_or(false);
 
+    tracing::debug!(source_id = %sid, acquired, "fan-in advisory lock");
+
     if !acquired {
+        tracing::debug!(
+            source_id = %sid,
+            "fan-in: lock held by another worker"
+        );
         return;
     }
 
@@ -129,7 +155,8 @@ pub(crate) async fn try_advance_to_summarize(repo: &PgRepo, source_id: SourceId)
         if failed > 0 {
             tracing::warn!(
                 source_id = %sid,
-                failed_chunks = failed,
+                failed = failed,
+                remaining,
                 "fan-in: extraction partially failed — proceeding with degraded coverage"
             );
             // Mark source as partial so downstream knows.
@@ -138,6 +165,12 @@ pub(crate) async fn try_advance_to_summarize(repo: &PgRepo, source_id: SourceId)
         let entities = QueueRepo::get_unsummarized_entities_tx(repo, &mut tx, sid)
             .await
             .unwrap_or_default();
+
+        tracing::debug!(
+            source_id = %sid,
+            entity_count = entities.len(),
+            "unsummarized entities"
+        );
 
         let mut enqueued = 0usize;
         for (node_id,) in &entities {
@@ -164,4 +197,10 @@ pub(crate) async fn try_advance_to_summarize(repo: &PgRepo, source_id: SourceId)
     }
 
     let _ = tx.commit().await;
+
+    tracing::debug!(
+        source_id = %sid,
+        elapsed_ms = %start.elapsed().as_millis(),
+        "fan-in check complete"
+    );
 }

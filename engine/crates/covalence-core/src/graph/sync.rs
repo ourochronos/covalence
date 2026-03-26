@@ -117,7 +117,7 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
         .fetch_all(pool)
         .await?;
 
-    let mut g = graph.write().await;
+    let mut g = super::instrumented_lock::write_graph(&graph, "full_reload").await;
     // Clear existing graph
     *g = GraphSidecar::new();
 
