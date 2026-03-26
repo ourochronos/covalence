@@ -33,6 +33,10 @@ pub struct SearchFilters {
     /// Layers: "spec", "design", "code", "research", "external".
     /// Applies only to chunk and source results.
     pub source_layers: Option<Vec<String>>,
+    /// Filter by source domain (preferred over `source_layers`).
+    /// Matches against `FusedResult.source_domains`. A result passes
+    /// if any of its domains overlap with the filter list.
+    pub domains: Option<Vec<String>>,
     /// Orthogonal graph view restricting which edges the graph
     /// dimension traverses: "causal", "temporal", "entity",
     /// "structural", "all". Passed through to the graph dimension.
@@ -48,6 +52,7 @@ pub struct SearchFilters {
 /// - `"research"` — external research (HTTP/HTTPS URLs)
 ///
 /// Returns `None` if the URI doesn't match a known pattern.
+#[deprecated(note = "use domain-based filtering via SearchFilters.domains")]
 pub fn source_layer_from_uri(uri: &str) -> Option<&'static str> {
     if uri.starts_with("file://spec/") {
         Some("spec")
@@ -280,6 +285,7 @@ pub(super) fn apply_post_fusion_filters(fused: &mut Vec<FusedResult>, filters: &
             r.source_type.as_ref().is_none_or(|st| types.contains(st))
         });
     }
+    #[allow(deprecated)]
     if let Some(ref layers) = filters.source_layers {
         let pre = fused.len();
         fused.retain(|r| {
@@ -293,6 +299,28 @@ pub(super) fn apply_post_fusion_filters(fused: &mut Vec<FusedResult>, filters: &
             before = pre,
             after = fused.len(),
             "source_layer filter applied"
+        );
+    }
+    if let Some(ref domains) = filters.domains {
+        let pre = fused.len();
+        fused.retain(|r| {
+            // Pass through non-source/chunk results (nodes,
+            // articles) since they have no source_domains.
+            if r.source_domains.is_empty() {
+                return r
+                    .source_domain
+                    .as_ref()
+                    .is_some_and(|d| domains.iter().any(|fd| fd == d));
+            }
+            r.source_domains
+                .iter()
+                .any(|d| domains.iter().any(|fd| fd == d))
+        });
+        tracing::info!(
+            domains = ?domains,
+            before = pre,
+            after = fused.len(),
+            "domain filter applied"
         );
     }
 }

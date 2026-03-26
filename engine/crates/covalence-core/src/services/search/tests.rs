@@ -1,6 +1,7 @@
 //! Tests for search service components.
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use crate::services::search::filters::source_layer_from_uri;
 

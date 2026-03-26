@@ -200,6 +200,10 @@ pub struct ServiceDef {
     /// URL for http transport.
     #[serde(default)]
     pub url: Option<String>,
+
+    /// Other service names this service depends on.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 /// A lifecycle hook definition.

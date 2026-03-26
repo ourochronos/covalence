@@ -34,6 +34,7 @@ use crate::storage::postgres::PgRepo;
 
 // Re-export public types so `services::search::SearchFilters` and
 // `services::search::SearchService` still resolve.
+#[allow(deprecated)]
 pub use filters::{SearchFilters, source_layer_from_uri};
 
 /// Service for orchestrating multi-dimensional search and RRF fusion.

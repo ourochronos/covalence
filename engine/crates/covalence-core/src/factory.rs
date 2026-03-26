@@ -348,6 +348,12 @@ impl ServiceFactory {
         // ── Service registry ──────────────────────────────────────
         let service_registry = Self::build_service_registry(config).await;
 
+        // Start periodic health checks for registered services.
+        if !service_registry.list().is_empty() {
+            service_registry.spawn_health_loop(120);
+            tracing::info!("service health loop started (every 120s)");
+        }
+
         Ok(Self {
             repo,
             graph,

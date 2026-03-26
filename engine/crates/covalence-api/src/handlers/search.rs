@@ -130,6 +130,7 @@ pub async fn search(
         || req.entity_classes.is_some()
         || req.source_types.is_some()
         || req.source_layers.is_some()
+        || req.domains.is_some()
         || date_range.is_some()
         || graph_view.is_some()
     {
@@ -140,6 +141,7 @@ pub async fn search(
             date_range,
             source_types: req.source_types,
             source_layers: req.source_layers,
+            domains: req.domains,
             graph_view,
         })
     } else {

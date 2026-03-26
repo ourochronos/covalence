@@ -9,6 +9,7 @@ use covalence_core::factory::ServiceFactory;
 use covalence_core::graph::engine::GraphEngine;
 use covalence_core::graph::sync::full_reload;
 use covalence_core::graph::{AgeEngine, PetgraphEngine};
+use covalence_core::ingestion::ServiceRegistry;
 use covalence_core::services::{
     AdminService, AnalysisService, AskService, EdgeService, NodeService, RetryQueueService,
     SearchService, SessionService, SourceService,
@@ -46,6 +47,8 @@ pub struct AppState {
     pub config_service: Arc<covalence_core::services::ConfigService>,
     /// Ontology service (configurable knowledge schema).
     pub ontology_service: Arc<covalence_core::services::OntologyService>,
+    /// Registry of external service transports (HTTP and STDIO).
+    pub service_registry: Arc<ServiceRegistry>,
     /// Prometheus metrics handle for rendering the `/metrics`
     /// endpoint. `None` if the recorder failed to install.
     pub prometheus_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
@@ -168,6 +171,7 @@ impl AppState {
             queue_service: factory.queue_service,
             config_service: factory.config_service,
             ontology_service: factory.ontology_service,
+            service_registry: factory.service_registry,
             prometheus_handle,
         })
     }

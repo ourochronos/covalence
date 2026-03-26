@@ -78,6 +78,9 @@ pub struct SearchRequest {
     /// Restrict to specific source layers derived from URI prefix.
     /// Layers: "spec", "design", "code", "research", "external".
     pub source_layers: Option<Vec<String>>,
+    /// Filter by source domain (preferred over `source_layers`).
+    /// Matches against the source's domain classification.
+    pub domains: Option<Vec<String>>,
     /// Start of date range filter (ISO 8601).
     pub date_range_start: Option<String>,
     /// End of date range filter (ISO 8601).

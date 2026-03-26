@@ -40,6 +40,7 @@ pub use reprocess::ReprocessResult;
 ///
 /// Returns a single domain string. Use [`derive_domains`] for
 /// multi-domain classification.
+#[allow(deprecated)]
 pub fn derive_domain(source_type: &str, uri: Option<&str>) -> Option<String> {
     derive_domains_hardcoded(source_type, uri)
         .into_iter()
@@ -51,6 +52,7 @@ pub fn derive_domain(source_type: &str, uri: Option<&str>) -> Option<String> {
 ///
 /// Returns a vec of matching domain IDs. This is the legacy
 /// fallback used when no DB rules or adapters match.
+#[deprecated(note = "use derive_domains_via_adapter() which uses DB rules from extensions")]
 pub fn derive_domains_hardcoded(source_type: &str, uri: Option<&str>) -> Vec<String> {
     // Code source type takes priority
     if source_type == "code" {
@@ -425,6 +427,7 @@ impl SourceService {
         }
 
         // 3. Hardcoded fallback
+        #[allow(deprecated)]
         derive_domains_hardcoded(source_type, uri)
     }
 

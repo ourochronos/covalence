@@ -2,10 +2,27 @@
 //! STDIO) and validates them at startup.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::Error;
 
 use super::stdio_transport::{ServiceTransport, StdioTransport};
+
+/// Health status of a registered service.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServiceHealth {
+    /// Human-readable service name.
+    pub name: String,
+    /// Transport type: "stdio" or "http".
+    pub transport_type: String,
+    /// Whether the last health check passed.
+    pub healthy: bool,
+    /// When the last health check was performed.
+    pub last_checked: Option<chrono::DateTime<chrono::Utc>>,
+    /// Error message from the last failed check, if any.
+    pub error: Option<String>,
+}
 
 /// Registry of named service transports.
 ///
@@ -70,6 +87,52 @@ impl ServiceRegistry {
         }
 
         failures
+    }
+
+    /// Run validate_all and return structured health status for all
+    /// registered services.
+    pub async fn health_status(&self) -> Vec<ServiceHealth> {
+        let now = chrono::Utc::now();
+        let failures = self.validate_all().await;
+        let failure_map: HashMap<&str, &Error> =
+            failures.iter().map(|(n, e)| (n.as_str(), e)).collect();
+
+        self.transports
+            .iter()
+            .map(|(name, transport)| {
+                let transport_type = match transport {
+                    ServiceTransport::Http { .. } => "http",
+                    ServiceTransport::Stdio { .. } => "stdio",
+                };
+                let error = failure_map.get(name.as_str()).map(|e| e.to_string());
+                ServiceHealth {
+                    name: name.clone(),
+                    transport_type: transport_type.to_string(),
+                    healthy: error.is_none(),
+                    last_checked: Some(now),
+                    error,
+                }
+            })
+            .collect()
+    }
+
+    /// Spawn a background task that periodically validates all
+    /// services.
+    pub fn spawn_health_loop(self: &Arc<Self>, interval_secs: u64) {
+        let registry = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+                let failures = registry.validate_all().await;
+                for (name, err) in &failures {
+                    tracing::warn!(
+                        service = %name,
+                        error = %err,
+                        "service health check failed"
+                    );
+                }
+            }
+        });
     }
 }
 
