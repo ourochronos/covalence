@@ -34,15 +34,7 @@ async fn main() -> Result<()> {
 
     dotenvy::dotenv().ok();
 
-    // Try the layered figment config system first, fall back to
-    // the legacy env-var-only path for backward compatibility.
-    let config = if std::path::Path::new("covalence.conf").exists() {
-        tracing::info!("loading config via figment (covalence.conf found)");
-        Config::from_figment(None, None)?
-    } else {
-        tracing::info!("loading config via env vars (no covalence.conf)");
-        Config::from_env()?
-    };
+    let config = Config::from_figment(None, None)?;
 
     tracing::info!(
         pool_size = config.queue.reprocess_concurrency,

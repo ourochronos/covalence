@@ -20,17 +20,8 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    // Try the layered figment config system first. If covalence.conf
-    // exists, it takes precedence. Otherwise, fall back to the
-    // legacy env-var-only path for backward compatibility.
-    let config = if std::path::Path::new("covalence.conf").exists() {
-        tracing::info!("loading config via figment (covalence.conf found)");
-        covalence_core::config::Config::from_figment(None, None)
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-    } else {
-        tracing::info!("loading config via env vars (no covalence.conf)");
-        covalence_core::config::Config::from_env().map_err(|e| anyhow::anyhow!("{e}"))?
-    };
+    let config = covalence_core::config::Config::from_figment(None, None)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let bind_addr = config.bind_addr.clone();
     let app_state = state::AppState::new(config).await?;

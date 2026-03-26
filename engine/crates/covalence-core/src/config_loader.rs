@@ -1,10 +1,20 @@
 //! Layered configuration loader (ADR-0023).
 //!
-//! Loads config from multiple sources in precedence order:
+//! This is the **sole** configuration loading path for Covalence.
+//! Config is assembled from multiple sources in precedence order
+//! (lowest to highest):
+//!
 //! 1. Hardcoded defaults (serialized from [`RawConfig::default()`])
-//! 2. `covalence.conf` (base YAML file)
+//! 2. `covalence.conf` (base YAML file, optional)
 //! 3. `covalence.conf.d/*.conf` (alphabetical, last value wins)
-//! 4. `COVALENCE_*` environment variables
+//! 4. `COVALENCE_*` environment variables (double-underscore `__`
+//!    for nesting, e.g. `COVALENCE_EMBEDDING__PROVIDER`)
+//! 5. Legacy unprefixed / flat env vars for backward compatibility
+//!    (e.g. `DATABASE_URL`, `BIND_ADDR`, `COVALENCE_EMBED_PROVIDER`)
+//!
+//! Binary crates call `dotenvy::dotenv().ok()` *before*
+//! [`Config::from_figment()`] so `.env` files are loaded into the
+//! process environment first.
 //!
 //! Override warnings are logged at startup so operators can see
 //! exactly which source provided each overridden value.
@@ -313,8 +323,7 @@ impl Default for RawConfig {
 impl RawConfig {
     /// Convert the deserialized raw config into the engine [`Config`].
     ///
-    /// Validates required fields and applies clamping rules that the
-    /// existing `Config::from_env()` enforces.
+    /// Validates required fields and applies clamping rules.
     fn into_config(self) -> Result<Config> {
         if self.database.url.is_empty() {
             return Err(Error::Config(
@@ -457,8 +466,7 @@ fn validate_range(name: &str, value: f32, min: f32, max: f32) -> Result<()> {
 /// 4. `COVALENCE_*` environment variables
 ///
 /// If no config file exists, the loader falls back gracefully to
-/// defaults + env vars, matching the existing `Config::from_env()`
-/// behavior.
+/// defaults + env vars.
 pub fn load_config(config_path: Option<&str>, config_dir: Option<&str>) -> Result<Config> {
     let figment = build_figment(config_path, config_dir)?;
 
@@ -515,15 +523,192 @@ pub fn build_figment(config_path: Option<&str>, config_dir: Option<&str>) -> Res
             .lowercase(true),
     );
 
-    // Also support the legacy non-prefixed DATABASE_URL env var by
-    // mapping it into the nested `database.url` key.
-    if let Ok(db_url) = std::env::var("DATABASE_URL") {
-        if !db_url.is_empty() {
-            figment = figment.merge(Serialized::default("database.url", &db_url));
+    // ── Legacy env var mappings ────────────────────────────────
+    //
+    // The old `Config::from_env()` used flat env var names that
+    // don't match figment's nested-with-`__` convention.  We
+    // merge them explicitly so existing `.env` and `.env.prod`
+    // files keep working without modification.
+    //
+    // These are merged *after* the `Env::prefixed` layer so they
+    // have the highest precedence (matching the old behavior where
+    // env vars win over everything else).
+
+    figment = merge_legacy_env_vars(figment);
+
+    Ok(figment)
+}
+
+/// Merge legacy (unprefixed and flat-named) environment variables
+/// into the figment.
+///
+/// Covers two categories:
+/// 1. Unprefixed vars (`DATABASE_URL`, `BIND_ADDR`, `OPENAI_API_KEY`,
+///    etc.) from existing `.env` files.
+/// 2. Flat `COVALENCE_*` vars that map to nested `RawConfig` fields
+///    (e.g. `COVALENCE_EMBED_PROVIDER` → `embedding.provider`).
+fn merge_legacy_env_vars(mut figment: Figment) -> Figment {
+    // Mapping table: (env var name, figment dotted key).
+    const LEGACY_MAPPINGS: &[(&str, &str)] = &[
+        // ── Unprefixed vars ──────────────────────────────────
+        ("DATABASE_URL", "database.url"),
+        ("BIND_ADDR", "bind_addr"),
+        ("OPENAI_API_KEY", "openai_api_key"),
+        ("OPENAI_BASE_URL", "openai_base_url"),
+        ("VOYAGE_API_KEY", "voyage_api_key"),
+        ("VOYAGE_BASE_URL", "voyage_base_url"),
+        // ── Flat COVALENCE_* → nested embedding.* ────────────
+        ("COVALENCE_EMBED_PROVIDER", "embedding.provider"),
+        ("COVALENCE_EMBED_MODEL", "embedding.model"),
+        ("COVALENCE_EMBED_BATCH", "embedding.batch_size"),
+        ("COVALENCE_EMBED_DIM_SOURCE", "embedding.dim_source"),
+        ("COVALENCE_EMBED_DIM_CHUNK", "embedding.dim_chunk"),
+        ("COVALENCE_EMBED_DIM_ARTICLE", "embedding.dim_article"),
+        ("COVALENCE_EMBED_DIM_NODE", "embedding.dim_node"),
+        ("COVALENCE_EMBED_DIM_ALIAS", "embedding.dim_alias"),
+        ("COVALENCE_EMBED_DIM_STATEMENT", "embedding.dim_statement"),
+        ("COVALENCE_EMBED_DIM_SECTION", "embedding.dim_section"),
+        // ── Flat COVALENCE_* → nested graph.* ────────────────
+        ("COVALENCE_GRAPH_ENGINE", "graph.engine"),
+        // ── Flat COVALENCE_* → nested chat.* ─────────────────
+        ("COVALENCE_CHAT_MODEL", "chat.model"),
+        ("COVALENCE_CHAT_API_KEY", "chat.api_key"),
+        ("COVALENCE_CHAT_BASE_URL", "chat.base_url"),
+        ("COVALENCE_CHAT_BACKEND", "chat.backend"),
+        ("COVALENCE_CHAT_CLI_COMMAND", "chat.cli_command"),
+        // ── Flat COVALENCE_* → nested consolidation.* ────────
+        (
+            "COVALENCE_BATCH_INTERVAL",
+            "consolidation.batch_interval_secs",
+        ),
+        (
+            "COVALENCE_DEEP_INTERVAL",
+            "consolidation.deep_interval_secs",
+        ),
+        ("COVALENCE_DELTA_THRESHOLD", "consolidation.delta_threshold"),
+        // ── Flat COVALENCE_* → nested search.* ──────────────
+        ("COVALENCE_RRF_K", "search.rrf_k"),
+        ("COVALENCE_DEFAULT_LIMIT", "search.default_limit"),
+        (
+            "COVALENCE_SEARCH_ABSTENTION_THRESHOLD",
+            "search.abstention_threshold",
+        ),
+        // ── Flat COVALENCE_* → nested pipeline.* ────────────
+        ("COVALENCE_CONVERT_ENABLED", "pipeline.convert_enabled"),
+        ("COVALENCE_NORMALIZE_ENABLED", "pipeline.normalize_enabled"),
+        ("COVALENCE_COREF_ENABLED", "pipeline.coref_enabled"),
+        ("COVALENCE_RESOLVE_ENABLED", "pipeline.resolve_enabled"),
+        ("COVALENCE_TIER5_ENABLED", "pipeline.tier5_enabled"),
+        ("COVALENCE_NER_WINDOW_CHARS", "pipeline.ner_window_chars"),
+        (
+            "COVALENCE_NER_WINDOW_OVERLAP",
+            "pipeline.ner_window_overlap",
+        ),
+        (
+            "COVALENCE_COREF_WINDOW_CHARS",
+            "pipeline.coref_window_chars",
+        ),
+        (
+            "COVALENCE_COREF_WINDOW_OVERLAP",
+            "pipeline.coref_window_overlap",
+        ),
+        ("COVALENCE_RE_WINDOW_CHARS", "pipeline.re_window_chars"),
+        ("COVALENCE_RE_WINDOW_OVERLAP", "pipeline.re_window_overlap"),
+        ("COVALENCE_STATEMENT_ENABLED", "pipeline.statement_enabled"),
+        (
+            "COVALENCE_STATEMENT_WINDOW_CHARS",
+            "pipeline.statement_window_chars",
+        ),
+        (
+            "COVALENCE_STATEMENT_WINDOW_OVERLAP",
+            "pipeline.statement_window_overlap",
+        ),
+        ("COVALENCE_STATEMENT_MODEL", "pipeline.statement_model"),
+        ("COVALENCE_CODE_ENTITY_CLASS", "pipeline.code_entity_class"),
+        ("COVALENCE_CODE_DOMAIN", "pipeline.code_domain"),
+        // ── Flat COVALENCE_* → nested queue.* ───────────────
+        ("COVALENCE_QUEUE_POLL_INTERVAL", "queue.poll_interval_secs"),
+        ("COVALENCE_QUEUE_BASE_BACKOFF", "queue.base_backoff_secs"),
+        ("COVALENCE_QUEUE_MAX_BACKOFF", "queue.max_backoff_secs"),
+        ("COVALENCE_QUEUE_MAX_ATTEMPTS", "queue.max_attempts"),
+        (
+            "COVALENCE_QUEUE_REPROCESS_CONCURRENCY",
+            "queue.reprocess_concurrency",
+        ),
+        (
+            "COVALENCE_QUEUE_EXTRACT_CONCURRENCY",
+            "queue.extract_concurrency",
+        ),
+        (
+            "COVALENCE_QUEUE_SUMMARIZE_CONCURRENCY",
+            "queue.summarize_concurrency",
+        ),
+        (
+            "COVALENCE_QUEUE_COMPOSE_CONCURRENCY",
+            "queue.compose_concurrency",
+        ),
+        ("COVALENCE_QUEUE_EDGE_CONCURRENCY", "queue.edge_concurrency"),
+        (
+            "COVALENCE_QUEUE_EMBED_CONCURRENCY",
+            "queue.embed_concurrency",
+        ),
+        ("COVALENCE_QUEUE_JOB_TIMEOUT", "queue.job_timeout_secs"),
+    ];
+
+    for &(env_key, target) in LEGACY_MAPPINGS {
+        if let Ok(v) = std::env::var(env_key) {
+            if !v.is_empty() {
+                figment = figment.merge(Serialized::default(target, coerce_env_value(&v)));
+            }
         }
     }
 
-    Ok(figment)
+    // Special case: COVALENCE_CODE_NODE_TYPES is comma-separated
+    // in env but a Vec in YAML. Figment would treat the env value
+    // as a single string, so we parse it manually.
+    if let Ok(v) = std::env::var("COVALENCE_CODE_NODE_TYPES") {
+        if !v.is_empty() {
+            let types: Vec<String> = v
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            figment = figment.merge(Serialized::default("pipeline.code_node_types", &types));
+        }
+    }
+
+    figment
+}
+
+/// Coerce a string env var value to its most specific JSON type.
+///
+/// Figment's `Serialized` provider serializes values as-is, so
+/// a `String` stays a `String` even when the target field expects
+/// a number or boolean. This helper mimics how figment's `Env`
+/// provider handles type coercion: try integer, then float, then
+/// boolean, and fall back to string.
+fn coerce_env_value(v: &str) -> serde_json::Value {
+    // Try integer first.
+    if let Ok(n) = v.parse::<u64>() {
+        return serde_json::Value::Number(n.into());
+    }
+    if let Ok(n) = v.parse::<i64>() {
+        return serde_json::Value::Number(n.into());
+    }
+    // Try float.
+    if let Ok(n) = v.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(n) {
+            return serde_json::Value::Number(n);
+        }
+    }
+    // Try boolean.
+    match v.to_lowercase().as_str() {
+        "true" => return serde_json::Value::Bool(true),
+        "false" => return serde_json::Value::Bool(false),
+        _ => {}
+    }
+    // Fall back to string.
+    serde_json::Value::String(v.to_string())
 }
 
 /// Collect `.conf`, `.yaml`, and `.yml` files from a directory,
@@ -591,8 +776,9 @@ fn log_overrides(figment: &Figment) {
     }
 }
 
-/// Re-export of the env-based service config parser from
-/// `config.rs`. External services use a dynamic naming pattern
+/// Parse external service configurations from env vars.
+///
+/// External services use a dynamic naming pattern
 /// (`COVALENCE_SERVICE_<NAME>_COMMAND`) that figment's flat env
 /// mapping cannot express, so they remain env-var-only.
 fn parse_service_configs_from_env() -> Vec<ExternalServiceConfig> {
@@ -604,9 +790,10 @@ fn parse_service_configs_from_env() -> Vec<ExternalServiceConfig> {
 impl Config {
     /// Load configuration from the layered figment system.
     ///
-    /// This is the figment-based alternative to [`Config::from_env()`].
-    /// If no `covalence.conf` file exists, it degrades gracefully to
-    /// defaults + environment variables.
+    /// If no `covalence.conf` file exists, degrades gracefully to
+    /// defaults + environment variables. Binary crates should call
+    /// `dotenvy::dotenv().ok()` before this so `.env` files are
+    /// loaded into the process environment first.
     pub fn from_figment(config_path: Option<&str>, config_dir: Option<&str>) -> Result<Self> {
         load_config(config_path, config_dir)
     }
@@ -946,6 +1133,63 @@ queue:
                 load_config(Some(conf_path.to_str().unwrap()), Some("/nonexistent")).unwrap();
 
             assert_eq!(config.database_url, "postgres://legacy@localhost/db");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn legacy_flat_env_vars_map_to_nested_fields() {
+        figment::Jail::expect_with(|jail| {
+            // Only set env vars — no conf file. This simulates the
+            // existing `.env` file workflow.
+            jail.set_env("DATABASE_URL", "postgres://env@localhost/db");
+            jail.set_env("BIND_ADDR", "127.0.0.1:9000");
+            jail.set_env("COVALENCE_EMBED_PROVIDER", "voyage");
+            jail.set_env("COVALENCE_EMBED_MODEL", "voyage-3-large");
+            jail.set_env("COVALENCE_GRAPH_ENGINE", "age");
+            jail.set_env("COVALENCE_CHAT_MODEL", "haiku");
+            jail.set_env("COVALENCE_CHAT_BACKEND", "cli");
+            jail.set_env("COVALENCE_CHAT_CLI_COMMAND", "claude");
+            jail.set_env("COVALENCE_QUEUE_EXTRACT_CONCURRENCY", "48");
+
+            let config = load_config(
+                Some("/nonexistent/covalence.conf"),
+                Some("/nonexistent/conf.d"),
+            )
+            .unwrap();
+
+            assert_eq!(config.database_url, "postgres://env@localhost/db");
+            assert_eq!(config.bind_addr, "127.0.0.1:9000");
+            assert_eq!(config.embed_provider, "voyage");
+            assert_eq!(config.embed_model, "voyage-3-large");
+            assert_eq!(config.graph_engine, "age");
+            assert_eq!(config.chat_model, "haiku");
+            assert_eq!(config.chat_backend, "cli");
+            assert_eq!(config.chat_cli_command, "claude");
+            assert_eq!(config.queue.extract_concurrency, 48);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn env_only_config_no_conf_file_needed() {
+        figment::Jail::expect_with(|jail| {
+            // Minimal set: just DATABASE_URL.
+            jail.set_env("DATABASE_URL", "postgres://min@localhost/db");
+
+            let config = load_config(
+                Some("/nonexistent/covalence.conf"),
+                Some("/nonexistent/conf.d"),
+            )
+            .unwrap();
+
+            assert_eq!(config.database_url, "postgres://min@localhost/db");
+            // Everything else should be defaults.
+            assert_eq!(config.bind_addr, "0.0.0.0:8431");
+            assert_eq!(config.chunk_size, 1000);
+            assert_eq!(config.embed_provider, "openai");
 
             Ok(())
         });

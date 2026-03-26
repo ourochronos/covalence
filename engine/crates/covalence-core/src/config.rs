@@ -1,6 +1,4 @@
-//! Application configuration loaded from environment variables.
-
-use crate::error::{Error, Result};
+//! Application configuration.
 
 /// Configuration for an external STDIO service discovered from env
 /// vars.
@@ -576,181 +574,6 @@ impl std::fmt::Debug for Config {
     }
 }
 
-impl Config {
-    /// Load configuration from environment variables.
-    ///
-    /// Call `dotenvy::dotenv().ok()` before this to load `.env` files.
-    pub fn from_env() -> Result<Self> {
-        let graph_engine = env_or("COVALENCE_GRAPH_ENGINE", "petgraph");
-        let embed_provider = env_or("COVALENCE_EMBED_PROVIDER", "openai");
-        let embed_model = env_or("COVALENCE_EMBED_MODEL", "text-embedding-3-large");
-
-        Ok(Self {
-            database_url: require_env("DATABASE_URL")?,
-            bind_addr: env_or("BIND_ADDR", "0.0.0.0:8431"),
-            api_key: optional_env("COVALENCE_API_KEY"),
-            openai_api_key: optional_env("OPENAI_API_KEY"),
-            openai_base_url: optional_env("OPENAI_BASE_URL"),
-            voyage_api_key: optional_env("VOYAGE_API_KEY"),
-            voyage_base_url: optional_env("VOYAGE_BASE_URL"),
-            graph_engine,
-            embed_provider,
-            embed_model: embed_model.clone(),
-            chat_model: env_or("COVALENCE_CHAT_MODEL", "gpt-4o"),
-            chat_api_key: optional_env("COVALENCE_CHAT_API_KEY"),
-            chat_base_url: optional_env("COVALENCE_CHAT_BASE_URL"),
-            chat_backend: env_or("COVALENCE_CHAT_BACKEND", "cli"),
-            chat_cli_command: env_or("COVALENCE_CHAT_CLI_COMMAND", "gemini"),
-            chunk_size: env_parse("COVALENCE_CHUNK_SIZE", 1000)?,
-            chunk_overlap: env_parse("COVALENCE_CHUNK_OVERLAP", 200)?,
-            min_section_size: env_parse("COVALENCE_MIN_SECTION_SIZE", 200)?,
-            embedding: {
-                // Per-table dimension config. Legacy COVALENCE_EMBED_DIM
-                // is used as fallback for chunk/article/source if the
-                // per-table vars are not set.
-                let legacy_dim: usize = env_parse("COVALENCE_EMBED_DIM", 1024)?;
-                let legacy_node: usize = env_parse("COVALENCE_NODE_EMBED_DIM", 256)?;
-                EmbeddingConfig {
-                    model: embed_model,
-                    batch_size: env_parse("COVALENCE_EMBED_BATCH", 64)?,
-                    table_dims: TableDimensions {
-                        source: env_parse("COVALENCE_EMBED_DIM_SOURCE", 2048)?,
-                        chunk: env_parse("COVALENCE_EMBED_DIM_CHUNK", legacy_dim)?,
-                        article: env_parse("COVALENCE_EMBED_DIM_ARTICLE", legacy_dim)?,
-                        node: env_parse("COVALENCE_EMBED_DIM_NODE", legacy_node)?,
-                        alias: env_parse("COVALENCE_EMBED_DIM_ALIAS", legacy_node)?,
-                        statement: env_parse("COVALENCE_EMBED_DIM_STATEMENT", legacy_dim)?,
-                        section: env_parse("COVALENCE_EMBED_DIM_SECTION", legacy_dim)?,
-                    },
-                }
-            },
-            extract_concurrency: env_parse("COVALENCE_EXTRACT_CONCURRENCY", 8)?,
-            min_extract_tokens: env_parse("COVALENCE_MIN_EXTRACT_TOKENS", 30)?,
-            extract_batch_tokens: env_parse("COVALENCE_EXTRACT_BATCH_TOKENS", 2000)?,
-            entity_extractor: env_or("COVALENCE_ENTITY_EXTRACTOR", "llm"),
-            extract_url: optional_env("COVALENCE_EXTRACT_URL"),
-            gliner_threshold: env_parse_f32_clamped(
-                "COVALENCE_GLINER_THRESHOLD",
-                0.5_f32,
-                0.0,
-                1.0,
-            )?,
-            consolidation: ConsolidationConfig {
-                batch_interval_secs: env_parse("COVALENCE_BATCH_INTERVAL", 300)?,
-                deep_interval_secs: env_parse("COVALENCE_DEEP_INTERVAL", 86_400)?,
-                delta_threshold: env_parse_f64("COVALENCE_DELTA_THRESHOLD", 0.1)?,
-            },
-            search: SearchConfig {
-                rrf_k: env_parse_f64("COVALENCE_RRF_K", 60.0)?,
-                default_limit: env_parse("COVALENCE_DEFAULT_LIMIT", 10)?,
-                abstention_threshold: env_parse_f64(
-                    "COVALENCE_SEARCH_ABSTENTION_THRESHOLD",
-                    0.001,
-                )?,
-            },
-            pipeline: PipelineConfig {
-                convert_enabled: env_parse_bool("COVALENCE_CONVERT_ENABLED", true),
-                normalize_enabled: env_parse_bool("COVALENCE_NORMALIZE_ENABLED", true),
-                coref_enabled: env_parse_bool("COVALENCE_COREF_ENABLED", true),
-                resolve_enabled: env_parse_bool("COVALENCE_RESOLVE_ENABLED", true),
-                tier5_enabled: env_parse_bool("COVALENCE_TIER5_ENABLED", false),
-                ner_window_chars: env_parse("COVALENCE_NER_WINDOW_CHARS", 1200)?,
-                ner_window_overlap: env_parse("COVALENCE_NER_WINDOW_OVERLAP", 200)?,
-                coref_window_chars: env_parse("COVALENCE_COREF_WINDOW_CHARS", 15_000)?,
-                coref_window_overlap: env_parse("COVALENCE_COREF_WINDOW_OVERLAP", 500)?,
-                re_window_chars: env_parse("COVALENCE_RE_WINDOW_CHARS", 15_000)?,
-                re_window_overlap: env_parse("COVALENCE_RE_WINDOW_OVERLAP", 500)?,
-                statement_enabled: env_parse_bool("COVALENCE_STATEMENT_ENABLED", true),
-                statement_window_chars: env_parse("COVALENCE_STATEMENT_WINDOW_CHARS", 8_000)?,
-                statement_window_overlap: env_parse("COVALENCE_STATEMENT_WINDOW_OVERLAP", 1_000)?,
-                statement_model: optional_env("COVALENCE_STATEMENT_MODEL"),
-                code_entity_class: env_or("COVALENCE_CODE_ENTITY_CLASS", "code"),
-                code_domain: env_or("COVALENCE_CODE_DOMAIN", "code"),
-                code_node_types: match optional_env("COVALENCE_CODE_NODE_TYPES") {
-                    Some(s) => s.split(',').map(|t| t.trim().to_string()).collect(),
-                    None => PipelineConfig::default_code_node_types(),
-                },
-            },
-            coref_url: optional_env("COVALENCE_COREF_URL"),
-            pdf_url: optional_env("COVALENCE_PDF_URL"),
-            readerlm_url: optional_env("COVALENCE_READERLM_URL"),
-            resolve_trigram_threshold: env_parse_f32_clamped(
-                "COVALENCE_RESOLVE_TRIGRAM_THRESHOLD",
-                0.4,
-                0.0,
-                1.0,
-            )?,
-            resolve_vector_threshold: env_parse_f32_clamped(
-                "COVALENCE_RESOLVE_VECTOR_THRESHOLD",
-                0.85_f32,
-                0.0,
-                1.0,
-            )?,
-            queue: RetryQueueConfig {
-                poll_interval_secs: env_parse("COVALENCE_QUEUE_POLL_INTERVAL", 5)?,
-                base_backoff_secs: env_parse("COVALENCE_QUEUE_BASE_BACKOFF", 30)?,
-                max_backoff_secs: env_parse("COVALENCE_QUEUE_MAX_BACKOFF", 3600)?,
-                max_attempts: env_parse("COVALENCE_QUEUE_MAX_ATTEMPTS", 5)?,
-                reprocess_concurrency: env_parse("COVALENCE_QUEUE_REPROCESS_CONCURRENCY", 4)?,
-                extract_concurrency: env_parse("COVALENCE_QUEUE_EXTRACT_CONCURRENCY", 24)?,
-                summarize_concurrency: env_parse("COVALENCE_QUEUE_SUMMARIZE_CONCURRENCY", 10)?,
-                compose_concurrency: env_parse("COVALENCE_QUEUE_COMPOSE_CONCURRENCY", 5)?,
-                edge_concurrency: env_parse("COVALENCE_QUEUE_EDGE_CONCURRENCY", 1)?,
-                embed_concurrency: env_parse("COVALENCE_QUEUE_EMBED_CONCURRENCY", 4)?,
-                job_timeout_secs: env_parse("COVALENCE_QUEUE_JOB_TIMEOUT", 600)?,
-            },
-            ask_model: env_or("COVALENCE_ASK_MODEL", "sonnet"),
-            external_services: parse_service_configs(),
-            metadata_enforcement: env_or("COVALENCE_METADATA_ENFORCEMENT", "warn"),
-        })
-    }
-}
-
-fn require_env(key: &str) -> Result<String> {
-    std::env::var(key)
-        .map_err(|_| Error::Config(format!("required environment variable {key} not set")))
-}
-
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key)
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| default.to_string())
-}
-
-fn optional_env(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.is_empty())
-}
-
-fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> Result<T> {
-    match std::env::var(key).ok().filter(|v| !v.is_empty()) {
-        Some(v) => v
-            .parse::<T>()
-            .map_err(|_| Error::Config(format!("invalid value for {key}: {v}"))),
-        None => Ok(default),
-    }
-}
-
-fn env_parse_bool(key: &str, default: bool) -> bool {
-    match std::env::var(key).ok().filter(|v| !v.is_empty()) {
-        Some(v) => matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"),
-        None => default,
-    }
-}
-
-/// Parse an f32 environment variable with bounds validation.
-///
-/// Returns an error if the parsed value falls outside `[min, max]`.
-fn env_parse_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> Result<f32> {
-    let value = env_parse(key, default)?;
-    if value < min || value > max {
-        return Err(Error::Config(format!(
-            "{key} must be in [{min}, {max}], got {value}"
-        )));
-    }
-    Ok(value)
-}
-
 /// Discover external STDIO service configurations from environment
 /// variables.
 ///
@@ -803,73 +626,14 @@ pub(crate) fn parse_service_configs() -> Vec<ExternalServiceConfig> {
     configs
 }
 
-fn env_parse_f64(key: &str, default: f64) -> Result<f64> {
-    match std::env::var(key).ok().filter(|v| !v.is_empty()) {
-        Some(v) => {
-            let value = v
-                .parse::<f64>()
-                .map_err(|_| Error::Config(format!("invalid float value for {key}: {v}")))?;
-            if !value.is_finite() {
-                return Err(Error::Config(format!(
-                    "non-finite float value for {key}: {v}"
-                )));
-            }
-            Ok(value)
-        }
-        None => Ok(default),
-    }
+/// Read an environment variable, returning `None` if unset or empty.
+fn optional_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn env_or_returns_default_when_unset() {
-        let key = "COVALENCE_TEST_UNSET_12345";
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var(key) };
-        assert_eq!(env_or(key, "fallback"), "fallback");
-    }
-
-    #[test]
-    fn env_or_returns_default_when_empty() {
-        let key = "COVALENCE_TEST_EMPTY_12345";
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(key, "") };
-        assert_eq!(env_or(key, "fallback"), "fallback");
-        unsafe { std::env::remove_var(key) };
-    }
-
-    #[test]
-    fn env_or_returns_value_when_set() {
-        let key = "COVALENCE_TEST_SET_12345";
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(key, "custom") };
-        assert_eq!(env_or(key, "fallback"), "custom");
-        unsafe { std::env::remove_var(key) };
-    }
-
-    #[test]
-    fn env_parse_returns_default_when_empty() {
-        let key = "COVALENCE_TEST_PARSE_EMPTY_12345";
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(key, "") };
-        assert_eq!(env_parse::<usize>(key, 42).unwrap(), 42);
-        unsafe { std::env::remove_var(key) };
-    }
-
-    #[test]
-    fn env_parse_f64_returns_default_when_empty() {
-        let key = "COVALENCE_TEST_PARSEF64_EMPTY_12345";
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(key, "") };
-        assert!(
-            (env_parse_f64(key, std::f64::consts::PI).unwrap() - std::f64::consts::PI).abs()
-                < 1e-10
-        );
-        unsafe { std::env::remove_var(key) };
-    }
 
     #[test]
     fn table_dimensions_default() {
@@ -932,47 +696,6 @@ mod tests {
         assert!(!cfg.tier5_enabled);
         assert_eq!(cfg.ner_window_chars, 1200);
         assert_eq!(cfg.ner_window_overlap, 200);
-    }
-
-    #[test]
-    fn env_parse_bool_truthy() {
-        let key = "COVALENCE_TEST_BOOL_12345";
-
-        for val in &["true", "1", "yes", "TRUE", "Yes"] {
-            unsafe { std::env::set_var(key, val) };
-            assert!(env_parse_bool(key, false), "should be true for {val}");
-        }
-
-        for val in &["false", "0", "no", "other"] {
-            unsafe { std::env::set_var(key, val) };
-            assert!(!env_parse_bool(key, true), "should be false for {val}");
-        }
-
-        unsafe { std::env::remove_var(key) };
-        assert!(env_parse_bool(key, true), "should use default when unset");
-        assert!(!env_parse_bool(key, false), "should use default when unset");
-    }
-
-    #[test]
-    fn env_parse_f32_clamped_rejects_out_of_bounds() {
-        let key = "COVALENCE_TEST_CLAMP_12345";
-
-        // Within bounds
-        unsafe { std::env::set_var(key, "0.5") };
-        let result = env_parse_f32_clamped(key, 0.5, 0.0, 1.0);
-        assert!(result.is_ok());
-
-        // Out of bounds (too high)
-        unsafe { std::env::set_var(key, "1.5") };
-        let result = env_parse_f32_clamped(key, 0.5, 0.0, 1.0);
-        assert!(result.is_err());
-
-        // Out of bounds (negative)
-        unsafe { std::env::set_var(key, "-0.1") };
-        let result = env_parse_f32_clamped(key, 0.5, 0.0, 1.0);
-        assert!(result.is_err());
-
-        unsafe { std::env::remove_var(key) };
     }
 
     #[test]
