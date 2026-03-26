@@ -13,9 +13,14 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 - **Async pipeline with retry queue** — per-entity jobs, fan-in triggers, watchdog, persistent error classification (permanent/rate-limit/transient)
 - **Semantic code summaries** — per-method extraction from impl blocks, definition-pattern chunk matching, bottom-up file summary composition
 - **Cross-domain alignment analysis** — coverage analysis, architecture erosion detection, blast-radius simulation, whitespace roadmap, dialectical critique
-- **`/ask` endpoint** — grounded Q&A with citations, per-request model override, ChainChatBackend multi-provider failover
+- **`/ask` endpoint with SSE streaming** — grounded Q&A with citations, per-request model override, ChainChatBackend multi-provider failover. `POST /ask/stream` returns Server-Sent Events (context, tokens, done)
+- **Lifecycle hooks** — external HTTP hooks at pre_search, post_search, and post_synthesis pipeline points. Fail-open by default, concurrent execution, global or domain-scoped via adapter binding
+- **Session/conversation primitives** — lightweight session + turn model for multi-turn `/ask` conversations. Conversation history injected into LLM context automatically
+- **STDIO sidecar contract** — JSON-in/JSON-out stateless transforms alongside HTTP sidecars. SidecarRegistry manages named transports with startup validation
+- **Prometheus metrics** — `GET /metrics` endpoint with counters and histograms for search, queue, LLM calls, and cache
 - **MCP server for Claude Code** — 7 tools bridging Claude Code sessions to the Covalence API
 - **Data health monitoring** — `/admin/data-health` endpoint, source supersession tracking
+- **Input validation** — validator crate on all request DTOs with bounds checking
 - **Provider attribution** — ChatResponse tracks which LLM provider answered each request
 - **Incremental ingestion on deploy** — changed files auto-ingested via `make deploy`
 
@@ -25,7 +30,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 |--------|------|---------|
 | Search precision@5 | >0.80 | 0.86 |
 | Entity precision | >90% | 96% |
-| Tests passing | — | 1,405 (1,335 core + 21 api + 49 eval) |
+| Tests passing | — | 1,452 (1,382 core + 21 api + 49 eval) |
 
 ## Architecture
 
@@ -87,7 +92,7 @@ cli/                       Go CLI (Cobra) — binary name: cove
 mcp-server/                MCP server for Claude Code integration (Node.js)
 dashboard/                 Web dashboard (stats, observability)
 spec/                      Design specifications (14 specs)
-docs/adr/                  Architecture Decision Records (18 ADRs)
+docs/adr/                  Architecture Decision Records (22 ADRs)
 ```
 
 ## Environments
