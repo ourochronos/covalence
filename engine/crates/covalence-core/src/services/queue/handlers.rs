@@ -335,6 +335,11 @@ async fn extract_single_chunk(
 
     let entity_count = entity_count.load(std::sync::atomic::Ordering::Relaxed);
 
+    // Fire post_extract hook (fire-and-forget).
+    if let Some(ref hook_svc) = svc.hook_service {
+        hook_svc.fire_post_extract(source_id, entity_count, result.relationships.len());
+    }
+
     // Mark chunk as processed.
     let ingestion_id = job
         .payload
@@ -364,6 +369,13 @@ async fn extract_single_chunk(
         ms = duration_ms,
         "chunk extraction complete (async job)"
     );
+
+    // Fire post_resolve hook (fire-and-forget).
+    if entity_count > 0 {
+        if let Some(ref hook_svc) = svc.hook_service {
+            hook_svc.fire_post_resolve(source_id, entity_count);
+        }
+    }
 
     // Fan-in: check if all ExtractChunk jobs for this source are done.
     // If so, enqueue SummarizeEntity jobs for code entities.

@@ -22,8 +22,8 @@ use crate::ingestion::{
     ChainChatBackend, ChatBackend, ChatBackendExtractor, CliChatBackend, ConverterRegistry,
     FastcorefClient, GlinerExtractor, HttpChatBackend, HttpExtractor, LlmExtractor,
     LlmSectionCompiler, LlmStatementExtractor, OpenAiEmbedder, PdfConverter, PgResolver,
-    ReaderLmConverter, ServiceRegistry, ServiceTransport, TwoPassExtractor, VoyageConfig,
-    VoyageEmbedder, fingerprint_config_from,
+    ReaderLmConverter, ServiceExtractor, ServiceRegistry, ServiceTransport, TwoPassExtractor,
+    VoyageConfig, VoyageEmbedder, fingerprint_config_from,
 };
 use crate::search::abstention::AbstentionConfig;
 use crate::search::cache::CacheConfig;
@@ -227,6 +227,65 @@ impl ServiceFactory {
             source_svc = source_svc.with_chat_backend(Arc::clone(backend));
         }
 
+        // ── Domain extractors from extensions ───────────────────
+        // Scan extension manifests for services with `extractor_for`
+        // and register them as domain-specific extractors.
+        let extensions_dir_path =
+            std::env::var("COVALENCE_EXTENSIONS_DIR").unwrap_or_else(|_| "extensions".to_string());
+        if std::path::Path::new(&extensions_dir_path).is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&extensions_dir_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let manifest_path = path.join("extension.yaml");
+                    if path.is_dir() && manifest_path.exists() {
+                        if let Ok(manifest) = ExtensionLoader::parse_manifest(&manifest_path) {
+                            if let Some(ref svc_def) = manifest.service {
+                                if let Some(ref domain) = svc_def.extractor_for {
+                                    let transport = match svc_def.transport.as_str() {
+                                        "stdio" => {
+                                            if let Some(ref cmd) = svc_def.command {
+                                                ServiceTransport::Stdio {
+                                                    command: cmd.clone(),
+                                                    args: svc_def.args.clone(),
+                                                }
+                                            } else {
+                                                continue;
+                                            }
+                                        }
+                                        "http" => {
+                                            if let Some(ref url) = svc_def.url {
+                                                ServiceTransport::Http { url: url.clone() }
+                                            } else {
+                                                continue;
+                                            }
+                                        }
+                                        _ => continue,
+                                    };
+                                    let extractor = Arc::new(ServiceExtractor::new(
+                                        svc_def.name.clone(),
+                                        transport,
+                                    ))
+                                        as Arc<dyn crate::ingestion::extractor::Extractor>;
+                                    tracing::info!(
+                                        extension = %manifest.name,
+                                        service = %svc_def.name,
+                                        domain = %domain,
+                                        "registered domain extractor from extension"
+                                    );
+                                    source_svc =
+                                        source_svc.with_domain_extractor(domain.clone(), extractor);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Hook service (early, so source_svc can reference it) ─
+        let hook_service = Arc::new(HookService::new(Arc::clone(&repo)));
+        source_svc = source_svc.with_hook_service(Arc::clone(&hook_service));
+
         let source_service = Arc::new(source_svc);
 
         // ── Search service ──────────────────────────────────────
@@ -295,9 +354,6 @@ impl ServiceFactory {
                 .with_node_embed_dim(config.embedding.table_dims.node)
                 .with_ontology(Arc::clone(&ontology_service)),
         );
-
-        // ── Hook service ─────────────────────────────────────────
-        let hook_service = Arc::new(HookService::new(Arc::clone(&repo)));
 
         // ── Session service ──────────────────────────────────────
         let session_service = Arc::new(SessionService::new(Arc::clone(&repo)));

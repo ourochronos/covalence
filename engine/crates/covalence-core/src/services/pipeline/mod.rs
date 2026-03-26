@@ -360,19 +360,33 @@ impl SourceService {
         }
 
         // --- Stages 6-7: Extract + resolve ---
-        let ast_ext: Option<Arc<dyn Extractor>> = if input.is_code {
+        // Extractor selection priority:
+        //   1. Domain-specific extractor (from extension)
+        //   2. AstExtractor for code sources (built-in)
+        //   3. Global extractor (LLM / sidecar)
+        let domain_ext: Option<&Arc<dyn Extractor>> = input
+            .source_domain
+            .as_deref()
+            .and_then(|d| self.domain_extractors.get(d));
+        let ast_ext: Option<Arc<dyn Extractor>> = if domain_ext.is_none() && input.is_code {
             Some(Arc::new(
                 crate::ingestion::ast_extractor::AstExtractor::new(),
             ))
         } else {
             None
         };
-        let active_extractor = if input.is_code {
-            ast_ext.as_ref()
+        let active_extractor = domain_ext.or(ast_ext.as_ref()).or(if input.is_code {
+            None
         } else {
             self.extractor.as_ref()
+        });
+        let extraction_method = if domain_ext.is_some() {
+            "service"
+        } else if input.is_code {
+            "ast"
+        } else {
+            "llm"
         };
-        let extraction_method = if input.is_code { "ast" } else { "llm" };
 
         if let Some(extractor) = active_extractor {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
