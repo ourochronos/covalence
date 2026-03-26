@@ -1,0 +1,128 @@
+# Research extension -- domains and rules for research papers
+# and external sources.
+#
+# Provides the research and external domains, research-specific
+# entity and relationship types, causal/entity view edges, domain
+# classification rules, and the evidence domain group.
+
+name: research
+version: "1.0.0"
+description: >
+  Research and external source domain pack.  Defines research/external
+  domains, research entity types (technology, dataset, metric, person,
+  organization), epistemic relationship types (supports, contradicts,
+  evaluated_on), causal and entity view edge mappings, domain
+  classification rules, and the evidence domain group.
+
+domains:
+  - id: research
+    label: Research
+    description: "Academic papers and research material"
+    is_internal: false
+  - id: external
+    label: External
+    description: "External web sources and documentation"
+    is_internal: false
+
+entity_types:
+  - id: technology
+    category: concept
+    label: Technology
+    description: "A technology, tool, or framework"
+  - id: dataset
+    category: artifact
+    label: Dataset
+    description: "A named dataset"
+  - id: metric
+    category: property
+    label: Metric
+    description: "A measurement or evaluation metric"
+  - id: person
+    category: agent
+    label: Person
+    description: "A named person or author"
+  - id: organization
+    category: agent
+    label: Organization
+    description: "A named organization or institution"
+
+relationship_types:
+  - id: THEORETICAL_BASIS
+    universal: derived_from
+    label: Theoretical Basis
+    description: "Component draws on research as its theoretical foundation"
+  - id: supports
+    universal: supports
+    label: Supports
+    description: "Epistemic agreement or evidence support"
+  - id: contradicts
+    universal: contradicts
+    label: Contradicts
+    description: "Epistemic disagreement or contrary evidence"
+  - id: evaluated_on
+    universal: uses
+    label: Evaluated On
+    description: "Evaluated or benchmarked on a dataset"
+  - id: outperformed_on
+    universal: supports
+    label: Outperformed On
+    description: "Achieved superior results on a benchmark"
+  - id: compared_to
+    universal: uses
+    label: Compared To
+    description: "Compared against another approach or baseline"
+
+view_edges:
+  causal:
+    - enables
+    - supports
+    - contradicts
+  entity:
+    - implements
+    - extends
+    - is_part_of
+    - uses_type
+    - applies_to
+    - used_in
+
+domain_rules:
+  - match_type: uri_prefix
+    match_value: "https://arxiv"
+    domain_id: research
+    priority: 50
+    description: "ArXiv papers"
+  - match_type: uri_prefix
+    match_value: "https://doi"
+    domain_id: research
+    priority: 51
+    description: "DOI papers"
+  - match_type: uri_prefix
+    match_value: "http://"
+    domain_id: research
+    priority: 60
+    description: "HTTP URLs"
+  - match_type: uri_prefix
+    match_value: "https://"
+    domain_id: research
+    priority: 61
+    description: "HTTPS URLs"
+  - match_type: source_type
+    match_value: document
+    domain_id: external
+    priority: 100
+    description: "Remaining documents"
+
+domain_groups:
+  evidence:
+    - research
+    - external
+
+alignment_rules:
+  - name: design_contradicted
+    check_type: contradiction
+    source_group: specification
+    target_group: evidence
+    description: "Design decisions potentially contradicted by research"
+    parameters:
+      source_domain: design
+      target_domain: research

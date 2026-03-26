@@ -1,0 +1,77 @@
+# Core extension -- MAGMA universal primitives.
+#
+# Provides the foundational categories and universal relationship types
+# that every other extension builds on.  These are the ontology atoms
+# that cannot be removed.
+
+name: core
+version: "1.0.0"
+description: >
+  Universal ontology categories (concept, process, artifact, agent,
+  property, collection) and relationship universals (is_a, part_of,
+  depends_on, etc.).  Every extension inherits these primitives.
+
+# No domains -- core is domain-agnostic.
+
+# Entity types that are domain-agnostic:
+entity_types:
+  - id: concept
+    category: concept
+    label: Concept
+    description: "A generic abstract idea, definition, or named thing"
+  - id: component
+    category: collection
+    label: Component
+    description: "An architectural or system component"
+  - id: community_summary
+    category: artifact
+    label: Community Summary
+    description: "A summary of a graph community cluster"
+
+# General-purpose relationship types:
+relationship_types:
+  - id: co_occurs
+    label: Co-occurs
+    description: "Entities that appear together in the same context"
+  - id: is_part_of
+    universal: part_of
+    label: Is Part Of
+  - id: applies_to
+    universal: uses
+    label: Applies To
+  - id: enables
+    universal: supports
+    label: Enables
+  - id: used_in
+    universal: uses
+    label: Used In
+  - id: mentioned_at
+    universal: uses
+    label: Mentioned At
+
+# Core noise patterns (common false positives):
+noise_patterns:
+  - pattern: "the"
+    pattern_type: literal
+    description: "Common article"
+  - pattern: "this"
+    pattern_type: literal
+    description: "Common demonstrative"
+  - pattern: "true"
+    pattern_type: literal
+    description: "Boolean literal"
+  - pattern: "false"
+    pattern_type: literal
+    description: "Boolean literal"
+  - pattern: "GET"
+    pattern_type: literal
+    description: "HTTP method"
+  - pattern: "POST"
+    pattern_type: literal
+    description: "HTTP method"
+  - pattern: "PUT"
+    pattern_type: literal
+    description: "HTTP method"
+  - pattern: "DELETE"
+    pattern_type: literal
+    description: "HTTP method"

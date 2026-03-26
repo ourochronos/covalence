@@ -1,0 +1,127 @@
+# Code Analysis extension -- entity types and rules for source code.
+#
+# Provides the code domain, code-specific entity types (function,
+# struct, trait, etc.), structural relationship types (calls,
+# uses_type, imports), and domain classification rules for code
+# sources.
+
+name: code-analysis
+version: "1.0.0"
+description: >
+  Source code analysis domain pack.  Defines code entity types,
+  structural relationship types, view edge mappings, domain
+  classification rules, and the implementation domain group.
+
+domains:
+  - id: code
+    label: Code
+    description: "Source code and implementation artifacts"
+    is_internal: true
+
+entity_types:
+  - id: function
+    category: process
+    label: Function
+    description: "A named function"
+  - id: method
+    category: process
+    label: Method
+    description: "A method on a type"
+  - id: macro
+    category: process
+    label: Macro
+    description: "A code macro"
+  - id: struct
+    category: concept
+    label: Struct
+    description: "A struct or data type"
+  - id: enum
+    category: concept
+    label: Enum
+    description: "An enumeration type"
+  - id: trait
+    category: concept
+    label: Trait
+    description: "A trait or interface"
+  - id: constant
+    category: concept
+    label: Constant
+    description: "A named constant"
+  - id: impl_block
+    category: concept
+    label: Impl Block
+    description: "An implementation block"
+  - id: module
+    category: collection
+    label: Module
+    description: "A code module or package"
+  - id: code_test
+    category: process
+    label: Code Test
+    description: "A test function or suite"
+
+relationship_types:
+  - id: calls
+    universal: uses
+    label: Calls
+    description: "Function/method call dependency"
+  - id: uses_type
+    universal: uses
+    label: Uses Type
+    description: "Type reference in signature or body"
+  - id: imports
+    universal: depends_on
+    label: Imports
+    description: "Module or crate import"
+  - id: implements
+    universal: derived_from
+    label: Implements
+    description: "Trait implementation or interface conformance"
+  - id: extends
+    universal: is_a
+    label: Extends
+    description: "Inheritance or trait extension"
+  - id: contains
+    universal: part_of
+    label: Contains
+    description: "Module or scope containment"
+
+view_edges:
+  structural:
+    - calls
+    - uses_type
+    - contains
+    - imports
+
+domain_rules:
+  - match_type: source_type
+    match_value: code
+    domain_id: code
+    priority: 10
+    description: "Code sources"
+  - match_type: uri_prefix
+    match_value: "file://engine/"
+    domain_id: code
+    priority: 40
+    description: "Engine source"
+  - match_type: uri_prefix
+    match_value: "file://cli/"
+    domain_id: code
+    priority: 41
+    description: "CLI source"
+  - match_type: uri_prefix
+    match_value: "file://dashboard/"
+    domain_id: code
+    priority: 42
+    description: "Dashboard source"
+
+domain_groups:
+  implementation:
+    - code
+
+alignment_rules:
+  - name: code_ahead
+    check_type: ahead
+    source_group: implementation
+    target_group: specification
+    description: "Code entities with no matching spec concept"

@@ -7,8 +7,8 @@ use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 
 use crate::handlers::{
-    adapters, admin, analysis, ask, config, edges, hooks, mcp, memory, metrics, nodes, ontology,
-    search, sessions, sources,
+    adapters, admin, analysis, ask, config, edges, extensions, hooks, mcp, memory, metrics, nodes,
+    ontology, search, sessions, sources,
 };
 use crate::middleware::require_api_key;
 use crate::openapi::ApiDoc;
@@ -104,6 +104,12 @@ pub fn router(state: AppState) -> Router {
             post(admin::summarize_code_nodes),
         )
         .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts))
+        // Extensions
+        .route("/admin/extensions", get(extensions::list_extensions))
+        .route(
+            "/admin/extensions/reload",
+            post(extensions::reload_extensions),
+        )
         // Config + Adapters
         .route("/admin/config", get(config::list_config))
         .route("/admin/config/{key}", put(config::update_config))

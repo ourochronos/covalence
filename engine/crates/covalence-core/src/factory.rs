@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 
 use crate::config::Config;
 use crate::error::Result;
+use crate::extensions::ExtensionLoader;
 use crate::graph::engine::GraphEngine;
 use crate::graph::{GraphSidecar, PetgraphEngine, SharedGraph};
 use crate::ingestion::embedder::Embedder;
@@ -246,6 +247,38 @@ impl ServiceFactory {
                 "initial ontology load failed (will retry)"
             );
         }
+        // ── Extension loader ──────────────────────────────────────
+        let extension_loader = ExtensionLoader::new(Arc::clone(&repo));
+        let extensions_dir =
+            std::env::var("COVALENCE_EXTENSIONS_DIR").unwrap_or_else(|_| "extensions".to_string());
+        if std::path::Path::new(&extensions_dir).is_dir() {
+            match extension_loader.load_directory(&extensions_dir).await {
+                Ok(names) => {
+                    if !names.is_empty() {
+                        tracing::info!(
+                            extensions = ?names,
+                            "loaded extensions"
+                        );
+                        // Refresh ontology cache after loading
+                        // extensions so new types are visible.
+                        if let Err(e) = ontology_service.refresh().await {
+                            tracing::warn!(
+                                error = %e,
+                                "ontology refresh after extension \
+                                 load failed"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "extension loading failed"
+                    );
+                }
+            }
+        }
+
         ontology_service.spawn_refresh_loop(60);
 
         // ── Analysis service (needs a graph engine) ─────────────

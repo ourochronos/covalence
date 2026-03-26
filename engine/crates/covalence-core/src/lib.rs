@@ -9,6 +9,7 @@ pub mod config_loader;
 pub mod consolidation;
 pub mod epistemic;
 pub mod error;
+pub mod extensions;
 pub mod factory;
 pub mod graph;
 pub mod ingestion;

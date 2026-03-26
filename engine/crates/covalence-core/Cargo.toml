@@ -26,6 +26,7 @@ reqwest = { workspace = true }
 futures = { workspace = true }
 tokio-stream = { workspace = true }
 regex = { workspace = true }
+serde_yaml = "0.9"
 hdbscan = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-go = { workspace = true }

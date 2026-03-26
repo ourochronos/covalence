@@ -1,0 +1,85 @@
+# Spec & Design extension -- domains and rules for specifications
+# and design documents.
+#
+# Provides the spec and design domains, analysis bridge relationship
+# types, domain classification rules, and alignment rules for
+# detecting spec-code drift.
+
+name: spec-design
+version: "1.0.0"
+description: >
+  Specification and design document domain pack.  Defines spec/design
+  domains, bridge relationship types (PART_OF_COMPONENT,
+  IMPLEMENTS_INTENT), domain classification rules, the specification
+  domain group, and alignment rules for detecting drift.
+
+domains:
+  - id: spec
+    label: Spec
+    description: "Specification documents"
+    is_internal: true
+  - id: design
+    label: Design
+    description: "Architecture decision records and design docs"
+    is_internal: true
+
+relationship_types:
+  - id: PART_OF_COMPONENT
+    universal: part_of
+    label: Part Of Component
+    description: "Code entity belongs to an architectural component"
+  - id: IMPLEMENTS_INTENT
+    universal: derived_from
+    label: Implements Intent
+    description: "Component implements a spec-declared intent"
+
+domain_rules:
+  - match_type: uri_prefix
+    match_value: "file://spec/"
+    domain_id: spec
+    priority: 20
+    description: "Spec documents"
+  - match_type: uri_prefix
+    match_value: "file://docs/adr/"
+    domain_id: design
+    priority: 30
+    description: "ADR design docs"
+  - match_type: uri_prefix
+    match_value: "file://VISION"
+    domain_id: design
+    priority: 31
+    description: "Vision doc"
+  - match_type: uri_prefix
+    match_value: "file://CLAUDE"
+    domain_id: design
+    priority: 32
+    description: "Project instructions"
+  - match_type: uri_prefix
+    match_value: "file://MILESTONES"
+    domain_id: design
+    priority: 33
+    description: "Milestone docs"
+  - match_type: uri_prefix
+    match_value: "file://design/"
+    domain_id: design
+    priority: 34
+    description: "Design docs"
+
+domain_groups:
+  specification:
+    - spec
+    - design
+
+alignment_rules:
+  - name: spec_ahead
+    check_type: ahead
+    source_group: specification
+    target_group: implementation
+    description: "Spec concepts with no implementing code"
+  - name: stale_design
+    check_type: staleness
+    source_group: specification
+    target_group: implementation
+    description: "Design docs whose descriptions diverge from code reality"
+    parameters:
+      source_domain: design

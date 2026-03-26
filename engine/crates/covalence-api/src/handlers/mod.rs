@@ -7,6 +7,7 @@ pub mod ask;
 pub mod config;
 pub mod dto;
 pub mod edges;
+pub mod extensions;
 pub mod hooks;
 pub mod mcp;
 pub mod memory;

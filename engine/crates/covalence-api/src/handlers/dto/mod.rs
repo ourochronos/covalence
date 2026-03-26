@@ -9,6 +9,7 @@ mod analysis;
 mod ask;
 mod common;
 mod edges;
+mod extensions;
 mod graph;
 mod hooks;
 mod nodes;
@@ -40,6 +41,7 @@ pub use analysis::{
 pub use ask::{AskApiRequest, AskApiResponse, CitationResponse};
 pub use common::{AuditLogResponse, CurationResponse, FeedbackResponse, PaginationParams};
 pub use edges::{CorrectEdgeRequest, DeleteEdgeParams, EdgeResponse};
+pub use extensions::{ListExtensionsResponse, ReloadExtensionsResponse};
 pub use graph::{
     CommunityParams, CommunityResponse, DomainLinkResponse, DomainResponse, GraphStatsResponse,
     TopologyResponse,
