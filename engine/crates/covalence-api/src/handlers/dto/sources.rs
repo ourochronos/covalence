@@ -3,13 +3,14 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
+use validator::Validate;
 
 /// Request body for source ingestion.
 ///
 /// Supply either `content` (base64-encoded bytes) or `url` (fetched
 /// by the server). When `url` is provided, `source_type` and `mime`
 /// are auto-detected from the response if not explicitly set.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Validate)]
 pub struct CreateSourceRequest {
     /// Base64-encoded content bytes. Required unless `url` is provided.
     pub content: Option<String>,
@@ -17,28 +18,35 @@ pub struct CreateSourceRequest {
     /// detects MIME type, auto-classifies source type from URL
     /// patterns, and extracts metadata (title, author, date) from
     /// the response.
+    #[validate(length(max = 2048))]
     pub url: Option<String>,
     /// Source type (document, web_page, conversation, code, api,
     /// manual, tool_output, observation). Auto-detected from URL
     /// patterns when `url` is used and this field is omitted.
+    #[validate(length(max = 50))]
     pub source_type: Option<String>,
     /// MIME type of the content (e.g. "text/markdown", "text/plain").
     /// Auto-detected from Content-Type header when `url` is used.
     /// Defaults to "text/plain" for direct content upload.
+    #[validate(length(max = 100))]
     pub mime: Option<String>,
     /// Optional URI of the original material. When `url` is used,
     /// the URL is stored as the URI automatically.
+    #[validate(length(max = 2048))]
     pub uri: Option<String>,
     /// Title for the source. Overrides auto-extracted title from
     /// HTML `<title>` or markdown `# heading`.
+    #[validate(length(max = 1000))]
     pub title: Option<String>,
     /// Author of the source. Overrides auto-extracted author from
     /// HTML meta tags.
+    #[validate(length(max = 500))]
     pub author: Option<String>,
     /// Optional metadata.
     pub metadata: Option<serde_json::Value>,
     /// Original file format before conversion (e.g. "pdf", "html",
     /// "markdown", "docx"). Stored in metadata.format_origin.
+    #[validate(length(max = 50))]
     pub format_origin: Option<String>,
     /// List of authors. First entry is used as the primary author.
     /// Stored in metadata.authors.

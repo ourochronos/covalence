@@ -9,6 +9,7 @@ pub mod dto;
 pub mod edges;
 pub mod mcp;
 pub mod memory;
+pub mod metrics;
 pub mod nodes;
 pub mod ontology;
 pub mod search;

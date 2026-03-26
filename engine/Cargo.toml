@@ -61,6 +61,10 @@ regex = "1"
 # Clustering
 hdbscan = "0.10"
 
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+
 # Code parsing
 tree-sitter = "0.26"
 tree-sitter-go = "0.25"

@@ -19,6 +19,8 @@ use crate::search::skewroute::{detect_intent, select_strategy};
 use crate::search::strategy::SearchStrategy;
 use crate::search::trace::QueryTrace;
 
+use crate::metrics;
+
 use super::super::search_helpers::{strategy_name, truncate_with_ellipsis};
 use super::SearchService;
 use super::enrichment;
@@ -36,6 +38,7 @@ impl SearchService {
         hierarchical: bool,
     ) -> Result<Vec<FusedResult>> {
         let start = Instant::now();
+        metrics::record_search_query(strategy_name(&strategy));
         let time_range = filters.as_ref().and_then(|f| f.date_range);
 
         // When post-fusion filters are present (especially
@@ -90,6 +93,7 @@ impl SearchService {
                 let strategy_str = strategy_name(&strategy);
                 match cache.lookup(emb, strategy_str).await {
                     Ok(Some(mut cached_results)) => {
+                        metrics::record_cache_hit();
                         tracing::debug!("cache hit for query");
                         // The cache stores the full pre-truncation
                         // result set. Apply the caller's limit here
@@ -103,7 +107,9 @@ impl SearchService {
                         trace.emit();
                         return Ok(cached_results);
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        metrics::record_cache_miss();
+                    }
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
@@ -269,6 +275,8 @@ impl SearchService {
         trace.final_count = fused.len();
         trace.set_duration(start.elapsed());
         trace.emit();
+
+        metrics::record_search_latency(&trace.strategy, start.elapsed().as_secs_f64());
 
         // Persist trace to DB for offline analysis.
         let db_trace = crate::models::trace::SearchTrace::new(

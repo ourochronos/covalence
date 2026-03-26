@@ -3,9 +3,40 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use validator::ValidationErrors;
 
 /// Wrapper around the core error type for HTTP response conversion.
 pub struct ApiError(pub covalence_core::error::Error);
+
+/// Validate a request DTO, converting validation errors into an
+/// `ApiError` with a 400 Bad Request response.
+pub fn validate_request<T: validator::Validate>(req: &T) -> Result<(), ApiError> {
+    req.validate().map_err(|e| {
+        ApiError::from(covalence_core::error::Error::InvalidInput(
+            format_validation_errors(&e),
+        ))
+    })
+}
+
+/// Format validation errors into a human-readable message.
+fn format_validation_errors(errors: &ValidationErrors) -> String {
+    let mut parts = Vec::new();
+    for (field, field_errors) in errors.field_errors() {
+        for error in field_errors {
+            let msg = error
+                .message
+                .as_ref()
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("{field}: validation failed ({:?})", error.code));
+            parts.push(msg);
+        }
+    }
+    if parts.is_empty() {
+        "validation failed".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
+use validator::Validate;
 
 /// Search delivery mode.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -50,13 +51,15 @@ pub struct DimensionWeightsDto {
 }
 
 /// Request body for search.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Validate)]
 pub struct SearchRequest {
     /// The search query text.
+    #[validate(length(min = 1, max = 10000))]
     pub query: String,
     /// Search strategy (auto, balanced, precise, exploratory, recent,
     /// graph_first, global, custom). When `custom` is used, provide
     /// the `weights` object. Default: `auto` (SkewRoute selection).
+    #[validate(length(max = 50))]
     pub strategy: Option<String>,
     /// Custom dimension weights (used when `strategy` is `custom`).
     /// All six weights are required; they need not sum to 1.0
@@ -221,15 +224,18 @@ pub enum SearchApiResponse {
 }
 
 /// Request body for search feedback.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Validate)]
 pub struct SearchFeedbackRequest {
     /// The query text that was searched.
+    #[validate(length(min = 1, max = 10000))]
     pub query: String,
     /// The result entity ID being rated.
     pub result_id: Uuid,
     /// Relevance rating (0.0 to 1.0).
+    #[validate(range(min = 0.0, max = 1.0))]
     pub relevance: f64,
     /// Optional free-text comment.
+    #[validate(length(max = 5000))]
     pub comment: Option<String>,
 }
 

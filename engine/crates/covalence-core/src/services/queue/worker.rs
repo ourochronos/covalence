@@ -224,6 +224,7 @@ impl RetryQueueService {
         tokio::spawn(async move {
             let job_id = job.id;
             let job_kind = job.kind;
+            let job_start = std::time::Instant::now();
             tracing::info!(
                 job_id = %job_id,
                 kind = ?job_kind,
@@ -244,8 +245,13 @@ impl RetryQueueService {
                 ))),
             };
 
+            let kind_str = format!("{job_kind:?}");
+            let elapsed = job_start.elapsed().as_secs_f64();
+
             match result {
                 Ok(()) => {
+                    crate::metrics::record_queue_job(&kind_str, "success");
+                    crate::metrics::record_queue_job_duration(&kind_str, elapsed);
                     tracing::info!(job_id = %job_id, kind = ?job_kind, "job succeeded");
                     if let Err(e) = JobQueueRepo::mark_succeeded(&*repo, job_id).await {
                         tracing::error!(
@@ -256,6 +262,8 @@ impl RetryQueueService {
                     }
                 }
                 Err(e) => {
+                    crate::metrics::record_queue_job(&kind_str, "failure");
+                    crate::metrics::record_queue_job_duration(&kind_str, elapsed);
                     let class = classify_error(&e);
                     let backoff =
                         compute_backoff_for_class(class, base_backoff, job.attempt, max_backoff);
