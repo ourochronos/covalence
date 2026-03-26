@@ -30,7 +30,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 |--------|------|---------|
 | Search precision@5 | >0.80 | 0.86 |
 | Entity precision | >90% | 96% |
-| Tests passing | — | 1,456 (1,386 core + 21 api + 49 eval) |
+| Tests passing | — | 1,492 (1,409 core + 21 api + 13 ast-extractor + 49 eval) |
 
 ## Architecture
 
@@ -81,18 +81,24 @@ cove llm "Review this code for quality"
 ## Project Structure
 
 ```
-engine/                    Rust workspace
+engine/                        Rust workspace
   crates/
-    covalence-core/        Library: models, storage, graph, search, ingestion, epistemic
-    covalence-api/         Binary: Axum server, OpenAPI, routes
-    covalence-migrations/  Binary: sqlx migration runner
-    covalence-eval/        Binary: layer-by-layer evaluation harness
-    covalence-worker/      Binary: async queue worker (per-kind concurrency)
-cli/                       Go CLI (Cobra) — binary name: cove
-mcp-server/                MCP server for Claude Code integration (Node.js)
-dashboard/                 Web dashboard (stats, observability)
-spec/                      Design specifications (14 specs)
-docs/adr/                  Architecture Decision Records (22 ADRs)
+    covalence-core/            Library: models, storage, graph, search, ingestion, epistemic
+    covalence-api/             Binary: Axum server, OpenAPI, routes
+    covalence-migrations/      Binary: sqlx migration runner
+    covalence-eval/            Binary: layer-by-layer evaluation harness
+    covalence-worker/          Binary: async queue worker (per-kind concurrency)
+    covalence-ast-extractor/   Binary: standalone AST extraction service (STDIO)
+extensions/                    Extension manifests (domain packs)
+  core/                        Universal categories + relationship universals
+  code-analysis/               Code entity types, structural edges, domain rules
+  spec-design/                 Spec/design domains, bridge types, alignment rules
+  research/                    Research domains, epistemic edges, evidence grouping
+cli/                           Go CLI (Cobra) — binary name: cove
+mcp-server/                    MCP server for Claude Code integration (Node.js)
+dashboard/                     Web dashboard (stats, observability)
+spec/                          Design specifications (14 specs)
+docs/adr/                      Architecture Decision Records (23 ADRs)
 ```
 
 ## Development
@@ -116,6 +122,32 @@ Configure deployment targets in your Makefile or environment. The engine is a st
 make promote  # check + migrate-prod + deploy (full pipeline)
 make deploy   # pull, build, migrate, restart on remote host
 ```
+
+## Extensions
+
+Covalence is infrastructure, not a specific solution. Domain-specific functionality is packaged as **extensions** — declarative YAML manifests that add entity types, relationship types, domains, alignment rules, and external services without modifying the core engine.
+
+```
+extensions/
+  core/extension.yaml           # MAGMA primitives (categories, universals)
+  code-analysis/extension.yaml  # AST entity types, structural edges
+  spec-design/extension.yaml    # Spec/design domains, bridge types
+  research/extension.yaml       # Research domains, epistemic edges
+  your-domain/extension.yaml    # Your domain — add your own
+```
+
+Extensions declare ontology additions, domain classification rules, alignment checks, services (STDIO or HTTP), and lifecycle hooks. The engine loads manifests at startup and seeds the database. See [ADR-0023](docs/adr/0023-extensions-and-config.md) for the full design.
+
+### Configuration
+
+Layered config via `covalence.conf` + `covalence.conf.d/`:
+
+```bash
+cp covalence.conf.example covalence.conf    # instance settings
+mkdir covalence.conf.d                       # extension overrides
+```
+
+Last value wins across files (alphabetical order). Environment variables (`COVALENCE_*`) override all files. See `covalence.conf.example` for all options.
 
 ## MCP Server
 
