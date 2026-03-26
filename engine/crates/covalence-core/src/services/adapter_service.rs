@@ -29,6 +29,10 @@ pub struct SourceAdapter {
     pub coref_enabled: bool,
     pub statement_enabled: bool,
     pub is_active: bool,
+    /// Default search strategy for `/ask` queries scoped to this
+    /// adapter. If set, overrides the global "auto" default.
+    #[serde(default)]
+    pub default_search_strategy: Option<String>,
 }
 
 /// Service for matching sources to adapters.
@@ -40,6 +44,11 @@ impl AdapterService {
     /// Create a new adapter service.
     pub fn new(repo: Arc<PgRepo>) -> Self {
         Self { repo }
+    }
+
+    /// Access the underlying database repo.
+    pub fn repo(&self) -> &PgRepo {
+        &self.repo
     }
 
     /// Find the best matching adapter for a given URI and MIME type.

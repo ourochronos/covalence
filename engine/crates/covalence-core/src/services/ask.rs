@@ -21,7 +21,9 @@ use crate::models::session::Turn;
 use crate::search::fusion::FusedResult;
 use crate::search::strategy::SearchStrategy;
 use crate::services::SearchService;
+use crate::services::adapter_service::AdapterService;
 use crate::services::hooks::HookService;
+use crate::services::search::SearchFilters;
 use crate::storage::postgres::PgRepo;
 
 /// Options controlling ask behavior.
@@ -134,6 +136,8 @@ pub struct AskService {
     hooks: Option<Arc<HookService>>,
     /// Optional session service for multi-turn conversation context.
     sessions: Option<Arc<super::SessionService>>,
+    /// Optional adapter service for adapter-driven defaults.
+    adapters: Option<Arc<AdapterService>>,
 }
 
 impl AskService {
@@ -145,6 +149,7 @@ impl AskService {
             repo,
             hooks: None,
             sessions: None,
+            adapters: None,
         }
     }
 
@@ -160,32 +165,71 @@ impl AskService {
         self
     }
 
+    /// Wire an adapter service for adapter-driven default strategy.
+    pub fn with_adapters(mut self, adapters: Arc<AdapterService>) -> Self {
+        self.adapters = Some(adapters);
+        self
+    }
+
+    /// Resolve the search strategy: explicit user choice > adapter
+    /// default > "auto".
+    async fn resolve_strategy(
+        &self,
+        user_strategy: Option<&str>,
+        adapter_id: Option<Uuid>,
+    ) -> SearchStrategy {
+        // 1. Explicit user strategy wins.
+        if let Some(s) = user_strategy {
+            if s != "auto" {
+                return parse_strategy(Some(s));
+            }
+        }
+
+        // 2. Adapter default strategy.
+        if let (Some(aid), Some(svc)) = (adapter_id, &self.adapters) {
+            use crate::storage::traits::AdapterRepo;
+            if let Ok(Some(adapter)) = AdapterRepo::find_by_id(svc.repo(), aid).await {
+                if let Some(ref default_strat) = adapter.default_search_strategy {
+                    let parsed = parse_strategy(Some(default_strat));
+                    tracing::info!(
+                        adapter_id = %aid,
+                        strategy = %default_strat,
+                        "using adapter default search strategy"
+                    );
+                    return parsed;
+                }
+            }
+        }
+
+        // 3. Fall back to auto.
+        SearchStrategy::Auto
+    }
+
     /// Answer a question by searching, enriching, and synthesizing.
     pub async fn ask(&self, question: &str, options: AskOptions) -> Result<AskResponse> {
         let adapter_id = options.adapter_id;
 
         // 0a. Pre-search hooks: let external systems enrich the query.
-        let effective_query = if let Some(ref hooks) = self.hooks {
+        let (effective_query, hook_filters) = if let Some(ref hooks) = self.hooks {
             let pre = hooks.fire_pre_search(question, adapter_id).await?;
-            if let Some(ref terms) = pre.boost_terms {
+            let boosted = if let Some(ref terms) = pre.boost_terms {
                 if !terms.is_empty() {
-                    let boosted = format!("{} {}", question, terms.join(" "));
+                    let q = format!("{} {}", question, terms.join(" "));
                     tracing::info!(
                         boost_terms = ?terms,
                         "pre_search hook enriched query with boost terms"
                     );
-                    boosted
+                    q
                 } else {
                     question.to_string()
                 }
             } else {
                 question.to_string()
-            }
-            // TODO: metadata_filters passthrough requires SearchFilters
-            // changes — log for now.
-            // pre.metadata_filters is captured but not yet forwarded.
+            };
+            let filters = pre.metadata_filters.as_ref().map(build_filters_from_hook);
+            (boosted, filters)
         } else {
-            question.to_string()
+            (question.to_string(), None)
         };
 
         // 0b. Load conversation history if a session is active.
@@ -196,10 +240,17 @@ impl AskService {
         };
 
         // 1. Search for context (using the boost-enriched query).
-        let strategy = parse_strategy(options.strategy.as_deref());
+        let strategy = self
+            .resolve_strategy(options.strategy.as_deref(), adapter_id)
+            .await;
         let results = self
             .search
-            .search(&effective_query, strategy, options.max_context, None)
+            .search(
+                &effective_query,
+                strategy,
+                options.max_context,
+                hook_filters,
+            )
             .await?;
 
         if results.is_empty() {
@@ -315,24 +366,26 @@ impl AskService {
         let adapter_id = options.adapter_id;
 
         // 0a. Pre-search hooks: enrich query with boost terms.
-        let effective_query = if let Some(ref hooks) = self.hooks {
+        let (effective_query, hook_filters) = if let Some(ref hooks) = self.hooks {
             let pre = hooks.fire_pre_search(question, adapter_id).await?;
-            if let Some(ref terms) = pre.boost_terms {
+            let boosted = if let Some(ref terms) = pre.boost_terms {
                 if !terms.is_empty() {
-                    let boosted = format!("{} {}", question, terms.join(" "));
+                    let q = format!("{} {}", question, terms.join(" "));
                     tracing::info!(
                         boost_terms = ?terms,
                         "pre_search hook enriched query with boost terms"
                     );
-                    boosted
+                    q
                 } else {
                     question.to_string()
                 }
             } else {
                 question.to_string()
-            }
+            };
+            let filters = pre.metadata_filters.as_ref().map(build_filters_from_hook);
+            (boosted, filters)
         } else {
-            question.to_string()
+            (question.to_string(), None)
         };
 
         // 0b. Load conversation history if a session is active.
@@ -343,10 +396,17 @@ impl AskService {
         };
 
         // 1. Search for context (using the boost-enriched query).
-        let strategy = parse_strategy(options.strategy.as_deref());
+        let strategy = self
+            .resolve_strategy(options.strategy.as_deref(), adapter_id)
+            .await;
         let results = self
             .search
-            .search(&effective_query, strategy, options.max_context, None)
+            .search(
+                &effective_query,
+                strategy,
+                options.max_context,
+                hook_filters,
+            )
             .await?;
 
         if results.is_empty() {
@@ -716,6 +776,74 @@ fn resolve_model_backend(model: &str) -> CliChatBackend {
         // Default: treat as a claude model name.
         other => CliChatBackend::new("claude".to_string(), other.to_string()),
     }
+}
+
+/// Build [`SearchFilters`] from a pre_search hook's
+/// `metadata_filters` JSON.
+///
+/// Recognized keys:
+/// - `domains` — `Vec<String>`: restrict to source domains.
+/// - `entity_classes` — `Vec<String>`: restrict to entity classes.
+/// - `node_types` — `Vec<String>`: restrict to node types.
+/// - `min_confidence` — `f64`: minimum epistemic confidence.
+///
+/// Unrecognized keys are logged as warnings and ignored.
+fn build_filters_from_hook(metadata: &serde_json::Value) -> SearchFilters {
+    let mut filters = SearchFilters::default();
+
+    if let Some(obj) = metadata.as_object() {
+        for (key, value) in obj {
+            match key.as_str() {
+                "domains" => {
+                    if let Some(arr) = value.as_array() {
+                        let vals: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !vals.is_empty() {
+                            filters.domains = Some(vals);
+                        }
+                    }
+                }
+                "entity_classes" => {
+                    if let Some(arr) = value.as_array() {
+                        let vals: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !vals.is_empty() {
+                            filters.entity_classes = Some(vals);
+                        }
+                    }
+                }
+                "node_types" => {
+                    if let Some(arr) = value.as_array() {
+                        let vals: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !vals.is_empty() {
+                            filters.node_types = Some(vals);
+                        }
+                    }
+                }
+                "min_confidence" => {
+                    if let Some(v) = value.as_f64() {
+                        filters.min_confidence = Some(v);
+                    }
+                }
+                other => {
+                    tracing::warn!(
+                        key = %other,
+                        "unrecognized metadata_filter key \
+                         from pre_search hook — ignoring"
+                    );
+                }
+            }
+        }
+    }
+
+    filters
 }
 
 fn parse_strategy(s: Option<&str>) -> SearchStrategy {
@@ -1388,5 +1516,114 @@ mod tests {
         }];
         let prompt = build_user_prompt_with_history("query", &blocks, &[]);
         assert!(!prompt.contains("## Conversation History"));
+    }
+
+    // --- build_filters_from_hook tests ---
+
+    #[test]
+    fn build_filters_empty_object() {
+        let meta = serde_json::json!({});
+        let filters = build_filters_from_hook(&meta);
+        assert!(filters.domains.is_none());
+        assert!(filters.entity_classes.is_none());
+        assert!(filters.node_types.is_none());
+        assert!(filters.min_confidence.is_none());
+    }
+
+    #[test]
+    fn build_filters_domains() {
+        let meta = serde_json::json!({
+            "domains": ["code", "spec"]
+        });
+        let filters = build_filters_from_hook(&meta);
+        assert_eq!(
+            filters.domains.as_deref(),
+            Some(["code".to_string(), "spec".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn build_filters_entity_classes() {
+        let meta = serde_json::json!({
+            "entity_classes": ["code", "domain"]
+        });
+        let filters = build_filters_from_hook(&meta);
+        assert_eq!(
+            filters.entity_classes.as_deref(),
+            Some(["code".to_string(), "domain".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn build_filters_node_types() {
+        let meta = serde_json::json!({
+            "node_types": ["concept", "function"]
+        });
+        let filters = build_filters_from_hook(&meta);
+        assert_eq!(
+            filters.node_types.as_deref(),
+            Some(["concept".to_string(), "function".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn build_filters_min_confidence() {
+        let meta = serde_json::json!({
+            "min_confidence": 0.75
+        });
+        let filters = build_filters_from_hook(&meta);
+        assert!((filters.min_confidence.unwrap() - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn build_filters_combined() {
+        let meta = serde_json::json!({
+            "domains": ["research"],
+            "min_confidence": 0.5,
+            "node_types": ["concept"]
+        });
+        let filters = build_filters_from_hook(&meta);
+        assert_eq!(
+            filters.domains.as_deref(),
+            Some(["research".to_string()].as_slice())
+        );
+        assert!((filters.min_confidence.unwrap() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(
+            filters.node_types.as_deref(),
+            Some(["concept".to_string()].as_slice())
+        );
+        assert!(filters.entity_classes.is_none());
+    }
+
+    #[test]
+    fn build_filters_ignores_unknown_keys() {
+        let meta = serde_json::json!({
+            "domains": ["code"],
+            "unknown_key": "value",
+            "another": 42
+        });
+        let filters = build_filters_from_hook(&meta);
+        assert!(filters.domains.is_some());
+        // Unknown keys are silently ignored (logged as warnings).
+    }
+
+    #[test]
+    fn build_filters_non_object_returns_default() {
+        let meta = serde_json::json!("not an object");
+        let filters = build_filters_from_hook(&meta);
+        assert!(filters.domains.is_none());
+        assert!(filters.min_confidence.is_none());
+    }
+
+    #[test]
+    fn build_filters_empty_array_ignored() {
+        let meta = serde_json::json!({
+            "domains": [],
+            "node_types": []
+        });
+        let filters = build_filters_from_hook(&meta);
+        // Empty arrays should not set the filter.
+        assert!(filters.domains.is_none());
+        assert!(filters.node_types.is_none());
     }
 }

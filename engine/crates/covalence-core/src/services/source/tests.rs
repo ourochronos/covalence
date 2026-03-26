@@ -76,6 +76,7 @@ fn adapter_regex_validation_catches_invalid_patterns() {
         coref_enabled: true,
         statement_enabled: true,
         is_active: true,
+        default_search_strategy: None,
     };
 
     // Regex::new should reject the pattern.

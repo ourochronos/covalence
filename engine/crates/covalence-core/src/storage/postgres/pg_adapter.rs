@@ -30,10 +30,23 @@ fn adapter_from_row(row: &sqlx::postgres::PgRow) -> SourceAdapter {
         coref_enabled: row.try_get("coref_enabled").unwrap_or(true),
         statement_enabled: row.try_get("statement_enabled").unwrap_or(true),
         is_active: row.try_get("is_active").unwrap_or(true),
+        default_search_strategy: row.try_get("default_search_strategy").unwrap_or(None),
     }
 }
 
 impl AdapterRepo for PgRepo {
+    async fn find_by_id(&self, id: uuid::Uuid) -> Result<Option<SourceAdapter>> {
+        let row = sqlx::query(
+            "SELECT * FROM source_adapters \
+             WHERE id = $1 \
+             LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.as_ref().map(adapter_from_row))
+    }
+
     async fn find_by_domain(&self, domain: &str) -> Result<Option<SourceAdapter>> {
         let row = sqlx::query(
             "SELECT * FROM source_adapters \
@@ -82,17 +95,19 @@ impl AdapterRepo for PgRepo {
                 id, name, description, match_domain, match_mime,
                 match_uri_regex, converter, normalization, prompt_template,
                 default_source_type, default_domain, webhook_url,
-                coref_enabled, statement_enabled, is_active, updated_at
+                coref_enabled, statement_enabled, is_active,
+                default_search_strategy, updated_at
              ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                $13, $14, $15, NOW()
+                $13, $14, $15, $16, NOW()
              ) ON CONFLICT (name) DO UPDATE SET
                 description = $3, match_domain = $4, match_mime = $5,
                 match_uri_regex = $6, converter = $7, normalization = $8,
                 prompt_template = $9, default_source_type = $10,
                 default_domain = $11, webhook_url = $12,
                 coref_enabled = $13, statement_enabled = $14,
-                is_active = $15, updated_at = NOW()",
+                is_active = $15, default_search_strategy = $16,
+                updated_at = NOW()",
         )
         .bind(adapter.id)
         .bind(&adapter.name)
@@ -109,6 +124,7 @@ impl AdapterRepo for PgRepo {
         .bind(adapter.coref_enabled)
         .bind(adapter.statement_enabled)
         .bind(adapter.is_active)
+        .bind(&adapter.default_search_strategy)
         .execute(&self.pool)
         .await?;
         Ok(())

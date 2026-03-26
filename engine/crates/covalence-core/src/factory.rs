@@ -159,7 +159,7 @@ impl ServiceFactory {
 
         // ── Adapter service (config-driven domain classification) ─
         let adapter_service = Arc::new(AdapterService::new(Arc::clone(&repo)));
-        source_svc = source_svc.with_adapter_service(adapter_service);
+        source_svc = source_svc.with_adapter_service(Arc::clone(&adapter_service));
 
         // ── Coref client (validate sidecar) ─────────────────────
         source_svc = Self::wire_coref_client(config, &coref_url, source_svc).await?;
@@ -375,7 +375,8 @@ impl ServiceFactory {
             Some(Arc::new(
                 AskService::new(Arc::clone(&search_service), ask_backend, Arc::clone(&repo))
                     .with_hooks(Arc::clone(&hook_service))
-                    .with_sessions(Arc::clone(&session_service)),
+                    .with_sessions(Arc::clone(&session_service))
+                    .with_adapters(Arc::clone(&adapter_service)),
             ))
         };
 

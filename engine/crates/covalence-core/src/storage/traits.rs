@@ -1281,6 +1281,12 @@ pub trait ConfigRepo: Send + Sync {
 
 /// Repository for source adapter configuration.
 pub trait AdapterRepo: Send + Sync {
+    /// Find adapter by ID.
+    fn find_by_id(
+        &self,
+        id: uuid::Uuid,
+    ) -> impl Future<Output = Result<Option<SourceAdapter>>> + Send;
+
     /// Find adapter by domain match.
     fn find_by_domain(
         &self,
