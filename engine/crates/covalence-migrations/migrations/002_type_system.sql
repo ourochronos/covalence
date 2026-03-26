@@ -83,3 +83,13 @@ CREATE TABLE IF NOT EXISTS ontology_noise_patterns (
     description  TEXT,
     is_active    BOOLEAN NOT NULL DEFAULT true
 );
+
+-- ================================================================
+-- Deferred FKs: domain_groups and domain_rules -> ontology_domains
+-- ================================================================
+
+ALTER TABLE domain_groups ADD CONSTRAINT fk_domain_groups_domain
+    FOREIGN KEY (domain_id) REFERENCES ontology_domains(id);
+
+ALTER TABLE domain_rules ADD CONSTRAINT fk_domain_rules_domain
+    FOREIGN KEY (domain_id) REFERENCES ontology_domains(id);

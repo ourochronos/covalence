@@ -106,3 +106,10 @@ CREATE TABLE IF NOT EXISTS source_adapters (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     is_active           BOOLEAN NOT NULL DEFAULT true
 );
+
+-- ================================================================
+-- Deferred FK: lifecycle_hooks.adapter_id -> source_adapters
+-- ================================================================
+
+ALTER TABLE lifecycle_hooks ADD CONSTRAINT fk_hooks_adapter
+    FOREIGN KEY (adapter_id) REFERENCES source_adapters(id) ON DELETE CASCADE;

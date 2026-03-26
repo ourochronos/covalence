@@ -688,9 +688,9 @@ RETURNS TABLE(
            AND EXISTS (SELECT 1 FROM edges e
                        WHERE e.source_node_id = n.id OR e.target_node_id = n.id))::bigint,
         (SELECT COUNT(*) FROM (
-           SELECT title, domain FROM sources
+           SELECT title, domains FROM sources
            WHERE title IS NOT NULL
-           GROUP BY title, domain HAVING COUNT(*) > 1
+           GROUP BY title, domains HAVING COUNT(*) > 1
          ) dup)::bigint,
         (SELECT COUNT(*) FROM nodes WHERE embedding IS NULL)::bigint,
         (SELECT COUNT(*) FROM nodes
@@ -727,10 +727,12 @@ CREATE OR REPLACE FUNCTION sp_top_invalidated_rel_types(
 $$ LANGUAGE sql STABLE;
 
 -- ================================================================
--- Coverage analysis
+-- Coverage analysis (parameterized domain versions)
 -- ================================================================
 
-CREATE OR REPLACE FUNCTION sp_get_orphan_code_nodes()
+CREATE OR REPLACE FUNCTION sp_get_orphan_code_nodes(
+    p_code_domains TEXT[] DEFAULT ARRAY['code']
+)
 RETURNS TABLE(
     id UUID,
     canonical_name TEXT,
@@ -740,7 +742,7 @@ RETURNS TABLE(
     SELECT n.id, n.canonical_name, n.node_type, n.mention_count
     FROM nodes n
     WHERE n.entity_class = 'code'
-      AND n.primary_domain = 'code'
+      AND n.primary_domain = ANY(p_code_domains)
       AND n.node_type != 'code_test'
       AND n.canonical_name NOT LIKE 'test_%'
       AND NOT EXISTS (
@@ -752,7 +754,9 @@ RETURNS TABLE(
     ORDER BY n.mention_count DESC;
 $$ LANGUAGE sql STABLE;
 
-CREATE OR REPLACE FUNCTION sp_get_unimplemented_specs()
+CREATE OR REPLACE FUNCTION sp_get_unimplemented_specs(
+    p_spec_domains TEXT[] DEFAULT ARRAY['spec', 'design']
+)
 RETURNS TABLE(
     id UUID,
     canonical_name TEXT,
@@ -762,7 +766,7 @@ RETURNS TABLE(
     SELECT n.id, n.canonical_name, n.node_type, n.mention_count
     FROM nodes n
     WHERE n.entity_class = 'domain'
-      AND n.primary_domain IN ('spec', 'design')
+      AND n.primary_domain = ANY(p_spec_domains)
       AND n.mention_count >= 2
       AND LENGTH(n.canonical_name) >= 3
       AND NOT EXISTS (
@@ -774,22 +778,26 @@ RETURNS TABLE(
     ORDER BY n.mention_count DESC;
 $$ LANGUAGE sql STABLE;
 
-CREATE OR REPLACE FUNCTION sp_count_spec_concepts()
+CREATE OR REPLACE FUNCTION sp_count_spec_concepts(
+    p_spec_domains TEXT[] DEFAULT ARRAY['spec', 'design']
+)
 RETURNS BIGINT AS $$
     SELECT COUNT(*)
     FROM nodes n
     WHERE n.entity_class = 'domain'
-      AND n.primary_domain IN ('spec', 'design')
+      AND n.primary_domain = ANY(p_spec_domains)
       AND n.mention_count >= 2
       AND LENGTH(n.canonical_name) >= 3;
 $$ LANGUAGE sql STABLE;
 
-CREATE OR REPLACE FUNCTION sp_count_implemented_specs()
+CREATE OR REPLACE FUNCTION sp_count_implemented_specs(
+    p_spec_domains TEXT[] DEFAULT ARRAY['spec', 'design']
+)
 RETURNS BIGINT AS $$
     SELECT COUNT(DISTINCT n.id)
     FROM nodes n
     WHERE n.entity_class = 'domain'
-      AND n.primary_domain IN ('spec', 'design')
+      AND n.primary_domain = ANY(p_spec_domains)
       AND n.mention_count >= 2
       AND LENGTH(n.canonical_name) >= 3
       AND EXISTS (
@@ -836,12 +844,14 @@ CREATE OR REPLACE FUNCTION sp_get_invalidated_edges_for_node(
 $$ LANGUAGE sql STABLE;
 
 -- ================================================================
--- Alignment checks
+-- Alignment checks (parameterized domain versions)
 -- ================================================================
 
 CREATE OR REPLACE FUNCTION sp_check_spec_ahead(
-    p_limit INT DEFAULT 20
-) RETURNS TABLE(
+    p_limit INT DEFAULT 20,
+    p_spec_domains TEXT[] DEFAULT ARRAY['spec', 'design']
+)
+RETURNS TABLE(
     canonical_name TEXT,
     node_type TEXT,
     mention_count INT
@@ -849,7 +859,7 @@ CREATE OR REPLACE FUNCTION sp_check_spec_ahead(
     SELECT n.canonical_name, n.node_type, n.mention_count
     FROM nodes n
     WHERE n.entity_class = 'domain'
-      AND n.primary_domain IN ('spec', 'design')
+      AND n.primary_domain = ANY(p_spec_domains)
       AND n.node_type NOT IN ('technology', 'actor')
       AND n.mention_count >= 2
       AND LENGTH(n.canonical_name) >= 3
@@ -866,7 +876,9 @@ $$ LANGUAGE sql STABLE;
 
 CREATE OR REPLACE FUNCTION sp_find_code_ahead(
     p_distance_threshold FLOAT8,
-    p_limit INT DEFAULT 20
+    p_limit INT DEFAULT 20,
+    p_code_class TEXT DEFAULT 'code',
+    p_spec_domains TEXT[] DEFAULT ARRAY['spec', 'design']
 ) RETURNS TABLE(
     canonical_name TEXT, node_type TEXT, domain TEXT,
     closest_dist FLOAT8, closest_name TEXT
@@ -875,18 +887,18 @@ CREATE OR REPLACE FUNCTION sp_find_code_ahead(
            COALESCE(n.primary_domain, 'code'),
            (SELECT MIN(n.embedding <=> s.embedding)
             FROM nodes s
-            WHERE s.primary_domain IN ('spec', 'design')
+            WHERE s.primary_domain = ANY(p_spec_domains)
               AND s.entity_class = 'domain'
               AND s.embedding IS NOT NULL) AS closest_dist,
            (SELECT s.canonical_name
             FROM nodes s
-            WHERE s.primary_domain IN ('spec', 'design')
+            WHERE s.primary_domain = ANY(p_spec_domains)
               AND s.entity_class = 'domain'
               AND s.embedding IS NOT NULL
             ORDER BY n.embedding <=> s.embedding ASC
             LIMIT 1) AS closest_name
     FROM nodes n
-    WHERE n.entity_class = 'code'
+    WHERE n.entity_class = p_code_class
       AND n.embedding IS NOT NULL
       AND n.node_type NOT IN ('code_test', 'module')
       AND n.canonical_name NOT LIKE 'test_%'
@@ -894,13 +906,13 @@ CREATE OR REPLACE FUNCTION sp_find_code_ahead(
       AND (
         (SELECT MIN(n.embedding <=> s.embedding)
          FROM nodes s
-         WHERE s.primary_domain IN ('spec', 'design')
+         WHERE s.primary_domain = ANY(p_spec_domains)
            AND s.entity_class = 'domain'
            AND s.embedding IS NOT NULL) > p_distance_threshold
         OR
         (SELECT MIN(n.embedding <=> s.embedding)
          FROM nodes s
-         WHERE s.primary_domain IN ('spec', 'design')
+         WHERE s.primary_domain = ANY(p_spec_domains)
            AND s.entity_class = 'domain'
            AND s.embedding IS NOT NULL) IS NULL
       )
@@ -910,7 +922,9 @@ $$ LANGUAGE sql STABLE;
 
 CREATE OR REPLACE FUNCTION sp_find_design_contradictions(
     p_distance_threshold FLOAT8,
-    p_limit INT DEFAULT 20
+    p_limit INT DEFAULT 20,
+    p_design_domains TEXT[] DEFAULT ARRAY['design'],
+    p_research_domains TEXT[] DEFAULT ARRAY['research']
 ) RETURNS TABLE(
     design_name TEXT, design_type TEXT, distance FLOAT8, research_name TEXT
 ) AS $$
@@ -918,11 +932,11 @@ CREATE OR REPLACE FUNCTION sp_find_design_contradictions(
            (d.embedding <=> r.embedding) AS dist,
            r.canonical_name
     FROM nodes d
-    JOIN nodes r ON r.primary_domain = 'research'
+    JOIN nodes r ON r.primary_domain = ANY(p_research_domains)
       AND r.entity_class = 'domain'
       AND r.embedding IS NOT NULL
       AND (d.embedding <=> r.embedding) < p_distance_threshold
-    WHERE d.primary_domain = 'design'
+    WHERE d.primary_domain = ANY(p_design_domains)
       AND d.entity_class = 'domain'
       AND d.embedding IS NOT NULL
       AND d.mention_count >= 2
@@ -931,7 +945,8 @@ CREATE OR REPLACE FUNCTION sp_find_design_contradictions(
 $$ LANGUAGE sql STABLE;
 
 CREATE OR REPLACE FUNCTION sp_find_stale_design(
-    p_limit INT DEFAULT 20
+    p_limit INT DEFAULT 20,
+    p_design_domains TEXT[] DEFAULT ARRAY['design']
 ) RETURNS TABLE(
     title TEXT, days_behind FLOAT8, code_entities TEXT
 ) AS $$
@@ -942,7 +957,7 @@ CREATE OR REPLACE FUNCTION sp_find_stale_design(
     JOIN chunks c ON c.source_id = s.id
     JOIN extractions ex ON ex.chunk_id = c.id AND ex.entity_type = 'node'
     JOIN nodes n ON n.id = ex.entity_id AND n.entity_class = 'code'
-    WHERE s.domain = 'design'
+    WHERE s.domains && p_design_domains
     GROUP BY s.id, s.title, s.ingested_at
     HAVING MAX(n.last_seen) > s.ingested_at
     ORDER BY 2 DESC
@@ -950,17 +965,23 @@ CREATE OR REPLACE FUNCTION sp_find_stale_design(
 $$ LANGUAGE sql STABLE;
 
 -- ================================================================
--- Research whitespace analysis
+-- Research whitespace analysis (parameterized domain version)
 -- ================================================================
 
-CREATE OR REPLACE FUNCTION sp_get_research_source_bridges()
+CREATE OR REPLACE FUNCTION sp_get_research_source_bridges(
+    p_min_cluster_size BIGINT DEFAULT 3,
+    p_limit INT DEFAULT 100,
+    p_domain_filter TEXT DEFAULT NULL,
+    p_research_domains TEXT[] DEFAULT ARRAY['research', 'external']
+)
 RETURNS TABLE(
     source_id UUID,
     source_title TEXT,
+    source_uri TEXT,
     total_entities BIGINT,
     bridged_entities BIGINT
 ) AS $$
-    SELECT s.id, s.title,
+    SELECT s.id, s.title, s.uri,
         COUNT(DISTINCT n.id) as total_entities,
         COUNT(DISTINCT CASE
             WHEN EXISTS (
@@ -974,15 +995,18 @@ RETURNS TABLE(
     JOIN chunks c ON c.source_id = s.id
     JOIN extractions ex ON ex.chunk_id = c.id AND ex.entity_type = 'node'
     JOIN nodes n ON n.id = ex.entity_id
-    WHERE s.domain IN ('research', 'external')
+    WHERE s.domains && p_research_domains
       AND s.superseded_by IS NULL
       AND n.mention_count >= 2
-    GROUP BY s.id, s.title
-    HAVING COUNT(DISTINCT n.id) >= 3;
+      AND (p_domain_filter IS NULL OR p_domain_filter = ANY(s.domains))
+    GROUP BY s.id, s.title, s.uri
+    HAVING COUNT(DISTINCT n.id) >= p_min_cluster_size
+    ORDER BY total_entities DESC
+    LIMIT p_limit;
 $$ LANGUAGE sql STABLE;
 
 -- ================================================================
--- Edge operations: cooccurrence synthesis
+-- Edge operations: cooccurrence synthesis (CTE-optimized)
 -- ================================================================
 
 CREATE OR REPLACE FUNCTION sp_find_cooccurrence_pairs(
@@ -993,7 +1017,14 @@ CREATE OR REPLACE FUNCTION sp_find_cooccurrence_pairs(
     target_node_id UUID,
     cooccurrence_count BIGINT
 ) AS $$
-    WITH chunk_pairs AS (
+    WITH node_degrees AS (
+        SELECT node_id, COUNT(*) AS degree FROM (
+            SELECT source_node_id AS node_id FROM edges
+            UNION ALL
+            SELECT target_node_id AS node_id FROM edges
+        ) all_nodes GROUP BY node_id
+    ),
+    chunk_pairs AS (
         SELECT e1.entity_id AS src, e2.entity_id AS tgt
         FROM extractions e1
         JOIN extractions e2 ON e1.chunk_id = e2.chunk_id
@@ -1022,14 +1053,16 @@ CREATE OR REPLACE FUNCTION sp_find_cooccurrence_pairs(
     )
     SELECT pf.src, pf.tgt, pf.freq
     FROM pair_freq pf
+    LEFT JOIN node_degrees nd_src ON nd_src.node_id = pf.src
+    LEFT JOIN node_degrees nd_tgt ON nd_tgt.node_id = pf.tgt
     WHERE NOT EXISTS (
         SELECT 1 FROM edges e
         WHERE e.source_node_id = pf.src
           AND e.target_node_id = pf.tgt
           AND e.rel_type = 'co_occurs'
     )
-    AND (SELECT COUNT(*) FROM edges WHERE source_node_id = pf.src OR target_node_id = pf.src) < p_max_degree
-    AND (SELECT COUNT(*) FROM edges WHERE source_node_id = pf.tgt OR target_node_id = pf.tgt) < p_max_degree;
+    AND COALESCE(nd_src.degree, 0) < p_max_degree
+    AND COALESCE(nd_tgt.degree, 0) < p_max_degree;
 $$ LANGUAGE sql STABLE;
 
 -- ================================================================

@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS statements (
     is_evicted        BOOLEAN NOT NULL DEFAULT false,
     extraction_method TEXT NOT NULL DEFAULT 'llm_statement',
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Processing metadata (migration 016)
+    -- Processing metadata
     processing        JSONB DEFAULT '{}',
     -- Full-text search (generated column)
     content_tsv       tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED

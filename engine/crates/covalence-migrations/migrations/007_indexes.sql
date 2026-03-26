@@ -14,7 +14,7 @@ CREATE INDEX IF NOT EXISTS idx_sources_ingested ON sources(ingested_at);
 CREATE INDEX IF NOT EXISTS idx_sources_metadata ON sources USING GIN(metadata);
 CREATE INDEX IF NOT EXISTS idx_sources_clearance ON sources(clearance_level);
 CREATE INDEX IF NOT EXISTS idx_sources_supersedes ON sources(supersedes_id);
-CREATE INDEX IF NOT EXISTS idx_sources_domain ON sources(domain);
+CREATE INDEX IF NOT EXISTS idx_sources_domains_gin ON sources USING GIN(domains);
 CREATE INDEX IF NOT EXISTS idx_sources_project ON sources(project);
 CREATE INDEX IF NOT EXISTS idx_sources_normalized_hash
     ON sources(normalized_hash) WHERE normalized_hash IS NOT NULL;
@@ -241,3 +241,15 @@ CREATE INDEX IF NOT EXISTS idx_query_cache_embedding
 
 CREATE INDEX IF NOT EXISTS idx_source_adapters_active
     ON source_adapters(is_active) WHERE is_active = true;
+
+-- ================================================================
+-- Sessions / Turns
+-- ================================================================
+
+CREATE INDEX IF NOT EXISTS idx_turns_session_ordinal ON turns (session_id, ordinal);
+
+-- ================================================================
+-- Lifecycle Hooks
+-- ================================================================
+
+CREATE INDEX IF NOT EXISTS idx_hooks_phase ON lifecycle_hooks (phase) WHERE is_active = true;

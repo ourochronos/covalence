@@ -1,8 +1,11 @@
 -- 008: Configuration table and seed data
 --
 -- Runtime config table, ontology seed data (categories, entity types,
--- relationship types, domains, view edges, noise patterns), and
--- default source adapter seeds.
+-- relationship types, domains, view edges, noise patterns), default
+-- source adapter seeds, domain group seeds, alignment rule seeds,
+-- and domain classification rule seeds.
+--
+-- Ontology seeds serve as defaults alongside extension manifests.
 
 -- ================================================================
 -- Config table (runtime-adjustable settings)
@@ -195,3 +198,58 @@ INSERT INTO source_adapters (name, description, match_domain, match_mime, conver
     ('code-go', 'Go source files', NULL, 'text/x-go', 'code', 'code', 'code'),
     ('code-python', 'Python source files', NULL, 'text/x-python', 'code', 'code', 'code')
 ON CONFLICT (name) DO NOTHING;
+
+-- ================================================================
+-- Domain group seeds
+-- ================================================================
+
+INSERT INTO domain_groups (group_name, domain_id, sort_order) VALUES
+    ('specification', 'spec',     1),
+    ('specification', 'design',   2),
+    ('evidence',      'research', 1),
+    ('evidence',      'external', 2),
+    ('implementation','code',     1)
+ON CONFLICT DO NOTHING;
+
+-- ================================================================
+-- Alignment rule seeds
+-- ================================================================
+
+INSERT INTO alignment_rules (name, description, check_type, source_group, target_group, parameters) VALUES
+    ('code_ahead',
+     'Code entities with no matching spec concept',
+     'ahead', 'implementation', 'specification', '{}'),
+    ('spec_ahead',
+     'Spec concepts with no implementing code',
+     'ahead', 'specification', 'implementation', '{}'),
+    ('design_contradicted',
+     'Design decisions potentially contradicted by research',
+     'contradiction', 'specification', 'evidence',
+     '{"source_domain": "design", "target_domain": "research"}'),
+    ('stale_design',
+     'Design docs whose descriptions diverge from code reality',
+     'staleness', 'specification', 'implementation',
+     '{"source_domain": "design"}')
+ON CONFLICT (name) DO NOTHING;
+
+-- ================================================================
+-- Domain classification rule seeds
+-- ================================================================
+
+INSERT INTO domain_rules (priority, match_type, match_value, domain_id, description) VALUES
+    (10,  'source_type', 'code',              'code',     'Code sources'),
+    (20,  'uri_prefix',  'file://spec/',       'spec',     'Spec documents'),
+    (30,  'uri_prefix',  'file://docs/adr/',   'design',   'ADR design docs'),
+    (31,  'uri_prefix',  'file://VISION',      'design',   'Vision doc'),
+    (32,  'uri_prefix',  'file://CLAUDE',      'design',   'Project instructions'),
+    (33,  'uri_prefix',  'file://MILESTONES',  'design',   'Milestone docs'),
+    (34,  'uri_prefix',  'file://design/',     'design',   'Design docs'),
+    (40,  'uri_prefix',  'file://engine/',     'code',     'Engine source'),
+    (41,  'uri_prefix',  'file://cli/',        'code',     'CLI source'),
+    (42,  'uri_prefix',  'file://dashboard/',  'code',     'Dashboard source'),
+    (50,  'uri_prefix',  'https://arxiv',      'research', 'ArXiv papers'),
+    (51,  'uri_prefix',  'https://doi',        'research', 'DOI papers'),
+    (60,  'uri_prefix',  'http://',            'research', 'HTTP URLs'),
+    (61,  'uri_prefix',  'https://',           'research', 'HTTPS URLs'),
+    (100, 'source_type', 'document',           'external', 'Remaining documents')
+ON CONFLICT DO NOTHING;

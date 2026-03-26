@@ -3,6 +3,7 @@
 -- Extensions, core tables (sources, chunks, nodes, edges, articles),
 -- supporting tables (extractions, node_aliases, audit_logs,
 -- offset_projection_ledgers, unresolved_entities, outbox_events),
+-- session/turn tables, lifecycle hooks, domain configuration,
 -- views, and trigger functions.
 
 -- ================================================================
@@ -37,20 +38,21 @@ CREATE TABLE IF NOT EXISTS sources (
     content_version   INT NOT NULL DEFAULT 1,
     -- Source-level embedding (Voyage voyage-3-large, 2048d)
     embedding         halfvec(2048),
-    -- Normalized content for deterministic re-ingestion (migration 010)
+    -- Normalized content for deterministic re-ingestion
     normalized_content TEXT,
     normalized_hash    BYTEA,
-    -- Source summary compiled from section summaries (migration 011)
+    -- Source summary compiled from section summaries
     summary           TEXT,
-    -- Graph type system labels (ADR-0018, migration 014)
+    -- Graph type system labels (ADR-0018)
     project           TEXT NOT NULL DEFAULT 'covalence',
-    domain            TEXT,
-    -- Supersession tracking (migration 017)
+    -- Multi-domain classification (replaces legacy single-domain column)
+    domains           TEXT[] NOT NULL DEFAULT '{}',
+    -- Supersession tracking
     superseded_by     UUID REFERENCES sources(id),
     superseded_at     TIMESTAMPTZ,
-    -- Async processing status (migration 018)
+    -- Async processing status
     status            TEXT NOT NULL DEFAULT 'complete',
-    -- Processing metadata (migration 016)
+    -- Processing metadata
     processing        JSONB DEFAULT '{}',
     UNIQUE(content_hash)
 );
@@ -74,11 +76,11 @@ CREATE TABLE IF NOT EXISTS chunks (
     clearance_level     INT NOT NULL DEFAULT 0,
     metadata            JSONB NOT NULL DEFAULT '{}',
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Byte offsets into source.normalized_content (migration 010)
+    -- Byte offsets into source.normalized_content
     byte_start          INTEGER,
     byte_end            INTEGER,
     content_offset      INTEGER DEFAULT 0,
-    -- Processing metadata (migration 016)
+    -- Processing metadata
     processing          JSONB DEFAULT '{}',
     -- Full-text search (generated column)
     content_tsv         tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
@@ -100,15 +102,15 @@ CREATE TABLE IF NOT EXISTS nodes (
     first_seen           TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen            TIMESTAMPTZ NOT NULL DEFAULT now(),
     mention_count        INT NOT NULL DEFAULT 1,
-    -- Ontology clustering (migration 008)
+    -- Ontology clustering
     canonical_type       TEXT,
     cluster_id           UUID,
-    -- Graph type system (ADR-0018, migration 014)
+    -- Graph type system (ADR-0018)
     entity_class         TEXT,
-    -- Domain entropy (migration 015)
+    -- Domain entropy
     domain_entropy       REAL,
     primary_domain       TEXT,
-    -- Processing metadata (migration 016)
+    -- Processing metadata
     processing           JSONB DEFAULT '{}',
     -- Full-text search (generated column)
     name_tsv             tsvector GENERATED ALWAYS AS (
@@ -134,12 +136,12 @@ CREATE TABLE IF NOT EXISTS edges (
     is_synthetic      BOOLEAN NOT NULL DEFAULT false,
     recorded_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Bi-temporal columns (migration 002)
+    -- Bi-temporal columns
     valid_from        TIMESTAMPTZ,
     valid_until       TIMESTAMPTZ,
     invalid_at        TIMESTAMPTZ,
     invalidated_by    UUID REFERENCES edges(id),
-    -- Ontology clustering (migration 008)
+    -- Ontology clustering
     canonical_rel_type TEXT
 );
 
@@ -180,7 +182,7 @@ CREATE TABLE IF NOT EXISTS extractions (
     confidence        FLOAT NOT NULL DEFAULT 1.0,
     is_superseded     BOOLEAN NOT NULL DEFAULT false,
     extracted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Dual provenance: can link to chunk or statement (migration 011)
+    -- Dual provenance: can link to chunk or statement
     statement_id      UUID
 );
 
@@ -290,6 +292,89 @@ CREATE TABLE IF NOT EXISTS model_calibrations (
     adjacent_stddev   FLOAT NOT NULL,
     sample_size       INT NOT NULL,
     calibrated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ================================================================
+-- Sessions (ephemeral /ask conversation context)
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT,
+    metadata    JSONB DEFAULT '{}',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS turns (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id  UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
+    content     TEXT NOT NULL,
+    metadata    JSONB DEFAULT '{}',
+    ordinal     INTEGER NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ================================================================
+-- Domain Groups (named sets of domains for analysis scoping)
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS domain_groups (
+    group_name TEXT NOT NULL,
+    domain_id  TEXT NOT NULL,
+    sort_order INT DEFAULT 0,
+    PRIMARY KEY (group_name, domain_id)
+);
+
+-- ================================================================
+-- Alignment Rules (data-driven analysis checks)
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS alignment_rules (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    check_type  TEXT NOT NULL CHECK (check_type IN ('ahead', 'contradiction', 'staleness')),
+    source_group TEXT NOT NULL,
+    target_group TEXT NOT NULL,
+    parameters  JSONB NOT NULL DEFAULT '{}',
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    sort_order  INT DEFAULT 0
+);
+
+-- ================================================================
+-- Domain Classification Rules (data-driven derive_domain)
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS domain_rules (
+    id          SERIAL PRIMARY KEY,
+    priority    INT NOT NULL DEFAULT 100,
+    match_type  TEXT NOT NULL CHECK (match_type IN ('source_type', 'uri_prefix', 'uri_regex')),
+    match_value TEXT NOT NULL,
+    domain_id   TEXT NOT NULL,
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT true
+);
+
+-- ================================================================
+-- Lifecycle Hooks (extensible pipeline integration)
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS lifecycle_hooks (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL UNIQUE,
+    phase       TEXT NOT NULL CHECK (phase IN (
+        'pre_search', 'post_search', 'post_synthesis',
+        'pre_ingest', 'post_extract', 'post_resolve'
+    )),
+    hook_url    TEXT NOT NULL,
+    adapter_id  UUID,
+    timeout_ms  INT NOT NULL DEFAULT 2000,
+    fail_open   BOOLEAN NOT NULL DEFAULT true,
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ================================================================
