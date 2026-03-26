@@ -25,9 +25,11 @@ pub mod projection;
 pub mod resolver;
 pub mod section_compiler;
 pub mod sidecar_extractor;
+pub mod sidecar_registry;
 pub mod source_profile;
 pub mod statement_cluster;
 pub mod statement_extractor;
+pub mod stdio_transport;
 pub mod takedown;
 pub mod two_pass_extractor;
 pub mod url_fetcher;
@@ -75,11 +77,13 @@ pub use section_compiler::{
     SourceSummaryInput,
 };
 pub use sidecar_extractor::SidecarExtractor;
+pub use sidecar_registry::SidecarRegistry;
 pub use source_profile::{ProfileRegistry, SourceProfile};
 pub use statement_cluster::{ClusterAssignments, ClusterConfig, cluster_statements};
 pub use statement_extractor::{
     ExtractedStatement, MockStatementExtractor, StatementExtractionResult, StatementExtractor,
 };
+pub use stdio_transport::{SidecarTransport, StdioTransport};
 pub use takedown::TakedownResult;
 pub use two_pass_extractor::TwoPassExtractor;
 pub use url_fetcher::{FetchResult, fetch_url};
