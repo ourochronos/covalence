@@ -54,9 +54,14 @@ pub struct ExtensionManifest {
     #[serde(default)]
     pub alignment_rules: Vec<AlignmentRuleDef>,
 
-    /// Optional external service definition.
+    /// Optional external service definition (singular, for backward
+    /// compatibility).
     #[serde(default)]
     pub service: Option<ServiceDef>,
+
+    /// Multiple external service definitions.
+    #[serde(default)]
+    pub services: Vec<ServiceDef>,
 
     /// Lifecycle hooks to register.
     #[serde(default)]
@@ -65,6 +70,22 @@ pub struct ExtensionManifest {
     /// Config schema: `{ key: { type, default, description } }`.
     #[serde(default)]
     pub config_schema: HashMap<String, ConfigFieldDef>,
+}
+
+impl ExtensionManifest {
+    /// Return all service definitions, merging the singular `service`
+    /// field with the plural `services` vec for backward
+    /// compatibility.
+    pub fn merged_services(&self) -> Vec<&ServiceDef> {
+        let mut out: Vec<&ServiceDef> = Vec::new();
+        if let Some(ref svc) = self.service {
+            out.push(svc);
+        }
+        for svc in &self.services {
+            out.push(svc);
+        }
+        out
+    }
 }
 
 /// A domain definition.
@@ -280,8 +301,10 @@ version: "1.0.0"
         assert!(manifest.domain_groups.is_empty());
         assert!(manifest.alignment_rules.is_empty());
         assert!(manifest.service.is_none());
+        assert!(manifest.services.is_empty());
         assert!(manifest.hooks.is_empty());
         assert!(manifest.config_schema.is_empty());
+        assert!(manifest.merged_services().is_empty());
     }
 
     #[test]
@@ -413,5 +436,54 @@ alignment_rules:
             manifest.alignment_rules[0].parameters,
             serde_json::Value::Object(serde_json::Map::new())
         );
+    }
+
+    #[test]
+    fn merged_services_combines_singular_and_plural() {
+        let yaml = r#"
+name: svc-test
+version: "1.0.0"
+
+service:
+  name: legacy-svc
+  transport: http
+  url: "http://localhost:9000"
+
+services:
+  - name: new-svc-a
+    transport: stdio
+    command: my-cmd
+  - name: new-svc-b
+    transport: http
+    url: "http://localhost:9001"
+"#;
+        let manifest: ExtensionManifest =
+            serde_yaml::from_str(yaml).expect("should parse services");
+        assert!(manifest.service.is_some());
+        assert_eq!(manifest.services.len(), 2);
+
+        let merged = manifest.merged_services();
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].name, "legacy-svc");
+        assert_eq!(merged[1].name, "new-svc-a");
+        assert_eq!(merged[2].name, "new-svc-b");
+    }
+
+    #[test]
+    fn merged_services_only_plural() {
+        let yaml = r#"
+name: svc-test
+version: "1.0.0"
+
+services:
+  - name: only-svc
+    transport: http
+    url: "http://localhost:9000"
+"#;
+        let manifest: ExtensionManifest = serde_yaml::from_str(yaml).expect("should parse");
+        assert!(manifest.service.is_none());
+        let merged = manifest.merged_services();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "only-svc");
     }
 }

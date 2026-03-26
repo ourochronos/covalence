@@ -125,3 +125,13 @@ alignment_rules:
     source_group: implementation
     target_group: specification
     description: "Code entities with no matching spec concept"
+
+config_schema:
+  languages:
+    type: array
+    default: ["rust", "python", "go"]
+    description: "Languages to extract AST from"
+  max_function_depth:
+    type: integer
+    default: 10
+    description: "Maximum call-graph depth for structural analysis"
