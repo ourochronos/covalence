@@ -348,6 +348,7 @@ impl ChatBackend for ChainChatBackend {
         json_mode: bool,
         temperature: f64,
     ) -> Result<ChatResponse> {
+        let call_start = std::time::Instant::now();
         let mut last_err = None;
         for (i, (label, backend)) in self.chain.iter().enumerate() {
             match backend
@@ -355,6 +356,9 @@ impl ChatBackend for ChainChatBackend {
                 .await
             {
                 Ok(response) => {
+                    let elapsed = call_start.elapsed().as_secs_f64();
+                    crate::metrics::record_llm_call(&response.provider);
+                    crate::metrics::record_llm_latency(&response.provider, elapsed);
                     if i > 0 {
                         tracing::info!(
                             provider = %label,

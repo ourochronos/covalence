@@ -7,7 +7,8 @@ use tower_http::services::ServeDir;
 use utoipa::OpenApi;
 
 use crate::handlers::{
-    adapters, admin, analysis, ask, config, edges, mcp, memory, nodes, ontology, search, sources,
+    adapters, admin, analysis, ask, config, edges, mcp, memory, metrics, nodes, ontology, search,
+    sources,
 };
 use crate::middleware::require_api_key;
 use crate::openapi::ApiDoc;
@@ -140,6 +141,8 @@ pub fn router(state: AppState) -> Router {
         .nest_service("/dashboard", ServeDir::new(&dashboard_dir))
         // Root health check (convenience, no auth)
         .route("/health", get(admin::health))
+        // Prometheus metrics (root level, no auth — standard scrape path)
+        .route("/metrics", get(metrics::prometheus_metrics))
         // Versioned API
         .nest("/api/v1", api_v1)
         .layer(axum::middleware::from_fn_with_state(

@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::State;
 use chrono::DateTime;
 
-use crate::error::ApiError;
+use crate::error::{ApiError, validate_request};
 use crate::handlers::dto::{
     ContextItemResponse, ContextResponse, FeedbackResponse, SearchApiResponse,
     SearchFeedbackRequest, SearchGranularity, SearchMode, SearchRequest, SearchResultResponse,
@@ -38,6 +38,8 @@ pub async fn search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchApiResponse>, ApiError> {
+    validate_request(&req)?;
+
     if req.query.trim().is_empty() {
         return Err(ApiError::from(covalence_core::error::Error::InvalidInput(
             "query must not be empty".to_string(),
@@ -297,14 +299,7 @@ pub async fn search_feedback(
     State(state): State<AppState>,
     Json(req): Json<SearchFeedbackRequest>,
 ) -> Result<Json<FeedbackResponse>, ApiError> {
-    if !req.relevance.is_finite() || !(0.0..=1.0).contains(&req.relevance) {
-        return Err(ApiError::from(covalence_core::error::Error::InvalidInput(
-            format!(
-                "relevance must be finite and in [0.0, 1.0], got {}",
-                req.relevance
-            ),
-        )));
-    }
+    validate_request(&req)?;
 
     let feedback = covalence_core::models::trace::SearchFeedback::new(
         req.query,

@@ -44,6 +44,9 @@ pub struct AppState {
     pub config_service: Arc<covalence_core::services::ConfigService>,
     /// Ontology service (configurable knowledge schema).
     pub ontology_service: Arc<covalence_core::services::OntologyService>,
+    /// Prometheus metrics handle for rendering the `/metrics`
+    /// endpoint. `None` if the recorder failed to install.
+    pub prometheus_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
 }
 
 impl AppState {
@@ -54,6 +57,17 @@ impl AppState {
     /// graph engine selection (petgraph vs AGE), and wiring the
     /// chosen graph engine into the analysis and admin services.
     pub async fn new(config: Config) -> Result<Self> {
+        // Install the Prometheus metrics recorder. This must happen
+        // before any metrics are emitted. `.ok()` silently handles
+        // the case where a recorder is already installed (e.g. in
+        // tests).
+        let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .install_recorder()
+            .ok();
+        if prometheus_handle.is_some() {
+            tracing::info!("prometheus metrics recorder installed");
+        }
+
         let repo = Arc::new(PgRepo::new(&config.database_url).await?);
 
         // Build all shared services via the factory.
@@ -151,6 +165,7 @@ impl AppState {
             queue_service: factory.queue_service,
             config_service: factory.config_service,
             ontology_service: factory.ontology_service,
+            prometheus_handle,
         })
     }
 }

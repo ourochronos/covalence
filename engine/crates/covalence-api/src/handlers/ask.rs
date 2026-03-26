@@ -3,7 +3,7 @@
 use axum::Json;
 use axum::extract::State;
 
-use crate::error::ApiError;
+use crate::error::{ApiError, validate_request};
 use crate::handlers::dto::{AskApiRequest, AskApiResponse, CitationResponse};
 use crate::state::AppState;
 
@@ -26,6 +26,8 @@ pub async fn ask(
     State(state): State<AppState>,
     Json(req): Json<AskApiRequest>,
 ) -> Result<Json<AskApiResponse>, ApiError> {
+    validate_request(&req)?;
+
     if req.question.trim().is_empty() {
         return Err(ApiError::from(covalence_core::error::Error::InvalidInput(
             "question must not be empty".to_string(),

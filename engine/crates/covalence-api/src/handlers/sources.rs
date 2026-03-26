@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use uuid::Uuid;
 
-use crate::error::ApiError;
+use crate::error::{ApiError, validate_request};
 use crate::handlers::dto::{
     ChunkResponse, CreateSourceRequest, CreateSourceResponse, DeleteSourceResponse,
     EnqueueReprocessResponse, PaginationParams, ReprocessSourceResponse, SourceResponse,
@@ -31,6 +31,8 @@ pub async fn create_source(
     State(state): State<AppState>,
     Json(req): Json<CreateSourceRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateSourceResponse>), ApiError> {
+    validate_request(&req)?;
+
     // Build metadata, merging format_origin, authors, title, and
     // author into the JSONB metadata object.
     let mut metadata = req

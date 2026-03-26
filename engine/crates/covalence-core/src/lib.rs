@@ -11,6 +11,7 @@ pub mod error;
 pub mod factory;
 pub mod graph;
 pub mod ingestion;
+pub mod metrics;
 pub mod models;
 pub mod search;
 pub mod services;
