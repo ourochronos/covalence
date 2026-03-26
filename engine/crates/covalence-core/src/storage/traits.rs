@@ -1332,6 +1332,30 @@ pub trait OntologyRepo: Send + Sync {
     fn list_view_edges(&self) -> impl Future<Output = Result<Vec<(String, String)>>> + Send;
 }
 
+/// Repository for lifecycle hook configuration.
+pub trait HookRepo: Send + Sync {
+    /// List all active hooks for a given phase.
+    fn list_by_phase(
+        &self,
+        phase: &str,
+    ) -> impl Future<Output = Result<Vec<crate::services::hooks::LifecycleHook>>> + Send;
+
+    /// Create a new lifecycle hook.
+    fn create(
+        &self,
+        hook: &crate::services::hooks::LifecycleHook,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Delete a lifecycle hook by ID. Returns true if a row was
+    /// deleted.
+    fn delete(&self, id: uuid::Uuid) -> impl Future<Output = Result<bool>> + Send;
+
+    /// List all lifecycle hooks (active and inactive).
+    fn list_all(
+        &self,
+    ) -> impl Future<Output = Result<Vec<crate::services::hooks::LifecycleHook>>> + Send;
+}
+
 /// Repository for ask-service graph edge lookups.
 pub trait AskRepo: Send + Sync {
     /// Get outgoing edges via SP.

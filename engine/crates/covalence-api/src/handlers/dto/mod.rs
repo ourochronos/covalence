@@ -10,6 +10,7 @@ mod ask;
 mod common;
 mod edges;
 mod graph;
+mod hooks;
 mod nodes;
 mod search;
 mod sources;
@@ -41,6 +42,9 @@ pub use edges::{CorrectEdgeRequest, DeleteEdgeParams, EdgeResponse};
 pub use graph::{
     CommunityParams, CommunityResponse, DomainLinkResponse, DomainResponse, GraphStatsResponse,
     TopologyResponse,
+};
+pub use hooks::{
+    CreateHookRequest, CreateHookResponse, DeleteHookResponse, HookResponse, ListHooksResponse,
 };
 pub use nodes::{
     AnnotateNodeRequest, CorrectNodeRequest, GetNodeParams, MergeNodesRequest, MergeNodesResponse,

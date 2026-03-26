@@ -62,6 +62,10 @@ pub enum Error {
     /// Retry queue operation failed.
     #[error("queue error: {0}")]
     Queue(String),
+
+    /// Lifecycle hook call failed.
+    #[error("hook error: {0}")]
+    Hook(String),
 }
 
 /// Result type alias using the Covalence error.
@@ -132,6 +136,12 @@ mod tests {
     fn auth_error_display() {
         let err = Error::Auth("unauthorized".into());
         assert_eq!(err.to_string(), "auth error: unauthorized");
+    }
+
+    #[test]
+    fn hook_error_display() {
+        let err = Error::Hook("timeout after 2000ms".into());
+        assert_eq!(err.to_string(), "hook error: timeout after 2000ms");
     }
 
     #[test]

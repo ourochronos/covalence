@@ -18,6 +18,7 @@ use crate::models::node::{EntityClass, derive_entity_class};
 use crate::search::fusion::FusedResult;
 use crate::search::strategy::SearchStrategy;
 use crate::services::SearchService;
+use crate::services::hooks::HookService;
 use crate::storage::postgres::PgRepo;
 
 /// Options controlling ask behavior.
@@ -86,16 +87,41 @@ pub struct AskService {
     chat: Arc<dyn ChatBackend>,
     /// Database repo for provenance enrichment and graph edge lookups.
     repo: Arc<PgRepo>,
+    /// Optional lifecycle hook service for pipeline extensibility.
+    hooks: Option<Arc<HookService>>,
 }
 
 impl AskService {
     /// Create a new ask service.
     pub fn new(search: Arc<SearchService>, chat: Arc<dyn ChatBackend>, repo: Arc<PgRepo>) -> Self {
-        Self { search, chat, repo }
+        Self {
+            search,
+            chat,
+            repo,
+            hooks: None,
+        }
+    }
+
+    /// Attach a lifecycle hook service for pipeline extensibility.
+    pub fn with_hooks(mut self, hooks: Arc<HookService>) -> Self {
+        self.hooks = Some(hooks);
+        self
     }
 
     /// Answer a question by searching, enriching, and synthesizing.
     pub async fn ask(&self, question: &str, options: AskOptions) -> Result<AskResponse> {
+        // 0. Pre-search hooks: let external systems enrich the query.
+        if let Some(ref hooks) = self.hooks {
+            let pre = hooks.fire_pre_search(question, None).await?;
+            if let Some(ref terms) = pre.boost_terms {
+                tracing::info!(
+                    boost_terms = ?terms,
+                    "pre_search hook returned boost terms (logged, \
+                     not yet applied to query)"
+                );
+            }
+        }
+
         // 1. Search for context.
         let strategy = parse_strategy(options.strategy.as_deref());
         let results = self
@@ -113,15 +139,40 @@ impl AskService {
             });
         }
 
-        // 2. Enrich with provenance and build context blocks.
-        let context_blocks = self.build_context_blocks(&results).await;
+        // 2. Post-search hooks: let external systems inject
+        //    additional context before synthesis.
+        let extra_context = if let Some(ref hooks) = self.hooks {
+            let summary = format!("{} results found", results.len());
+            let post = hooks.fire_post_search(question, &summary, None).await?;
+            post.additional_context.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // 3. Enrich with provenance and build context blocks.
+        let mut context_blocks = self.build_context_blocks(&results).await;
+
+        // Append hook-injected context as extra blocks.
+        for (i, ctx_text) in extra_context.iter().enumerate() {
+            context_blocks.push(ContextBlock {
+                number: context_blocks.len() + 1,
+                result_type: "hook_context".to_string(),
+                confidence: 1.0,
+                source_title: format!("hook_context_{}", i + 1),
+                source_uri: String::new(),
+                source_domain: "external".to_string(),
+                snippet: ctx_text.clone(),
+                _fused_score: 0.0,
+                graph_edges: None,
+            });
+        }
         let context_used = context_blocks.len();
 
-        // 3. Build the grounded prompt.
+        // 4. Build the grounded prompt.
         let system_prompt = build_system_prompt();
         let user_prompt = build_user_prompt(question, &context_blocks);
 
-        // 4. Call LLM (use per-request model override if specified).
+        // 5. Call LLM (use per-request model override if specified).
         let backend: Arc<dyn ChatBackend> = if let Some(ref model) = options.model {
             Arc::new(resolve_model_backend(model))
         } else {
@@ -132,8 +183,17 @@ impl AskService {
             .await?;
         let answer = chat_resp.text;
 
-        // 5. Build citations from the search results.
+        // 6. Build citations from the search results.
         let citations = build_citations(&results, &context_blocks);
+
+        // 7. Post-synthesis hook: fire-and-forget notification.
+        if let Some(ref hooks) = self.hooks {
+            let citation_values: Vec<serde_json::Value> = citations
+                .iter()
+                .filter_map(|c| serde_json::to_value(c).ok())
+                .collect();
+            hooks.fire_post_synthesis(question.to_string(), answer.clone(), citation_values, None);
+        }
 
         Ok(AskResponse {
             answer,

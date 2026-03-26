@@ -56,6 +56,7 @@ impl IntoResponse for ApiError {
             Error::EntityResolution(_) => (StatusCode::INTERNAL_SERVER_ERROR, "resolution_error"),
             Error::Consolidation(_) => (StatusCode::INTERNAL_SERVER_ERROR, "consolidation_error"),
             Error::Queue(_) => (StatusCode::INTERNAL_SERVER_ERROR, "queue_error"),
+            Error::Hook(_) => (StatusCode::BAD_GATEWAY, "hook_error"),
         };
 
         let body = json!({

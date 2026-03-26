@@ -28,8 +28,8 @@ use crate::search::cache::CacheConfig;
 use crate::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use crate::services::adapter_service::AdapterService;
 use crate::services::{
-    AdminService, AnalysisService, AskService, ConfigService, EdgeService, NodeService,
-    OntologyService, RetryQueueService, SearchService, SourceService,
+    AdminService, AnalysisService, AskService, ConfigService, EdgeService, HookService,
+    NodeService, OntologyService, RetryQueueService, SearchService, SourceService,
 };
 use crate::storage::postgres::PgRepo;
 
@@ -70,6 +70,8 @@ pub struct ServiceFactory {
     pub config_service: Arc<ConfigService>,
     /// Ontology service (configurable knowledge schema).
     pub ontology_service: Arc<OntologyService>,
+    /// Lifecycle hook service for pipeline extensibility.
+    pub hook_service: Arc<HookService>,
 }
 
 impl ServiceFactory {
@@ -244,6 +246,9 @@ impl ServiceFactory {
                 .with_node_embed_dim(config.embedding.table_dims.node),
         );
 
+        // ── Hook service ─────────────────────────────────────────
+        let hook_service = Arc::new(HookService::new(Arc::clone(&repo)));
+
         // ── Ask service ─────────────────────────────────────────
         let ask_service = {
             let ask_model = &config.ask_model;
@@ -252,11 +257,10 @@ impl ServiceFactory {
                 model = %ask_model,
                 "ask service using dedicated synthesis backend"
             );
-            Some(Arc::new(AskService::new(
-                Arc::clone(&search_service),
-                ask_backend,
-                Arc::clone(&repo),
-            )))
+            Some(Arc::new(
+                AskService::new(Arc::clone(&search_service), ask_backend, Arc::clone(&repo))
+                    .with_hooks(Arc::clone(&hook_service)),
+            ))
         };
 
         // ── Admin service ───────────────────────────────────────
@@ -313,6 +317,7 @@ impl ServiceFactory {
             queue_service,
             config_service,
             ontology_service,
+            hook_service,
         })
     }
 
