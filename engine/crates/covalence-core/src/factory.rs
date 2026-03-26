@@ -251,10 +251,12 @@ impl ServiceFactory {
         let extension_loader = ExtensionLoader::new(Arc::clone(&repo));
         let extensions_dir =
             std::env::var("COVALENCE_EXTENSIONS_DIR").unwrap_or_else(|_| "extensions".to_string());
+        let mut load_results = Vec::new();
         if std::path::Path::new(&extensions_dir).is_dir() {
             match extension_loader.load_directory(&extensions_dir).await {
-                Ok(names) => {
-                    if !names.is_empty() {
+                Ok(results) => {
+                    if !results.is_empty() {
+                        let names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
                         tracing::info!(
                             extensions = ?names,
                             "loaded extensions"
@@ -268,6 +270,7 @@ impl ServiceFactory {
                                  load failed"
                             );
                         }
+                        load_results = results;
                     }
                 }
                 Err(e) => {
@@ -343,10 +346,72 @@ impl ServiceFactory {
                 "initial config load failed (will retry)"
             );
         }
+
+        // Refresh config after extensions may have seeded defaults.
+        if !load_results.is_empty() {
+            if let Err(e) = config_service.refresh().await {
+                tracing::warn!(
+                    error = %e,
+                    "config refresh after extension load failed"
+                );
+            }
+        }
         config_service.spawn_refresh_loop(30);
 
         // ── Service registry ──────────────────────────────────────
-        let service_registry = Self::build_service_registry(config).await;
+        let mut service_registry = Self::build_service_registry(config).await;
+
+        // Register extension-declared services into the registry.
+        for result in &load_results {
+            for svc_def in &result.services {
+                let transport = match svc_def.transport.as_str() {
+                    "stdio" => {
+                        if let Some(ref cmd) = svc_def.command {
+                            ServiceTransport::Stdio {
+                                command: cmd.clone(),
+                                args: svc_def.args.clone(),
+                            }
+                        } else {
+                            tracing::warn!(
+                                extension = %result.name,
+                                service = %svc_def.name,
+                                "stdio service missing command"
+                            );
+                            continue;
+                        }
+                    }
+                    "http" => {
+                        if let Some(ref url) = svc_def.url {
+                            ServiceTransport::Http { url: url.clone() }
+                        } else {
+                            tracing::warn!(
+                                extension = %result.name,
+                                service = %svc_def.name,
+                                "http service missing url"
+                            );
+                            continue;
+                        }
+                    }
+                    other => {
+                        tracing::warn!(
+                            extension = %result.name,
+                            service = %svc_def.name,
+                            transport = %other,
+                            "unknown service transport type"
+                        );
+                        continue;
+                    }
+                };
+                service_registry.register(&svc_def.name, transport);
+                tracing::debug!(
+                    extension = %result.name,
+                    service = %svc_def.name,
+                    "registered extension service"
+                );
+            }
+        }
+
+        let service_registry = Arc::new(service_registry);
 
         Ok(Self {
             repo,
@@ -710,7 +775,10 @@ impl ServiceFactory {
 
     /// Build the service registry from config-driven STDIO entries
     /// and well-known HTTP services.
-    async fn build_service_registry(config: &Config) -> Arc<ServiceRegistry> {
+    ///
+    /// Returns a bare [`ServiceRegistry`] so the caller can add
+    /// extension-declared services before wrapping in `Arc`.
+    async fn build_service_registry(config: &Config) -> ServiceRegistry {
         let mut registry = ServiceRegistry::new();
 
         // Register STDIO services from config.
@@ -753,7 +821,7 @@ impl ServiceFactory {
             );
         }
 
-        Arc::new(registry)
+        registry
     }
 }
 

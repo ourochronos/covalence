@@ -12,7 +12,18 @@ use sqlx::Row;
 use crate::error::{Error, Result};
 use crate::storage::postgres::PgRepo;
 
-use super::manifest::ExtensionManifest;
+use super::manifest::{ExtensionManifest, ServiceDef};
+
+/// The result of loading a single extension manifest.
+#[derive(Debug, Clone)]
+pub struct LoadResult {
+    /// Extension name.
+    pub name: String,
+    /// Service definitions declared by this extension.
+    pub services: Vec<ServiceDef>,
+    /// Number of config keys seeded with defaults.
+    pub config_keys_seeded: usize,
+}
 
 /// Loads extension manifests and seeds DB tables with their
 /// declarations.
@@ -45,8 +56,8 @@ impl ExtensionLoader {
     /// Scan a directory for extension subdirectories and load each.
     ///
     /// Each subdirectory should contain an `extension.yaml` file.
-    /// Returns the list of loaded extension names.
-    pub async fn load_directory(&self, dir: &str) -> Result<Vec<String>> {
+    /// Returns `LoadResult` for each successfully loaded extension.
+    pub async fn load_directory(&self, dir: &str) -> Result<Vec<LoadResult>> {
         let dir_path = Path::new(dir);
         if !dir_path.is_dir() {
             return Err(Error::Config(format!(
@@ -82,13 +93,15 @@ impl ExtensionLoader {
                 Ok(manifest) => {
                     let name = manifest.name.clone();
                     match self.load_manifest(&manifest).await {
-                        Ok(()) => {
+                        Ok(result) => {
                             tracing::info!(
                                 extension = %name,
                                 version = %manifest.version,
+                                config_keys = result.config_keys_seeded,
+                                services = result.services.len(),
                                 "loaded extension"
                             );
-                            loaded.push(name);
+                            loaded.push(result);
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -109,7 +122,7 @@ impl ExtensionLoader {
             }
         }
 
-        loaded.sort();
+        loaded.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(loaded)
     }
 
@@ -117,8 +130,12 @@ impl ExtensionLoader {
     ///
     /// Inserts domains, entity types, relationship types, view edges,
     /// noise patterns, domain rules, domain groups, alignment rules,
-    /// and hooks.  All inserts are idempotent (ON CONFLICT DO NOTHING).
-    pub async fn load_manifest(&self, manifest: &ExtensionManifest) -> Result<()> {
+    /// hooks, and config defaults.  All inserts are idempotent
+    /// (ON CONFLICT DO NOTHING).
+    ///
+    /// Returns a [`LoadResult`] with the extension name, declared
+    /// services, and number of config keys seeded.
+    pub async fn load_manifest(&self, manifest: &ExtensionManifest) -> Result<LoadResult> {
         let pool = self.repo.pool();
 
         // 1. Domains
@@ -319,6 +336,142 @@ impl ExtensionLoader {
                 .bind(hook.fail_open)
                 .execute(pool)
                 .await?;
+            }
+        }
+
+        // 10. Config schema defaults — seed into the config table
+        //     with namespaced keys (`ext.<extension>.<key>`).
+        let mut config_keys_seeded: usize = 0;
+        for (key, field_def) in &manifest.config_schema {
+            if let Some(ref default_val) = field_def.default {
+                let namespaced = format!("ext.{}.{}", manifest.name, key);
+                let result = sqlx::query(
+                    "INSERT INTO config (key, value, description) \
+                     VALUES ($1, $2, $3) \
+                     ON CONFLICT (key) DO NOTHING",
+                )
+                .bind(&namespaced)
+                .bind(default_val)
+                .bind(field_def.description.as_deref().unwrap_or(""))
+                .execute(pool)
+                .await?;
+
+                if result.rows_affected() > 0 {
+                    config_keys_seeded += 1;
+                }
+            }
+        }
+
+        // 11. Service entity nodes — create nodes for declared
+        //     services so they are queryable in the knowledge graph.
+        let merged_services: Vec<ServiceDef> =
+            manifest.merged_services().into_iter().cloned().collect();
+        self.create_service_nodes(&manifest.name, &merged_services)
+            .await?;
+
+        Ok(LoadResult {
+            name: manifest.name.clone(),
+            services: merged_services,
+            config_keys_seeded,
+        })
+    }
+
+    /// Create `Entity:Service` nodes in the knowledge graph for each
+    /// declared service so they are discoverable via search.
+    ///
+    /// For each service:
+    /// - INSERT a node with `node_type = 'service'` and
+    ///   `entity_class = 'analysis'`.
+    /// - INSERT an edge from the extension source (if one exists)
+    ///   to the service node with `rel_type = 'provides_service'`.
+    ///
+    /// All inserts use `ON CONFLICT DO NOTHING` for idempotency.
+    pub async fn create_service_nodes(
+        &self,
+        extension_name: &str,
+        services: &[ServiceDef],
+    ) -> Result<()> {
+        if services.is_empty() {
+            return Ok(());
+        }
+
+        let pool = self.repo.pool();
+
+        for svc in services {
+            let node_id = uuid::Uuid::new_v4();
+
+            // Upsert service node — use canonical_name as the
+            // uniqueness key.
+            sqlx::query(
+                "INSERT INTO nodes \
+                     (id, canonical_name, node_type, \
+                      entity_class, summary) \
+                 VALUES ($1, $2, 'service', 'analysis', $3) \
+                 ON CONFLICT (canonical_name) DO NOTHING",
+            )
+            .bind(node_id)
+            .bind(&svc.name)
+            .bind(format!(
+                "Service '{}' provided by extension '{}'",
+                svc.name, extension_name
+            ))
+            .execute(pool)
+            .await?;
+
+            // If there is a source for this extension, create a
+            // provides_service edge.
+            let maybe_source_id: Option<uuid::Uuid> = sqlx::query_scalar(
+                "SELECT s.id FROM sources s \
+                 JOIN nodes n ON n.canonical_name = $1 \
+                 WHERE s.title = $2 \
+                 LIMIT 1",
+            )
+            .bind(&svc.name)
+            .bind(extension_name)
+            .fetch_optional(pool)
+            .await?;
+
+            if let Some(_source_id) = maybe_source_id {
+                // Look up the actual node ID for the service we
+                // just upserted (may have existed already).
+                let actual_node_id: Option<uuid::Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM nodes \
+                         WHERE canonical_name = $1 \
+                         LIMIT 1",
+                )
+                .bind(&svc.name)
+                .fetch_optional(pool)
+                .await?;
+
+                if let Some(svc_node_id) = actual_node_id {
+                    // Look for an extension node to create an edge
+                    // from.
+                    let ext_node_id: Option<uuid::Uuid> = sqlx::query_scalar(
+                        "SELECT id FROM nodes \
+                             WHERE canonical_name = $1 \
+                             LIMIT 1",
+                    )
+                    .bind(extension_name)
+                    .fetch_optional(pool)
+                    .await?;
+
+                    if let Some(ext_id) = ext_node_id {
+                        let edge_id = uuid::Uuid::new_v4();
+                        sqlx::query(
+                            "INSERT INTO edges \
+                                 (id, source_node_id, \
+                                  target_node_id, rel_type) \
+                             VALUES ($1, $2, $3, \
+                                     'provides_service') \
+                             ON CONFLICT DO NOTHING",
+                        )
+                        .bind(edge_id)
+                        .bind(ext_id)
+                        .bind(svc_node_id)
+                        .execute(pool)
+                        .await?;
+                    }
+                }
             }
         }
 
@@ -527,6 +680,11 @@ config_schema:
   key1:
     type: string
     default: "hello"
+
+services:
+  - name: svc1
+    transport: http
+    url: "http://localhost:9090"
 "#;
         let manifest: ExtensionManifest = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(manifest.name, "complete");
@@ -540,5 +698,25 @@ config_schema:
         assert_eq!(manifest.alignment_rules.len(), 1);
         assert_eq!(manifest.hooks.len(), 1);
         assert_eq!(manifest.config_schema.len(), 1);
+        assert_eq!(manifest.services.len(), 1);
+        assert_eq!(manifest.services[0].name, "svc1");
+    }
+
+    #[test]
+    fn load_result_preserves_services_and_config_count() {
+        let result = LoadResult {
+            name: "test-ext".to_string(),
+            services: vec![ServiceDef {
+                name: "svc1".to_string(),
+                transport: "http".to_string(),
+                command: None,
+                args: vec![],
+                url: Some("http://localhost:9000".to_string()),
+            }],
+            config_keys_seeded: 3,
+        };
+        assert_eq!(result.name, "test-ext");
+        assert_eq!(result.services.len(), 1);
+        assert_eq!(result.config_keys_seeded, 3);
     }
 }

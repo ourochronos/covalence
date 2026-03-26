@@ -88,6 +88,25 @@ impl ConfigService {
         ConfigRepo::list_all_entries(&*self.repo).await
     }
 
+    /// Get all config entries for a given extension.
+    ///
+    /// Queries the cache for keys starting with `ext.<extension_name>.`
+    /// and returns them with the namespace prefix stripped.
+    pub async fn extension_config(
+        &self,
+        extension_name: &str,
+    ) -> HashMap<String, serde_json::Value> {
+        let prefix = format!("ext.{}.", extension_name);
+        let cache = self.cache.read().await;
+        cache
+            .iter()
+            .filter_map(|(k, v)| {
+                k.strip_prefix(&prefix)
+                    .map(|stripped| (stripped.to_string(), v.clone()))
+            })
+            .collect()
+    }
+
     /// Update a config value (from WebUI or API).
     pub async fn set(&self, key: &str, value: serde_json::Value) -> Result<()> {
         ConfigRepo::set(&*self.repo, key, &value).await?;
@@ -111,5 +130,80 @@ impl ConfigService {
                 tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
             }
         });
+    }
+
+    /// Inject values into the cache for testing (bypasses DB).
+    #[cfg(test)]
+    pub async fn inject_for_test(&self, entries: Vec<(String, serde_json::Value)>) {
+        let mut cache = self.cache.write().await;
+        for (k, v) in entries {
+            cache.insert(k, v);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a ConfigService without a real DB for cache-only tests.
+    fn test_config_service() -> ConfigService {
+        // Safety: we never call refresh() or set() — only
+        // cache-only methods.
+        let pool = unsafe {
+            sqlx::PgPool::connect_lazy("postgres://fake@localhost/fake").unwrap_unchecked()
+        };
+        let repo = Arc::new(PgRepo::from_pool(pool));
+        ConfigService::new(repo)
+    }
+
+    #[tokio::test]
+    async fn extension_config_returns_matching_keys() {
+        let svc = test_config_service();
+        svc.inject_for_test(vec![
+            (
+                "ext.code-analysis.languages".into(),
+                serde_json::json!(["rust", "python"]),
+            ),
+            ("ext.code-analysis.max_depth".into(), serde_json::json!(10)),
+            ("ext.research.enabled".into(), serde_json::json!(true)),
+            ("other.key".into(), serde_json::json!("ignored")),
+        ])
+        .await;
+
+        let cfg = svc.extension_config("code-analysis").await;
+        assert_eq!(cfg.len(), 2);
+        assert_eq!(
+            cfg.get("languages"),
+            Some(&serde_json::json!(["rust", "python"]))
+        );
+        assert_eq!(cfg.get("max_depth"), Some(&serde_json::json!(10)));
+    }
+
+    #[tokio::test]
+    async fn extension_config_returns_empty_for_unknown() {
+        let svc = test_config_service();
+        svc.inject_for_test(vec![(
+            "ext.code-analysis.languages".into(),
+            serde_json::json!(["rust"]),
+        )])
+        .await;
+
+        let cfg = svc.extension_config("nonexistent").await;
+        assert!(cfg.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extension_config_no_partial_prefix_match() {
+        let svc = test_config_service();
+        svc.inject_for_test(vec![(
+            "ext.code-analysis-v2.key".into(),
+            serde_json::json!("val"),
+        )])
+        .await;
+
+        // Should NOT match "code-analysis" (partial prefix).
+        let cfg = svc.extension_config("code-analysis").await;
+        assert!(cfg.is_empty());
     }
 }

@@ -14,5 +14,5 @@
 pub mod loader;
 pub mod manifest;
 
-pub use loader::ExtensionLoader;
+pub use loader::{ExtensionLoader, LoadResult};
 pub use manifest::ExtensionManifest;

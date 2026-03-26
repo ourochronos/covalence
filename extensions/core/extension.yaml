@@ -27,6 +27,14 @@ entity_types:
     category: artifact
     label: Community Summary
     description: "A summary of a graph community cluster"
+  - id: service
+    category: process
+    label: Service
+    description: "An external or internal service endpoint"
+  - id: extension
+    category: collection
+    label: Extension
+    description: "A Covalence knowledge extension"
 
 # General-purpose relationship types:
 relationship_types:
@@ -48,6 +56,10 @@ relationship_types:
   - id: mentioned_at
     universal: uses
     label: Mentioned At
+  - id: provides_service
+    universal: part_of
+    label: Provides Service
+    description: "Extension provides a service endpoint"
 
 # Core noise patterns (common false positives):
 noise_patterns:
