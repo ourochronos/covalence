@@ -1,4 +1,4 @@
-//! JSON-in, JSON-out STDIO transport for sidecar processes.
+//! JSON-in, JSON-out STDIO transport for external service processes.
 //!
 //! Spawns a child process per call, writes JSON to stdin, reads JSON
 //! from stdout. Stateless — each invocation is independent.
@@ -16,20 +16,20 @@ use tokio::process::Command;
 
 use crate::error::{Error, Result};
 
-/// Transport type for sidecar communication.
+/// Transport type for external service communication.
 ///
-/// Unifies HTTP sidecars (persistent servers) and STDIO sidecars
+/// Unifies HTTP services (persistent servers) and STDIO services
 /// (stateless child processes) under a single enum so the registry
 /// can manage both.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
-pub enum SidecarTransport {
-    /// HTTP sidecar — a persistent server at the given URL.
+pub enum ServiceTransport {
+    /// HTTP service — a persistent server at the given URL.
     Http {
-        /// Base URL of the HTTP sidecar.
+        /// Base URL of the HTTP service.
         url: String,
     },
-    /// STDIO sidecar — spawned per-call, JSON on stdin/stdout.
+    /// STDIO service — spawned per-call, JSON on stdin/stdout.
     Stdio {
         /// Command to execute.
         command: String,
@@ -82,18 +82,18 @@ impl StdioTransport {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
-                Error::Ingestion(format!("failed to spawn sidecar '{}': {e}", self.command))
+                Error::Ingestion(format!("failed to spawn service '{}': {e}", self.command))
             })?;
 
         // Write JSON to stdin, then close it.
         let stdin_bytes = serde_json::to_vec(input)
-            .map_err(|e| Error::Ingestion(format!("failed to serialize sidecar input: {e}")))?;
+            .map_err(|e| Error::Ingestion(format!("failed to serialize service input: {e}")))?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(&stdin_bytes)
                 .await
-                .map_err(|e| Error::Ingestion(format!("failed to write to sidecar stdin: {e}")))?;
+                .map_err(|e| Error::Ingestion(format!("failed to write to service stdin: {e}")))?;
             // Drop stdin to signal EOF.
             drop(stdin);
         }
@@ -103,11 +103,11 @@ impl StdioTransport {
             .await
             .map_err(|_| {
                 Error::Ingestion(format!(
-                    "sidecar '{}' timed out after {:?}",
+                    "service '{}' timed out after {:?}",
                     self.command, self.timeout
                 ))
             })?
-            .map_err(|e| Error::Ingestion(format!("failed to read sidecar output: {e}")))?;
+            .map_err(|e| Error::Ingestion(format!("failed to read service output: {e}")))?;
 
         // Check exit status.
         if !output.status.success() {
@@ -118,7 +118,7 @@ impl StdioTransport {
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".to_string());
             return Err(Error::Ingestion(format!(
-                "sidecar '{}' exited with code {code}: {stderr}",
+                "service '{}' exited with code {code}: {stderr}",
                 self.command
             )));
         }
@@ -127,14 +127,14 @@ impl StdioTransport {
         serde_json::from_slice::<O>(&output.stdout).map_err(|e| {
             let raw = String::from_utf8_lossy(&output.stdout);
             Error::Ingestion(format!(
-                "sidecar '{}' returned invalid JSON: {e} (raw: {})",
+                "service '{}' returned invalid JSON: {e} (raw: {})",
                 self.command,
                 &raw[..raw.len().min(200)]
             ))
         })
     }
 
-    /// Validate that the sidecar is reachable and returns valid JSON.
+    /// Validate that the service is reachable and returns valid JSON.
     ///
     /// Sends `{"ping": true}` and checks that any valid JSON comes
     /// back.
@@ -150,14 +150,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sidecar_transport_serde_roundtrip_http() {
-        let transport = SidecarTransport::Http {
+    fn service_transport_serde_roundtrip_http() {
+        let transport = ServiceTransport::Http {
             url: "http://localhost:8080".to_string(),
         };
         let json = serde_json::to_string(&transport).unwrap();
-        let parsed: SidecarTransport = serde_json::from_str(&json).unwrap();
+        let parsed: ServiceTransport = serde_json::from_str(&json).unwrap();
         match parsed {
-            SidecarTransport::Http { url } => {
+            ServiceTransport::Http { url } => {
                 assert_eq!(url, "http://localhost:8080");
             }
             _ => panic!("expected Http variant"),
@@ -165,15 +165,15 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_transport_serde_roundtrip_stdio() {
-        let transport = SidecarTransport::Stdio {
+    fn service_transport_serde_roundtrip_stdio() {
+        let transport = ServiceTransport::Stdio {
             command: "my-tool".to_string(),
             args: vec!["--format".to_string(), "json".to_string()],
         };
         let json = serde_json::to_string(&transport).unwrap();
-        let parsed: SidecarTransport = serde_json::from_str(&json).unwrap();
+        let parsed: ServiceTransport = serde_json::from_str(&json).unwrap();
         match parsed {
-            SidecarTransport::Stdio { command, args } => {
+            ServiceTransport::Stdio { command, args } => {
                 assert_eq!(command, "my-tool");
                 assert_eq!(args, vec!["--format", "json"]);
             }

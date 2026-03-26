@@ -343,14 +343,14 @@ pub struct KnowledgeGapsResponse {
     pub gaps: Vec<KnowledgeGapItem>,
 }
 
-/// Health status of a single sidecar in the audit response.
+/// Health status of a single external service in the audit response.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct SidecarHealthResponse {
-    /// Human-readable sidecar name.
+pub struct ServiceHealthResponse {
+    /// Human-readable service name.
     pub name: String,
-    /// Whether the sidecar URL is configured.
+    /// Whether the service URL is configured.
     pub configured: bool,
-    /// Whether the sidecar responded to a health probe.
+    /// Whether the service responded to a health probe.
     pub reachable: bool,
     /// Description of fallback behavior when unreachable.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -362,8 +362,8 @@ pub struct SidecarHealthResponse {
 pub struct ConfigAuditResponse {
     /// Current pipeline configuration summary.
     pub current_config: serde_json::Value,
-    /// Sidecar health status.
-    pub sidecars: Vec<SidecarHealthResponse>,
+    /// External service health status.
+    pub services: Vec<ServiceHealthResponse>,
     /// Warnings about potential issues.
     pub warnings: Vec<String>,
 }

@@ -2,13 +2,15 @@
 
 use crate::error::{Error, Result};
 
-/// Configuration for a STDIO sidecar discovered from env vars.
+/// Configuration for an external STDIO service discovered from env
+/// vars.
 ///
-/// Parsed from `COVALENCE_SIDECAR_<NAME>_COMMAND` and the optional
-/// `COVALENCE_SIDECAR_<NAME>_ARGS` (comma-separated).
+/// Parsed from `COVALENCE_SERVICE_<NAME>_COMMAND` (preferred) or the
+/// legacy `COVALENCE_SIDECAR_<NAME>_COMMAND` (fallback), plus the
+/// optional `_ARGS` suffix (comma-separated).
 #[derive(Debug, Clone)]
-pub struct SidecarConfig {
-    /// Human-readable sidecar name (lowercased from the env var).
+pub struct ExternalServiceConfig {
+    /// Human-readable service name (lowercased from the env var).
     pub name: String,
     /// Command to execute.
     pub command: String,
@@ -124,7 +126,7 @@ pub struct Config {
     /// relationships only.
     pub entity_extractor: String,
 
-    /// Base URL for the extraction sidecar (used by `gliner2` backend).
+    /// Base URL for the extraction service (used by `gliner2` backend).
     ///
     /// Env: `COVALENCE_EXTRACT_URL`. Defaults to `http://localhost:8432`
     /// when the `gliner2` backend is selected.
@@ -133,25 +135,24 @@ pub struct Config {
     /// GLiNER2 confidence threshold in \[0.0, 1.0\].
     ///
     /// Entities scoring below this threshold are discarded by the
-    /// sidecar. Env: `COVALENCE_GLINER_THRESHOLD`. Default: `0.5`.
+    /// service. Env: `COVALENCE_GLINER_THRESHOLD`. Default: `0.5`.
     pub gliner_threshold: f32,
 
-    /// Base URL for the Fastcoref neural coreference sidecar.
+    /// Base URL for the Fastcoref neural coreference service.
     ///
     /// When set, neural coreference resolution runs as a
     /// preprocessing stage before entity extraction, benefiting
-    /// all extractor backends. When `entity_extractor` is
-    /// `"sidecar"`, defaults to `extract_url` if not explicitly set.
-    /// Env: `COVALENCE_COREF_URL`. Default: none (auto from sidecar).
+    /// all extractor backends.
+    /// Env: `COVALENCE_COREF_URL`. Default: none.
     pub coref_url: Option<String>,
 
-    /// Base URL for the PDF-to-Markdown conversion sidecar
+    /// Base URL for the PDF-to-Markdown conversion service
     /// (e.g., pymupdf4llm). When set, `application/pdf` content
     /// is converted to Markdown via `POST /convert-pdf`.
     /// Env: `COVALENCE_PDF_URL`. Default: none (disabled).
     pub pdf_url: Option<String>,
 
-    /// Base URL for the ReaderLM-v2 HTML-to-Markdown sidecar.
+    /// Base URL for the ReaderLM-v2 HTML-to-Markdown service.
     ///
     /// When set, HTML content is converted to clean Markdown via
     /// the MLX-based ReaderLM model before parsing. Falls back to
@@ -181,11 +182,13 @@ pub struct Config {
     /// Env: `COVALENCE_ASK_MODEL`. Default: `"sonnet"`.
     pub ask_model: String,
 
-    /// STDIO sidecar configurations discovered from env vars.
+    /// External STDIO service configurations discovered from env
+    /// vars.
     ///
-    /// Parsed from `COVALENCE_SIDECAR_<NAME>_COMMAND` and the
-    /// optional `COVALENCE_SIDECAR_<NAME>_ARGS` (comma-separated).
-    pub sidecars: Vec<SidecarConfig>,
+    /// Parsed from `COVALENCE_SERVICE_<NAME>_COMMAND` (preferred) or
+    /// the legacy `COVALENCE_SIDECAR_<NAME>_COMMAND` (fallback),
+    /// plus the optional `_ARGS` suffix (comma-separated).
+    pub external_services: Vec<ExternalServiceConfig>,
 }
 
 /// Configuration for the embedding subsystem.
@@ -561,7 +564,7 @@ impl std::fmt::Debug for Config {
             .field("resolve_vector_threshold", &self.resolve_vector_threshold)
             .field("queue", &self.queue)
             .field("ask_model", &self.ask_model)
-            .field("sidecars", &self.sidecars)
+            .field("external_services", &self.external_services)
             .finish()
     }
 }
@@ -690,7 +693,7 @@ impl Config {
                 job_timeout_secs: env_parse("COVALENCE_QUEUE_JOB_TIMEOUT", 600)?,
             },
             ask_model: env_or("COVALENCE_ASK_MODEL", "sonnet"),
-            sidecars: parse_sidecar_configs(),
+            external_services: parse_service_configs(),
         })
     }
 }
@@ -740,34 +743,53 @@ fn env_parse_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> Result<
     Ok(value)
 }
 
-/// Discover STDIO sidecar configurations from environment variables.
+/// Discover external STDIO service configurations from environment
+/// variables.
 ///
-/// Scans for vars matching `COVALENCE_SIDECAR_<NAME>_COMMAND` and
-/// pairs them with optional `COVALENCE_SIDECAR_<NAME>_ARGS`
-/// (comma-separated). Returns a vec of [`SidecarConfig`].
-fn parse_sidecar_configs() -> Vec<SidecarConfig> {
+/// Scans for vars matching `COVALENCE_SERVICE_<NAME>_COMMAND`
+/// (preferred) and falls back to the legacy
+/// `COVALENCE_SIDECAR_<NAME>_COMMAND` prefix for backward
+/// compatibility. Pairs them with optional `_ARGS`
+/// (comma-separated). Returns a vec of [`ExternalServiceConfig`].
+fn parse_service_configs() -> Vec<ExternalServiceConfig> {
     use std::collections::HashMap;
 
-    let prefix = "COVALENCE_SIDECAR_";
+    let new_prefix = "COVALENCE_SERVICE_";
+    let legacy_prefix = "COVALENCE_SIDECAR_";
     let suffix_cmd = "_COMMAND";
 
-    // Collect all COVALENCE_SIDECAR_*_COMMAND env vars.
-    let mut commands: HashMap<String, String> = HashMap::new();
+    // Collect from both prefixes; new prefix wins on conflict.
+    let mut commands: HashMap<String, (String, String)> = HashMap::new();
+
+    // Legacy prefix first (so new prefix overwrites).
     for (key, value) in std::env::vars() {
-        if let Some(rest) = key.strip_prefix(prefix) {
+        if let Some(rest) = key.strip_prefix(legacy_prefix) {
             if let Some(name) = rest.strip_suffix(suffix_cmd) {
                 if !name.is_empty() && !value.is_empty() {
-                    commands.insert(name.to_string(), value);
+                    commands.insert(name.to_string(), (legacy_prefix.to_string(), value));
+                }
+            }
+        }
+    }
+    // New prefix overwrites legacy.
+    for (key, value) in std::env::vars() {
+        if let Some(rest) = key.strip_prefix(new_prefix) {
+            if let Some(name) = rest.strip_suffix(suffix_cmd) {
+                if !name.is_empty() && !value.is_empty() {
+                    commands.insert(name.to_string(), (new_prefix.to_string(), value));
                 }
             }
         }
     }
 
-    let mut configs: Vec<SidecarConfig> = commands
+    let mut configs: Vec<ExternalServiceConfig> = commands
         .into_iter()
-        .map(|(name, command)| {
-            let args_key = format!("{prefix}{name}_ARGS");
-            let args = optional_env(&args_key)
+        .map(|(name, (prefix, command))| {
+            // Try new-prefix args first, fall back to legacy.
+            let new_args_key = format!("{new_prefix}{name}_ARGS");
+            let legacy_args_key = format!("{legacy_prefix}{name}_ARGS");
+            let args = optional_env(&new_args_key)
+                .or_else(|| optional_env(&legacy_args_key))
                 .map(|s| {
                     s.split(',')
                         .map(|a| a.trim().to_string())
@@ -776,7 +798,15 @@ fn parse_sidecar_configs() -> Vec<SidecarConfig> {
                 })
                 .unwrap_or_default();
 
-            SidecarConfig {
+            if prefix == legacy_prefix {
+                tracing::debug!(
+                    name = %name.to_lowercase(),
+                    "using legacy COVALENCE_SIDECAR_ env var — \
+                     prefer COVALENCE_SERVICE_"
+                );
+            }
+
+            ExternalServiceConfig {
                 name: name.to_lowercase(),
                 command,
                 args,
@@ -962,9 +992,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_sidecar_configs_from_env() {
-        let cmd_key = "COVALENCE_SIDECAR_MYTOOL_COMMAND";
-        let args_key = "COVALENCE_SIDECAR_MYTOOL_ARGS";
+    fn parse_service_configs_from_env() {
+        let cmd_key = "COVALENCE_SERVICE_MYTOOL_COMMAND";
+        let args_key = "COVALENCE_SERVICE_MYTOOL_ARGS";
 
         // SAFETY: test-only, single-threaded test runner.
         unsafe {
@@ -972,9 +1002,9 @@ mod tests {
             std::env::set_var(args_key, "--format,markdown,--strict");
         }
 
-        let configs = parse_sidecar_configs();
+        let configs = parse_service_configs();
         let found = configs.iter().find(|c| c.name == "mytool");
-        assert!(found.is_some(), "should find 'mytool' sidecar");
+        assert!(found.is_some(), "should find 'mytool' service");
         let sc = found.unwrap();
         assert_eq!(sc.command, "my-converter");
         assert_eq!(sc.args, vec!["--format", "markdown", "--strict"]);
@@ -987,17 +1017,45 @@ mod tests {
     }
 
     #[test]
-    fn parse_sidecar_configs_no_args() {
-        let cmd_key = "COVALENCE_SIDECAR_NOTOOL_COMMAND";
+    fn parse_service_configs_legacy_fallback() {
+        let cmd_key = "COVALENCE_SIDECAR_LEGACY_COMMAND";
+        let args_key = "COVALENCE_SIDECAR_LEGACY_ARGS";
+
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe {
+            std::env::set_var(cmd_key, "legacy-tool");
+            std::env::set_var(args_key, "--old");
+        }
+
+        let configs = parse_service_configs();
+        let found = configs.iter().find(|c| c.name == "legacy");
+        assert!(
+            found.is_some(),
+            "should find service via legacy SIDECAR prefix"
+        );
+        let sc = found.unwrap();
+        assert_eq!(sc.command, "legacy-tool");
+        assert_eq!(sc.args, vec!["--old"]);
+
+        // Cleanup.
+        unsafe {
+            std::env::remove_var(cmd_key);
+            std::env::remove_var(args_key);
+        }
+    }
+
+    #[test]
+    fn parse_service_configs_no_args() {
+        let cmd_key = "COVALENCE_SERVICE_NOTOOL_COMMAND";
 
         // SAFETY: test-only, single-threaded test runner.
         unsafe {
             std::env::set_var(cmd_key, "simple-tool");
         }
 
-        let configs = parse_sidecar_configs();
+        let configs = parse_service_configs();
         let found = configs.iter().find(|c| c.name == "notool");
-        assert!(found.is_some(), "should find 'notool' sidecar");
+        assert!(found.is_some(), "should find 'notool' service");
         let sc = found.unwrap();
         assert_eq!(sc.command, "simple-tool");
         assert!(sc.args.is_empty());
@@ -1009,17 +1067,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_sidecar_configs_name_is_lowercased() {
-        let cmd_key = "COVALENCE_SIDECAR_UPPER_COMMAND";
+    fn parse_service_configs_name_is_lowercased() {
+        let cmd_key = "COVALENCE_SERVICE_UPPER_COMMAND";
 
         // SAFETY: test-only, single-threaded test runner.
         unsafe {
             std::env::set_var(cmd_key, "upper-tool");
         }
 
-        let configs = parse_sidecar_configs();
+        let configs = parse_service_configs();
         let found = configs.iter().find(|c| c.name == "upper");
-        assert!(found.is_some(), "sidecar name should be lowercased");
+        assert!(found.is_some(), "service name should be lowercased");
 
         // Cleanup.
         unsafe {
@@ -1070,7 +1128,7 @@ mod tests {
                 resolve_vector_threshold: 0.85,
                 queue: RetryQueueConfig::default(),
                 ask_model: "sonnet".into(),
-                sidecars: vec![],
+                external_services: vec![],
             }
         );
         assert!(debug_out.contains("[REDACTED]"));

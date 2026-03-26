@@ -1,23 +1,23 @@
-//! Sidecar registry — manages named transport endpoints (HTTP and
+//! Service registry — manages named transport endpoints (HTTP and
 //! STDIO) and validates them at startup.
 
 use std::collections::HashMap;
 
 use crate::error::Error;
 
-use super::stdio_transport::{SidecarTransport, StdioTransport};
+use super::stdio_transport::{ServiceTransport, StdioTransport};
 
-/// Registry of named sidecar transports.
+/// Registry of named service transports.
 ///
-/// Both HTTP and STDIO sidecars can be registered under a human-
+/// Both HTTP and STDIO services can be registered under a human-
 /// readable name. At startup the factory calls [`validate_all`] to
 /// smoke-test every transport and log failures.
-pub struct SidecarRegistry {
+pub struct ServiceRegistry {
     /// Name -> transport mapping.
-    transports: HashMap<String, SidecarTransport>,
+    transports: HashMap<String, ServiceTransport>,
 }
 
-impl SidecarRegistry {
+impl ServiceRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
@@ -28,17 +28,17 @@ impl SidecarRegistry {
     /// Register a transport under the given name.
     ///
     /// Overwrites any existing transport with the same name.
-    pub fn register(&mut self, name: &str, transport: SidecarTransport) {
+    pub fn register(&mut self, name: &str, transport: ServiceTransport) {
         self.transports.insert(name.to_string(), transport);
     }
 
     /// Look up a transport by name.
-    pub fn get(&self, name: &str) -> Option<&SidecarTransport> {
+    pub fn get(&self, name: &str) -> Option<&ServiceTransport> {
         self.transports.get(name)
     }
 
     /// List all registered transports as `(name, transport)` pairs.
-    pub fn list(&self) -> Vec<(&str, &SidecarTransport)> {
+    pub fn list(&self) -> Vec<(&str, &ServiceTransport)> {
         self.transports
             .iter()
             .map(|(k, v)| (k.as_str(), v))
@@ -58,8 +58,8 @@ impl SidecarRegistry {
 
         for (name, transport) in &self.transports {
             let result = match transport {
-                SidecarTransport::Http { url } => validate_http(url).await,
-                SidecarTransport::Stdio { command, args } => {
+                ServiceTransport::Http { url } => validate_http(url).await,
+                ServiceTransport::Stdio { command, args } => {
                     let t = StdioTransport::new(command.clone(), args.clone());
                     t.validate().await
                 }
@@ -73,13 +73,13 @@ impl SidecarRegistry {
     }
 }
 
-impl Default for SidecarRegistry {
+impl Default for ServiceRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Quick connectivity check for an HTTP sidecar.
+/// Quick connectivity check for an HTTP service.
 ///
 /// Sends a GET to the base URL and considers any non-error response
 /// (even 4xx) as "reachable." Only connection/DNS failures count as
@@ -94,7 +94,7 @@ async fn validate_http(url: &str) -> crate::error::Result<()> {
         .get(url)
         .send()
         .await
-        .map_err(|e| Error::Ingestion(format!("HTTP sidecar at {url} is unreachable: {e}")))?;
+        .map_err(|e| Error::Ingestion(format!("HTTP service at {url} is unreachable: {e}")))?;
 
     Ok(())
 }
@@ -105,17 +105,17 @@ mod tests {
 
     #[test]
     fn register_and_get() {
-        let mut registry = SidecarRegistry::new();
+        let mut registry = ServiceRegistry::new();
         registry.register(
             "pdf",
-            SidecarTransport::Http {
+            ServiceTransport::Http {
                 url: "http://localhost:9000".to_string(),
             },
         );
         let t = registry.get("pdf");
         assert!(t.is_some());
         match t.unwrap() {
-            SidecarTransport::Http { url } => {
+            ServiceTransport::Http { url } => {
                 assert_eq!(url, "http://localhost:9000");
             }
             _ => panic!("expected Http variant"),
@@ -124,22 +124,22 @@ mod tests {
 
     #[test]
     fn get_returns_none_for_unknown() {
-        let registry = SidecarRegistry::new();
+        let registry = ServiceRegistry::new();
         assert!(registry.get("nonexistent").is_none());
     }
 
     #[test]
     fn list_returns_all_registered() {
-        let mut registry = SidecarRegistry::new();
+        let mut registry = ServiceRegistry::new();
         registry.register(
             "pdf",
-            SidecarTransport::Http {
+            ServiceTransport::Http {
                 url: "http://localhost:9000".to_string(),
             },
         );
         registry.register(
             "converter",
-            SidecarTransport::Stdio {
+            ServiceTransport::Stdio {
                 command: "my-converter".to_string(),
                 args: vec![],
             },
@@ -154,21 +154,21 @@ mod tests {
 
     #[test]
     fn register_overwrites_existing() {
-        let mut registry = SidecarRegistry::new();
+        let mut registry = ServiceRegistry::new();
         registry.register(
             "pdf",
-            SidecarTransport::Http {
+            ServiceTransport::Http {
                 url: "http://old:9000".to_string(),
             },
         );
         registry.register(
             "pdf",
-            SidecarTransport::Http {
+            ServiceTransport::Http {
                 url: "http://new:9000".to_string(),
             },
         );
         match registry.get("pdf").unwrap() {
-            SidecarTransport::Http { url } => {
+            ServiceTransport::Http { url } => {
                 assert_eq!(url, "http://new:9000");
             }
             _ => panic!("expected Http variant"),
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn default_creates_empty_registry() {
-        let registry = SidecarRegistry::default();
+        let registry = ServiceRegistry::default();
         assert!(registry.list().is_empty());
     }
 }
