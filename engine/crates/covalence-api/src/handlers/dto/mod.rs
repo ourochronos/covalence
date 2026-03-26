@@ -12,6 +12,7 @@ mod edges;
 mod graph;
 mod nodes;
 mod search;
+mod sessions;
 mod sources;
 
 pub use admin::{
@@ -51,6 +52,9 @@ pub use search::{
     ContextItemResponse, ContextResponse, RelatedEntityResponse, SearchApiResponse,
     SearchFeedbackRequest, SearchGranularity, SearchMode, SearchRequest, SearchResultResponse,
     SearchTraceResponse, TraceReplayResponse,
+};
+pub use sessions::{
+    AddTurnRequest, CreateSessionRequest, GetTurnsParams, SessionResponse, TurnResponse,
 };
 pub use sources::{
     ChunkResponse, CreateSourceRequest, CreateSourceResponse, DeleteSourceResponse,

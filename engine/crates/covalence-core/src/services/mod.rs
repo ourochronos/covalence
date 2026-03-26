@@ -20,6 +20,7 @@ pub(crate) mod prompts;
 pub mod queue;
 pub mod search;
 pub(crate) mod search_helpers;
+pub mod session;
 pub mod source;
 pub(crate) mod statement_pipeline;
 
@@ -35,4 +36,5 @@ pub use node::{NodeExplanation, NodeService};
 pub use ontology_service::OntologyService;
 pub use queue::RetryQueueService;
 pub use search::{SearchFilters, SearchService};
+pub use session::SessionService;
 pub use source::SourceService;

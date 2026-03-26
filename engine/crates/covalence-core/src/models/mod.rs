@@ -10,6 +10,7 @@ pub mod node_alias;
 pub mod projection;
 pub mod retry_job;
 pub mod section;
+pub mod session;
 pub mod source;
 pub mod statement;
 pub mod trace;

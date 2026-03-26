@@ -29,7 +29,7 @@ use crate::search::rerank::{HttpReranker, RerankConfig, Reranker};
 use crate::services::adapter_service::AdapterService;
 use crate::services::{
     AdminService, AnalysisService, AskService, ConfigService, EdgeService, NodeService,
-    OntologyService, RetryQueueService, SearchService, SourceService,
+    OntologyService, RetryQueueService, SearchService, SessionService, SourceService,
 };
 use crate::storage::postgres::PgRepo;
 
@@ -64,6 +64,8 @@ pub struct ServiceFactory {
     pub analysis_service: Arc<AnalysisService>,
     /// LLM-powered knowledge synthesis.
     pub ask_service: Option<Arc<AskService>>,
+    /// Session/conversation management.
+    pub session_service: Arc<SessionService>,
     /// Persistent retry queue.
     pub queue_service: Arc<RetryQueueService>,
     /// Runtime configuration service.
@@ -244,6 +246,9 @@ impl ServiceFactory {
                 .with_node_embed_dim(config.embedding.table_dims.node),
         );
 
+        // ── Session service ──────────────────────────────────────
+        let session_service = Arc::new(SessionService::new(Arc::clone(&repo)));
+
         // ── Ask service ─────────────────────────────────────────
         let ask_service = {
             let ask_model = &config.ask_model;
@@ -252,11 +257,10 @@ impl ServiceFactory {
                 model = %ask_model,
                 "ask service using dedicated synthesis backend"
             );
-            Some(Arc::new(AskService::new(
-                Arc::clone(&search_service),
-                ask_backend,
-                Arc::clone(&repo),
-            )))
+            Some(Arc::new(
+                AskService::new(Arc::clone(&search_service), ask_backend, Arc::clone(&repo))
+                    .with_sessions(Arc::clone(&session_service)),
+            ))
         };
 
         // ── Admin service ───────────────────────────────────────
@@ -310,6 +314,7 @@ impl ServiceFactory {
             admin_service,
             analysis_service,
             ask_service,
+            session_service,
             queue_service,
             config_service,
             ontology_service,
