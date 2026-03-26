@@ -39,6 +39,10 @@ pub struct AskOptions {
     /// When set, the last 10 turns are injected into the prompt
     /// and the question + answer are recorded as new turns.
     pub session_id: Option<Uuid>,
+    /// Optional adapter ID to scope lifecycle hooks to a specific
+    /// adapter. When set, only hooks registered for this adapter
+    /// (or global hooks) are fired.
+    pub adapter_id: Option<Uuid>,
 }
 
 impl Default for AskOptions {
@@ -48,6 +52,7 @@ impl Default for AskOptions {
             strategy: None,
             model: None,
             session_id: None,
+            adapter_id: None,
         }
     }
 }
@@ -157,17 +162,31 @@ impl AskService {
 
     /// Answer a question by searching, enriching, and synthesizing.
     pub async fn ask(&self, question: &str, options: AskOptions) -> Result<AskResponse> {
+        let adapter_id = options.adapter_id;
+
         // 0a. Pre-search hooks: let external systems enrich the query.
-        if let Some(ref hooks) = self.hooks {
-            let pre = hooks.fire_pre_search(question, None).await?;
+        let effective_query = if let Some(ref hooks) = self.hooks {
+            let pre = hooks.fire_pre_search(question, adapter_id).await?;
             if let Some(ref terms) = pre.boost_terms {
-                tracing::info!(
-                    boost_terms = ?terms,
-                    "pre_search hook returned boost terms (logged, \
-                     not yet applied to query)"
-                );
+                if !terms.is_empty() {
+                    let boosted = format!("{} {}", question, terms.join(" "));
+                    tracing::info!(
+                        boost_terms = ?terms,
+                        "pre_search hook enriched query with boost terms"
+                    );
+                    boosted
+                } else {
+                    question.to_string()
+                }
+            } else {
+                question.to_string()
             }
-        }
+            // TODO: metadata_filters passthrough requires SearchFilters
+            // changes — log for now.
+            // pre.metadata_filters is captured but not yet forwarded.
+        } else {
+            question.to_string()
+        };
 
         // 0b. Load conversation history if a session is active.
         let history = if let (Some(sid), Some(svc)) = (options.session_id, &self.sessions) {
@@ -176,11 +195,11 @@ impl AskService {
             Vec::new()
         };
 
-        // 1. Search for context.
+        // 1. Search for context (using the boost-enriched query).
         let strategy = parse_strategy(options.strategy.as_deref());
         let results = self
             .search
-            .search(question, strategy, options.max_context, None)
+            .search(&effective_query, strategy, options.max_context, None)
             .await?;
 
         if results.is_empty() {
@@ -206,7 +225,9 @@ impl AskService {
         //    additional context before synthesis.
         let extra_context = if let Some(ref hooks) = self.hooks {
             let summary = format!("{} results found", results.len());
-            let post = hooks.fire_post_search(question, &summary, None).await?;
+            let post = hooks
+                .fire_post_search(question, &summary, adapter_id)
+                .await?;
             post.additional_context.unwrap_or_default()
         } else {
             Vec::new()
@@ -255,7 +276,12 @@ impl AskService {
                 .iter()
                 .filter_map(|c| serde_json::to_value(c).ok())
                 .collect();
-            hooks.fire_post_synthesis(question.to_string(), answer.clone(), citation_values, None);
+            hooks.fire_post_synthesis(
+                question.to_string(),
+                answer.clone(),
+                citation_values,
+                adapter_id,
+            );
         }
 
         // 8. Record turns if a session is active.
@@ -286,17 +312,28 @@ impl AskService {
     ) -> Result<Pin<Box<dyn Stream<Item = AskStreamEvent> + Send>>> {
         use futures::StreamExt;
 
-        // 0a. Pre-search hooks.
-        if let Some(ref hooks) = self.hooks {
-            let pre = hooks.fire_pre_search(question, None).await?;
+        let adapter_id = options.adapter_id;
+
+        // 0a. Pre-search hooks: enrich query with boost terms.
+        let effective_query = if let Some(ref hooks) = self.hooks {
+            let pre = hooks.fire_pre_search(question, adapter_id).await?;
             if let Some(ref terms) = pre.boost_terms {
-                tracing::info!(
-                    boost_terms = ?terms,
-                    "pre_search hook returned boost terms \
-                     (logged, not yet applied to query)"
-                );
+                if !terms.is_empty() {
+                    let boosted = format!("{} {}", question, terms.join(" "));
+                    tracing::info!(
+                        boost_terms = ?terms,
+                        "pre_search hook enriched query with boost terms"
+                    );
+                    boosted
+                } else {
+                    question.to_string()
+                }
+            } else {
+                question.to_string()
             }
-        }
+        } else {
+            question.to_string()
+        };
 
         // 0b. Load conversation history if a session is active.
         let history = if let (Some(sid), Some(svc)) = (options.session_id, &self.sessions) {
@@ -305,11 +342,11 @@ impl AskService {
             Vec::new()
         };
 
-        // 1. Search for context (blocking, not streamed).
+        // 1. Search for context (using the boost-enriched query).
         let strategy = parse_strategy(options.strategy.as_deref());
         let results = self
             .search
-            .search(question, strategy, options.max_context, None)
+            .search(&effective_query, strategy, options.max_context, None)
             .await?;
 
         if results.is_empty() {
@@ -338,7 +375,9 @@ impl AskService {
         // 2. Post-search hooks.
         let extra_context = if let Some(ref hooks) = self.hooks {
             let summary = format!("{} results found", results.len());
-            let post = hooks.fire_post_search(question, &summary, None).await?;
+            let post = hooks
+                .fire_post_search(question, &summary, adapter_id)
+                .await?;
             post.additional_context.unwrap_or_default()
         } else {
             Vec::new()
@@ -423,7 +462,7 @@ impl AskService {
                                 question_owned.clone(),
                                 answer.clone(),
                                 cit_vals,
-                                None,
+                                adapter_id,
                             );
                         }
                         // Record session turns.
@@ -842,6 +881,7 @@ mod tests {
         assert_eq!(opts.max_context, 15);
         assert!(opts.strategy.is_none());
         assert!(opts.session_id.is_none());
+        assert!(opts.adapter_id.is_none());
     }
 
     #[test]

@@ -26,6 +26,11 @@ pub struct AddTurnRequest {
     pub content: String,
     /// Optional turn metadata.
     pub metadata: Option<serde_json::Value>,
+    /// When true, the turn content is ingested as a micro-source
+    /// (`source_type = "conversation"`) and enqueued for extraction.
+    /// Opt-in: defaults to false.
+    #[serde(default)]
+    pub extract: Option<bool>,
 }
 
 /// Query parameters for listing turns.

@@ -154,6 +154,10 @@ struct PreIngestPayload {
     source_id: String,
     source_type: String,
     domain: Option<String>,
+    /// First 500 characters of the source content, giving hooks
+    /// enough context for classification/routing without sending
+    /// the full payload.
+    content_preview: Option<String>,
 }
 
 /// Request body sent to post_extract hooks.
@@ -395,11 +399,16 @@ impl HookService {
     ///
     /// Returns a [`PreIngestHookResponse`] whose fields can override
     /// pipeline behaviour (skip extraction, change domain).
+    ///
+    /// `content_preview` provides the first 500 characters of the
+    /// source content so hooks can make classification decisions
+    /// without receiving the full payload.
     pub async fn fire_pre_ingest(
         &self,
         source_id: &crate::types::ids::SourceId,
         source_type: &str,
         domain: Option<&str>,
+        content_preview: Option<&str>,
     ) -> Result<PreIngestHookResponse> {
         let hooks = self.active_hooks(HookPhase::PreIngest, None).await?;
         if hooks.is_empty() {
@@ -410,6 +419,7 @@ impl HookService {
             source_id: source_id.to_string(),
             source_type: source_type.to_string(),
             domain: domain.map(|s| s.to_string()),
+            content_preview: content_preview.map(|s| s.to_string()),
         };
         let body = serde_json::to_value(&payload)?;
 
@@ -619,6 +629,10 @@ impl HookService {
     }
 
     /// Fire all hooks concurrently, returning results in order.
+    ///
+    /// Uses `futures::future::join_all` so all hooks execute in
+    /// parallel rather than sequentially. Each hook gets its own
+    /// per-hook timeout via `.timeout()`.
     async fn fire_all(
         &self,
         hooks: &[LifecycleHook],

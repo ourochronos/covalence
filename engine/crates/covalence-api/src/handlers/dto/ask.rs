@@ -20,6 +20,8 @@ pub struct AskApiRequest {
     pub model: Option<String>,
     /// Optional session ID for multi-turn conversation context.
     pub session_id: Option<String>,
+    /// Optional adapter ID to scope lifecycle hooks.
+    pub adapter_id: Option<String>,
 }
 
 /// A citation backing the synthesized answer.

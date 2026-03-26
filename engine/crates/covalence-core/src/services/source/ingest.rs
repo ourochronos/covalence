@@ -247,8 +247,21 @@ impl SourceService {
         let mut effective_domain = source.domains.first().cloned();
         let mut skip_extraction = false;
         if let Some(ref hook_svc) = self.hook_service {
+            // Send a content preview (first 500 chars) so hooks can
+            // make classification decisions without the full payload.
+            let preview = normalized.chars().take(500).collect::<String>();
+            let preview_ref = if preview.is_empty() {
+                None
+            } else {
+                Some(preview.as_str())
+            };
             match hook_svc
-                .fire_pre_ingest(&source_id, source_type, effective_domain.as_deref())
+                .fire_pre_ingest(
+                    &source_id,
+                    source_type,
+                    effective_domain.as_deref(),
+                    preview_ref,
+                )
                 .await
             {
                 Ok(resp) => {

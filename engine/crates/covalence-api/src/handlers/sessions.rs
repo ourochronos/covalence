@@ -201,6 +201,42 @@ pub async fn add_turn(
         .add_turn(uuid, &req.role, &req.content, req.metadata)
         .await?;
 
+    // Optionally ingest the turn content as a micro-source for
+    // graph extraction. The existing pipeline handles the rest.
+    if req.extract == Some(true) {
+        let meta = serde_json::json!({
+            "session_id": uuid.to_string(),
+            "turn_id": turn.id.to_string(),
+            "role": turn.role,
+        });
+        match state
+            .source_service
+            .ingest(
+                turn.content.as_bytes(),
+                "conversation",
+                "text/plain",
+                None,
+                meta,
+            )
+            .await
+        {
+            Ok(source_id) => {
+                tracing::info!(
+                    turn_id = %turn.id,
+                    source_id = %source_id,
+                    "turn content ingested for extraction"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    turn_id = %turn.id,
+                    error = %e,
+                    "failed to ingest turn content for extraction"
+                );
+            }
+        }
+    }
+
     Ok((
         axum::http::StatusCode::CREATED,
         Json(TurnResponse {

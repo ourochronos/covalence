@@ -51,11 +51,17 @@ pub async fn ask(
         .as_deref()
         .and_then(|s| s.parse::<uuid::Uuid>().ok());
 
+    let adapter_id = req
+        .adapter_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+
     let options = covalence_core::services::ask::AskOptions {
         max_context: req.max_context.unwrap_or(15),
         strategy: req.strategy.clone(),
         model: req.model.clone(),
         session_id,
+        adapter_id,
     };
 
     let response = ask_service.ask(&req.question, options).await?;
@@ -118,11 +124,17 @@ pub async fn ask_stream(
         .as_deref()
         .and_then(|s| s.parse::<uuid::Uuid>().ok());
 
+    let adapter_id = req
+        .adapter_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+
     let options = covalence_core::services::ask::AskOptions {
         max_context: req.max_context.unwrap_or(15),
         strategy: req.strategy.clone(),
         model: req.model.clone(),
         session_id,
+        adapter_id,
     };
 
     let event_stream = ask_service.ask_stream(&req.question, options).await?;
