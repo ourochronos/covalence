@@ -77,6 +77,8 @@ pub struct OntologyCache {
     pub categories: Vec<EntityCategory>,
     /// Universal relationship types.
     pub rel_universals: Vec<RelUniversal>,
+    /// Named domain groups (e.g. "specification" → ["spec", "design"]).
+    pub domain_groups: HashMap<String, Vec<String>>,
 }
 
 /// Ontology service with cached lookups.
@@ -164,6 +166,26 @@ impl OntologyService {
             cache.view_edges.entry(view).or_default().insert(rel);
         }
 
+        // Domain groups
+        use crate::storage::traits::DomainGroupRepo;
+        match DomainGroupRepo::list_all(&*self.repo).await {
+            Ok(dg_rows) => {
+                for (group_name, domain_id) in dg_rows {
+                    cache
+                        .domain_groups
+                        .entry(group_name)
+                        .or_default()
+                        .push(domain_id);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to load domain groups (table may not exist yet)"
+                );
+            }
+        }
+
         let mut guard = self.cache.write().await;
         *guard = cache;
         Ok(())
@@ -196,6 +218,14 @@ impl OntologyService {
     pub async fn edges_for_view(&self, view: &str) -> HashSet<String> {
         let cache = self.cache.read().await;
         cache.view_edges.get(view).cloned().unwrap_or_default()
+    }
+
+    /// Get domain IDs belonging to a named group.
+    ///
+    /// Returns an empty vec if the group doesn't exist.
+    pub async fn domains_for_group(&self, group: &str) -> Vec<String> {
+        let cache = self.cache.read().await;
+        cache.domain_groups.get(group).cloned().unwrap_or_default()
     }
 
     /// Start the polling refresh loop.

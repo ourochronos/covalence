@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::graph::GraphEngine;
 use crate::ingestion::ChatBackend;
 use crate::ingestion::Embedder;
+use crate::services::ontology_service::OntologyService;
 use crate::storage::postgres::PgRepo;
 
 mod alignment;
@@ -114,8 +115,10 @@ pub struct AnalysisService {
     node_embed_dim: usize,
     /// Configurable bridge relationship types.
     pub(crate) bridges: BridgeConfig,
-    /// Configurable domain groupings.
+    /// Configurable domain groupings (static fallback).
     pub(crate) domains: DomainConfig,
+    /// Ontology service for DB-driven domain group lookups.
+    pub(crate) ontology: Option<Arc<OntologyService>>,
 }
 
 impl AnalysisService {
@@ -129,6 +132,7 @@ impl AnalysisService {
             node_embed_dim: 256,
             bridges: BridgeConfig::default(),
             domains: DomainConfig::default(),
+            ontology: None,
         }
     }
 
@@ -160,5 +164,32 @@ impl AnalysisService {
     pub fn with_node_embed_dim(mut self, dim: usize) -> Self {
         self.node_embed_dim = dim;
         self
+    }
+
+    /// Set the ontology service for DB-driven domain group lookups.
+    pub fn with_ontology(mut self, ontology: Arc<OntologyService>) -> Self {
+        self.ontology = Some(ontology);
+        self
+    }
+
+    /// Resolve domains for a named group.
+    ///
+    /// Tries the ontology service first (DB-driven), falls back to
+    /// the static `DomainConfig` fields.
+    #[allow(dead_code)]
+    pub(crate) async fn resolve_group_domains(&self, group: &str) -> Vec<String> {
+        if let Some(ref ont) = self.ontology {
+            let domains = ont.domains_for_group(group).await;
+            if !domains.is_empty() {
+                return domains;
+            }
+        }
+        // Static fallback
+        match group {
+            "specification" => self.domains.spec_domains.clone(),
+            "evidence" => self.domains.research_domains.clone(),
+            "implementation" => vec![self.domains.code_domain.clone()],
+            _ => Vec::new(),
+        }
     }
 }

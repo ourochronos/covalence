@@ -237,6 +237,17 @@ impl ServiceFactory {
         let node_service = Arc::new(NodeService::new(Arc::clone(&repo), Arc::clone(&graph)));
         let edge_service = Arc::new(EdgeService::new(Arc::clone(&repo)));
 
+        // ── Ontology service (polls DB every 60s) ───────────────
+        // Created early so other services can reference it.
+        let ontology_service = Arc::new(OntologyService::new(Arc::clone(&repo)));
+        if let Err(e) = ontology_service.refresh().await {
+            tracing::warn!(
+                error = %e,
+                "initial ontology load failed (will retry)"
+            );
+        }
+        ontology_service.spawn_refresh_loop(60);
+
         // ── Analysis service (needs a graph engine) ─────────────
         // For factory purposes we always use petgraph; the API can
         // override with AGE via `with_graph_engine()` after
@@ -248,7 +259,8 @@ impl ServiceFactory {
             AnalysisService::new(Arc::clone(&repo), Arc::clone(&petgraph_engine))
                 .with_embedder(embedder.clone())
                 .with_chat_backend(chat_backend.clone())
-                .with_node_embed_dim(config.embedding.table_dims.node),
+                .with_node_embed_dim(config.embedding.table_dims.node)
+                .with_ontology(Arc::clone(&ontology_service)),
         );
 
         // ── Hook service ─────────────────────────────────────────
@@ -299,16 +311,6 @@ impl ServiceFactory {
             );
         }
         config_service.spawn_refresh_loop(30);
-
-        // ── Ontology service (polls DB every 60s) ───────────────
-        let ontology_service = Arc::new(OntologyService::new(Arc::clone(&repo)));
-        if let Err(e) = ontology_service.refresh().await {
-            tracing::warn!(
-                error = %e,
-                "initial ontology load failed (will retry)"
-            );
-        }
-        ontology_service.spawn_refresh_loop(60);
 
         // ── Service registry ──────────────────────────────────────
         let service_registry = Self::build_service_registry(config).await;

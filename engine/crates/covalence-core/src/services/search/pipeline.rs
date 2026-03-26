@@ -553,6 +553,7 @@ impl SearchService {
                         source_title: None,
                         source_type: None,
                         source_domain: None,
+                        source_domains: Vec::new(),
                         result_type: None,
                         created_at: None,
                         dimension_scores: HashMap::new(),

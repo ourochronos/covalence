@@ -86,6 +86,7 @@ async fn enrich_source(result: &mut FusedResult, repo: &Arc<PgRepo>) {
         result.source_title = source.title;
         result.source_type = Some(source.source_type.clone());
         result.source_domain = source.domain.clone();
+        result.source_domains = source.domains.clone();
         result.created_at = Some(source.ingested_at.to_rfc3339());
         // Use truncated raw content for snippet.
         if let Some(ref raw) = source.raw_content {
@@ -107,6 +108,7 @@ async fn enrich_statement(result: &mut FusedResult, repo: &Arc<PgRepo>, query: &
             result.source_title = source.title.clone();
             result.source_type = Some(source.source_type.clone());
             result.source_domain = source.domain.clone();
+            result.source_domains = source.domains.clone();
         }
         // Use the statement content as name (truncated).
         result.name = Some(truncate_with_ellipsis(&stmt.content, 80));
@@ -130,6 +132,7 @@ async fn enrich_section(result: &mut FusedResult, repo: &Arc<PgRepo>, query: &st
             result.source_title = source.title.clone();
             result.source_type = Some(source.source_type.clone());
             result.source_domain = source.domain.clone();
+            result.source_domains = source.domains.clone();
         }
         // Content-based snippet fallback.
         if result.snippet.is_none() {
@@ -152,6 +155,7 @@ async fn enrich_chunk_or_fallback(result: &mut FusedResult, repo: &Arc<PgRepo>, 
             result.source_title = source.title.clone();
             result.source_type = Some(source.source_type.clone());
             result.source_domain = source.domain.clone();
+            result.source_domains = source.domains.clone();
             result.created_at = Some(source.ingested_at.to_rfc3339());
             source.title
         } else {
@@ -197,6 +201,7 @@ async fn enrich_chunk_or_fallback(result: &mut FusedResult, repo: &Arc<PgRepo>, 
             result.source_title = source.title;
             result.source_type = Some(source.source_type.clone());
             result.source_domain = source.domain.clone();
+            result.source_domains = source.domains.clone();
             result.created_at = Some(source.ingested_at.to_rfc3339());
             if let Some(ref raw) = source.raw_content {
                 result.content = Some(truncate_with_ellipsis(raw, 500));

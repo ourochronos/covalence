@@ -17,6 +17,7 @@ mod pg_admin;
 mod pg_analysis;
 mod pg_ask;
 mod pg_config;
+mod pg_domain_rules;
 mod pg_hooks;
 mod pg_job_queue;
 mod pg_ontology;

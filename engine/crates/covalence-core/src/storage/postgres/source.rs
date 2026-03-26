@@ -15,7 +15,7 @@ impl SourceRepo for PgRepo {
         sqlx::query(
             "INSERT INTO sources (
                 id, source_type, uri, title, author,
-                project, domain,
+                project, domain, domains,
                 created_date,
                 ingested_at, content_hash, metadata, raw_content,
                 trust_alpha, trust_beta, reliability_score,
@@ -24,13 +24,13 @@ impl SourceRepo for PgRepo {
                 summary, status
             ) VALUES (
                 $1, $2, $3, $4, $5,
-                $6, $7,
-                $8,
-                $9, $10, $11, $12,
-                $13, $14, $15,
-                $16, $17, $18,
-                $19, $20, $21,
-                $22, $23
+                $6, $7, $8,
+                $9,
+                $10, $11, $12, $13,
+                $14, $15, $16,
+                $17, $18, $19,
+                $20, $21, $22,
+                $23, $24
             )",
         )
         .bind(source.id)
@@ -40,6 +40,7 @@ impl SourceRepo for PgRepo {
         .bind(&source.author)
         .bind(&source.project)
         .bind(&source.domain)
+        .bind(&source.domains)
         .bind(source.created_date)
         .bind(source.ingested_at)
         .bind(&source.content_hash)
@@ -64,7 +65,7 @@ impl SourceRepo for PgRepo {
     async fn get(&self, id: SourceId) -> Result<Option<Source>> {
         let row = sqlx::query(
             "SELECT id, source_type, uri, title, author,
-                    project, domain,
+                    project, domain, domains,
                     created_date, ingested_at, content_hash,
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
@@ -82,7 +83,7 @@ impl SourceRepo for PgRepo {
     async fn get_by_hash(&self, hash: &[u8]) -> Result<Option<Source>> {
         let row = sqlx::query(
             "SELECT id, source_type, uri, title, author,
-                    project, domain,
+                    project, domain, domains,
                     created_date, ingested_at, content_hash,
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
@@ -100,7 +101,7 @@ impl SourceRepo for PgRepo {
     async fn get_by_normalized_hash(&self, hash: &[u8]) -> Result<Option<Source>> {
         let row = sqlx::query(
             "SELECT id, source_type, uri, title, author,
-                    project, domain,
+                    project, domain, domains,
                     created_date, ingested_at, content_hash,
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
@@ -120,14 +121,15 @@ impl SourceRepo for PgRepo {
             "UPDATE sources SET
                 source_type = $2, uri = $3, title = $4,
                 author = $5, project = $6, domain = $7,
-                created_date = $8, ingested_at = $9,
-                content_hash = $10, metadata = $11, raw_content = $12,
-                trust_alpha = $13, trust_beta = $14,
-                reliability_score = $15, clearance_level = $16,
-                update_class = $17, supersedes_id = $18,
-                content_version = $19,
-                normalized_content = $20, normalized_hash = $21,
-                summary = $22
+                domains = $8,
+                created_date = $9, ingested_at = $10,
+                content_hash = $11, metadata = $12, raw_content = $13,
+                trust_alpha = $14, trust_beta = $15,
+                reliability_score = $16, clearance_level = $17,
+                update_class = $18, supersedes_id = $19,
+                content_version = $20,
+                normalized_content = $21, normalized_hash = $22,
+                summary = $23
              WHERE id = $1",
         )
         .bind(source.id)
@@ -137,6 +139,7 @@ impl SourceRepo for PgRepo {
         .bind(&source.author)
         .bind(&source.project)
         .bind(&source.domain)
+        .bind(&source.domains)
         .bind(source.created_date)
         .bind(source.ingested_at)
         .bind(&source.content_hash)
@@ -168,7 +171,7 @@ impl SourceRepo for PgRepo {
     async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Source>> {
         let rows = sqlx::query(
             "SELECT id, source_type, uri, title, author,
-                    project, domain,
+                    project, domain, domains,
                     created_date, ingested_at, content_hash,
                     metadata, raw_content, trust_alpha, trust_beta,
                     reliability_score, clearance_level, update_class,
@@ -234,6 +237,7 @@ impl SourceRepo for PgRepo {
 
 fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
     let clearance_i32: i32 = row.get("clearance_level");
+    let domains: Vec<String> = row.try_get("domains").unwrap_or_default();
     Source {
         id: row.get("id"),
         source_type: row.get("source_type"),
@@ -242,6 +246,7 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
         author: row.get("author"),
         project: row.get("project"),
         domain: row.get("domain"),
+        domains,
         created_date: row.get("created_date"),
         ingested_at: row.get("ingested_at"),
         content_hash: row.get("content_hash"),

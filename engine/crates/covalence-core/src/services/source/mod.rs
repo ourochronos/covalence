@@ -37,17 +37,34 @@ pub use reprocess::ReprocessResult;
 /// 2. URI pattern matching for file:// paths
 /// 3. HTTP/HTTPS defaults to `research`
 /// 4. Remaining documents → `external`
+///
+/// Returns a single domain string. Use [`derive_domains`] for
+/// multi-domain classification.
 pub fn derive_domain(source_type: &str, uri: Option<&str>) -> Option<String> {
+    derive_domains_hardcoded(source_type, uri)
+        .into_iter()
+        .next()
+}
+
+/// Derive knowledge domains from a source's type and URI using
+/// hardcoded fallback rules.
+///
+/// Returns a vec of matching domain IDs. This is the legacy
+/// fallback used when no DB rules or adapters match.
+pub fn derive_domains_hardcoded(source_type: &str, uri: Option<&str>) -> Vec<String> {
     // Code source type takes priority
     if source_type == "code" {
-        return Some("code".to_string());
+        return vec!["code".to_string()];
     }
 
-    let uri = uri?;
+    let uri = match uri {
+        Some(u) => u,
+        None => return Vec::new(),
+    };
 
     // File URI patterns
     if uri.starts_with("file://spec/") {
-        return Some("spec".to_string());
+        return vec!["spec".to_string()];
     }
     if uri.starts_with("file://docs/adr/")
         || uri.starts_with("file://VISION")
@@ -55,29 +72,29 @@ pub fn derive_domain(source_type: &str, uri: Option<&str>) -> Option<String> {
         || uri.starts_with("file://MILESTONES")
         || uri.starts_with("file://design/")
     {
-        return Some("design".to_string());
+        return vec!["design".to_string()];
     }
     if uri.starts_with("file://engine/")
         || uri.starts_with("file://cli/")
         || uri.starts_with("file://dashboard/")
     {
-        return Some("code".to_string());
+        return vec!["code".to_string()];
     }
 
     // HTTP sources
     if uri.starts_with("https://arxiv") || uri.starts_with("https://doi") {
-        return Some("research".to_string());
+        return vec!["research".to_string()];
     }
     if uri.starts_with("http://") || uri.starts_with("https://") {
-        return Some("research".to_string());
+        return vec!["research".to_string()];
     }
 
     // Remaining documents
     if source_type == "document" {
-        return Some("external".to_string());
+        return vec!["external".to_string()];
     }
 
-    None
+    Vec::new()
 }
 
 /// Service for source ingestion and management.
@@ -334,12 +351,36 @@ impl SourceService {
     /// 1. Adapter match (domain → MIME → URI regex) — uses
     ///    `default_domain` from the matching adapter.
     /// 2. Hardcoded [`derive_domain()`] patterns.
+    ///
+    /// Deprecated: prefer [`derive_domains_via_adapter`] for
+    /// multi-domain classification.
+    #[allow(dead_code)]
     pub(crate) async fn derive_domain_via_adapter(
         &self,
         source_type: &str,
         uri: Option<&str>,
         mime: Option<&str>,
     ) -> Option<String> {
+        self.derive_domains_via_adapter(source_type, uri, mime)
+            .await
+            .into_iter()
+            .next()
+    }
+
+    /// Derive knowledge domains using adapters, then DB rules,
+    /// then hardcoded patterns as fallback.
+    ///
+    /// Priority:
+    /// 1. Adapter match → `[adapter.default_domain]`
+    /// 2. DB domain_rules table (via DomainRuleRepo)
+    /// 3. Hardcoded [`derive_domains_hardcoded()`] patterns
+    pub(crate) async fn derive_domains_via_adapter(
+        &self,
+        source_type: &str,
+        uri: Option<&str>,
+        mime: Option<&str>,
+    ) -> Vec<String> {
+        // 1. Adapter match
         if let Some(ref adapter_svc) = self.adapter_service {
             match adapter_svc.match_adapter(uri, mime).await {
                 Ok(Some(adapter)) => {
@@ -350,20 +391,41 @@ impl SourceService {
                             uri = uri.unwrap_or("-"),
                             "domain derived via adapter"
                         );
-                        return Some(domain.clone());
+                        return vec![domain.clone()];
                     }
                 }
                 Ok(None) => {}
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        "adapter lookup failed, falling back to \
-                         hardcoded patterns"
+                        "adapter lookup failed, falling back"
                     );
                 }
             }
         }
-        derive_domain(source_type, uri)
+
+        // 2. DB rule lookup
+        use crate::storage::traits::DomainRuleRepo;
+        match DomainRuleRepo::match_rules(&*self.repo, source_type, uri).await {
+            Ok(domains) if !domains.is_empty() => {
+                tracing::debug!(
+                    domains = ?domains,
+                    uri = uri.unwrap_or("-"),
+                    "domains derived via DB rules"
+                );
+                return domains;
+            }
+            Ok(_) => {} // No matches, fall through
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "DB domain rule lookup failed, falling back"
+                );
+            }
+        }
+
+        // 3. Hardcoded fallback
+        derive_domains_hardcoded(source_type, uri)
     }
 
     /// Compute the current pipeline fingerprint (if configured).

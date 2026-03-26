@@ -120,9 +120,13 @@ impl SourceService {
         // Build source record.
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
-        source.domain = self
-            .derive_domain_via_adapter(source_type, uri, Some(mime))
+
+        // Multi-domain classification.
+        let domains = self
+            .derive_domains_via_adapter(source_type, uri, Some(mime))
             .await;
+        source.domain = domains.first().cloned();
+        source.domains = domains;
 
         // Title priority: metadata > filename (code) > parsed > URI segment.
         let uri_filename = uri.and_then(|u| u.rsplit('/').next().map(|f| f.to_string()));

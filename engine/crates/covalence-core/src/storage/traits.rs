@@ -1303,6 +1303,47 @@ pub trait AdapterRepo: Send + Sync {
     fn find_all_with_uri_regex(&self) -> impl Future<Output = Result<Vec<SourceAdapter>>> + Send;
 }
 
+/// Repository for domain classification rules.
+pub trait DomainRuleRepo: Send + Sync {
+    /// Match domain rules against a source type and URI.
+    ///
+    /// Returns domain IDs from all matching rules ordered by
+    /// priority (lowest number = highest priority). A source can
+    /// match multiple rules and thus belong to multiple domains.
+    fn match_rules(
+        &self,
+        source_type: &str,
+        uri: Option<&str>,
+    ) -> impl Future<Output = Result<Vec<String>>> + Send;
+}
+
+/// Repository for alignment rules.
+#[allow(clippy::type_complexity)]
+pub trait AlignmentRuleRepo: Send + Sync {
+    /// List all active alignment rules ordered by sort_order.
+    fn list_active(
+        &self,
+    ) -> impl Future<
+        Output = Result<
+            Vec<(
+                i32,
+                String,
+                String,
+                String,
+                String,
+                String,
+                serde_json::Value,
+            )>,
+        >,
+    > + Send;
+}
+
+/// Repository for domain group lookups.
+pub trait DomainGroupRepo: Send + Sync {
+    /// List all domain groups as (group_name, domain_id) pairs.
+    fn list_all(&self) -> impl Future<Output = Result<Vec<(String, String)>>> + Send;
+}
+
 /// Repository for ontology table lookups.
 #[allow(clippy::type_complexity)]
 pub trait OntologyRepo: Send + Sync {

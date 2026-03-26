@@ -66,45 +66,124 @@ pub struct AlignmentReport {
     pub design_contradicted: Vec<AlignmentItem>,
     /// Design docs whose descriptions diverge from code reality.
     pub stale_design: Vec<AlignmentItem>,
+    /// Rule-driven check results, keyed by rule name.
+    /// Includes results from all active alignment rules.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub checks: std::collections::HashMap<String, Vec<AlignmentItem>>,
 }
 
 impl AnalysisService {
     /// Run cross-domain alignment analysis.
+    ///
+    /// Loads active alignment rules from the DB and runs each.
+    /// Falls back to the 4 hardcoded checks if no rules are
+    /// configured or the DB is unavailable.
     pub async fn alignment_report(&self, req: &AlignmentRequest) -> Result<AlignmentReport> {
         let run_all = req.checks.is_empty();
         let threshold = 1.0 - req.min_similarity;
 
-        let code_ahead = if run_all || req.checks.iter().any(|c| c == "code_ahead") {
-            self.check_code_ahead(threshold, req.limit).await?
-        } else {
-            Vec::new()
-        };
+        // Try rule-driven alignment first.
+        let mut checks = std::collections::HashMap::new();
+        if let Ok(rule_rows) =
+            crate::storage::traits::AlignmentRuleRepo::list_active(&*self.repo).await
+        {
+            for row in rule_rows {
+                let rule = crate::models::alignment_rule::AlignmentRule::from_row(row);
+                if !run_all && !req.checks.iter().any(|c| c == &rule.name) {
+                    continue;
+                }
+                match self.run_rule(&rule, threshold, req.limit).await {
+                    Ok(items) => {
+                        checks.insert(rule.name.clone(), items);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            rule = %rule.name,
+                            error = %e,
+                            "alignment rule failed"
+                        );
+                    }
+                }
+            }
+        }
 
-        let spec_ahead = if run_all || req.checks.iter().any(|c| c == "spec_ahead") {
-            self.check_spec_ahead(req.limit).await?
-        } else {
-            Vec::new()
-        };
+        // Extract named results for backward compat fields.
+        let code_ahead = checks.get("code_ahead").cloned().unwrap_or_default();
+        let spec_ahead = checks.get("spec_ahead").cloned().unwrap_or_default();
+        let design_contradicted = checks
+            .get("design_contradicted")
+            .cloned()
+            .unwrap_or_default();
+        let stale_design = checks.get("stale_design").cloned().unwrap_or_default();
 
-        let design_contradicted =
-            if run_all || req.checks.iter().any(|c| c == "design_contradicted") {
-                self.check_design_contradicted(threshold, req.limit).await?
+        // If no DB rules ran (table doesn't exist yet or empty),
+        // fall back to hardcoded checks.
+        if checks.is_empty() {
+            let code_ahead = if run_all || req.checks.iter().any(|c| c == "code_ahead") {
+                self.check_code_ahead(threshold, req.limit).await?
             } else {
                 Vec::new()
             };
-
-        let stale_design = if run_all || req.checks.iter().any(|c| c == "stale_design") {
-            self.check_stale_design(threshold, req.limit).await?
-        } else {
-            Vec::new()
-        };
+            let spec_ahead = if run_all || req.checks.iter().any(|c| c == "spec_ahead") {
+                self.check_spec_ahead(req.limit).await?
+            } else {
+                Vec::new()
+            };
+            let design_contradicted =
+                if run_all || req.checks.iter().any(|c| c == "design_contradicted") {
+                    self.check_design_contradicted(threshold, req.limit).await?
+                } else {
+                    Vec::new()
+                };
+            let stale_design = if run_all || req.checks.iter().any(|c| c == "stale_design") {
+                self.check_stale_design(threshold, req.limit).await?
+            } else {
+                Vec::new()
+            };
+            return Ok(AlignmentReport {
+                code_ahead,
+                spec_ahead,
+                design_contradicted,
+                stale_design,
+                checks: std::collections::HashMap::new(),
+            });
+        }
 
         Ok(AlignmentReport {
             code_ahead,
             spec_ahead,
             design_contradicted,
             stale_design,
+            checks,
         })
+    }
+
+    /// Run a single alignment rule, dispatching by check_type.
+    async fn run_rule(
+        &self,
+        rule: &crate::models::alignment_rule::AlignmentRule,
+        threshold: f64,
+        limit: i64,
+    ) -> Result<Vec<AlignmentItem>> {
+        match rule.check_type.as_str() {
+            "ahead" => {
+                if rule.source_group == "implementation" {
+                    self.check_code_ahead(threshold, limit).await
+                } else {
+                    self.check_spec_ahead(limit).await
+                }
+            }
+            "contradiction" => self.check_design_contradicted(threshold, limit).await,
+            "staleness" => self.check_stale_design(threshold, limit).await,
+            other => {
+                tracing::warn!(
+                    check_type = other,
+                    rule = %rule.name,
+                    "unknown alignment check type"
+                );
+                Ok(Vec::new())
+            }
+        }
     }
 
     /// Find code entities with no matching spec concept.

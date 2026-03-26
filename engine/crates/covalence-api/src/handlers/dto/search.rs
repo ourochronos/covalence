@@ -131,6 +131,9 @@ pub struct SearchResultResponse {
     /// Source domain (code/spec/design/research/external).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_domain: Option<String>,
+    /// Multi-domain classification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_domains: Vec<String>,
     /// Per-dimension scores.
     pub dimension_scores: std::collections::HashMap<String, f64>,
     /// Per-dimension ranks.
@@ -164,6 +167,7 @@ impl From<covalence_core::search::fusion::FusedResult> for SearchResultResponse 
             source_title: r.source_title,
             source_type: r.source_type,
             source_domain: r.source_domain,
+            source_domains: r.source_domains,
             dimension_scores: r.dimension_scores,
             dimension_ranks: r.dimension_ranks,
             graph_context,
@@ -337,6 +341,7 @@ mod tests {
             source_title: None,
             source_type: None,
             source_domain: None,
+            source_domains: Vec::new(),
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: None,
@@ -363,6 +368,7 @@ mod tests {
             source_title: None,
             source_type: None,
             source_domain: None,
+            source_domains: Vec::new(),
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: None,
@@ -385,6 +391,7 @@ mod tests {
             source_title: None,
             source_type: None,
             source_domain: None,
+            source_domains: Vec::new(),
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
             graph_context: Some(vec![

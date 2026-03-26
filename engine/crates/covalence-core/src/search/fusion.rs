@@ -69,8 +69,12 @@ pub struct FusedResult {
     pub source_type: Option<String>,
     /// Source domain (code/spec/design/research/external). Populated
     /// during enrichment from the source's domain field.
+    /// Deprecated: use `source_domains` for multi-domain support.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_domain: Option<String>,
+    /// Multi-domain classification from the source's `domains` field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_domains: Vec<String>,
     /// The type of result: "chunk", "node", or "article".
     pub result_type: Option<String>,
     /// When this entity was ingested/created (ISO 8601).
@@ -126,6 +130,7 @@ pub fn rrf_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64], k: f64) -> 
                 source_title: None,
                 source_type: None,
                 source_domain: None,
+                source_domains: Vec::new(),
                 result_type: None,
                 created_at: None,
                 dimension_scores: HashMap::new(),
@@ -220,6 +225,7 @@ pub fn cc_fuse(ranked_lists: &[Vec<SearchResult>], weights: &[f64]) -> Vec<Fused
                 source_title: None,
                 source_type: None,
                 source_domain: None,
+                source_domains: Vec::new(),
                 result_type: None,
                 created_at: None,
                 dimension_scores: HashMap::new(),
@@ -387,6 +393,7 @@ mod tests {
             source_title: None,
             source_type: None,
             source_domain: None,
+            source_domains: Vec::new(),
             result_type: None,
             created_at: None,
             dimension_scores: HashMap::new(),

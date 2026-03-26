@@ -1,10 +1,8 @@
 //! Source model -- provenance record for ingested material.
 
-mod source_domain;
 mod source_type;
 mod update_class;
 
-pub use source_domain::SourceDomain;
 pub use source_type::SourceType;
 pub use update_class::UpdateClass;
 
@@ -30,7 +28,12 @@ pub struct Source {
     /// Project namespace (default "covalence"). NULL = global.
     pub project: String,
     /// Knowledge domain: code, spec, design, research, external.
+    /// Deprecated: use `domains` for multi-domain classification.
     pub domain: Option<String>,
+    /// Multi-domain classification (a source can belong to multiple
+    /// visibility scopes). Populated from the `domains TEXT[]` column.
+    #[serde(default)]
+    pub domains: Vec<String>,
     /// When the source was originally created/published.
     pub created_date: Option<DateTime<Utc>>,
     /// When this system ingested the source.
@@ -83,6 +86,7 @@ impl Source {
             author: None,
             project: "covalence".to_string(),
             domain: None,
+            domains: Vec::new(),
             created_date: None,
             ingested_at: Utc::now(),
             content_hash,
