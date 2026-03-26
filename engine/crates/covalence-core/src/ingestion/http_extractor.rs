@@ -17,6 +17,8 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use reqwest_middleware::ClientWithMiddleware;
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -114,9 +116,12 @@ struct RelResponse {
 /// Coreference resolution is handled by the separate
 /// [`FastcorefClient`](crate::ingestion::coreference::FastcorefClient)
 /// preprocessing stage before this extractor is called.
+///
+/// Uses `reqwest-middleware` with exponential-backoff retry on
+/// transient failures (5xx, timeouts, connection errors).
 pub struct HttpExtractor {
-    /// HTTP client with timeout.
-    client: reqwest::Client,
+    /// HTTP client with retry middleware and timeout.
+    client: ClientWithMiddleware,
     /// Base URL of the extraction service.
     base_url: String,
     /// NER confidence threshold.
@@ -145,6 +150,10 @@ impl HttpExtractor {
     }
 
     /// Create a new HTTP extractor with custom windowing parameters.
+    ///
+    /// The inner HTTP client is wrapped with retry middleware that
+    /// retries transient failures up to 2 times with exponential
+    /// backoff.
     pub fn with_windowing(
         base_url: String,
         threshold: f32,
@@ -153,10 +162,14 @@ impl HttpExtractor {
         re_max_chars: usize,
         re_overlap_chars: usize,
     ) -> Self {
-        let client = reqwest::Client::builder()
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(2);
+        let raw_client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
             .unwrap_or_default();
+        let client = reqwest_middleware::ClientBuilder::new(raw_client)
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
         Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),

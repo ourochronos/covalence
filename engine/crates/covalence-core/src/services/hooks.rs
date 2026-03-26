@@ -8,6 +8,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use reqwest_middleware::ClientWithMiddleware;
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -170,18 +172,31 @@ struct PostResolvePayload {
 }
 
 /// Service for firing lifecycle hooks at pipeline phases.
+///
+/// Uses `reqwest-middleware` with exponential-backoff retry on
+/// transient failures (5xx, timeouts, connection errors).
+/// Per-hook timeouts are applied per-request via `.timeout()`.
 pub struct HookService {
-    client: reqwest::Client,
+    client: ClientWithMiddleware,
     repo: Arc<PgRepo>,
 }
 
 impl HookService {
     /// Create a new hook service.
+    ///
+    /// The inner HTTP client is wrapped with retry middleware that
+    /// retries transient failures up to 2 times with exponential
+    /// backoff.
     pub fn new(repo: Arc<PgRepo>) -> Self {
-        let client = reqwest::Client::builder()
-            .pool_max_idle_per_host(4)
-            .build()
-            .unwrap_or_default();
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(2);
+        let client = reqwest_middleware::ClientBuilder::new(
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(4)
+                .build()
+                .unwrap_or_default(),
+        )
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
         Self { client, repo }
     }
 

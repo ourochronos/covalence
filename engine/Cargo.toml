@@ -49,6 +49,8 @@ async-trait = "0.1"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }
+reqwest-middleware = { version = "0.4", features = ["json"] }
+reqwest-retry = "0.7"
 
 # Async utilities
 futures = "0.3"
@@ -67,6 +69,12 @@ hdbscan = "0.10"
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
+
+# HTML conversion
+html2md = "0.2"
+
+# JSON Schema validation
+jsonschema = "0.29"
 
 # Code parsing
 tree-sitter = "0.26"

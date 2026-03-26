@@ -289,6 +289,215 @@ fn default_empty_object() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
 }
 
+/// JSON Schema for validating extension manifests.
+///
+/// This schema validates the structure and required fields of an
+/// `extension.yaml` before serde deserialization. It catches
+/// structural errors (missing fields, wrong types) with descriptive
+/// messages rather than generic serde errors.
+fn manifest_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["name", "version"],
+        "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "description": { "type": "string" },
+            "domains": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "label": { "type": "string" },
+                        "description": { "type": "string" },
+                        "is_internal": { "type": "boolean" }
+                    }
+                }
+            },
+            "entity_types": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "category", "label"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "category": { "type": "string" },
+                        "label": { "type": "string" },
+                        "description": { "type": "string" }
+                    }
+                }
+            },
+            "relationship_types": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "universal": { "type": "string" },
+                        "label": { "type": "string" },
+                        "description": { "type": "string" }
+                    }
+                }
+            },
+            "view_edges": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            },
+            "noise_patterns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["pattern"],
+                    "properties": {
+                        "pattern": { "type": "string" },
+                        "pattern_type": { "type": "string" },
+                        "description": { "type": "string" }
+                    }
+                }
+            },
+            "domain_rules": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "match_type", "match_value", "domain_id"
+                    ],
+                    "properties": {
+                        "match_type": { "type": "string" },
+                        "match_value": { "type": "string" },
+                        "domain_id": { "type": "string" },
+                        "priority": { "type": "integer" },
+                        "description": { "type": "string" }
+                    }
+                }
+            },
+            "domain_groups": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            },
+            "alignment_rules": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "name", "check_type",
+                        "source_group", "target_group"
+                    ],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "check_type": { "type": "string" },
+                        "source_group": { "type": "string" },
+                        "target_group": { "type": "string" },
+                        "description": { "type": "string" },
+                        "parameters": { "type": "object" }
+                    }
+                }
+            },
+            "service": {
+                "type": "object",
+                "required": ["name", "transport"],
+                "properties": {
+                    "name": { "type": "string" },
+                    "transport": { "type": "string" },
+                    "command": { "type": "string" },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "url": { "type": "string" },
+                    "extractor_for": { "type": "string" },
+                    "depends_on": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            },
+            "services": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["name", "transport"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "transport": { "type": "string" },
+                        "command": { "type": "string" },
+                        "args": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "url": { "type": "string" },
+                        "extractor_for": { "type": "string" },
+                        "depends_on": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    }
+                }
+            },
+            "hooks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["phase", "url"],
+                    "properties": {
+                        "phase": { "type": "string" },
+                        "url": { "type": "string" },
+                        "timeout_ms": { "type": "integer" },
+                        "fail_open": { "type": "boolean" }
+                    }
+                }
+            },
+            "config_schema": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                        "type": { "type": "string" },
+                        "default": {},
+                        "description": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Validate a parsed JSON value against the extension manifest schema.
+///
+/// Returns `Ok(())` if valid, or an error with all validation failure
+/// messages joined together.
+pub fn validate_manifest_json(value: &serde_json::Value) -> std::result::Result<(), String> {
+    let schema = manifest_schema();
+    let validator =
+        jsonschema::validator_for(&schema).map_err(|e| format!("invalid manifest schema: {e}"))?;
+    let errors: Vec<String> = validator
+        .iter_errors(value)
+        .map(|e| {
+            let path = e.instance_path.to_string();
+            if path.is_empty() {
+                e.to_string()
+            } else {
+                format!("{path}: {e}")
+            }
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,5 +709,163 @@ services:
         let merged = manifest.merged_services();
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].name, "only-svc");
+    }
+
+    // --- JSON Schema validation tests ---
+
+    #[test]
+    fn schema_validates_minimal_manifest() {
+        let json = serde_json::json!({
+            "name": "test-ext",
+            "version": "1.0.0"
+        });
+        validate_manifest_json(&json).expect("minimal manifest should validate");
+    }
+
+    #[test]
+    fn schema_rejects_missing_name() {
+        let json = serde_json::json!({
+            "version": "1.0.0"
+        });
+        let err = validate_manifest_json(&json).expect_err("should reject missing name");
+        assert!(err.contains("name"), "error should mention 'name': {err}");
+    }
+
+    #[test]
+    fn schema_rejects_missing_version() {
+        let json = serde_json::json!({
+            "name": "test-ext"
+        });
+        let err = validate_manifest_json(&json).expect_err("should reject missing version");
+        assert!(
+            err.contains("version"),
+            "error should mention 'version': {err}"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_wrong_type_for_name() {
+        let json = serde_json::json!({
+            "name": 123,
+            "version": "1.0.0"
+        });
+        let err = validate_manifest_json(&json).expect_err("should reject numeric name");
+        assert!(
+            err.contains("name") || err.contains("string"),
+            "error should mention the field or type: {err}"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_domain_missing_id() {
+        let json = serde_json::json!({
+            "name": "test",
+            "version": "1.0.0",
+            "domains": [{"label": "Missing ID"}]
+        });
+        let err = validate_manifest_json(&json).expect_err("should reject domain without id");
+        assert!(err.contains("id"), "error should mention 'id': {err}");
+    }
+
+    #[test]
+    fn schema_rejects_entity_type_missing_category() {
+        let json = serde_json::json!({
+            "name": "test",
+            "version": "1.0.0",
+            "entity_types": [{
+                "id": "widget",
+                "label": "Widget"
+            }]
+        });
+        let err =
+            validate_manifest_json(&json).expect_err("should reject entity_type without category");
+        assert!(
+            err.contains("category"),
+            "error should mention 'category': {err}"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_hook_missing_url() {
+        let json = serde_json::json!({
+            "name": "test",
+            "version": "1.0.0",
+            "hooks": [{"phase": "pre_search"}]
+        });
+        let err = validate_manifest_json(&json).expect_err("should reject hook without url");
+        assert!(err.contains("url"), "error should mention 'url': {err}");
+    }
+
+    #[test]
+    fn schema_validates_full_manifest() {
+        let yaml = r#"
+name: full-ext
+version: "2.0.0"
+description: "A full test extension"
+domains:
+  - id: testdom
+    label: "Test Domain"
+    is_internal: true
+entity_types:
+  - id: widget
+    category: concept
+    label: Widget
+relationship_types:
+  - id: uses_widget
+    label: "Uses Widget"
+domain_rules:
+  - match_type: uri_prefix
+    match_value: "file://test/"
+    domain_id: testdom
+hooks:
+  - phase: pre_search
+    url: "http://localhost:9999/hook"
+"#;
+        let value: serde_json::Value = serde_yaml::from_str(yaml).expect("parse yaml");
+        validate_manifest_json(&value).expect("full manifest should validate");
+    }
+
+    /// Validate the 4 default extensions against the schema.
+    #[test]
+    fn default_extensions_validate_against_schema() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent());
+
+        let ext_dir = match repo_root {
+            Some(root) => root.join("extensions"),
+            None => return,
+        };
+
+        if !ext_dir.is_dir() {
+            return;
+        }
+
+        let mut validated = 0;
+        for entry in std::fs::read_dir(&ext_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let manifest_path = path.join("extension.yaml");
+            if path.is_dir() && manifest_path.exists() {
+                let content = std::fs::read_to_string(&manifest_path)
+                    .unwrap_or_else(|e| panic!("failed to read {}: {e}", manifest_path.display()));
+                let value: serde_json::Value = serde_yaml::from_str(&content)
+                    .unwrap_or_else(|e| panic!("failed to parse {}: {e}", manifest_path.display()));
+                validate_manifest_json(&value).unwrap_or_else(|e| {
+                    panic!(
+                        "extension {} failed schema validation: \
+                             {e}",
+                        manifest_path.display()
+                    )
+                });
+                validated += 1;
+            }
+        }
+        assert!(
+            validated >= 4,
+            "expected at least 4 default extensions, \
+             found {validated}"
+        );
     }
 }

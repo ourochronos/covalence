@@ -12,7 +12,7 @@ use sqlx::Row;
 use crate::error::{Error, Result};
 use crate::storage::postgres::PgRepo;
 
-use super::manifest::{ExtensionManifest, ServiceDef};
+use super::manifest::{ExtensionManifest, ServiceDef, validate_manifest_json};
 
 /// The result of loading a single extension manifest.
 #[derive(Debug, Clone)]
@@ -38,6 +38,11 @@ impl ExtensionLoader {
     }
 
     /// Parse an `extension.yaml` file into an [`ExtensionManifest`].
+    ///
+    /// Validates the manifest against a JSON Schema before
+    /// deserializing into the typed struct. Schema validation
+    /// catches structural errors (missing required fields, wrong
+    /// types) with descriptive messages.
     pub fn parse_manifest(path: &Path) -> Result<ExtensionManifest> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             Error::Config(format!(
@@ -45,9 +50,29 @@ impl ExtensionLoader {
                 path.display()
             ))
         })?;
-        serde_yaml::from_str(&content).map_err(|e| {
+
+        // Parse to serde_json::Value first for schema validation.
+        let value: serde_json::Value = serde_yaml::from_str(&content).map_err(|e| {
             Error::Config(format!(
                 "failed to parse extension manifest {}: {e}",
+                path.display()
+            ))
+        })?;
+
+        // Validate against the JSON Schema.
+        validate_manifest_json(&value).map_err(|e| {
+            Error::Config(format!(
+                "extension manifest {} failed schema \
+                 validation: {e}",
+                path.display()
+            ))
+        })?;
+
+        // Deserialize into the typed struct.
+        serde_json::from_value(value).map_err(|e| {
+            Error::Config(format!(
+                "failed to deserialize extension manifest {}: \
+                 {e}",
                 path.display()
             ))
         })

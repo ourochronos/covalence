@@ -5,7 +5,6 @@
 
 use crate::error::Result;
 use crate::ingestion::converter::SourceConverter;
-use crate::ingestion::utils::decode_html_entities;
 
 /// Converter for HTML content.
 ///
@@ -84,94 +83,25 @@ pub(crate) fn split_html_windows(html: &str, max_chars: usize) -> Vec<String> {
     windows
 }
 
-/// Strip HTML tags and convert structural elements to Markdown.
+/// Strip HTML tags and convert to Markdown.
 ///
-/// Handles: `<h1>`-`<h6>` (to `#`-`######`), `<p>` (blank line),
-/// `<br>` / `<br/>` (newline), `<li>` (bullet), and `<script>` /
-/// `<style>` (entire block removed). All other tags are removed,
-/// preserving inner text. HTML entities `&amp;`, `&lt;`, `&gt;`,
-/// `&quot;`, and `&nbsp;` are decoded.
+/// Uses the `html2md` crate for conversion, with boilerplate
+/// removal as a preprocessing step. The flow is:
+/// 1. `strip_boilerplate()` — removes nav, header, footer, etc.
+/// 2. `remove_block_elements()` — removes script/style blocks
+/// 3. `html2md::parse_html()` — converts cleaned HTML to Markdown
+/// 4. `collapse_newlines()` — normalizes whitespace
 pub(crate) fn strip_html(html: &str) -> String {
     // Remove boilerplate elements (nav, header, footer, sidebar,
     // cookie banners), then <script> and <style> blocks.
     let cleaned = strip_boilerplate(html);
     let cleaned = remove_block_elements(&cleaned);
 
-    let mut output = String::with_capacity(cleaned.len());
-    let mut inside_tag = false;
-    let mut current_tag = String::new();
-
-    for ch in cleaned.chars() {
-        if ch == '<' {
-            inside_tag = true;
-            current_tag.clear();
-            continue;
-        }
-
-        if inside_tag {
-            if ch == '>' {
-                inside_tag = false;
-                let tag_lower = current_tag.to_lowercase();
-                let tag_lower = tag_lower.trim();
-
-                // Handle structural tags
-                if let Some(rest) = tag_lower.strip_prefix("h") {
-                    // Opening heading: h1-h6
-                    let level_str = rest.split_whitespace().next().unwrap_or("");
-                    if let Ok(level) = level_str.parse::<u8>() {
-                        if (1..=6).contains(&level) {
-                            let prefix = "#".repeat(level as usize);
-                            // Ensure blank line before heading
-                            if !output.ends_with('\n') && !output.is_empty() {
-                                output.push('\n');
-                            }
-                            if !output.ends_with("\n\n") && !output.is_empty() {
-                                output.push('\n');
-                            }
-                            output.push_str(&prefix);
-                            output.push(' ');
-                        }
-                    }
-                } else if tag_lower.starts_with("/h") {
-                    // Closing heading — add newlines
-                    output.push('\n');
-                } else if tag_lower == "p" || tag_lower.starts_with("p ") {
-                    if !output.is_empty() && !output.ends_with("\n\n") {
-                        if !output.ends_with('\n') {
-                            output.push('\n');
-                        }
-                        output.push('\n');
-                    }
-                } else if tag_lower == "/p" {
-                    if !output.ends_with('\n') {
-                        output.push('\n');
-                    }
-                    output.push('\n');
-                } else if tag_lower == "br" || tag_lower == "br/" || tag_lower == "br /" {
-                    output.push('\n');
-                } else if tag_lower == "li" || tag_lower.starts_with("li ") {
-                    if !output.ends_with('\n') && !output.is_empty() {
-                        output.push('\n');
-                    }
-                    output.push_str("- ");
-                } else if tag_lower == "/li" && !output.ends_with('\n') {
-                    output.push('\n');
-                }
-                // All other tags are silently consumed.
-            } else {
-                current_tag.push(ch);
-            }
-            continue;
-        }
-
-        output.push(ch);
-    }
-
-    // Decode common HTML entities
-    let output = decode_html_entities(&output);
+    // Convert to Markdown using html2md.
+    let md = html2md::parse_html(&cleaned);
 
     // Collapse runs of 3+ newlines into 2, and trim.
-    collapse_newlines(&output)
+    collapse_newlines(&md)
 }
 
 /// Strip boilerplate HTML elements that contain non-content material.

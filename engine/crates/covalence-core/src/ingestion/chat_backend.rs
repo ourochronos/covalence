@@ -8,6 +8,8 @@
 use std::pin::Pin;
 
 use futures::Stream;
+use reqwest_middleware::ClientWithMiddleware;
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -87,8 +89,11 @@ pub trait ChatBackend: Send + Sync {
 // ── HTTP backend (OpenAI-compatible) ────────────────────────────
 
 /// OpenAI-compatible HTTP chat backend.
+///
+/// Uses `reqwest-middleware` with exponential-backoff retry on
+/// transient failures (5xx, timeouts, connection errors).
 pub struct HttpChatBackend {
-    client: reqwest::Client,
+    client: ClientWithMiddleware,
     base_url: String,
     api_key: String,
     model: String,
@@ -98,11 +103,17 @@ impl HttpChatBackend {
     /// Create a new HTTP backend.
     ///
     /// `base_url` defaults to `https://api.openai.com/v1` when
-    /// `None`.
+    /// `None`.  The inner HTTP client is wrapped with retry
+    /// middleware that retries transient failures up to 3 times
+    /// with exponential backoff (100ms, 200ms, 400ms).
     pub fn new(model: String, api_key: String, base_url: Option<String>) -> Self {
         let base = base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
+        let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new())
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: base.trim_end_matches('/').to_string(),
             api_key,
             model,

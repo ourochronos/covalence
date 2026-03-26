@@ -23,6 +23,8 @@ async-trait = { workspace = true }
 dotenvy = { workspace = true }
 figment = { workspace = true }
 reqwest = { workspace = true }
+reqwest-middleware = { workspace = true }
+reqwest-retry = { workspace = true }
 futures = { workspace = true }
 tokio-stream = { workspace = true }
 regex = { workspace = true }
@@ -33,6 +35,8 @@ tree-sitter-go = { workspace = true }
 tree-sitter-rust = { workspace = true }
 tree-sitter-python = { workspace = true }
 metrics = { workspace = true }
+html2md = { workspace = true }
+jsonschema = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
