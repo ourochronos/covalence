@@ -13,6 +13,7 @@ use crate::models::node::Node;
 use crate::models::node_alias::NodeAlias;
 use crate::models::retry_job::{JobKind, JobStatus, QueueStatusRow, RetryJob};
 use crate::models::section::Section;
+use crate::models::session::{Session, Turn};
 use crate::models::source::Source;
 use crate::models::statement::Statement;
 use crate::models::trace::{SearchFeedback, SearchTrace};
@@ -1373,4 +1374,40 @@ pub trait AskRepo: Send + Sync {
         rel_types: &[String],
         limit: i64,
     ) -> impl Future<Output = Result<Vec<(String, String)>>> + Send;
+}
+
+/// Repository for [`Session`] and [`Turn`] entities.
+///
+/// Lightweight conversation context — no embedding pipeline, no
+/// entity extraction. Used by the ask service for multi-turn
+/// conversations.
+pub trait SessionRepo: Send + Sync {
+    /// Insert a new session.
+    fn create_session(&self, session: &Session) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get a session by ID.
+    fn get_session(&self, id: uuid::Uuid) -> impl Future<Output = Result<Option<Session>>> + Send;
+
+    /// Add a turn to a session. The ordinal is auto-computed as
+    /// `MAX(ordinal) + 1` within the session.
+    fn add_turn(&self, turn: &Turn) -> impl Future<Output = Result<Turn>> + Send;
+
+    /// Get the last `last_n` turns for a session in chronological
+    /// order (ascending ordinal).
+    fn get_history(
+        &self,
+        session_id: uuid::Uuid,
+        last_n: i64,
+    ) -> impl Future<Output = Result<Vec<Turn>>> + Send;
+
+    /// Delete a session and all its turns (CASCADE).
+    /// Returns `true` if the session existed.
+    fn close_session(&self, id: uuid::Uuid) -> impl Future<Output = Result<bool>> + Send;
+
+    /// List sessions ordered by most recently updated first.
+    fn list_sessions(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> impl Future<Output = Result<Vec<Session>>> + Send;
 }

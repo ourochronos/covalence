@@ -15,6 +15,7 @@ use crate::error::Result;
 use crate::ingestion::ChatBackend;
 use crate::ingestion::chat_backend::CliChatBackend;
 use crate::models::node::{EntityClass, derive_entity_class};
+use crate::models::session::Turn;
 use crate::search::fusion::FusedResult;
 use crate::search::strategy::SearchStrategy;
 use crate::services::SearchService;
@@ -32,6 +33,10 @@ pub struct AskOptions {
     /// Format: "haiku", "sonnet", "opus", "gemini", "copilot".
     /// If None, uses the default configured backend.
     pub model: Option<String>,
+    /// Optional session ID for multi-turn conversation context.
+    /// When set, the last 10 turns are injected into the prompt
+    /// and the question + answer are recorded as new turns.
+    pub session_id: Option<Uuid>,
 }
 
 impl Default for AskOptions {
@@ -40,6 +45,7 @@ impl Default for AskOptions {
             max_context: 15,
             strategy: None,
             model: None,
+            session_id: None,
         }
     }
 }
@@ -89,6 +95,8 @@ pub struct AskService {
     repo: Arc<PgRepo>,
     /// Optional lifecycle hook service for pipeline extensibility.
     hooks: Option<Arc<HookService>>,
+    /// Optional session service for multi-turn conversation context.
+    sessions: Option<Arc<super::SessionService>>,
 }
 
 impl AskService {
@@ -99,6 +107,7 @@ impl AskService {
             chat,
             repo,
             hooks: None,
+            sessions: None,
         }
     }
 
@@ -108,9 +117,15 @@ impl AskService {
         self
     }
 
+    /// Wire a session service for multi-turn conversation support.
+    pub fn with_sessions(mut self, sessions: Arc<super::SessionService>) -> Self {
+        self.sessions = Some(sessions);
+        self
+    }
+
     /// Answer a question by searching, enriching, and synthesizing.
     pub async fn ask(&self, question: &str, options: AskOptions) -> Result<AskResponse> {
-        // 0. Pre-search hooks: let external systems enrich the query.
+        // 0a. Pre-search hooks: let external systems enrich the query.
         if let Some(ref hooks) = self.hooks {
             let pre = hooks.fire_pre_search(question, None).await?;
             if let Some(ref terms) = pre.boost_terms {
@@ -122,6 +137,13 @@ impl AskService {
             }
         }
 
+        // 0b. Load conversation history if a session is active.
+        let history = if let (Some(sid), Some(svc)) = (options.session_id, &self.sessions) {
+            svc.get_history(sid, Some(10)).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         // 1. Search for context.
         let strategy = parse_strategy(options.strategy.as_deref());
         let results = self
@@ -130,10 +152,19 @@ impl AskService {
             .await?;
 
         if results.is_empty() {
-            return Ok(AskResponse {
-                answer: "No relevant information found in the knowledge \
+            let answer = "No relevant information found in the knowledge \
                          graph to answer this question."
-                    .to_string(),
+                .to_string();
+
+            // Record turns even for empty results so the conversation
+            // stays coherent.
+            if let (Some(sid), Some(svc)) = (options.session_id, &self.sessions) {
+                let _ = svc.add_turn(sid, "user", question, None).await;
+                let _ = svc.add_turn(sid, "assistant", &answer, None).await;
+            }
+
+            return Ok(AskResponse {
+                answer,
                 citations: Vec::new(),
                 context_used: 0,
             });
@@ -168,9 +199,9 @@ impl AskService {
         }
         let context_used = context_blocks.len();
 
-        // 4. Build the grounded prompt.
+        // 4. Build the grounded prompt (with optional conversation history).
         let system_prompt = build_system_prompt();
-        let user_prompt = build_user_prompt(question, &context_blocks);
+        let user_prompt = build_user_prompt_with_history(question, &context_blocks, &history);
 
         // 5. Call LLM (use per-request model override if specified).
         let backend: Arc<dyn ChatBackend> = if let Some(ref model) = options.model {
@@ -193,6 +224,12 @@ impl AskService {
                 .filter_map(|c| serde_json::to_value(c).ok())
                 .collect();
             hooks.fire_post_synthesis(question.to_string(), answer.clone(), citation_values, None);
+        }
+
+        // 8. Record turns if a session is active.
+        if let (Some(sid), Some(svc)) = (options.session_id, &self.sessions) {
+            let _ = svc.add_turn(sid, "user", question, None).await;
+            let _ = svc.add_turn(sid, "assistant", &answer, None).await;
         }
 
         Ok(AskResponse {
@@ -480,7 +517,26 @@ fn build_system_prompt() -> String {
 }
 
 /// Build the user prompt including the question and context blocks.
+///
+/// Convenience wrapper around [`build_user_prompt_with_history`] with
+/// no conversation history.
+#[cfg(test)]
 fn build_user_prompt(question: &str, blocks: &[ContextBlock]) -> String {
+    build_user_prompt_with_history(question, blocks, &[])
+}
+
+/// Build the user prompt with optional conversation history.
+///
+/// Layout:
+/// 1. Question
+/// 2. Retrieved context (numbered blocks)
+/// 3. Conversation history (if any)
+/// 4. Closing instruction
+fn build_user_prompt_with_history(
+    question: &str,
+    blocks: &[ContextBlock],
+    history: &[Turn],
+) -> String {
     let mut prompt = format!("Question: {question}\n\nRetrieved context:\n");
 
     for block in blocks {
@@ -512,6 +568,25 @@ fn build_user_prompt(question: &str, blocks: &[ContextBlock]) -> String {
         if let Some(ref graph_ctx) = block.graph_edges {
             prompt.push_str(&format_graph_edges(graph_ctx));
             prompt.push('\n');
+        }
+    }
+
+    // Inject conversation history between context and closing.
+    if !history.is_empty() {
+        prompt.push_str("\n## Conversation History\n");
+        for turn in history {
+            let role_label = match turn.role.as_str() {
+                "user" => "User",
+                "assistant" => "Assistant",
+                "system" => "System",
+                "tool" => "Tool",
+                other => other,
+            };
+            prompt.push_str(&format!(
+                "{}: {}\n",
+                role_label,
+                truncate_context(&turn.content, 1000)
+            ));
         }
     }
 
@@ -566,6 +641,7 @@ mod tests {
         let opts = AskOptions::default();
         assert_eq!(opts.max_context, 15);
         assert!(opts.strategy.is_none());
+        assert!(opts.session_id.is_none());
     }
 
     #[test]
@@ -938,5 +1014,62 @@ mod tests {
         }];
         let prompt = build_user_prompt("What is RRF?", &blocks);
         assert!(!prompt.contains("[Graph Context"));
+    }
+
+    #[test]
+    fn build_user_prompt_includes_conversation_history() {
+        let blocks = vec![ContextBlock {
+            number: 1,
+            result_type: "chunk".to_string(),
+            confidence: 0.9,
+            source_title: "Test".to_string(),
+            source_uri: String::new(),
+            source_domain: "spec".to_string(),
+            snippet: "Some content.".to_string(),
+            _fused_score: 0.8,
+            graph_edges: None,
+        }];
+        let history = vec![
+            Turn {
+                id: Uuid::new_v4(),
+                session_id: Uuid::new_v4(),
+                role: "user".to_string(),
+                content: "What is entity resolution?".to_string(),
+                metadata: serde_json::json!({}),
+                ordinal: 1,
+                created_at: chrono::Utc::now(),
+            },
+            Turn {
+                id: Uuid::new_v4(),
+                session_id: Uuid::new_v4(),
+                role: "assistant".to_string(),
+                content: "Entity resolution is a 5-tier process.".to_string(),
+                metadata: serde_json::json!({}),
+                ordinal: 2,
+                created_at: chrono::Utc::now(),
+            },
+        ];
+        let prompt = build_user_prompt_with_history("How does tier 3 work?", &blocks, &history);
+        assert!(prompt.contains("## Conversation History"));
+        assert!(prompt.contains("User: What is entity resolution?"));
+        assert!(prompt.contains("Assistant: Entity resolution is a 5-tier"));
+        assert!(prompt.contains("Question: How does tier 3 work?"));
+    }
+
+    #[test]
+    fn build_user_prompt_no_history_omits_section() {
+        let blocks = vec![ContextBlock {
+            number: 1,
+            result_type: "chunk".to_string(),
+            confidence: 0.5,
+            source_title: "Test".to_string(),
+            source_uri: String::new(),
+            source_domain: String::new(),
+            snippet: "content".to_string(),
+            _fused_score: 0.5,
+            graph_edges: None,
+        }];
+        let prompt = build_user_prompt_with_history("query", &blocks, &[]);
+        assert!(!prompt.contains("## Conversation History"));
     }
 }

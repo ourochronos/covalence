@@ -14,4 +14,5 @@ pub mod metrics;
 pub mod nodes;
 pub mod ontology;
 pub mod search;
+pub mod sessions;
 pub mod sources;

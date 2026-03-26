@@ -11,7 +11,7 @@ use covalence_core::graph::sync::full_reload;
 use covalence_core::graph::{AgeEngine, PetgraphEngine};
 use covalence_core::services::{
     AdminService, AnalysisService, AskService, EdgeService, NodeService, RetryQueueService,
-    SearchService, SourceService,
+    SearchService, SessionService, SourceService,
 };
 use covalence_core::storage::postgres::PgRepo;
 
@@ -38,6 +38,8 @@ pub struct AppState {
     pub analysis_service: Arc<AnalysisService>,
     /// LLM-powered knowledge synthesis.
     pub ask_service: Option<Arc<AskService>>,
+    /// Session/conversation management.
+    pub session_service: Arc<SessionService>,
     /// Persistent retry queue.
     pub queue_service: Arc<RetryQueueService>,
     /// Runtime configuration service.
@@ -162,6 +164,7 @@ impl AppState {
             admin_service,
             analysis_service,
             ask_service: factory.ask_service,
+            session_service: factory.session_service,
             queue_service: factory.queue_service,
             config_service: factory.config_service,
             ontology_service: factory.ontology_service,

@@ -8,7 +8,7 @@ use utoipa::OpenApi;
 
 use crate::handlers::{
     adapters, admin, analysis, ask, config, edges, hooks, mcp, memory, metrics, nodes, ontology,
-    search, sources,
+    search, sessions, sources,
 };
 use crate::middleware::require_api_key;
 use crate::openapi::ApiDoc;
@@ -37,6 +37,13 @@ pub fn router(state: AppState) -> Router {
         .route("/search/feedback", post(search::search_feedback))
         // Ask (LLM synthesis)
         .route("/ask", post(ask::ask))
+        // Sessions (conversation context)
+        .route("/sessions", post(sessions::create_session))
+        .route("/sessions", get(sessions::list_sessions))
+        .route("/sessions/{id}", get(sessions::get_session))
+        .route("/sessions/{id}", delete(sessions::close_session))
+        .route("/sessions/{id}/turns", get(sessions::get_turns))
+        .route("/sessions/{id}/turns", post(sessions::add_turn))
         // Nodes
         .route("/nodes/resolve", post(nodes::resolve_node))
         .route("/nodes/merge", post(nodes::merge_nodes))

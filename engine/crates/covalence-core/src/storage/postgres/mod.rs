@@ -22,6 +22,7 @@ mod pg_job_queue;
 mod pg_ontology;
 mod pg_pipeline;
 mod pg_queue_ext;
+mod pg_session;
 mod section;
 mod source;
 mod statement;

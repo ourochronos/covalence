@@ -18,6 +18,8 @@ pub struct AskApiRequest {
     /// LLM model override: haiku, sonnet, opus, gemini, copilot.
     #[validate(length(max = 50))]
     pub model: Option<String>,
+    /// Optional session ID for multi-turn conversation context.
+    pub session_id: Option<String>,
 }
 
 /// A citation backing the synthesized answer.
