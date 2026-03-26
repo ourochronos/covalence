@@ -28,8 +28,8 @@ ollama pull gemma2:9b            # Google's option
 ### 2. Configure `.env`
 
 ```bash
-DATABASE_URL=postgres://covalence:covalence@localhost:5435/covalence_dev
-BIND_ADDR=0.0.0.0:8431
+DATABASE_URL=postgres://covalence:covalence@localhost:5432/covalence_dev
+BIND_ADDR=0.0.0.0:8080
 
 # --- Embeddings (Ollama) ---
 OPENAI_API_KEY=ollama
@@ -124,8 +124,8 @@ vllm serve nomic-ai/nomic-embed-text-v1.5 \
 ### 3. Configure `.env`
 
 ```bash
-DATABASE_URL=postgres://covalence:covalence@localhost:5435/covalence_dev
-BIND_ADDR=0.0.0.0:8431
+DATABASE_URL=postgres://covalence:covalence@localhost:5432/covalence_dev
+BIND_ADDR=0.0.0.0:8080
 
 # --- Embeddings (vLLM) ---
 OPENAI_API_KEY=unused

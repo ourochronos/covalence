@@ -420,7 +420,7 @@ Execute the uncompromising `design/v2-migration-plan.md`:
 ### Quality
 - [x] 11 new unit tests (1,239 total)
 - [x] Zero clippy warnings, fmt clean
-- [x] All endpoints live on prod (:8441)
+- [x] All endpoints live on prod
 
 ## Wave 10 — Graph Type System *(complete)*
 

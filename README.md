@@ -1,6 +1,6 @@
 # Covalence
 
-A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a property graph with epistemic annotations (Subjective Logic, causal hierarchy, provenance), and provides multi-dimensional fused search via Reciprocal Rank Fusion. Running in production on derptop (covalence-wsl).
+A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a property graph with epistemic annotations (Subjective Logic, causal hierarchy, provenance), and provides multi-dimensional fused search via Reciprocal Rank Fusion.
 
 ## Features
 
@@ -95,32 +95,26 @@ spec/                      Design specifications (14 specs)
 docs/adr/                  Architecture Decision Records (22 ADRs)
 ```
 
-## Environments
-
-| Resource | Dev (Mac mini) | Prod (derptop / covalence-wsl) |
-|----------|---------------|-------------------------------|
-| PG port | 5435 (Docker) | 5432 (native PG 17) |
-| Engine port | 8431 | 8441 |
-| Test PG | 5436 (Docker) | — |
-| Host | localhost | covalence-wsl (Tailscale) |
-| CLI | `cove --api-url http://localhost:8431` | `cove --api-url http://covalence-wsl:8441` |
-
-Prod runs on derptop: Ryzen 9 7945HX, 96GB RAM, WSL2 Ubuntu 24.04. Engine managed by systemd (`covalence-engine.service`).
-
 ## Development
 
 ```bash
-make check    # fmt + clippy + tests
-make test     # unit tests
-make lint     # clippy
-make run-dev  # start engine on :8431
+cp .env.example .env    # configure database URL, API keys, sidecars
+make dev-db             # start dev PostgreSQL (Docker)
+make migrate            # run migrations
+make run                # start engine
+
+make check              # fmt + clippy + tests
+make test               # unit tests only
+make lint               # clippy only
 ```
 
 ### Deployment
 
+Configure deployment targets in your Makefile or environment. The engine is a standard Rust binary managed by systemd or equivalent.
+
 ```bash
 make promote  # check + migrate-prod + deploy (full pipeline)
-make deploy   # git pull + build + migrate + restart on derptop
+make deploy   # pull, build, migrate, restart on remote host
 ```
 
 ## MCP Server

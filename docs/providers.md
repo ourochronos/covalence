@@ -232,7 +232,7 @@ cove source add --title "Test" --content "Albert Einstein developed the theory o
 # 4. Verify chunks were created with embeddings
 cove source list --json | jq '.[0].id'
 # Use the source ID to check chunks:
-curl -s http://localhost:8431/sources/<id>/chunks | jq '.[].embedding | length'
+curl -s http://localhost:8080/api/v1/sources/<id>/chunks | jq '.[].embedding | length'
 
 # 5. Search and verify results
 cove search "general relativity"

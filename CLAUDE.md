@@ -68,81 +68,26 @@ docs/adr/                           Architecture Decision Records (22 ADRs)
 | futures | Concurrent extraction via join_all |
 | cobra (Go) | CLI framework |
 
-## Ports & Deployment
+## Development & Deployment
 
-| Resource | Dev (Mac mini) | Prod (derptop / covalence-wsl) |
-|----------|---------------|-------------------------------|
-| PG port | **5435** (Docker) | **5432** (native PG 17) |
-| Engine port | **8431** | **8441** |
-| Test PG | **5436** (Docker) | — |
-| Host | localhost | covalence-wsl (Tailscale) |
-| CLI | `cove --api-url http://localhost:8431` | `cove --api-url http://covalence-wsl:8441` |
+Configure environment via `.env` (see `.env.example` for all variables). Ports, hosts, and deployment targets are environment-specific — not hardcoded.
 
-Prod runs on derptop: Ryzen 9 7945HX, 96GB RAM, WSL2 Ubuntu 24.04.
-Engine managed by systemd (`covalence-engine.service`).
-
-### Development & Deployment Workflow
-
-```
-Mac mini (dev)                         Derptop (prod)
-──────────────                         ──────────────
-1. Edit code
-2. make check (test + clippy + fmt)
-3. git commit && git push ──────────→  make deploy:
-                                         git pull
-                                         cargo build --release
-                                         migrate
-                                         systemctl restart
-4. make eval-search ────────────────→  (runs against covalence-wsl:8441)
-```
-
-Key commands:
-- `make check` — local test + clippy + fmt
-- `make deploy` — SSH to derptop, pull, build, migrate, restart
-- `make promote` — check + migrate-prod + deploy (full pipeline)
-- `make eval-search` — search regression against prod
-
-## Environments: Dev vs Prod
-
-Covalence runs two independent environments. **Dev** is for testing schema changes, pipeline modifications, and new features. **Prod** holds the canonical knowledge graph with ingested codebase, specs, and design docs.
-
-### Environment Summary
-
-| | Dev (Mac mini) | Prod (derptop) |
-|---|-----|------|
-| Host | localhost | covalence-wsl |
-| DB | `covalence_dev` on localhost:5435 | `covalence_prod` on covalence-wsl:5432 |
-| Engine | localhost:8431 | covalence-wsl:8441 |
-| Config | `.env` (default) | `.env.wsl` on derptop |
-| PG | Docker container | Native PG 17 (16GB shared_buffers) |
-| Engine mgmt | `cargo run` | systemd (`covalence-engine.service`) |
-| Data policy | Ephemeral — reset freely | Persistent — protect data |
-
-### Workflow: Testing in Dev, Deploying to Prod
-
-1. **Develop and test in dev first.** All schema changes, new migrations, pipeline changes, and features are tested against the local dev database.
-2. **Run `make check`** to verify tests, clippy, and formatting pass.
-3. **Commit and push** to GitHub.
-4. **Run `make deploy`** to pull, build, migrate, and restart on derptop.
-5. **Run `make promote`** for the full pipeline: check + migrate-prod + deploy.
-6. **Never modify prod data** without explicit user approval. Prod data is not ephemeral.
-
-### Make Targets
+### Key Commands
 
 ```bash
-# Dev (Mac mini, default)
-make dev-db          # Start dev PG (5435)
+# Development
+make dev-db          # Start dev PostgreSQL (Docker)
 make migrate         # Run migrations on dev
-make reset-db        # Drop + recreate dev DB (safe to do freely)
-make run-dev         # Start engine on :8431 (reads .env)
+make reset-db        # Drop + recreate dev DB
+make run             # Start engine (reads .env)
+make check           # fmt + clippy + tests
 
-# Prod (derptop / covalence-wsl)
-make deploy          # git pull + build + migrate + restart on derptop
-make migrate-prod    # Run migrations on prod (covalence-wsl:5432)
+# Deployment
+make deploy          # Pull, build, migrate, restart on remote host
 make promote         # check + migrate-prod + deploy (full pipeline)
 make eval-search     # Search regression against prod
 
-# Ingestion (requires prod engine running on :8441)
+# Ingestion
 make ingest-codebase # Ingest all .rs and .go files
 make ingest-specs    # Ingest spec/*.md
 make ingest-adrs     # Ingest docs/adr/*.md
@@ -152,13 +97,10 @@ make ingest-prod     # All of the above
 ### Claude Code Directives
 
 When working on Covalence:
-- **Use dev for all development work.** `make run-dev` or `make run` (alias).
+- **Use dev for all development work.** `make run` starts the engine.
 - **Never modify prod data** without explicit user approval.
 - **After adding migrations**, run `make migrate` (dev) first, verify, then `make promote` for prod.
-- **Deploy with `make deploy`** — this SSHes to derptop, pulls, builds, migrates, and restarts.
-- **To query prod**, use `cove --api-url http://covalence-wsl:8441 search "query"` or `curl -X POST http://covalence-wsl:8441/api/v1/search`.
-- **SSH to prod**: `ssh covalence@covalence-wsl` (key auth, NOPASSWD sudo).
-- **Prod engine logs**: `ssh covalence@covalence-wsl 'journalctl -u covalence-engine -f'` or `~/covalence/logs/engine.log`.
+- **Deploy with `make deploy`** — pulls, builds, migrates, and restarts on the configured remote host.
 
 ## The Meta Loop
 
@@ -193,22 +135,25 @@ The vision defines four priorities in order: (1) knowledge quality, (2) observab
 Use the `cove` CLI as the primary interface to Covalence. This dogfoods the CLI and surfaces usability issues.
 
 ```bash
-# Search (against prod)
-cove --api-url http://covalence-wsl:8441 search "subjective logic confidence propagation"
-cove --api-url http://covalence-wsl:8441 search "entity resolution" --strategy precise
-cove --api-url http://covalence-wsl:8441 search "chunking strategies" --mode context
+# Search
+cove search "subjective logic confidence propagation"
+cove search "entity resolution" --strategy precise
+cove search "chunking strategies" --mode context
 
 # Inspect sources and graph
-cove --api-url http://covalence-wsl:8441 source list
-cove --api-url http://covalence-wsl:8441 node list --type concept --limit 20
-cove --api-url http://covalence-wsl:8441 graph stats
+cove source list
+cove node list --type concept --limit 20
+cove graph stats
 
 # Ingest a local file
-cove --api-url http://covalence-wsl:8441 source add /path/to/paper.md
+cove source add /path/to/paper.md
 
 # Admin
-cove --api-url http://covalence-wsl:8441 admin health
-cove --api-url http://covalence-wsl:8441 admin metrics
+cove admin health
+cove admin metrics
+
+# Grounded Q&A
+cove ask "How does entity resolution work?"
 ```
 
 If the CLI is missing a feature you need (e.g., URL-based ingestion, bulk operations), add it. That's the loop working.
@@ -271,7 +216,7 @@ Autonomous sessions should proactively maintain engineering quality:
 - **Close the loop on issues.** At the end of every session, review which issues were touched. Update them with progress notes, close completed ones, add blockers to deferred ones. Append a final summary to `logs/session.md` so the next agent understands where you left off. An open issue with no recent activity is invisible work.
 - **Respect conventions.** You MUST explicitly run `cd engine && cargo fmt` and `cd engine && cargo clippy --workspace` and ensure all tests pass before making any commit.
 - **Code Review Protocol.** Before executing a `git push` or merge, you MUST run a code review via `cove llm` (e.g., `cove llm "Review the unpushed commits on my branch for architectural alignment and code quality"`). Default backend is Claude Haiku. If quota is exhausted, fall back to the internal code review agent. You must address any feedback or fixes requested and re-run the review. Once the reviewer has provided a green light, you may push the branch, merge it into `main`, and push `main`.
-- **Test in dev first.** Use `make run-dev` for development. Don't touch prod data without explicit approval. Use `make promote` to move verified changes to prod.
+- **Test in dev first.** Use `make run` for development. Don't touch prod data without explicit approval. Use `make promote` to move verified changes to prod.
 - **Keep CI green locally.** Run `make check` before pushing. We don't rely on GitHub Actions for gating — the project isn't released yet — but the local checks are non-negotiable.
 - **Modular design.** Prefer small, focused modules. If a file is growing past ~500 lines, consider splitting. If a function does three things, make it three functions.
 - **Don't ignore failures.** If a consolidation run fails, a test is flaky, or an ingestion produces warnings — investigate immediately or create an issue. Moving past failures silently compounds debt.
@@ -374,7 +319,7 @@ These patterns come from the existing Covalence and should be maintained:
 cd engine && cargo test --workspace
 # Current: 1,452 passing tests (1,382 core + 21 api + 49 eval), 18 ignored integration tests
 
-# Integration tests (requires running PG on port 5435)
+# Integration tests (requires running dev PG — see .env)
 cd engine && cargo test --workspace -- --ignored
 
 # Clippy
@@ -393,21 +338,15 @@ cd cli && go test ./...
 ## Database
 
 ```bash
-# Dev database
-make dev-db                                                        # Start container
-make migrate                                                       # Run migrations
-psql postgres://covalence:covalence@localhost:5435/covalence_dev   # Connect
-
-# Prod database
-make prod-db                                                               # Check prod PG connectivity
-make migrate-prod                                                          # Run migrations on prod
-ssh covalence@covalence-wsl 'psql postgres://covalence:covalence@localhost:5432/covalence_prod'  # Connect
-
-# Deployment and promotion
-make promote
+make dev-db       # Start dev PostgreSQL container
+make migrate      # Run migrations on dev
+make reset-db     # Drop + recreate dev DB
+make promote      # check + migrate-prod + deploy
 ```
 
 Extensions required: `pgvector`, `pg_trgm`, `ltree`
+
+Connection details are environment-specific — see `.env` and `.env.example`.
 
 ## Spec References
 
