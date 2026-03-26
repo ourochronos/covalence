@@ -44,7 +44,7 @@ impl GraphEngine for PetgraphEngine {
 
     /// Graph summary statistics.
     async fn stats(&self) -> Result<GraphStats> {
-        let g = self.graph.read().await;
+        let g = super::instrumented_lock::read_graph(&self.graph, "PetgraphEngine::stats").await;
         let n = g.node_count();
         let e = g.edge_count();
         let density = if n > 1 {

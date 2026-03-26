@@ -9,6 +9,7 @@ pub mod bridges;
 pub mod community;
 pub mod engine;
 pub mod filtered;
+pub mod instrumented_lock;
 pub mod petgraph_engine;
 pub mod sidecar;
 pub mod sync;

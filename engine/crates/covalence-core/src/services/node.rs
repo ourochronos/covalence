@@ -301,7 +301,9 @@ impl NodeService {
 
         // Update graph sidecar
         {
-            let mut g = self.graph.write().await;
+            let mut g =
+                crate::graph::instrumented_lock::write_graph(&self.graph, "NodeService::merge")
+                    .await;
             for source_id in &source_ids {
                 if let Err(e) = g.remove_node(source_id.into_uuid()) {
                     tracing::warn!(
