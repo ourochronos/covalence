@@ -8,7 +8,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 - **Statement-first ingestion** — two-pass LLM extraction (statements then triples) with fastcoref coreference resolution and offset projection. PDF, HTML, Markdown, and code via pluggable converter sidecars
 - **Epistemic model** — Subjective Logic opinions, Dempster-Shafer fusion, DF-QuAD argumentation, Bayesian Model Reduction forgetting
 - **5-tier entity resolution** — exact, alias, vector cosine, fuzzy trigram, HDBSCAN batch clustering
-- **Graph type system** — entity classification (entity_class), domain labels (project/domain on sources), traceability edges (ADR-0018)
+- **Configurable domain system** — multi-domain sources (TEXT[]), domain groups for analysis scoping, rule-driven alignment checks, DB-driven domain classification. Domains are visibility scopes, not a fixed taxonomy
 - **Apache AGE graph backend** — config-driven graph engine selection (petgraph or AGE) via GraphEngine trait
 - **Async pipeline with retry queue** — per-entity jobs, fan-in triggers, watchdog, persistent error classification (permanent/rate-limit/transient)
 - **Semantic code summaries** — per-method extraction from impl blocks, definition-pattern chunk matching, bottom-up file summary composition
@@ -30,7 +30,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 |--------|------|---------|
 | Search precision@5 | >0.80 | 0.86 |
 | Entity precision | >90% | 96% |
-| Tests passing | — | 1,452 (1,382 core + 21 api + 49 eval) |
+| Tests passing | — | 1,456 (1,386 core + 21 api + 49 eval) |
 
 ## Architecture
 
