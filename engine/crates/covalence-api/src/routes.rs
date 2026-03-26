@@ -37,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         .route("/search/feedback", post(search::search_feedback))
         // Ask (LLM synthesis)
         .route("/ask", post(ask::ask))
+        .route("/ask/stream", post(ask::ask_stream))
         // Sessions (conversation context)
         .route("/sessions", post(sessions::create_session))
         .route("/sessions", get(sessions::list_sessions))

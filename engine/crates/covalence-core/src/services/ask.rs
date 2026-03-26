@@ -6,8 +6,10 @@
 //! and returns a structured answer with citations.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -72,6 +74,36 @@ pub struct AskResponse {
     pub citations: Vec<Citation>,
     /// Number of search results used as context.
     pub context_used: usize,
+}
+
+/// A Server-Sent Event from the streaming ask endpoint.
+///
+/// Each variant is tagged with a `type` field for SSE routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum AskStreamEvent {
+    /// Emitted first: search context metadata and citations.
+    Context {
+        /// Number of context fragments used.
+        context_used: usize,
+        /// Citations from the knowledge graph.
+        citations: Vec<Citation>,
+    },
+    /// A token (or line) of the synthesized answer.
+    Token {
+        /// The text content of this token/chunk.
+        text: String,
+    },
+    /// The stream is complete.
+    Done {
+        /// Which LLM provider generated the answer.
+        provider: String,
+    },
+    /// An error occurred during streaming.
+    Error {
+        /// Human-readable error description.
+        message: String,
+    },
 }
 
 /// Maximum number of code entities to enrich with graph edges.
@@ -237,6 +269,185 @@ impl AskService {
             citations,
             context_used,
         })
+    }
+
+    /// Stream an answer as Server-Sent Events.
+    ///
+    /// Performs the same search + context enrichment as [`ask()`],
+    /// but streams the LLM synthesis token-by-token instead of
+    /// buffering the full response.
+    ///
+    /// Event order: `Context` (once) -> `Token` (many) -> `Done`.
+    /// On error the stream yields an `Error` event and terminates.
+    pub async fn ask_stream(
+        &self,
+        question: &str,
+        options: AskOptions,
+    ) -> Result<Pin<Box<dyn Stream<Item = AskStreamEvent> + Send>>> {
+        use futures::StreamExt;
+
+        // 0a. Pre-search hooks.
+        if let Some(ref hooks) = self.hooks {
+            let pre = hooks.fire_pre_search(question, None).await?;
+            if let Some(ref terms) = pre.boost_terms {
+                tracing::info!(
+                    boost_terms = ?terms,
+                    "pre_search hook returned boost terms \
+                     (logged, not yet applied to query)"
+                );
+            }
+        }
+
+        // 0b. Load conversation history if a session is active.
+        let history = if let (Some(sid), Some(svc)) = (options.session_id, &self.sessions) {
+            svc.get_history(sid, Some(10)).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // 1. Search for context (blocking, not streamed).
+        let strategy = parse_strategy(options.strategy.as_deref());
+        let results = self
+            .search
+            .search(question, strategy, options.max_context, None)
+            .await?;
+
+        if results.is_empty() {
+            let answer = "No relevant information found in the \
+                          knowledge graph to answer this question."
+                .to_string();
+
+            if let (Some(sid), Some(svc)) = (options.session_id, &self.sessions) {
+                let _ = svc.add_turn(sid, "user", question, None).await;
+                let _ = svc.add_turn(sid, "assistant", &answer, None).await;
+            }
+
+            let stream = futures::stream::iter(vec![
+                AskStreamEvent::Context {
+                    context_used: 0,
+                    citations: Vec::new(),
+                },
+                AskStreamEvent::Token { text: answer },
+                AskStreamEvent::Done {
+                    provider: "none".to_string(),
+                },
+            ]);
+            return Ok(Box::pin(stream));
+        }
+
+        // 2. Post-search hooks.
+        let extra_context = if let Some(ref hooks) = self.hooks {
+            let summary = format!("{} results found", results.len());
+            let post = hooks.fire_post_search(question, &summary, None).await?;
+            post.additional_context.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // 3. Enrich with provenance and build context blocks.
+        let mut context_blocks = self.build_context_blocks(&results).await;
+
+        for (i, ctx_text) in extra_context.iter().enumerate() {
+            context_blocks.push(ContextBlock {
+                number: context_blocks.len() + 1,
+                result_type: "hook_context".to_string(),
+                confidence: 1.0,
+                source_title: format!("hook_context_{}", i + 1),
+                source_uri: String::new(),
+                source_domain: "external".to_string(),
+                snippet: ctx_text.clone(),
+                _fused_score: 0.0,
+                graph_edges: None,
+            });
+        }
+        let context_used = context_blocks.len();
+
+        // 4. Build prompts.
+        let system_prompt = build_system_prompt();
+        let user_prompt = build_user_prompt_with_history(question, &context_blocks, &history);
+
+        // 5. Build citations.
+        let citations = build_citations(&results, &context_blocks);
+
+        // 6. Resolve LLM backend.
+        let backend: Arc<dyn ChatBackend> = if let Some(ref model) = options.model {
+            Arc::new(resolve_model_backend(model))
+        } else {
+            Arc::clone(&self.chat)
+        };
+
+        // 7. Get the LLM token stream.
+        let token_stream = backend
+            .chat_stream(&system_prompt, &user_prompt, false, 0.3)
+            .await?;
+
+        // Capture state needed by the stream closure.
+        let hooks = self.hooks.clone();
+        let sessions = self.sessions.clone();
+        let question_owned = question.to_string();
+        let session_id = options.session_id;
+
+        // 8. Compose the SSE stream:
+        //    Context -> Token* -> Done
+        let context_event = AskStreamEvent::Context {
+            context_used,
+            citations: citations.clone(),
+        };
+
+        // Chain: one context event, then mapped token events.
+        let prefix = futures::stream::once(async move { context_event });
+
+        // Map the raw token stream, accumulating text for session
+        // recording and post-synthesis hooks.
+        let answer_buf = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let answer_buf2 = Arc::clone(&answer_buf);
+
+        let tokens = token_stream.filter_map(move |chunk_result| {
+            let answer_buf = Arc::clone(&answer_buf2);
+            let hooks = hooks.clone();
+            let sessions = sessions.clone();
+            let citations = citations.clone();
+            let question_owned = question_owned.clone();
+            async move {
+                match chunk_result {
+                    Ok(chunk) if chunk.done => {
+                        let provider = chunk.provider;
+                        // Fire post-synthesis hook (fire-and-forget).
+                        if let Some(hooks) = hooks {
+                            let answer = answer_buf.lock().await;
+                            let cit_vals: Vec<serde_json::Value> = citations
+                                .iter()
+                                .filter_map(|c| serde_json::to_value(c).ok())
+                                .collect();
+                            hooks.fire_post_synthesis(
+                                question_owned.clone(),
+                                answer.clone(),
+                                cit_vals,
+                                None,
+                            );
+                        }
+                        // Record session turns.
+                        if let (Some(sid), Some(svc)) = (session_id, &sessions) {
+                            let answer = answer_buf.lock().await;
+                            let _ = svc.add_turn(sid, "user", &question_owned, None).await;
+                            let _ = svc.add_turn(sid, "assistant", &answer, None).await;
+                        }
+                        Some(AskStreamEvent::Done { provider })
+                    }
+                    Ok(chunk) if chunk.text.is_empty() => None,
+                    Ok(chunk) => {
+                        let mut buf = answer_buf.lock().await;
+                        buf.push_str(&chunk.text);
+                        Some(AskStreamEvent::Token { text: chunk.text })
+                    }
+                    Err(e) => Some(AskStreamEvent::Error {
+                        message: e.to_string(),
+                    }),
+                }
+            }
+        });
+
+        Ok(Box::pin(prefix.chain(tokens)))
     }
 
     /// Build numbered context blocks from search results, enriching
@@ -1054,6 +1265,83 @@ mod tests {
         assert!(prompt.contains("User: What is entity resolution?"));
         assert!(prompt.contains("Assistant: Entity resolution is a 5-tier"));
         assert!(prompt.contains("Question: How does tier 3 work?"));
+    }
+
+    // --- AskStreamEvent serialization tests ---
+
+    #[test]
+    fn ask_stream_event_context_serialization() {
+        let event = AskStreamEvent::Context {
+            context_used: 5,
+            citations: vec![Citation {
+                source: "test.md".to_string(),
+                snippet: "hello".to_string(),
+                result_type: "chunk".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "Context");
+        assert_eq!(json["context_used"], 5);
+        assert_eq!(json["citations"].as_array().unwrap().len(), 1);
+        assert_eq!(json["citations"][0]["source"], "test.md");
+    }
+
+    #[test]
+    fn ask_stream_event_token_serialization() {
+        let event = AskStreamEvent::Token {
+            text: "hello world".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "Token");
+        assert_eq!(json["text"], "hello world");
+    }
+
+    #[test]
+    fn ask_stream_event_done_serialization() {
+        let event = AskStreamEvent::Done {
+            provider: "claude(haiku)".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "Done");
+        assert_eq!(json["provider"], "claude(haiku)");
+    }
+
+    #[test]
+    fn ask_stream_event_error_serialization() {
+        let event = AskStreamEvent::Error {
+            message: "something went wrong".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "Error");
+        assert_eq!(json["message"], "something went wrong");
+    }
+
+    #[test]
+    fn ask_stream_event_roundtrip() {
+        let events = vec![
+            AskStreamEvent::Context {
+                context_used: 3,
+                citations: vec![],
+            },
+            AskStreamEvent::Token {
+                text: "test".to_string(),
+            },
+            AskStreamEvent::Done {
+                provider: "mock".to_string(),
+            },
+            AskStreamEvent::Error {
+                message: "oops".to_string(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: AskStreamEvent = serde_json::from_str(&json).unwrap();
+            // Verify roundtrip preserves type tag.
+            let orig_type = serde_json::to_value(event).unwrap()["type"].clone();
+            let back_type = serde_json::to_value(&back).unwrap()["type"].clone();
+            assert_eq!(orig_type, back_type);
+        }
     }
 
     #[test]

@@ -5,6 +5,9 @@
 //! LLM-driven stages can run against either an OpenAI-compatible
 //! HTTP API or a local CLI tool (e.g. `gemini`).
 
+use std::pin::Pin;
+
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -17,6 +20,17 @@ pub struct ChatResponse {
     /// Label identifying which provider handled the request
     /// (e.g. "claude(haiku)", "gemini(2.5-flash)", "openai(gpt-4)").
     pub provider: String,
+}
+
+/// A single chunk from a streaming chat response.
+#[derive(Debug, Clone)]
+pub struct StreamChunk {
+    /// The text content of this chunk (a token or line).
+    pub text: String,
+    /// Label identifying which provider is streaming.
+    pub provider: String,
+    /// Whether this is the final chunk in the stream.
+    pub done: bool,
 }
 
 /// A backend for LLM chat completions.
@@ -38,6 +52,36 @@ pub trait ChatBackend: Send + Sync {
         json_mode: bool,
         temperature: f64,
     ) -> Result<ChatResponse>;
+
+    /// Stream a chat completion token-by-token.
+    ///
+    /// Default implementation calls [`chat()`](ChatBackend::chat)
+    /// and yields the full response as a single chunk.
+    async fn chat_stream(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        json_mode: bool,
+        temperature: f64,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
+        let resp = self
+            .chat(system_prompt, user_prompt, json_mode, temperature)
+            .await?;
+        let provider = resp.provider.clone();
+        let stream = tokio_stream::iter(vec![
+            Ok(StreamChunk {
+                text: resp.text,
+                provider: provider.clone(),
+                done: false,
+            }),
+            Ok(StreamChunk {
+                text: String::new(),
+                provider,
+                done: true,
+            }),
+        ]);
+        Ok(Box::pin(stream))
+    }
 }
 
 // ── HTTP backend (OpenAI-compatible) ────────────────────────────
@@ -196,6 +240,28 @@ fn build_cli_prompt(
     prompt
 }
 
+/// Build a [`tokio::process::Command`] for the given CLI backend.
+///
+/// Each CLI tool has different flags for non-interactive prompt mode:
+///   gemini:  --prompt=<text> --model <model>
+///   copilot: --prompt=<text> --model <model>
+///   claude:  --print --model <model> <prompt>
+///
+/// For gemini/copilot: use `--prompt=<value>` (equals syntax)
+/// to avoid yargs misinterpreting prompt content containing
+/// dashes (e.g. "---" markdown separators) as CLI flags.
+fn build_cli_command(command: &str, model: &str, prompt: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(command);
+    if command == "claude" {
+        cmd.arg("--print").arg("--model").arg(model).arg(prompt);
+    } else {
+        cmd.arg(format!("--prompt={prompt}"))
+            .arg("--model")
+            .arg(model);
+    }
+    cmd
+}
+
 #[async_trait::async_trait]
 impl ChatBackend for CliChatBackend {
     async fn chat(
@@ -205,36 +271,15 @@ impl ChatBackend for CliChatBackend {
         json_mode: bool,
         temperature: f64,
     ) -> Result<ChatResponse> {
-        use tokio::process::Command;
-
         let prompt = build_cli_prompt(system_prompt, user_prompt, json_mode, temperature);
-
-        // Build CLI arguments based on the command. Each CLI tool
-        // has different flags for non-interactive prompt mode:
-        //   gemini:  --prompt=<text> --model <model>
-        //   copilot: --prompt=<text> --model <model>
-        //   claude:  --print --model <model> <prompt>
-        //
-        // For gemini/copilot: use `--prompt=<value>` (equals syntax)
-        // to avoid yargs misinterpreting prompt content containing
-        // dashes (e.g. "---" markdown separators) as CLI flags.
-        let mut cmd = Command::new(&self.command);
-        if self.command == "claude" {
-            cmd.arg("--print")
-                .arg("--model")
-                .arg(&self.model)
-                .arg(&prompt);
-        } else {
-            cmd.arg(format!("--prompt={prompt}"))
-                .arg("--model")
-                .arg(&self.model);
-        }
+        let mut cmd = build_cli_command(&self.command, &self.model, &prompt);
 
         // Run from a neutral directory to prevent CLI agents from
-        // picking up the repo cwd and entering agentic/tool-use mode.
-        // Use $HOME instead of /tmp — some CLIs (gemini) scan the cwd
-        // and fail on /tmp due to permission errors on systemd dirs.
-        let neutral_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        // picking up the repo cwd and entering agentic/tool-use
+        // mode. Use $HOME instead of /tmp — some CLIs (gemini)
+        // scan the cwd and fail on /tmp due to permission errors
+        // on systemd dirs.
+        let neutral_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         let output = cmd
             .current_dir(&neutral_dir)
             .stdin(std::process::Stdio::null())
@@ -273,6 +318,117 @@ impl ChatBackend for CliChatBackend {
             text: content,
             provider: format!("{}({})", self.command, self.model),
         })
+    }
+
+    async fn chat_stream(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        json_mode: bool,
+        temperature: f64,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let prompt = build_cli_prompt(system_prompt, user_prompt, json_mode, temperature);
+        let mut cmd = build_cli_command(&self.command, &self.model, &prompt);
+
+        let neutral_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+
+        let mut child = cmd
+            .current_dir(&neutral_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                Error::Ingestion(format!(
+                    "failed to spawn streaming chat CLI '{}': {e}",
+                    self.command
+                ))
+            })?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Ingestion("chat CLI stdout not captured".to_string()))?;
+
+        let provider = format!("{}({})", self.command, self.model);
+        let cmd_name = self.command.clone();
+        let lines = BufReader::new(stdout).lines();
+
+        // State tuple: (lines, child, provider, cmd_name,
+        //               seen_credentials_preamble, terminated)
+        type State = (
+            tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+            tokio::process::Child,
+            String,
+            String,
+            bool,
+            bool,
+        );
+
+        let stream = futures::stream::unfold(
+            (lines, child, provider, cmd_name, false, false) as State,
+            |state| async move {
+                let (mut lines, mut child, provider, cmd_name, mut seen_cred, terminated) = state;
+                if terminated {
+                    return None;
+                }
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        // Skip the Gemini credentials preamble.
+                        if !seen_cred && line == "Loaded cached credentials." {
+                            seen_cred = true;
+                            return Some((
+                                Ok(StreamChunk {
+                                    text: String::new(),
+                                    provider: provider.clone(),
+                                    done: false,
+                                }),
+                                (lines, child, provider, cmd_name, seen_cred, false),
+                            ));
+                        }
+                        Some((
+                            Ok(StreamChunk {
+                                text: format!("{line}\n"),
+                                provider: provider.clone(),
+                                done: false,
+                            }),
+                            (lines, child, provider, cmd_name, seen_cred, false),
+                        ))
+                    }
+                    Ok(None) => {
+                        // EOF — check exit status.
+                        let status = child.wait().await;
+                        let item = match status {
+                            Ok(s) if s.success() => Ok(StreamChunk {
+                                text: String::new(),
+                                provider: provider.clone(),
+                                done: true,
+                            }),
+                            Ok(s) => Err(Error::Ingestion(format!(
+                                "chat CLI '{cmd_name}' \
+                                 exited with {s}"
+                            ))),
+                            Err(e) => Err(Error::Ingestion(format!(
+                                "failed to wait on chat CLI \
+                                 '{cmd_name}': {e}"
+                            ))),
+                        };
+                        Some((item, (lines, child, provider, cmd_name, seen_cred, true)))
+                    }
+                    Err(e) => Some((
+                        Err(Error::Ingestion(format!(
+                            "error reading chat CLI \
+                             '{cmd_name}' stdout: {e}"
+                        ))),
+                        (lines, child, provider, cmd_name, seen_cred, true),
+                    )),
+                }
+            },
+        );
+
+        Ok(Box::pin(stream))
     }
 }
 
@@ -576,5 +732,131 @@ mod tests {
     fn cli_prompt_low_temperature_appends_hint() {
         let prompt = build_cli_prompt("sys", "user", false, 0.05);
         assert!(prompt.contains("precise and deterministic"));
+    }
+
+    // --- StreamChunk tests ---
+
+    #[test]
+    fn stream_chunk_fields() {
+        let chunk = StreamChunk {
+            text: "hello".to_string(),
+            provider: "test(model)".to_string(),
+            done: false,
+        };
+        assert_eq!(chunk.text, "hello");
+        assert_eq!(chunk.provider, "test(model)");
+        assert!(!chunk.done);
+
+        let done = StreamChunk {
+            text: String::new(),
+            provider: "test(model)".to_string(),
+            done: true,
+        };
+        assert!(done.done);
+        assert!(done.text.is_empty());
+    }
+
+    #[test]
+    fn stream_chunk_clone() {
+        let chunk = StreamChunk {
+            text: "data".to_string(),
+            provider: "p".to_string(),
+            done: false,
+        };
+        let cloned = chunk.clone();
+        assert_eq!(cloned.text, chunk.text);
+        assert_eq!(cloned.provider, chunk.provider);
+        assert_eq!(cloned.done, chunk.done);
+    }
+
+    // --- Default chat_stream tests ---
+
+    /// Mock backend that always returns the same response (for
+    /// chat_stream default impl testing).
+    struct StableMockBackend {
+        text: String,
+        provider: String,
+    }
+
+    impl StableMockBackend {
+        fn new(text: &str) -> Self {
+            Self {
+                text: text.to_string(),
+                provider: "stable_mock".to_string(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChatBackend for StableMockBackend {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _json_mode: bool,
+            _temperature: f64,
+        ) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                text: self.text.clone(),
+                provider: self.provider.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn default_chat_stream_yields_content_then_done() {
+        use futures::StreamExt;
+
+        let backend = StableMockBackend::new("full response");
+        let stream = backend
+            .chat_stream("sys", "user", false, 0.5)
+            .await
+            .unwrap();
+
+        let chunks: Vec<_> = stream.collect::<Vec<_>>().await;
+
+        assert_eq!(chunks.len(), 2);
+
+        // First chunk: the full content.
+        let first = chunks[0].as_ref().unwrap();
+        assert_eq!(first.text, "full response");
+        assert_eq!(first.provider, "stable_mock");
+        assert!(!first.done);
+
+        // Second chunk: done sentinel.
+        let second = chunks[1].as_ref().unwrap();
+        assert!(second.text.is_empty());
+        assert!(second.done);
+        assert_eq!(second.provider, "stable_mock");
+    }
+
+    #[test]
+    fn build_cli_command_claude() {
+        let cmd = build_cli_command("claude", "haiku", "hello world");
+        let prog = cmd.as_std().get_program().to_str().unwrap();
+        assert_eq!(prog, "claude");
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"haiku".to_string()));
+        assert!(args.contains(&"hello world".to_string()));
+    }
+
+    #[test]
+    fn build_cli_command_gemini() {
+        let cmd = build_cli_command("gemini", "gemini-2.5-flash", "test prompt");
+        let prog = cmd.as_std().get_program().to_str().unwrap();
+        assert_eq!(prog, "gemini");
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert!(args.contains(&"--prompt=test prompt".to_string()));
+        assert!(args.contains(&"gemini-2.5-flash".to_string()));
     }
 }

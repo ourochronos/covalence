@@ -40,7 +40,7 @@ pub use accept::{AcceptResult, compute_content_hash};
 pub use ast_extractor::AstExtractor;
 pub use chat_backend::{
     ChainChatBackend, ChatBackend, ChatResponse, CliChatBackend, FallbackChatBackend,
-    HttpChatBackend,
+    HttpChatBackend, StreamChunk,
 };
 pub use chunker::{ChunkLevel, ChunkOutput, chunk_document, chunk_document_with_merge};
 pub use code_chunker::{CodeLanguage, code_to_markdown, detect_code_language};
