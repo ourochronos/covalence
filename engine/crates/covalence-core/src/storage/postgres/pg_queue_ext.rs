@@ -51,7 +51,7 @@ impl QueueRepo for PgRepo {
         let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT DISTINCT s.id \
              FROM sources s \
-             WHERE s.domain = $1 \
+             WHERE $1 = ANY(s.domains) \
                AND s.summary IS NULL \
                AND EXISTS ( \
                  SELECT 1 FROM nodes n \
@@ -89,7 +89,7 @@ impl QueueRepo for PgRepo {
     ) -> Result<Vec<(uuid::Uuid,)>> {
         let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT s.id FROM sources s \
-             WHERE s.domain = $1 \
+             WHERE $1 = ANY(s.domains) \
                AND s.summary IS NULL \
                AND EXISTS ( \
                  SELECT 1 FROM nodes n \

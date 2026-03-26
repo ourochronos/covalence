@@ -43,7 +43,7 @@ impl AnalysisRepo for PgRepo {
                        JOIN chunks c ON ex.chunk_id = c.id \
                        JOIN sources s ON c.source_id = s.id \
                        WHERE ex.entity_id = n.id \
-                       ORDER BY CASE WHEN s.domain = $2 \
+                       ORDER BY CASE WHEN $2 = ANY(s.domains) \
                                      THEN 0 ELSE 1 END \
                        LIMIT 1), \
                       '' \
@@ -57,7 +57,7 @@ impl AnalysisRepo for PgRepo {
                  JOIN chunks c ON ex.chunk_id = c.id \
                  JOIN sources s ON c.source_id = s.id \
                  WHERE ex.entity_id = n.id \
-                   AND s.domain = $2 \
+                   AND $2 = ANY(s.domains) \
                )",
         )
         .bind(code_entity_class)
@@ -100,7 +100,7 @@ impl AnalysisRepo for PgRepo {
                  JOIN chunks c ON ex.chunk_id = c.id \
                  JOIN sources s ON c.source_id = s.id \
                  WHERE ex.entity_id = n.id \
-                   AND s.domain = ANY($3) \
+                   AND s.domains && $3 \
                ) \
              ORDER BY dist ASC \
              LIMIT $2",
@@ -306,7 +306,7 @@ impl AnalysisRepo for PgRepo {
                  JOIN chunks c ON c.id = ex.chunk_id \
                  JOIN sources s ON s.id = c.source_id \
                  WHERE ex.entity_id = n.id \
-                   AND s.domain = ANY($2) \
+                   AND s.domains && $2 \
                ) \
              ORDER BY dist ASC \
              LIMIT $3",
@@ -391,7 +391,7 @@ impl AnalysisRepo for PgRepo {
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain = $4 \
+                       AND $4 = ANY(s.domains) \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",
@@ -416,7 +416,7 @@ impl AnalysisRepo for PgRepo {
                      JOIN chunks c ON c.id = ex.chunk_id \
                      JOIN sources s ON s.id = c.source_id \
                      WHERE ex.entity_id = n.id \
-                       AND s.domain = ANY($3) \
+                       AND s.domains && $3 \
                    ) \
                  ORDER BY dist ASC \
                  LIMIT $2",

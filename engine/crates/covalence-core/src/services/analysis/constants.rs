@@ -31,7 +31,7 @@ pub(super) const COMPONENT_DEFS: &[(&str, &str)] = &[
          Self-referential domain boost (DDSS) for internal vs external \
          content. Voyage rerank-2.5 reranking blended 60/40 with \
          fusion scores. Semantic query cache. Abstention detection. \
-         Post-fusion entity_class and source_layer filtering.",
+         Post-fusion entity_class and domain filtering.",
     ),
     (
         "Entity Resolution",
@@ -79,7 +79,7 @@ pub(super) const COMPONENT_DEFS: &[(&str, &str)] = &[
          sources, nodes, edges, articles, search, ask (LLM synthesis), \
          memory, admin, and cross-domain analysis. OpenAPI spec via \
          utoipa with Swagger UI. MCP tool interface (11 tools). \
-         Entity_class and source_domain filtering in search. \
+         Entity_class and domain filtering in search. \
          ChainChatBackend for multi-provider LLM failover.",
     ),
     (

@@ -281,7 +281,7 @@ async fn extract_single_chunk(
         source_uri: source.as_ref().and_then(|s| s.uri.clone()),
         source_title: source.as_ref().and_then(|s| s.title.clone()),
     };
-    let source_domain = source.as_ref().and_then(|s| s.domain.clone());
+    let source_domain = source.as_ref().and_then(|s| s.domains.first().cloned());
 
     let start = Instant::now();
     let result = extractor.extract(&chunk.content, &context).await?;

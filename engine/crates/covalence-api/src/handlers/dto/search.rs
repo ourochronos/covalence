@@ -75,11 +75,8 @@ pub struct SearchRequest {
     pub entity_classes: Option<Vec<String>>,
     /// Restrict to specific source types (e.g. "document", "code").
     pub source_types: Option<Vec<String>>,
-    /// Restrict to specific source layers derived from URI prefix.
-    /// Layers: "spec", "design", "code", "research", "external".
-    pub source_layers: Option<Vec<String>>,
-    /// Filter by source domain (preferred over `source_layers`).
-    /// Matches against the source's domain classification.
+    /// Filter by source domain. Matches against the source's domain
+    /// classification.
     pub domains: Option<Vec<String>>,
     /// Start of date range filter (ISO 8601).
     pub date_range_start: Option<String>,
@@ -131,9 +128,6 @@ pub struct SearchResultResponse {
     /// Source type (e.g. "code", "document").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_type: Option<String>,
-    /// Source domain (code/spec/design/research/external).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_domain: Option<String>,
     /// Multi-domain classification.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_domains: Vec<String>,
@@ -169,7 +163,6 @@ impl From<covalence_core::search::fusion::FusedResult> for SearchResultResponse 
             source_uri: r.source_uri,
             source_title: r.source_title,
             source_type: r.source_type,
-            source_domain: r.source_domain,
             source_domains: r.source_domains,
             dimension_scores: r.dimension_scores,
             dimension_ranks: r.dimension_ranks,
@@ -343,7 +336,6 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
-            source_domain: None,
             source_domains: Vec::new(),
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
@@ -370,7 +362,6 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
-            source_domain: None,
             source_domains: Vec::new(),
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),
@@ -393,7 +384,6 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
-            source_domain: None,
             source_domains: Vec::new(),
             dimension_scores: std::collections::HashMap::new(),
             dimension_ranks: std::collections::HashMap::new(),

@@ -1,8 +1,8 @@
 //! Search service — multi-dimensional fused search orchestration.
 //!
 //! Split into focused submodules:
-//! - [`filters`] — `SearchFilters` struct, `source_layer_from_uri`,
-//!   and all post-fusion filtering/diversification logic
+//! - [`filters`] — `SearchFilters` struct and all post-fusion
+//!   filtering/diversification logic
 //! - [`enrichment`] — result enrichment (node/chunk/article/source
 //!   metadata lookup, graph context)
 //! - [`pipeline`] — the core `search_inner` pipeline orchestration
@@ -34,8 +34,7 @@ use crate::storage::postgres::PgRepo;
 
 // Re-export public types so `services::search::SearchFilters` and
 // `services::search::SearchService` still resolve.
-#[allow(deprecated)]
-pub use filters::{SearchFilters, source_layer_from_uri};
+pub use filters::SearchFilters;
 
 /// Service for orchestrating multi-dimensional search and RRF fusion.
 ///

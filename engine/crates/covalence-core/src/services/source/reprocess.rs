@@ -98,7 +98,7 @@ impl SourceService {
                 source_type: &source.source_type,
                 source_uri: source.uri.clone(),
                 source_title: source.title.clone(),
-                source_domain: source.domain.clone(),
+                source_domain: source.domains.first().cloned(),
                 normalized: &prepared.normalized,
                 is_code: prepared.is_code,
                 chunk_only: false,
@@ -141,7 +141,10 @@ impl SourceService {
                         );
                         // Extract entities from statements (Phase 4, ADR-0015).
                         if let Err(e) = self
-                            .extract_entities_from_statements(id, source.domain.as_deref())
+                            .extract_entities_from_statements(
+                                id,
+                                source.domains.first().map(|s| s.as_str()),
+                            )
                             .await
                         {
                             tracing::warn!(

@@ -84,7 +84,6 @@ pub async fn recall_memory(
             entity_classes: None,
             date_range: None,
             source_types: None,
-            source_layers: None,
             domains: None,
             graph_view: None,
         })

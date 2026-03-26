@@ -41,9 +41,8 @@ impl SearchService {
         metrics::record_search_query(strategy_name(&strategy));
         let time_range = filters.as_ref().and_then(|f| f.date_range);
 
-        // When post-fusion filters are present (especially
-        // source_layers), over-fetch so the filter has enough
-        // candidates to meet the requested limit.
+        // When post-fusion filters are present, over-fetch so the
+        // filter has enough candidates to meet the requested limit.
         let internal_limit = if filters.is_some() {
             (limit * 5).max(50)
         } else {
@@ -77,8 +76,8 @@ impl SearchService {
         // --- Step 2: Cache lookup ---
         // Skip cache when post-fusion filters are present — the cache
         // keys on (embedding, strategy) only, so cached results would
-        // bypass min_confidence, node_types, source_types,
-        // source_layers, and date_range filters.
+        // bypass min_confidence, node_types, source_types, domains,
+        // and date_range filters.
         //
         // Also skip cache for Auto strategy — SkewRoute adaptively
         // selects a strategy per query, so caching under "auto" would
@@ -552,7 +551,6 @@ impl SearchService {
                         source_uri: None,
                         source_title: None,
                         source_type: None,
-                        source_domain: None,
                         source_domains: Vec::new(),
                         result_type: None,
                         created_at: None,

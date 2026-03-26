@@ -125,7 +125,6 @@ impl SourceService {
         let domains = self
             .derive_domains_via_adapter(source_type, uri, Some(mime))
             .await;
-        source.domain = domains.first().cloned();
         source.domains = domains;
 
         // Title priority: metadata > filename (code) > parsed > URI segment.
@@ -245,7 +244,7 @@ impl SourceService {
             || source_type == "code";
 
         // Fire pre_ingest hooks (can skip extraction or override domain).
-        let mut effective_domain = source.domain.clone();
+        let mut effective_domain = source.domains.first().cloned();
         let mut skip_extraction = false;
         if let Some(ref hook_svc) = self.hook_service {
             match hook_svc
@@ -396,7 +395,10 @@ impl SourceService {
                 {
                     Ok(_result) => {
                         if let Err(e) = self
-                            .extract_entities_from_statements(source_id, source.domain.as_deref())
+                            .extract_entities_from_statements(
+                                source_id,
+                                source.domains.first().map(|s| s.as_str()),
+                            )
                             .await
                         {
                             tracing::warn!(

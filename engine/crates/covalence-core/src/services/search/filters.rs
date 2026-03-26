@@ -1,9 +1,9 @@
 //! Search filters and post-fusion filtering/diversification.
 //!
 //! Contains the [`SearchFilters`] struct for narrowing search results,
-//! the [`source_layer_from_uri`] classifier, and post-fusion logic
-//! including entity demotion, code-chunk demotion, DDSS boost,
-//! quality gating, diversification, and epistemic confidence boost.
+//! and post-fusion logic including entity demotion, code-chunk
+//! demotion, DDSS boost, quality gating, diversification, and
+//! epistemic confidence boost.
 
 use std::collections::{HashMap, HashSet};
 
@@ -29,42 +29,14 @@ pub struct SearchFilters {
     /// Restrict to specific source types (e.g. "document", "code").
     /// Applies only to chunk and source results.
     pub source_types: Option<Vec<String>>,
-    /// Restrict to specific source layers derived from source URI.
-    /// Layers: "spec", "design", "code", "research", "external".
-    /// Applies only to chunk and source results.
-    pub source_layers: Option<Vec<String>>,
-    /// Filter by source domain (preferred over `source_layers`).
-    /// Matches against `FusedResult.source_domains`. A result passes
-    /// if any of its domains overlap with the filter list.
+    /// Filter by source domain. Matches against
+    /// `FusedResult.source_domains`. A result passes if any of its
+    /// domains overlap with the filter list.
     pub domains: Option<Vec<String>>,
     /// Orthogonal graph view restricting which edges the graph
     /// dimension traverses: "causal", "temporal", "entity",
     /// "structural", "all". Passed through to the graph dimension.
     pub graph_view: Option<GraphView>,
-}
-
-/// Derive a source layer from a source URI.
-///
-/// Layers classify sources by their role in the project:
-/// - `"spec"` — specification documents (`file://spec/`)
-/// - `"design"` — architecture decision records (`file://docs/adr/`)
-/// - `"code"` — source code (`file://engine/` or `file://cli/`)
-/// - `"research"` — external research (HTTP/HTTPS URLs)
-///
-/// Returns `None` if the URI doesn't match a known pattern.
-#[deprecated(note = "use domain-based filtering via SearchFilters.domains")]
-pub fn source_layer_from_uri(uri: &str) -> Option<&'static str> {
-    if uri.starts_with("file://spec/") {
-        Some("spec")
-    } else if uri.starts_with("file://docs/adr/") {
-        Some("design")
-    } else if uri.starts_with("file://engine/") || uri.starts_with("file://cli/") {
-        Some("code")
-    } else if uri.starts_with("http://") || uri.starts_with("https://") {
-        Some("research")
-    } else {
-        None
-    }
 }
 
 /// Apply post-fusion entity demotion (Step 8b).
@@ -164,9 +136,9 @@ pub(super) fn apply_ddss_boost(
     let max_internal = fused
         .iter()
         .filter(|r| {
-            r.source_domain
-                .as_deref()
-                .is_some_and(|d| internal_domains.contains(d))
+            r.source_domains
+                .iter()
+                .any(|d| internal_domains.contains(d))
         })
         .map(|r| r.fused_score)
         .fold(0.0_f64, f64::max);
@@ -174,9 +146,10 @@ pub(super) fn apply_ddss_boost(
     let max_external = fused
         .iter()
         .filter(|r| {
-            r.source_domain
-                .as_deref()
-                .is_some_and(|d| !internal_domains.contains(d))
+            !r.source_domains.is_empty()
+                && r.source_domains
+                    .iter()
+                    .all(|d| !internal_domains.contains(d))
         })
         .map(|r| r.fused_score)
         .fold(0.0_f64, f64::max);
@@ -205,9 +178,9 @@ pub(super) fn apply_ddss_boost(
             let mut boosted = 0usize;
             for result in fused.iter_mut() {
                 if result
-                    .source_domain
-                    .as_deref()
-                    .is_some_and(|d| internal_domains.contains(d))
+                    .source_domains
+                    .iter()
+                    .any(|d| internal_domains.contains(d))
                 {
                     result.fused_score *= BOOST_FACTOR;
                     boosted += 1;
@@ -285,32 +258,13 @@ pub(super) fn apply_post_fusion_filters(fused: &mut Vec<FusedResult>, filters: &
             r.source_type.as_ref().is_none_or(|st| types.contains(st))
         });
     }
-    #[allow(deprecated)]
-    if let Some(ref layers) = filters.source_layers {
-        let pre = fused.len();
-        fused.retain(|r| {
-            r.source_uri
-                .as_ref()
-                .and_then(|uri| source_layer_from_uri(uri))
-                .is_some_and(|layer| layers.iter().any(|l| l == layer))
-        });
-        tracing::info!(
-            layers = ?layers,
-            before = pre,
-            after = fused.len(),
-            "source_layer filter applied"
-        );
-    }
     if let Some(ref domains) = filters.domains {
         let pre = fused.len();
         fused.retain(|r| {
             // Pass through non-source/chunk results (nodes,
             // articles) since they have no source_domains.
             if r.source_domains.is_empty() {
-                return r
-                    .source_domain
-                    .as_ref()
-                    .is_some_and(|d| domains.iter().any(|fd| fd == d));
+                return true;
             }
             r.source_domains
                 .iter()

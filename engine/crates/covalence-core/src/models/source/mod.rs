@@ -27,9 +27,6 @@ pub struct Source {
     pub author: Option<String>,
     /// Project namespace (default "covalence"). NULL = global.
     pub project: String,
-    /// Knowledge domain: code, spec, design, research, external.
-    /// Deprecated: use `domains` for multi-domain classification.
-    pub domain: Option<String>,
     /// Multi-domain classification (a source can belong to multiple
     /// visibility scopes). Populated from the `domains TEXT[]` column.
     #[serde(default)]
@@ -85,7 +82,6 @@ impl Source {
             title: None,
             author: None,
             project: "covalence".to_string(),
-            domain: None,
             domains: Vec::new(),
             created_date: None,
             ingested_at: Utc::now(),
@@ -121,7 +117,7 @@ mod tests {
     fn source_new_has_default_project() {
         let source = Source::new(SourceType::Document, vec![0u8; 32]);
         assert_eq!(source.project, "covalence");
-        assert!(source.domain.is_none());
+        assert!(source.domains.is_empty());
     }
 
     #[test]

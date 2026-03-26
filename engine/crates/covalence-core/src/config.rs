@@ -5,9 +5,8 @@ use crate::error::{Error, Result};
 /// Configuration for an external STDIO service discovered from env
 /// vars.
 ///
-/// Parsed from `COVALENCE_SERVICE_<NAME>_COMMAND` (preferred) or the
-/// legacy `COVALENCE_SIDECAR_<NAME>_COMMAND` (fallback), plus the
-/// optional `_ARGS` suffix (comma-separated).
+/// Parsed from `COVALENCE_SERVICE_<NAME>_COMMAND` plus the optional
+/// `_ARGS` suffix (comma-separated).
 #[derive(Debug, Clone)]
 pub struct ExternalServiceConfig {
     /// Human-readable service name (lowercased from the env var).
@@ -754,29 +753,16 @@ fn env_parse_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> Result<
 pub(crate) fn parse_service_configs() -> Vec<ExternalServiceConfig> {
     use std::collections::HashMap;
 
-    let new_prefix = "COVALENCE_SERVICE_";
-    let legacy_prefix = "COVALENCE_SIDECAR_";
+    let prefix = "COVALENCE_SERVICE_";
     let suffix_cmd = "_COMMAND";
 
-    // Collect from both prefixes; new prefix wins on conflict.
-    let mut commands: HashMap<String, (String, String)> = HashMap::new();
+    let mut commands: HashMap<String, String> = HashMap::new();
 
-    // Legacy prefix first (so new prefix overwrites).
     for (key, value) in std::env::vars() {
-        if let Some(rest) = key.strip_prefix(legacy_prefix) {
+        if let Some(rest) = key.strip_prefix(prefix) {
             if let Some(name) = rest.strip_suffix(suffix_cmd) {
                 if !name.is_empty() && !value.is_empty() {
-                    commands.insert(name.to_string(), (legacy_prefix.to_string(), value));
-                }
-            }
-        }
-    }
-    // New prefix overwrites legacy.
-    for (key, value) in std::env::vars() {
-        if let Some(rest) = key.strip_prefix(new_prefix) {
-            if let Some(name) = rest.strip_suffix(suffix_cmd) {
-                if !name.is_empty() && !value.is_empty() {
-                    commands.insert(name.to_string(), (new_prefix.to_string(), value));
+                    commands.insert(name.to_string(), value);
                 }
             }
         }
@@ -784,12 +770,9 @@ pub(crate) fn parse_service_configs() -> Vec<ExternalServiceConfig> {
 
     let mut configs: Vec<ExternalServiceConfig> = commands
         .into_iter()
-        .map(|(name, (prefix, command))| {
-            // Try new-prefix args first, fall back to legacy.
-            let new_args_key = format!("{new_prefix}{name}_ARGS");
-            let legacy_args_key = format!("{legacy_prefix}{name}_ARGS");
-            let args = optional_env(&new_args_key)
-                .or_else(|| optional_env(&legacy_args_key))
+        .map(|(name, command)| {
+            let args_key = format!("{prefix}{name}_ARGS");
+            let args = optional_env(&args_key)
                 .map(|s| {
                     s.split(',')
                         .map(|a| a.trim().to_string())
@@ -797,14 +780,6 @@ pub(crate) fn parse_service_configs() -> Vec<ExternalServiceConfig> {
                         .collect()
                 })
                 .unwrap_or_default();
-
-            if prefix == legacy_prefix {
-                tracing::debug!(
-                    name = %name.to_lowercase(),
-                    "using legacy COVALENCE_SIDECAR_ env var — \
-                     prefer COVALENCE_SERVICE_"
-                );
-            }
 
             ExternalServiceConfig {
                 name: name.to_lowercase(),
@@ -1008,34 +983,6 @@ mod tests {
         let sc = found.unwrap();
         assert_eq!(sc.command, "my-converter");
         assert_eq!(sc.args, vec!["--format", "markdown", "--strict"]);
-
-        // Cleanup.
-        unsafe {
-            std::env::remove_var(cmd_key);
-            std::env::remove_var(args_key);
-        }
-    }
-
-    #[test]
-    fn parse_service_configs_legacy_fallback() {
-        let cmd_key = "COVALENCE_SIDECAR_LEGACY_COMMAND";
-        let args_key = "COVALENCE_SIDECAR_LEGACY_ARGS";
-
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe {
-            std::env::set_var(cmd_key, "legacy-tool");
-            std::env::set_var(args_key, "--old");
-        }
-
-        let configs = parse_service_configs();
-        let found = configs.iter().find(|c| c.name == "legacy");
-        assert!(
-            found.is_some(),
-            "should find service via legacy SIDECAR prefix"
-        );
-        let sc = found.unwrap();
-        assert_eq!(sc.command, "legacy-tool");
-        assert_eq!(sc.args, vec!["--old"]);
 
         // Cleanup.
         unsafe {

@@ -473,13 +473,7 @@ impl AskService {
                 confidence,
                 source_title: source_info.title,
                 source_uri: source_info.uri.clone(),
-                source_domain: if source_info.domain.is_empty() {
-                    // Derive domain from URI as fallback
-                    crate::services::source::derive_domain("document", Some(&source_info.uri))
-                        .unwrap_or_default()
-                } else {
-                    source_info.domain
-                },
+                source_domain: source_info.domain,
                 snippet,
                 _fused_score: result.fused_score,
                 graph_edges: None,
@@ -516,15 +510,10 @@ impl AskService {
         let title = result.source_title.clone();
         let uri = result.source_uri.clone();
         if title.is_some() || uri.is_some() {
-            let uri_str = uri.unwrap_or_default();
-            let domain = crate::services::source::derive_domain(
-                result.source_type.as_deref().unwrap_or("document"),
-                Some(&uri_str),
-            )
-            .unwrap_or_default();
+            let domain = result.source_domains.first().cloned().unwrap_or_default();
             return Some(SourceInfo {
                 title: title.unwrap_or_default(),
-                uri: uri_str,
+                uri: uri.unwrap_or_default(),
                 domain,
             });
         }
@@ -996,7 +985,6 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
-            source_domain: None,
             source_domains: Vec::new(),
             result_type: Some("chunk".to_string()),
             created_at: None,
@@ -1035,7 +1023,6 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
-            source_domain: None,
             source_domains: Vec::new(),
             result_type: Some("node".to_string()),
             created_at: None,
@@ -1073,7 +1060,6 @@ mod tests {
             source_uri: None,
             source_title: None,
             source_type: None,
-            source_domain: None,
             source_domains: Vec::new(),
             result_type: Some("node".to_string()),
             created_at: None,
