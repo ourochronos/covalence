@@ -751,7 +751,7 @@ fn env_parse_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> Result<
 /// `COVALENCE_SIDECAR_<NAME>_COMMAND` prefix for backward
 /// compatibility. Pairs them with optional `_ARGS`
 /// (comma-separated). Returns a vec of [`ExternalServiceConfig`].
-fn parse_service_configs() -> Vec<ExternalServiceConfig> {
+pub(crate) fn parse_service_configs() -> Vec<ExternalServiceConfig> {
     use std::collections::HashMap;
 
     let new_prefix = "COVALENCE_SERVICE_";

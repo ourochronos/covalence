@@ -5,6 +5,7 @@
 //! Covalence knowledge engine.
 
 pub mod config;
+pub mod config_loader;
 pub mod consolidation;
 pub mod epistemic;
 pub mod error;

@@ -1,0 +1,74 @@
+# Covalence Configuration (ADR-0023)
+#
+# This is the base config file. Copy to covalence.conf and adjust.
+# Config files in covalence.conf.d/ override values here.
+# Environment variables (COVALENCE_*) override all files.
+#
+# Nested keys use double-underscore in env vars:
+#   embedding.provider -> COVALENCE_EMBEDDING__PROVIDER
+#   database.url       -> COVALENCE_DATABASE__URL
+#
+# The legacy DATABASE_URL env var (no prefix) is also supported
+# for backward compatibility.
+
+database:
+  url: postgres://covalence:covalence@localhost:5432/covalence_dev
+
+bind_addr: "0.0.0.0:8431"
+
+# Uncomment to require an API key for all requests.
+# api_key: your-secret-key
+
+embedding:
+  provider: voyage
+  model: voyage-3-large
+  batch_size: 64
+  dim_source: 2048
+  dim_chunk: 1024
+  dim_article: 1024
+  dim_node: 256
+  dim_alias: 256
+  dim_statement: 1024
+  dim_section: 1024
+
+chat:
+  backend: cli
+  cli_command: claude
+  model: haiku
+
+graph:
+  engine: petgraph
+
+pipeline:
+  statement_enabled: true
+  # statement_model: haiku
+  convert_enabled: true
+  normalize_enabled: true
+  coref_enabled: true
+  resolve_enabled: true
+  tier5_enabled: false
+
+queue:
+  poll_interval_secs: 5
+  extract_concurrency: 24
+  summarize_concurrency: 10
+  compose_concurrency: 5
+  embed_concurrency: 4
+  job_timeout_secs: 600
+
+search:
+  rrf_k: 60.0
+  default_limit: 10
+  abstention_threshold: 0.001
+
+consolidation:
+  batch_interval_secs: 300
+  deep_interval_secs: 86400
+  delta_threshold: 0.1
+
+chunk_size: 1000
+chunk_overlap: 200
+min_section_size: 200
+extract_concurrency: 8
+entity_extractor: llm
+ask_model: sonnet

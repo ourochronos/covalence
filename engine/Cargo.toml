@@ -55,6 +55,7 @@ tokio-stream = "0.1"
 
 # Config
 dotenvy = "0.15"
+figment = { version = "0.10", features = ["yaml", "env"] }
 
 # Regex
 regex = "1"

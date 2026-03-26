@@ -19,6 +19,10 @@
 .env.*.local
 .venv*
 
+# Layered config (operator-specific, ADR-0023)
+covalence.conf
+covalence.conf.d/
+
 # IDE
 .idea/
 .vscode/
