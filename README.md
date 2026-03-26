@@ -30,7 +30,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 |--------|------|---------|
 | Search precision@5 | >0.80 | 0.86 |
 | Entity precision | >90% | 96% |
-| Tests passing | — | 1,511 (1,428 core + 21 api + 13 ast-extractor + 49 eval) |
+| Tests passing | — | 1,520 (1,437 core + 21 api + 13 ast-extractor + 49 eval) |
 
 ## Architecture
 
@@ -98,7 +98,7 @@ cli/                           Go CLI (Cobra) — binary name: cove
 mcp-server/                    MCP server for Claude Code integration (Node.js)
 dashboard/                     Web dashboard (stats, observability)
 spec/                          Design specifications (14 specs)
-docs/adr/                      Architecture Decision Records (23 ADRs)
+docs/adr/                      Architecture Decision Records (24 ADRs)
 ```
 
 ## Development

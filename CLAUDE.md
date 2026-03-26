@@ -42,7 +42,7 @@ cli/                                Go CLI (Cobra) — binary name: cove
   internal/                         HTTP client + output helpers
 dashboard/                          Web dashboard (stats, observability, future interaction)
 spec/                               Design specs (13 specs + README)
-docs/adr/                           Architecture Decision Records (22 ADRs)
+docs/adr/                           Architecture Decision Records (24 ADRs)
 ```
 
 ### Key Dependencies
@@ -317,7 +317,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 1,492 passing tests (1,409 core + 21 api + 13 ast-extractor + 49 eval), 18 ignored integration tests
+# Current: 1,520 passing tests (1,437 core + 21 api + 13 ast-extractor + 49 eval), 18 ignored integration tests
 
 # Integration tests (requires running dev PG — see .env)
 cd engine && cargo test --workspace -- --ignored
@@ -430,4 +430,4 @@ The dashboard is served by the existing Axum engine (alongside the API and Swagg
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–20 complete.** 1,492 tests passing (1,409 core + 21 api + 13 ast-extractor + 49 eval). See `MILESTONES.md` for the full wave history. Recent waves: architecture evolution (multi-binary split, 67 SPs, per-kind concurrency, source adapters, config management, WebUI dashboard, codebase cleanup, lifecycle hooks, SSE streaming, sessions, STDIO sidecars, Prometheus metrics, input validation).
+Current phase: **M0-M11 + Waves 1–20 complete.** 1,520 tests passing (1,437 core + 21 api + 13 ast-extractor + 49 eval). See `MILESTONES.md` for the full wave history. Recent waves: architecture evolution (multi-binary split, 67 SPs, per-kind concurrency, source adapters, config management, WebUI dashboard, codebase cleanup, lifecycle hooks, SSE streaming, sessions, STDIO sidecars, Prometheus metrics, input validation).
