@@ -433,6 +433,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "covalence-ast-extractor"
+version = "0.1.0"
+dependencies = [
+ "covalence-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "covalence-core"
 version = "0.1.0"
 dependencies = [

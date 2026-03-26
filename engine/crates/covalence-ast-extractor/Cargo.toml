@@ -1,0 +1,18 @@
+[package]
+name = "covalence-ast-extractor"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Standalone AST extractor — STDIO service contract"
+
+[[bin]]
+name = "covalence-ast-extractor"
+path = "src/main.rs"
+
+[dependencies]
+covalence-core = { path = "../covalence-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { version = "1", features = ["rt"] }

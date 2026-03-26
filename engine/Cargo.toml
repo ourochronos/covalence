@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/covalence-core",
     "crates/covalence-api",
+    "crates/covalence-ast-extractor",
     "crates/covalence-worker",
     "crates/covalence-migrations",
     "crates/covalence-eval",
