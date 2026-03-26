@@ -469,6 +469,12 @@ impl ServiceFactory {
 
         let service_registry = Arc::new(service_registry);
 
+        // Start periodic health checks for registered services.
+        if !service_registry.list().is_empty() {
+            service_registry.spawn_health_loop(120);
+            tracing::info!("service health loop started (every 120s)");
+        }
+
         Ok(Self {
             repo,
             graph,

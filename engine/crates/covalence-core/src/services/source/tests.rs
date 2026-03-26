@@ -86,6 +86,7 @@ fn derive_domain_no_uri() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn derive_domains_hardcoded_returns_vec() {
     assert_eq!(
         derive_domains_hardcoded("code", Some("file://engine/src/main.rs")),
@@ -102,12 +103,14 @@ fn derive_domains_hardcoded_returns_vec() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn derive_domains_hardcoded_no_uri_non_code() {
     // Non-code, non-document source with no URI.
     assert!(derive_domains_hardcoded("audio", None).is_empty());
 }
 
 #[test]
+#[allow(deprecated)]
 fn derive_domains_hardcoded_document_no_uri() {
     // Document with no URI → empty (no URI means we can't classify).
     assert!(derive_domains_hardcoded("document", None).is_empty());

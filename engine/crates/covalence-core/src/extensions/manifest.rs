@@ -229,6 +229,10 @@ pub struct ServiceDef {
     /// default extractor.
     #[serde(default)]
     pub extractor_for: Option<String>,
+
+    /// Other service names this service depends on.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 /// A lifecycle hook definition.

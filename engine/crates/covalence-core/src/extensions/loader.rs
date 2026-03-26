@@ -712,6 +712,8 @@ services:
                 command: None,
                 args: vec![],
                 url: Some("http://localhost:9000".to_string()),
+                extractor_for: None,
+                depends_on: vec![],
             }],
             config_keys_seeded: 3,
         };

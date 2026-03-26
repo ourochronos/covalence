@@ -460,6 +460,30 @@ pub struct ResurrectDeadResponse {
     pub resurrected: u64,
 }
 
+/// Health status of a single service in the registry.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ServiceStatusResponse {
+    /// Service name.
+    pub name: String,
+    /// Transport type: "http" or "stdio".
+    pub transport_type: String,
+    /// Whether the service passed its last health check.
+    pub healthy: bool,
+    /// When the service was last checked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_checked: Option<String>,
+    /// Error message from the last failed check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response for listing all registered services with health.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListServicesResponse {
+    /// All registered services with current health status.
+    pub services: Vec<ServiceStatusResponse>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -51,7 +51,8 @@ pub async fn reload_extensions(
 ) -> Result<Json<ReloadExtensionsResponse>, ApiError> {
     let dir = extensions_dir();
     let loader = ExtensionLoader::new(Arc::clone(&state.repo));
-    let loaded = loader.load_directory(&dir).await.map_err(ApiError::from)?;
+    let results = loader.load_directory(&dir).await.map_err(ApiError::from)?;
+    let loaded: Vec<String> = results.iter().map(|r| r.name.clone()).collect();
 
     // Refresh ontology cache so newly loaded types are visible.
     if !loaded.is_empty() {

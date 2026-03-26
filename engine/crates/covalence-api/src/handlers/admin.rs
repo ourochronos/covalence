@@ -12,13 +12,13 @@ use crate::handlers::dto::{
     DeadJobResponse, DomainLinkResponse, DomainResponse, GcResponse, GraphStatsResponse,
     HealthResponse, InvalidatedEdgeNodeResponse, InvalidatedEdgeStatsParams,
     InvalidatedEdgeStatsResponse, InvalidatedEdgeTypeResponse, KnowledgeGapItem,
-    KnowledgeGapParams, KnowledgeGapsResponse, ListDeadParams, ListDeadResponse, MetricsResponse,
-    NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem, OntologyClusterItem,
-    OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
-    QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
-    ResurrectDeadResponse, RetryFailedRequest, RetryFailedResponse, SearchTraceResponse,
-    SeedOpinionsResponse, ServiceHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
-    TopologyResponse, TraceReplayResponse,
+    KnowledgeGapParams, KnowledgeGapsResponse, ListDeadParams, ListDeadResponse,
+    ListServicesResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse,
+    NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse,
+    PaginationParams, PublishResponse, QueueStatusResponse, QueueStatusRowResponse, RaptorResponse,
+    ReloadResponse, ResurrectDeadResponse, RetryFailedRequest, RetryFailedResponse,
+    SearchTraceResponse, SeedOpinionsResponse, ServiceHealthResponse, ServiceStatusResponse,
+    Tier5ResolveRequest, Tier5ResolveResponse, TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
 
@@ -1090,4 +1090,30 @@ pub async fn data_health_handler(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let report = state.admin_service.data_health_report().await?;
     Ok(Json(serde_json::to_value(report).unwrap_or_default()))
+}
+
+/// List all registered external services with health status.
+#[utoipa::path(
+    get,
+    path = "/admin/services",
+    responses(
+        (status = 200, description = "Registered services with health",
+         body = ListServicesResponse),
+    ),
+    tag = "admin"
+)]
+pub async fn list_services(State(state): State<AppState>) -> Json<ListServicesResponse> {
+    let health = state.service_registry.health_status().await;
+    Json(ListServicesResponse {
+        services: health
+            .into_iter()
+            .map(|h| ServiceStatusResponse {
+                name: h.name,
+                transport_type: h.transport_type,
+                healthy: h.healthy,
+                last_checked: h.last_checked.map(|t| t.to_rfc3339()),
+                error: h.error,
+            })
+            .collect(),
+    })
 }

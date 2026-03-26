@@ -23,11 +23,11 @@ pub use admin::{
     CooccurrenceResponse, DeadJobResponse, GcResponse, HealthResponse, InvalidatedEdgeNodeResponse,
     InvalidatedEdgeStatsParams, InvalidatedEdgeStatsResponse, InvalidatedEdgeTypeResponse,
     KnowledgeGapItem, KnowledgeGapParams, KnowledgeGapsResponse, ListDeadParams, ListDeadResponse,
-    MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse, NoiseEntityItem,
-    OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse, PublishResponse,
-    QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
+    ListServicesResponse, MetricsResponse, NoiseCleanupRequest, NoiseCleanupResponse,
+    NoiseEntityItem, OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse,
+    PublishResponse, QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
     ResurrectDeadResponse, RetryFailedRequest, RetryFailedResponse, SeedOpinionsResponse,
-    ServiceHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
+    ServiceHealthResponse, ServiceStatusResponse, Tier5ResolveRequest, Tier5ResolveResponse,
 };
 pub use analysis::{
     AffectedNodeResponse, AlignmentReportResponse, AlignmentRequest, BlastRadiusHopResponse,

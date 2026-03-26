@@ -104,6 +104,8 @@ pub fn router(state: AppState) -> Router {
             post(admin::summarize_code_nodes),
         )
         .route("/admin/edges/bridge", post(admin::bridge_code_to_concepts))
+        // Services
+        .route("/admin/services", get(admin::list_services))
         // Extensions
         .route("/admin/extensions", get(extensions::list_extensions))
         .route(

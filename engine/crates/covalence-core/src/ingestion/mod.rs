@@ -79,7 +79,7 @@ pub use section_compiler::{
     SourceSummaryInput,
 };
 pub use service_extractor::ServiceExtractor;
-pub use service_registry::ServiceRegistry;
+pub use service_registry::{ServiceHealth, ServiceRegistry};
 pub use source_profile::{ProfileRegistry, SourceProfile};
 pub use statement_cluster::{ClusterAssignments, ClusterConfig, cluster_statements};
 pub use statement_extractor::{
