@@ -78,6 +78,41 @@ impl AdapterService {
             }
         }
 
+        // Try URI regex match (least specific).
+        if let Some(u) = uri {
+            if let Some(adapter) = self.match_by_uri_regex(u).await? {
+                return Ok(Some(adapter));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Find the best matching adapter by URI regex patterns.
+    ///
+    /// Fetches all active adapters with a `match_uri_regex` and
+    /// returns the first one whose compiled regex matches the URI.
+    pub async fn match_by_uri_regex(&self, uri: &str) -> Result<Option<SourceAdapter>> {
+        let adapters = AdapterRepo::find_all_with_uri_regex(&*self.repo).await?;
+        for adapter in adapters {
+            if let Some(ref pattern) = adapter.match_uri_regex {
+                match regex::Regex::new(pattern) {
+                    Ok(re) => {
+                        if re.is_match(uri) {
+                            return Ok(Some(adapter));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            adapter = %adapter.name,
+                            pattern = %pattern,
+                            error = %e,
+                            "invalid URI regex in adapter — skipping"
+                        );
+                    }
+                }
+            }
+        }
         Ok(None)
     }
 
@@ -97,7 +132,18 @@ impl AdapterService {
     }
 
     /// Create or update an adapter.
+    ///
+    /// Validates any `match_uri_regex` pattern before persisting.
+    /// Returns [`Error::InvalidInput`] if the regex is malformed.
     pub async fn upsert(&self, adapter: &SourceAdapter) -> Result<()> {
+        if let Some(ref pattern) = adapter.match_uri_regex {
+            regex::Regex::new(pattern).map_err(|e| {
+                crate::error::Error::InvalidInput(format!(
+                    "invalid match_uri_regex '{}': {}",
+                    pattern, e
+                ))
+            })?;
+        }
         AdapterRepo::upsert(&*self.repo, adapter).await
     }
 }

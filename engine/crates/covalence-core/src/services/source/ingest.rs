@@ -8,7 +8,6 @@ use crate::storage::traits::SourceRepo;
 use crate::types::ids::SourceId;
 
 use super::SourceService;
-use super::derive_domain;
 use crate::services::ingestion_helpers::{SupersedesInfo, detect_update_class};
 use crate::services::pipeline::PipelineInput;
 
@@ -121,7 +120,9 @@ impl SourceService {
         // Build source record.
         let mut source = Source::new(st, hash);
         source.uri = uri.map(|s| s.to_string());
-        source.domain = derive_domain(source_type, uri);
+        source.domain = self
+            .derive_domain_via_adapter(source_type, uri, Some(mime))
+            .await;
 
         // Title priority: metadata > filename (code) > parsed > URI segment.
         let uri_filename = uri.and_then(|u| u.rsplit('/').next().map(|f| f.to_string()));

@@ -26,6 +26,7 @@ use crate::ingestion::{
 use crate::search::abstention::AbstentionConfig;
 use crate::search::cache::CacheConfig;
 use crate::search::rerank::{HttpReranker, RerankConfig, Reranker};
+use crate::services::adapter_service::AdapterService;
 use crate::services::{
     AdminService, AnalysisService, AskService, ConfigService, EdgeService, NodeService,
     OntologyService, RetryQueueService, SearchService, SourceService,
@@ -147,6 +148,10 @@ impl ServiceFactory {
             config.pdf_url.is_some(),
             coref_url.is_some(),
         ));
+
+        // ── Adapter service (config-driven domain classification) ─
+        let adapter_service = Arc::new(AdapterService::new(Arc::clone(&repo)));
+        source_svc = source_svc.with_adapter_service(adapter_service);
 
         // ── Coref client (validate sidecar) ─────────────────────
         source_svc = Self::wire_coref_client(config, &coref_url, source_svc).await?;

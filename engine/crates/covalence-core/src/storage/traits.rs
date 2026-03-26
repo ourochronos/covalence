@@ -1297,6 +1297,9 @@ pub trait AdapterRepo: Send + Sync {
 
     /// Create or update an adapter.
     fn upsert(&self, adapter: &SourceAdapter) -> impl Future<Output = Result<()>> + Send;
+
+    /// Fetch all active adapters that have a URI regex pattern.
+    fn find_all_with_uri_regex(&self) -> impl Future<Output = Result<Vec<SourceAdapter>>> + Send;
 }
 
 /// Repository for ontology table lookups.
