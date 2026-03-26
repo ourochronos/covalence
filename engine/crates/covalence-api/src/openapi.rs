@@ -146,7 +146,7 @@ use crate::handlers::{admin, analysis, ask, dto, edges, mcp, nodes, search, sour
         dto::KnowledgeGapItem,
         dto::KnowledgeGapsResponse,
         dto::ConfigAuditResponse,
-        dto::SidecarHealthResponse,
+        dto::ServiceHealthResponse,
         dto::CooccurrenceRequest,
         dto::CooccurrenceResponse,
         dto::OntologyClusterRequest,

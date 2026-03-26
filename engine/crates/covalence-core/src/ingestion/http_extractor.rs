@@ -1,6 +1,6 @@
-//! Unified extraction sidecar client with windowed processing.
+//! Unified extraction HTTP service client with windowed processing.
 //!
-//! Calls two sidecar endpoints in sequence:
+//! Calls two service endpoints in sequence:
 //! 1. `/ner` — named entity recognition (GLiNER2, ~1200 char windows)
 //! 2. `/relationships` — relationship extraction (NuExtract, ~15K char limit)
 //!
@@ -9,7 +9,7 @@
 //! preprocessing stage, which runs before extraction so that all
 //! extractor backends benefit from neural coref.
 //!
-//! Rust owns the windowing: the sidecar stays dumb and stateless.
+//! Rust owns the windowing: the service stays dumb and stateless.
 //! Each model has a configurable `max_input_chars` limit. Input
 //! exceeding the limit is split into overlapping windows at sentence
 //! boundaries, and results are merged/deduplicated.
@@ -46,7 +46,7 @@ const DEFAULT_LABELS: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
-// Sidecar request/response types
+// Service request/response types
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -101,11 +101,11 @@ struct RelResponse {
 }
 
 // ---------------------------------------------------------------------------
-// SidecarExtractor
+// HttpExtractor
 // ---------------------------------------------------------------------------
 
-/// Two-stage extraction client that calls the unified sidecar with
-/// windowed processing for models with limited context windows.
+/// Two-stage extraction client that calls the extraction HTTP service
+/// with windowed processing for models with limited context windows.
 ///
 /// Pipeline:
 /// 1. NER in overlapping ~1200-char windows, deduplicated
@@ -114,10 +114,10 @@ struct RelResponse {
 /// Coreference resolution is handled by the separate
 /// [`FastcorefClient`](crate::ingestion::coreference::FastcorefClient)
 /// preprocessing stage before this extractor is called.
-pub struct SidecarExtractor {
+pub struct HttpExtractor {
     /// HTTP client with timeout.
     client: reqwest::Client,
-    /// Base URL of the extraction sidecar.
+    /// Base URL of the extraction service.
     base_url: String,
     /// NER confidence threshold.
     threshold: f32,
@@ -131,8 +131,8 @@ pub struct SidecarExtractor {
     re_overlap_chars: usize,
 }
 
-impl SidecarExtractor {
-    /// Create a new sidecar extractor with default windowing.
+impl HttpExtractor {
+    /// Create a new HTTP extractor with default windowing.
     pub fn new(base_url: String, threshold: f32) -> Self {
         Self::with_windowing(
             base_url,
@@ -144,7 +144,7 @@ impl SidecarExtractor {
         )
     }
 
-    /// Create a new sidecar extractor with custom windowing parameters.
+    /// Create a new HTTP extractor with custom windowing parameters.
     pub fn with_windowing(
         base_url: String,
         threshold: f32,
@@ -217,13 +217,13 @@ impl SidecarExtractor {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Ingestion(format!("sidecar NER request failed: {e}")))?;
+            .map_err(|e| Error::Ingestion(format!("NER request failed: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
             return Err(Error::Ingestion(format!(
-                "sidecar NER returned {status}: {body_text}"
+                "NER returned {status}: {body_text}"
             )));
         }
 
@@ -310,13 +310,13 @@ impl SidecarExtractor {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Ingestion(format!("sidecar relationships request failed: {e}")))?;
+            .map_err(|e| Error::Ingestion(format!("relationships request failed: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
             return Err(Error::Ingestion(format!(
-                "sidecar relationships returned {status}: {body_text}"
+                "relationships returned {status}: {body_text}"
             )));
         }
 
@@ -354,7 +354,7 @@ impl Clone for RelEntityHint {
 }
 
 #[async_trait::async_trait]
-impl Extractor for SidecarExtractor {
+impl Extractor for HttpExtractor {
     async fn extract(&self, text: &str, _context: &ExtractionContext) -> Result<ExtractionResult> {
         if text.trim().is_empty() {
             return Ok(ExtractionResult::default());
@@ -428,14 +428,14 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_extractor_is_send_sync() {
+    fn http_extractor_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<SidecarExtractor>();
+        assert_send_sync::<HttpExtractor>();
     }
 
     #[tokio::test]
     async fn extract_empty_text_returns_default() {
-        let ext = SidecarExtractor::new("http://localhost:9999".to_string(), 0.4);
+        let ext = HttpExtractor::new("http://localhost:9999".to_string(), 0.4);
         let ctx = ExtractionContext::default();
         let result = ext.extract("   ", &ctx).await.unwrap();
         assert!(result.entities.is_empty());

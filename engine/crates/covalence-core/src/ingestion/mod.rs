@@ -14,6 +14,7 @@ pub mod embedder;
 pub mod extractor;
 pub mod fingerprint;
 pub mod gliner_extractor;
+pub mod http_extractor;
 pub mod llm_extractor;
 pub mod llm_statement_extractor;
 pub mod normalize;
@@ -24,8 +25,7 @@ pub mod pii;
 pub mod projection;
 pub mod resolver;
 pub mod section_compiler;
-pub mod sidecar_extractor;
-pub mod sidecar_registry;
+pub mod service_registry;
 pub mod source_profile;
 pub mod statement_cluster;
 pub mod statement_extractor;
@@ -58,6 +58,7 @@ pub use fingerprint::{
     FingerprintConfig, FingerprintDrift, PipelineFingerprint, fingerprint_config_from,
 };
 pub use gliner_extractor::GlinerExtractor;
+pub use http_extractor::HttpExtractor;
 pub use llm_extractor::{ChatBackendExtractor, LlmExtractor};
 pub use llm_statement_extractor::LlmStatementExtractor;
 pub use normalize::{
@@ -76,14 +77,13 @@ pub use section_compiler::{
     SectionCompilationOutput, SectionCompiler, SectionSummaryEntry, SourceSummaryCompiler,
     SourceSummaryInput,
 };
-pub use sidecar_extractor::SidecarExtractor;
-pub use sidecar_registry::SidecarRegistry;
+pub use service_registry::ServiceRegistry;
 pub use source_profile::{ProfileRegistry, SourceProfile};
 pub use statement_cluster::{ClusterAssignments, ClusterConfig, cluster_statements};
 pub use statement_extractor::{
     ExtractedStatement, MockStatementExtractor, StatementExtractionResult, StatementExtractor,
 };
-pub use stdio_transport::{SidecarTransport, StdioTransport};
+pub use stdio_transport::{ServiceTransport, StdioTransport};
 pub use takedown::TakedownResult;
 pub use two_pass_extractor::TwoPassExtractor;
 pub use url_fetcher::{FetchResult, fetch_url};

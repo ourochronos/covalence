@@ -1,23 +1,23 @@
-//! Sidecar health checking utilities.
+//! External service health checking utilities.
 //!
-//! Probes configured sidecar endpoints to determine reachability
-//! and generates warnings for unreachable sidecars that will fall
+//! Probes configured service endpoints to determine reachability
+//! and generates warnings for unreachable services that will fall
 //! back to built-in alternatives.
 
 use serde::Serialize;
 
 use crate::config::Config;
 
-/// Health status of a single sidecar service.
+/// Health status of a single external service.
 #[derive(Debug, Clone, Serialize)]
-pub struct SidecarHealth {
-    /// Human-readable sidecar name.
+pub struct ServiceHealth {
+    /// Human-readable service name.
     pub name: String,
-    /// Whether the sidecar URL is configured.
+    /// Whether the service URL is configured.
     pub configured: bool,
     /// The configured URL, if any.
     pub url: Option<String>,
-    /// Whether the sidecar responded to a health probe.
+    /// Whether the service responded to a health probe.
     pub reachable: bool,
     /// Description of the fallback behavior when unreachable.
     pub fallback: Option<String>,
@@ -28,8 +28,8 @@ pub struct SidecarHealth {
 pub struct ConfigAudit {
     /// Summary of the current pipeline configuration.
     pub current_config: serde_json::Value,
-    /// Health status of all sidecars.
-    pub sidecars: Vec<SidecarHealth>,
+    /// Health status of all external services.
+    pub services: Vec<ServiceHealth>,
     /// Warnings about potential configuration issues.
     pub warnings: Vec<String>,
 }
@@ -56,13 +56,13 @@ async fn probe_health(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check health of all configured sidecars.
+/// Check health of all configured external services.
 ///
-/// Probes each sidecar URL's `/health` endpoint with a 2-second
-/// timeout. Returns a `SidecarHealth` entry for each known sidecar,
+/// Probes each service URL's `/health` endpoint with a 2-second
+/// timeout. Returns a `ServiceHealth` entry for each known service,
 /// regardless of whether it is configured.
-pub async fn check_sidecars(config: &Config) -> Vec<SidecarHealth> {
-    let sidecars = vec![
+pub async fn check_services(config: &Config) -> Vec<ServiceHealth> {
+    let entries = vec![
         (
             "readerlm",
             config.readerlm_url.as_deref(),
@@ -81,15 +81,15 @@ pub async fn check_sidecars(config: &Config) -> Vec<SidecarHealth> {
         ("pdf", config.pdf_url.as_deref(), "PDF ingestion disabled"),
     ];
 
-    let mut results = Vec::with_capacity(sidecars.len());
+    let mut results = Vec::with_capacity(entries.len());
 
-    for (name, url, fallback_desc) in sidecars {
+    for (name, url, fallback_desc) in entries {
         let (configured, reachable) = match url {
             Some(u) => (true, probe_health(u).await),
             None => (false, false),
         };
 
-        results.push(SidecarHealth {
+        results.push(ServiceHealth {
             name: name.to_string(),
             configured,
             url: url.map(|u| u.to_string()),
@@ -158,7 +158,7 @@ pub fn build_config_summary(config: &Config) -> serde_json::Value {
             "delta_threshold":
                 config.consolidation.delta_threshold,
         },
-        "sidecars": {
+        "services": {
             "readerlm_url": config.readerlm_url,
             "coref_url": config.coref_url,
             "extract_url": config.extract_url,
@@ -170,20 +170,20 @@ pub fn build_config_summary(config: &Config) -> serde_json::Value {
     })
 }
 
-/// Generate warnings based on sidecar health and config state.
+/// Generate warnings based on service health and config state.
 ///
 /// Produces human-readable warning strings for cases like:
-/// - A sidecar is configured but unreachable
-/// - A pipeline stage is enabled but the backing sidecar is missing
+/// - A service is configured but unreachable
+/// - A pipeline stage is enabled but the backing service is missing
 /// - Missing API keys that limit functionality
-pub fn generate_warnings(config: &Config, sidecars: &[SidecarHealth]) -> Vec<String> {
+pub fn generate_warnings(config: &Config, services: &[ServiceHealth]) -> Vec<String> {
     let mut warnings = Vec::new();
 
-    for sc in sidecars {
+    for sc in services {
         if sc.configured && !sc.reachable {
             let fallback = sc.fallback.as_deref().unwrap_or("degraded behavior");
             warnings.push(format!(
-                "{} sidecar configured at {} but unreachable \
+                "{} service configured at {} but unreachable \
                  — will fall back to: {}",
                 sc.name,
                 sc.url.as_deref().unwrap_or("unknown"),
@@ -201,14 +201,15 @@ pub fn generate_warnings(config: &Config, sidecars: &[SidecarHealth]) -> Vec<Str
         );
     }
 
-    // Warn if entity extractor requires a sidecar but URL is missing.
-    let needs_sidecar = matches!(
+    // Warn if entity extractor requires an extraction service but
+    // URL is missing.
+    let needs_service = matches!(
         config.entity_extractor.as_str(),
         "gliner2" | "sidecar" | "two_pass"
     );
-    if needs_sidecar && config.extract_url.is_none() {
+    if needs_service && config.extract_url.is_none() {
         warnings.push(format!(
-            "Entity extractor '{}' requires an extraction sidecar \
+            "Entity extractor '{}' requires an extraction service \
              but COVALENCE_EXTRACT_URL is not configured \
              — will use default localhost URL",
             config.entity_extractor,
@@ -225,10 +226,10 @@ pub fn generate_warnings(config: &Config, sidecars: &[SidecarHealth]) -> Vec<Str
         );
     }
 
-    // Warn if PDF conversion is enabled but no sidecar.
+    // Warn if PDF conversion is enabled but no service.
     if config.pipeline.convert_enabled && config.pdf_url.is_none() {
         warnings.push(
-            "Format conversion enabled but no PDF sidecar \
+            "Format conversion enabled but no PDF service \
              configured (COVALENCE_PDF_URL) — PDF ingestion \
              will fail"
                 .to_string(),
@@ -240,17 +241,17 @@ pub fn generate_warnings(config: &Config, sidecars: &[SidecarHealth]) -> Vec<Str
 
 /// Run a full configuration audit.
 ///
-/// Checks all sidecars, builds a config summary, and generates
+/// Checks all services, builds a config summary, and generates
 /// warnings. This is the main entry point for the config audit
 /// feature.
 pub async fn run_config_audit(config: &Config) -> ConfigAudit {
-    let sidecars = check_sidecars(config).await;
+    let services = check_services(config).await;
     let current_config = build_config_summary(config);
-    let warnings = generate_warnings(config, &sidecars);
+    let warnings = generate_warnings(config, &services);
 
     ConfigAudit {
         current_config,
-        sidecars,
+        services,
         warnings,
     }
 }
@@ -301,7 +302,7 @@ mod tests {
             resolve_vector_threshold: 0.85,
             queue: RetryQueueConfig::default(),
             ask_model: "sonnet".to_string(),
-            sidecars: vec![],
+            external_services: vec![],
         }
     }
 
@@ -348,9 +349,9 @@ mod tests {
     }
 
     #[test]
-    fn warnings_for_unreachable_sidecar() {
+    fn warnings_for_unreachable_service() {
         let config = test_config();
-        let sidecars = vec![SidecarHealth {
+        let services = vec![ServiceHealth {
             name: "readerlm".to_string(),
             configured: true,
             url: Some("http://localhost:9999".to_string()),
@@ -358,7 +359,7 @@ mod tests {
             fallback: Some("Built-in HTML tag stripper".to_string()),
         }];
 
-        let warnings = generate_warnings(&config, &sidecars);
+        let warnings = generate_warnings(&config, &services);
         assert!(
             warnings
                 .iter()
@@ -367,14 +368,14 @@ mod tests {
     }
 
     #[test]
-    fn no_warnings_for_reachable_sidecar() {
+    fn no_warnings_for_reachable_service() {
         let mut config = test_config();
         // Disable coref so the "no coref URL" warning doesn't fire.
         config.pipeline.coref_enabled = false;
         // Set PDF URL so the PDF warning doesn't fire.
         config.pdf_url = Some("http://localhost:8000".to_string());
 
-        let sidecars = vec![SidecarHealth {
+        let services = vec![ServiceHealth {
             name: "readerlm".to_string(),
             configured: true,
             url: Some("http://localhost:8000".to_string()),
@@ -382,10 +383,10 @@ mod tests {
             fallback: None,
         }];
 
-        let warnings = generate_warnings(&config, &sidecars);
+        let warnings = generate_warnings(&config, &services);
         assert!(
             !warnings.iter().any(|w| w.contains("readerlm")),
-            "should not warn about reachable sidecar"
+            "should not warn about reachable service"
         );
     }
 
@@ -445,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn warning_when_sidecar_extractor_no_url() {
+    fn warning_when_extract_service_no_url() {
         let mut config = test_config();
         config.entity_extractor = "gliner2".to_string();
         config.extract_url = None;
@@ -459,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn no_sidecar_warning_for_llm_extractor() {
+    fn no_service_warning_for_llm_extractor() {
         let mut config = test_config();
         config.entity_extractor = "llm".to_string();
         config.extract_url = None;
@@ -481,7 +482,7 @@ mod tests {
         config.pdf_url = None;
 
         let warnings = generate_warnings(&config, &[]);
-        assert!(warnings.iter().any(|w| w.contains("PDF sidecar")));
+        assert!(warnings.iter().any(|w| w.contains("PDF service")));
     }
 
     #[test]
@@ -494,15 +495,15 @@ mod tests {
 
         let warnings = generate_warnings(&config, &[]);
         assert!(
-            !warnings.iter().any(|w| w.contains("PDF sidecar")),
+            !warnings.iter().any(|w| w.contains("PDF service")),
             "should not warn about PDF when conversion disabled"
         );
     }
 
     #[test]
-    fn unconfigured_sidecar_has_no_fallback() {
+    fn unconfigured_service_has_no_fallback() {
         let config = test_config();
-        let sidecars = vec![SidecarHealth {
+        let services = vec![ServiceHealth {
             name: "readerlm".to_string(),
             configured: false,
             url: None,
@@ -510,8 +511,8 @@ mod tests {
             fallback: None,
         }];
 
-        let warnings = generate_warnings(&config, &sidecars);
-        // Unconfigured sidecars should not trigger "unreachable"
+        let warnings = generate_warnings(&config, &services);
+        // Unconfigured services should not trigger "unreachable"
         // warnings.
         assert!(
             !warnings
@@ -521,9 +522,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_sidecars_with_no_config() {
+    async fn check_services_with_no_config() {
         let config = test_config();
-        let results = check_sidecars(&config).await;
+        let results = check_services(&config).await;
 
         // Should return 4 entries (readerlm, coref, extract, pdf).
         assert_eq!(results.len(), 4);
@@ -537,12 +538,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_sidecars_unreachable_url() {
+    async fn check_services_unreachable_url() {
         let mut config = test_config();
         // Use a URL that won't respond.
         config.readerlm_url = Some("http://127.0.0.1:19999".to_string());
 
-        let results = check_sidecars(&config).await;
+        let results = check_services(&config).await;
         let readerlm = results
             .iter()
             .find(|s| s.name == "readerlm")
@@ -559,15 +560,15 @@ mod tests {
         let config = test_config();
         let audit = run_config_audit(&config).await;
 
-        assert!(!audit.sidecars.is_empty());
+        assert!(!audit.services.is_empty());
         assert!(audit.current_config.is_object());
         // Should have at least the coref + PDF warnings.
         assert!(!audit.warnings.is_empty());
     }
 
     #[test]
-    fn sidecar_health_serializes_correctly() {
-        let health = SidecarHealth {
+    fn service_health_serializes_correctly() {
+        let health = ServiceHealth {
             name: "readerlm".to_string(),
             configured: true,
             url: Some("http://localhost:8000".to_string()),
@@ -587,7 +588,7 @@ mod tests {
     fn config_audit_serializes_correctly() {
         let audit = ConfigAudit {
             current_config: serde_json::json!({"key": "value"}),
-            sidecars: vec![SidecarHealth {
+            services: vec![ServiceHealth {
                 name: "test".to_string(),
                 configured: false,
                 url: None,
@@ -599,7 +600,7 @@ mod tests {
 
         let json = serde_json::to_value(&audit).expect("serialize");
         assert_eq!(json["warnings"][0], "test warning");
-        assert_eq!(json["sidecars"][0]["name"], "test");
+        assert_eq!(json["services"][0]["name"], "test");
         assert_eq!(json["current_config"]["key"], "value");
     }
 
@@ -613,7 +614,7 @@ mod tests {
         config.entity_extractor = "gliner2".to_string();
         config.extract_url = None;
 
-        let unreachable = vec![SidecarHealth {
+        let unreachable = vec![ServiceHealth {
             name: "readerlm".to_string(),
             configured: true,
             url: Some("http://localhost:9999".to_string()),

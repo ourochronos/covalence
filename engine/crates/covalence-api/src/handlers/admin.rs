@@ -17,7 +17,7 @@ use crate::handlers::dto::{
     OntologyClusterRequest, OntologyClusterResponse, PaginationParams, PublishResponse,
     QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
     ResurrectDeadResponse, RetryFailedRequest, RetryFailedResponse, SearchTraceResponse,
-    SeedOpinionsResponse, SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
+    SeedOpinionsResponse, ServiceHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
     TopologyResponse, TraceReplayResponse,
 };
 use crate::state::AppState;
@@ -617,10 +617,10 @@ pub async fn config_audit(
 ) -> Result<Json<ConfigAuditResponse>, ApiError> {
     let audit = state.admin_service.config_audit().await?;
 
-    let sidecars: Vec<SidecarHealthResponse> = audit
-        .sidecars
+    let services: Vec<ServiceHealthResponse> = audit
+        .services
         .into_iter()
-        .map(|s| SidecarHealthResponse {
+        .map(|s| ServiceHealthResponse {
             name: s.name,
             configured: s.configured,
             reachable: s.reachable,
@@ -630,7 +630,7 @@ pub async fn config_audit(
 
     Ok(Json(ConfigAuditResponse {
         current_config: audit.current_config,
-        sidecars,
+        services,
         warnings: audit.warnings,
     }))
 }

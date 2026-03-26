@@ -19,9 +19,9 @@ use crate::ingestion::extractor::Extractor;
 use crate::ingestion::resolver::EntityResolver;
 use crate::ingestion::{
     ChainChatBackend, ChatBackend, ChatBackendExtractor, CliChatBackend, ConverterRegistry,
-    FastcorefClient, GlinerExtractor, HttpChatBackend, LlmExtractor, LlmSectionCompiler,
-    LlmStatementExtractor, OpenAiEmbedder, PdfConverter, PgResolver, ReaderLmConverter,
-    SidecarExtractor, SidecarRegistry, SidecarTransport, TwoPassExtractor, VoyageConfig,
+    FastcorefClient, GlinerExtractor, HttpChatBackend, HttpExtractor, LlmExtractor,
+    LlmSectionCompiler, LlmStatementExtractor, OpenAiEmbedder, PdfConverter, PgResolver,
+    ReaderLmConverter, ServiceRegistry, ServiceTransport, TwoPassExtractor, VoyageConfig,
     VoyageEmbedder, fingerprint_config_from,
 };
 use crate::search::abstention::AbstentionConfig;
@@ -75,15 +75,15 @@ pub struct ServiceFactory {
     pub ontology_service: Arc<OntologyService>,
     /// Lifecycle hook service for pipeline extensibility.
     pub hook_service: Arc<HookService>,
-    /// Registry of sidecar transports (HTTP and STDIO).
-    pub sidecar_registry: Arc<SidecarRegistry>,
+    /// Registry of external service transports (HTTP and STDIO).
+    pub service_registry: Arc<ServiceRegistry>,
 }
 
 impl ServiceFactory {
     /// Build all services from the given configuration and repo.
     ///
     /// This is an async constructor because several steps require
-    /// database queries or sidecar validation.
+    /// database queries or service validation.
     pub async fn new(config: &Config, repo: Arc<PgRepo>) -> Result<Self> {
         let graph: SharedGraph = Arc::new(RwLock::new(GraphSidecar::new()));
 
@@ -112,7 +112,7 @@ impl ServiceFactory {
         // ── Converter registry ──────────────────────────────────
         let converter_registry = Self::build_converter_registry(config).await?;
 
-        // ── Coref URL (explicit or auto-derived from sidecar) ───
+        // ── Coref URL (explicit or auto-derived from extractor) ──
         let coref_url = config.coref_url.clone().or_else(|| {
             if config.entity_extractor == "sidecar" {
                 config
@@ -310,8 +310,8 @@ impl ServiceFactory {
         }
         ontology_service.spawn_refresh_loop(60);
 
-        // ── Sidecar registry ──────────────────────────────────────
-        let sidecar_registry = Self::build_sidecar_registry(config).await;
+        // ── Service registry ──────────────────────────────────────
+        let service_registry = Self::build_service_registry(config).await;
 
         Ok(Self {
             repo,
@@ -331,7 +331,7 @@ impl ServiceFactory {
             config_service,
             ontology_service,
             hook_service,
-            sidecar_registry,
+            service_registry,
         })
     }
 
@@ -395,9 +395,9 @@ impl ServiceFactory {
                 .unwrap_or_else(|| "http://localhost:8433".to_string());
             tracing::info!(
                 url = %base_url,
-                "using unified extraction sidecar"
+                "using unified extraction HTTP service"
             );
-            Some(Arc::new(SidecarExtractor::with_windowing(
+            Some(Arc::new(HttpExtractor::with_windowing(
                 base_url,
                 config.gliner_threshold,
                 config.pipeline.ner_window_chars,
@@ -481,8 +481,8 @@ impl ServiceFactory {
                 }
                 Err(e) => {
                     return Err(crate::error::Error::Config(format!(
-                        "PDF sidecar at {url} is unreachable: {e}. \
-                         Either start the sidecar or remove \
+                        "PDF service at {url} is unreachable: {e}. \
+                         Either start the service or remove \
                          COVALENCE_PDF_URL."
                     )));
                 }
@@ -508,7 +508,7 @@ impl ServiceFactory {
                 Ok(()) => {
                     tracing::info!(
                         url = %url,
-                        "fastcoref sidecar validated and enabled"
+                        "fastcoref service validated and enabled"
                     );
                     source_svc = source_svc.with_coref_client(coref_client);
                 }
@@ -516,8 +516,8 @@ impl ServiceFactory {
                     if config.coref_url.is_some() {
                         // Explicitly configured — fail fast.
                         return Err(crate::error::Error::Config(format!(
-                            "fastcoref sidecar at {url} is unreachable: \
-                             {e}. Either start the sidecar or remove \
+                            "fastcoref service at {url} is unreachable: \
+                             {e}. Either start the service or remove \
                              COVALENCE_COREF_URL."
                         )));
                     }
@@ -525,7 +525,7 @@ impl ServiceFactory {
                     tracing::warn!(
                         url = %url,
                         error = %e,
-                        "fastcoref sidecar unavailable — coref disabled \
+                        "fastcoref service unavailable — coref disabled \
                          (auto-derived URL, not explicitly configured)"
                     );
                 }
@@ -673,48 +673,48 @@ impl ServiceFactory {
         })
     }
 
-    /// Build the sidecar registry from config-driven STDIO entries
-    /// and well-known HTTP sidecars.
-    async fn build_sidecar_registry(config: &Config) -> Arc<SidecarRegistry> {
-        let mut registry = SidecarRegistry::new();
+    /// Build the service registry from config-driven STDIO entries
+    /// and well-known HTTP services.
+    async fn build_service_registry(config: &Config) -> Arc<ServiceRegistry> {
+        let mut registry = ServiceRegistry::new();
 
-        // Register STDIO sidecars from config.
-        for sc in &config.sidecars {
+        // Register STDIO services from config.
+        for sc in &config.external_services {
             registry.register(
                 &sc.name,
-                SidecarTransport::Stdio {
+                ServiceTransport::Stdio {
                     command: sc.command.clone(),
                     args: sc.args.clone(),
                 },
             );
         }
 
-        // Register well-known HTTP sidecars.
+        // Register well-known HTTP services.
         if let Some(ref url) = config.pdf_url {
-            registry.register("pdf", SidecarTransport::Http { url: url.clone() });
+            registry.register("pdf", ServiceTransport::Http { url: url.clone() });
         }
         if let Some(ref url) = config.readerlm_url {
-            registry.register("readerlm", SidecarTransport::Http { url: url.clone() });
+            registry.register("readerlm", ServiceTransport::Http { url: url.clone() });
         }
         if let Some(ref url) = config.coref_url {
-            registry.register("coref", SidecarTransport::Http { url: url.clone() });
+            registry.register("coref", ServiceTransport::Http { url: url.clone() });
         }
 
-        // Validate STDIO sidecars at startup.
+        // Validate services at startup.
         let failures = registry.validate_all().await;
         for (name, err) in &failures {
             tracing::warn!(
-                sidecar = %name,
+                service = %name,
                 error = %err,
-                "STDIO sidecar validation failed — disabled"
+                "service validation failed — disabled"
             );
         }
 
         if !registry.list().is_empty() {
             let names: Vec<&str> = registry.list().iter().map(|(n, _)| *n).collect();
             tracing::info!(
-                sidecars = ?names,
-                "sidecar registry initialized"
+                services = ?names,
+                "service registry initialized"
             );
         }
 
@@ -797,7 +797,7 @@ mod tests {
             resolve_vector_threshold: 0.85,
             queue: RetryQueueConfig::default(),
             ask_model: "sonnet".into(),
-            sidecars: vec![],
+            external_services: vec![],
         }
     }
 

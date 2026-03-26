@@ -32,7 +32,7 @@ pub use ask::{AskResponse, AskService, AskStreamEvent, Citation};
 pub use config_service::ConfigService;
 pub use consolidation::GraphDeepConsolidator;
 pub use edge::EdgeService;
-pub use health::{ConfigAudit, SidecarHealth};
+pub use health::{ConfigAudit, ServiceHealth};
 pub use hooks::HookService;
 pub use node::{NodeExplanation, NodeService};
 pub use ontology_service::OntologyService;

@@ -26,7 +26,7 @@ pub use admin::{
     OntologyClusterItem, OntologyClusterRequest, OntologyClusterResponse, PublishResponse,
     QueueStatusResponse, QueueStatusRowResponse, RaptorResponse, ReloadResponse,
     ResurrectDeadResponse, RetryFailedRequest, RetryFailedResponse, SeedOpinionsResponse,
-    SidecarHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
+    ServiceHealthResponse, Tier5ResolveRequest, Tier5ResolveResponse,
 };
 pub use analysis::{
     AffectedNodeResponse, AlignmentReportResponse, AlignmentRequest, BlastRadiusHopResponse,
