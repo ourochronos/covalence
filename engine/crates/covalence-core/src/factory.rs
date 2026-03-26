@@ -21,7 +21,8 @@ use crate::ingestion::{
     ChainChatBackend, ChatBackend, ChatBackendExtractor, CliChatBackend, ConverterRegistry,
     FastcorefClient, GlinerExtractor, HttpChatBackend, LlmExtractor, LlmSectionCompiler,
     LlmStatementExtractor, OpenAiEmbedder, PdfConverter, PgResolver, ReaderLmConverter,
-    SidecarExtractor, TwoPassExtractor, VoyageConfig, VoyageEmbedder, fingerprint_config_from,
+    SidecarExtractor, SidecarRegistry, SidecarTransport, TwoPassExtractor, VoyageConfig,
+    VoyageEmbedder, fingerprint_config_from,
 };
 use crate::search::abstention::AbstentionConfig;
 use crate::search::cache::CacheConfig;
@@ -70,6 +71,8 @@ pub struct ServiceFactory {
     pub config_service: Arc<ConfigService>,
     /// Ontology service (configurable knowledge schema).
     pub ontology_service: Arc<OntologyService>,
+    /// Registry of sidecar transports (HTTP and STDIO).
+    pub sidecar_registry: Arc<SidecarRegistry>,
 }
 
 impl ServiceFactory {
@@ -297,6 +300,9 @@ impl ServiceFactory {
         }
         ontology_service.spawn_refresh_loop(60);
 
+        // ── Sidecar registry ──────────────────────────────────────
+        let sidecar_registry = Self::build_sidecar_registry(config).await;
+
         Ok(Self {
             repo,
             graph,
@@ -313,6 +319,7 @@ impl ServiceFactory {
             queue_service,
             config_service,
             ontology_service,
+            sidecar_registry,
         })
     }
 
@@ -653,6 +660,54 @@ impl ServiceFactory {
             None => search,
         })
     }
+
+    /// Build the sidecar registry from config-driven STDIO entries
+    /// and well-known HTTP sidecars.
+    async fn build_sidecar_registry(config: &Config) -> Arc<SidecarRegistry> {
+        let mut registry = SidecarRegistry::new();
+
+        // Register STDIO sidecars from config.
+        for sc in &config.sidecars {
+            registry.register(
+                &sc.name,
+                SidecarTransport::Stdio {
+                    command: sc.command.clone(),
+                    args: sc.args.clone(),
+                },
+            );
+        }
+
+        // Register well-known HTTP sidecars.
+        if let Some(ref url) = config.pdf_url {
+            registry.register("pdf", SidecarTransport::Http { url: url.clone() });
+        }
+        if let Some(ref url) = config.readerlm_url {
+            registry.register("readerlm", SidecarTransport::Http { url: url.clone() });
+        }
+        if let Some(ref url) = config.coref_url {
+            registry.register("coref", SidecarTransport::Http { url: url.clone() });
+        }
+
+        // Validate STDIO sidecars at startup.
+        let failures = registry.validate_all().await;
+        for (name, err) in &failures {
+            tracing::warn!(
+                sidecar = %name,
+                error = %err,
+                "STDIO sidecar validation failed — disabled"
+            );
+        }
+
+        if !registry.list().is_empty() {
+            let names: Vec<&str> = registry.list().iter().map(|(n, _)| *n).collect();
+            tracing::info!(
+                sidecars = ?names,
+                "sidecar registry initialized"
+            );
+        }
+
+        Arc::new(registry)
+    }
 }
 
 /// Resolve a model name to a [`CliChatBackend`] for the ask service.
@@ -730,6 +785,7 @@ mod tests {
             resolve_vector_threshold: 0.85,
             queue: RetryQueueConfig::default(),
             ask_model: "sonnet".into(),
+            sidecars: vec![],
         }
     }
 

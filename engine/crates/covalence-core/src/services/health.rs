@@ -301,6 +301,7 @@ mod tests {
             resolve_vector_threshold: 0.85,
             queue: RetryQueueConfig::default(),
             ask_model: "sonnet".to_string(),
+            sidecars: vec![],
         }
     }
 

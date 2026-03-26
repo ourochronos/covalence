@@ -2,6 +2,20 @@
 
 use crate::error::{Error, Result};
 
+/// Configuration for a STDIO sidecar discovered from env vars.
+///
+/// Parsed from `COVALENCE_SIDECAR_<NAME>_COMMAND` and the optional
+/// `COVALENCE_SIDECAR_<NAME>_ARGS` (comma-separated).
+#[derive(Debug, Clone)]
+pub struct SidecarConfig {
+    /// Human-readable sidecar name (lowercased from the env var).
+    pub name: String,
+    /// Command to execute.
+    pub command: String,
+    /// Arguments to pass to the command.
+    pub args: Vec<String>,
+}
+
 /// Top-level configuration for the Covalence engine.
 #[derive(Clone)]
 pub struct Config {
@@ -166,6 +180,12 @@ pub struct Config {
     /// this defaults to `"sonnet"` while extraction uses Haiku.
     /// Env: `COVALENCE_ASK_MODEL`. Default: `"sonnet"`.
     pub ask_model: String,
+
+    /// STDIO sidecar configurations discovered from env vars.
+    ///
+    /// Parsed from `COVALENCE_SIDECAR_<NAME>_COMMAND` and the
+    /// optional `COVALENCE_SIDECAR_<NAME>_ARGS` (comma-separated).
+    pub sidecars: Vec<SidecarConfig>,
 }
 
 /// Configuration for the embedding subsystem.
@@ -541,6 +561,7 @@ impl std::fmt::Debug for Config {
             .field("resolve_vector_threshold", &self.resolve_vector_threshold)
             .field("queue", &self.queue)
             .field("ask_model", &self.ask_model)
+            .field("sidecars", &self.sidecars)
             .finish()
     }
 }
@@ -669,6 +690,7 @@ impl Config {
                 job_timeout_secs: env_parse("COVALENCE_QUEUE_JOB_TIMEOUT", 600)?,
             },
             ask_model: env_or("COVALENCE_ASK_MODEL", "sonnet"),
+            sidecars: parse_sidecar_configs(),
         })
     }
 }
@@ -716,6 +738,55 @@ fn env_parse_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> Result<
         )));
     }
     Ok(value)
+}
+
+/// Discover STDIO sidecar configurations from environment variables.
+///
+/// Scans for vars matching `COVALENCE_SIDECAR_<NAME>_COMMAND` and
+/// pairs them with optional `COVALENCE_SIDECAR_<NAME>_ARGS`
+/// (comma-separated). Returns a vec of [`SidecarConfig`].
+fn parse_sidecar_configs() -> Vec<SidecarConfig> {
+    use std::collections::HashMap;
+
+    let prefix = "COVALENCE_SIDECAR_";
+    let suffix_cmd = "_COMMAND";
+
+    // Collect all COVALENCE_SIDECAR_*_COMMAND env vars.
+    let mut commands: HashMap<String, String> = HashMap::new();
+    for (key, value) in std::env::vars() {
+        if let Some(rest) = key.strip_prefix(prefix) {
+            if let Some(name) = rest.strip_suffix(suffix_cmd) {
+                if !name.is_empty() && !value.is_empty() {
+                    commands.insert(name.to_string(), value);
+                }
+            }
+        }
+    }
+
+    let mut configs: Vec<SidecarConfig> = commands
+        .into_iter()
+        .map(|(name, command)| {
+            let args_key = format!("{prefix}{name}_ARGS");
+            let args = optional_env(&args_key)
+                .map(|s| {
+                    s.split(',')
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            SidecarConfig {
+                name: name.to_lowercase(),
+                command,
+                args,
+            }
+        })
+        .collect();
+
+    // Sort for deterministic ordering.
+    configs.sort_by(|a, b| a.name.cmp(&b.name));
+    configs
 }
 
 fn env_parse_f64(key: &str, default: f64) -> Result<f64> {
@@ -891,6 +962,72 @@ mod tests {
     }
 
     #[test]
+    fn parse_sidecar_configs_from_env() {
+        let cmd_key = "COVALENCE_SIDECAR_MYTOOL_COMMAND";
+        let args_key = "COVALENCE_SIDECAR_MYTOOL_ARGS";
+
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe {
+            std::env::set_var(cmd_key, "my-converter");
+            std::env::set_var(args_key, "--format,markdown,--strict");
+        }
+
+        let configs = parse_sidecar_configs();
+        let found = configs.iter().find(|c| c.name == "mytool");
+        assert!(found.is_some(), "should find 'mytool' sidecar");
+        let sc = found.unwrap();
+        assert_eq!(sc.command, "my-converter");
+        assert_eq!(sc.args, vec!["--format", "markdown", "--strict"]);
+
+        // Cleanup.
+        unsafe {
+            std::env::remove_var(cmd_key);
+            std::env::remove_var(args_key);
+        }
+    }
+
+    #[test]
+    fn parse_sidecar_configs_no_args() {
+        let cmd_key = "COVALENCE_SIDECAR_NOTOOL_COMMAND";
+
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe {
+            std::env::set_var(cmd_key, "simple-tool");
+        }
+
+        let configs = parse_sidecar_configs();
+        let found = configs.iter().find(|c| c.name == "notool");
+        assert!(found.is_some(), "should find 'notool' sidecar");
+        let sc = found.unwrap();
+        assert_eq!(sc.command, "simple-tool");
+        assert!(sc.args.is_empty());
+
+        // Cleanup.
+        unsafe {
+            std::env::remove_var(cmd_key);
+        }
+    }
+
+    #[test]
+    fn parse_sidecar_configs_name_is_lowercased() {
+        let cmd_key = "COVALENCE_SIDECAR_UPPER_COMMAND";
+
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe {
+            std::env::set_var(cmd_key, "upper-tool");
+        }
+
+        let configs = parse_sidecar_configs();
+        let found = configs.iter().find(|c| c.name == "upper");
+        assert!(found.is_some(), "sidecar name should be lowercased");
+
+        // Cleanup.
+        unsafe {
+            std::env::remove_var(cmd_key);
+        }
+    }
+
+    #[test]
     fn config_debug_redacts_secrets() {
         // Can't easily construct a full Config without DATABASE_URL,
         // but we can verify the Debug impl redacts API keys by
@@ -933,6 +1070,7 @@ mod tests {
                 resolve_vector_threshold: 0.85,
                 queue: RetryQueueConfig::default(),
                 ask_model: "sonnet".into(),
+                sidecars: vec![],
             }
         );
         assert!(debug_out.contains("[REDACTED]"));
