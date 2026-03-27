@@ -321,6 +321,22 @@ async function fetchMemory() {
     document.getElementById("relationship-count").textContent = fmt(
       data.total_relationships
     );
+
+    // Show additional memory details if available
+    const details = document.getElementById("memory-details");
+    if (details) {
+      let html = "";
+      if (data.agent_memories !== undefined) {
+        html += `<div class="list-item"><span class="name">Agent memories</span><span class="meta">${fmt(data.agent_memories)}</span></div>`;
+      }
+      if (data.recent_memories && data.recent_memories.length > 0) {
+        for (const m of data.recent_memories.slice(0, 5)) {
+          const key = m.key || m.name || shortId(m.id || "");
+          html += `<div class="list-item"><span class="name">${escapeHtml(key)}</span><span class="meta">${relativeTime(m.created_at)}</span></div>`;
+        }
+      }
+      details.innerHTML = html || '<span class="dim">No additional details</span>';
+    }
   } catch {
     document.getElementById("memory-count").textContent = "err";
   }
@@ -482,6 +498,153 @@ async function fetchAnalysis() {
   }
 }
 
+// --- Session 42 features ---
+
+async function fetchExtensions() {
+  try {
+    const data = await apiFetch("/admin/extensions");
+    const extensions = data.extensions || [];
+    setText("extension-count", extensions.length);
+
+    const container = document.getElementById("extension-list");
+    if (extensions.length === 0) {
+      container.innerHTML = '<span class="dim">No extensions loaded</span>';
+      return;
+    }
+    let html = "";
+    for (const ext of extensions) {
+      html += `<div class="list-item">
+        <span class="name">${escapeHtml(ext)}</span>
+      </div>`;
+    }
+    container.innerHTML = html;
+  } catch {
+    setText("extension-count", "err");
+  }
+}
+
+async function fetchSessions() {
+  try {
+    const sessions = await apiFetch("/sessions?limit=5");
+    const list = Array.isArray(sessions) ? sessions : (sessions.sessions || []);
+    setText("session-count", list.length);
+
+    const container = document.getElementById("session-list");
+    if (list.length === 0) {
+      container.innerHTML = '<span class="dim">No active sessions</span>';
+      return;
+    }
+    let html = `<table>
+      <thead><tr>
+        <th>ID</th><th>Name</th><th>Created</th><th>Updated</th>
+      </tr></thead><tbody>`;
+    for (const s of list) {
+      const name = s.name || "--";
+      const nameShort = name.length > 40 ? name.substring(0, 40) + "..." : name;
+      html += `<tr>
+        <td class="mono">${shortId(s.id)}</td>
+        <td>${escapeHtml(nameShort)}</td>
+        <td class="dim">${relativeTime(s.created_at)}</td>
+        <td class="dim">${relativeTime(s.updated_at)}</td>
+      </tr>`;
+    }
+    html += "</tbody></table>";
+    container.innerHTML = html;
+  } catch {
+    setText("session-count", "err");
+  }
+}
+
+async function fetchHooks() {
+  try {
+    const hooks = await apiFetch("/admin/hooks");
+    const list = Array.isArray(hooks) ? hooks : (hooks.hooks || []);
+    setText("hook-count", list.length);
+
+    const activeCount = list.filter(h => h.is_active).length;
+    setText("hook-active-count", activeCount);
+
+    // Phase breakdown
+    const phases = {};
+    for (const h of list) {
+      const phase = h.phase || "unknown";
+      phases[phase] = (phases[phase] || 0) + 1;
+    }
+
+    const breakdownEl = document.getElementById("hook-phase-breakdown");
+    if (Object.keys(phases).length > 0) {
+      let html = "";
+      for (const [phase, count] of Object.entries(phases)) {
+        html += `<div class="list-item">
+          <span class="name">${escapeHtml(phase)}</span>
+          <span class="meta">${count} hook${count !== 1 ? "s" : ""}</span>
+        </div>`;
+      }
+      breakdownEl.innerHTML = html;
+    } else {
+      breakdownEl.innerHTML = "";
+    }
+
+    // Hook table
+    const container = document.getElementById("hook-list");
+    if (list.length === 0) {
+      container.innerHTML = '<span class="dim">No hooks registered</span>';
+      return;
+    }
+    let html = `<table>
+      <thead><tr>
+        <th>Name</th><th>Phase</th><th>URL</th><th>Fail Open</th><th>Active</th>
+      </tr></thead><tbody>`;
+    for (const h of list) {
+      const url = h.hook_url || "--";
+      const urlShort = url.length > 40 ? url.substring(0, 40) + "..." : url;
+      const activeClass = h.is_active ? "health-ok" : "health-err";
+      html += `<tr>
+        <td>${escapeHtml(h.name || "--")}</td>
+        <td class="mono">${escapeHtml(h.phase || "--")}</td>
+        <td class="dim">${escapeHtml(urlShort)}</td>
+        <td>${h.fail_open ? "yes" : "no"}</td>
+        <td><span class="health-badge ${activeClass}">${h.is_active ? "active" : "inactive"}</span></td>
+      </tr>`;
+    }
+    html += "</tbody></table>";
+    container.innerHTML = html;
+  } catch {
+    setText("hook-count", "err");
+  }
+}
+
+async function fetchServices() {
+  try {
+    const data = await apiFetch("/admin/services");
+    const services = data.services || [];
+    setText("service-count", services.length);
+
+    const healthyCount = services.filter(s => s.healthy).length;
+    setText("service-healthy-count", healthyCount);
+
+    const container = document.getElementById("service-list");
+    if (services.length === 0) {
+      container.innerHTML = '<span class="dim">No services registered</span>';
+      return;
+    }
+    let html = "";
+    for (const s of services) {
+      const statusClass = s.healthy ? "health-ok" : "health-err";
+      const statusText = s.healthy ? "healthy" : "unhealthy";
+      const lastCheck = s.last_check ? relativeTime(s.last_check) : "--";
+      const errorText = s.last_error ? ` — ${escapeHtml(s.last_error)}` : "";
+      html += `<div class="list-item">
+        <span class="name"><span class="health-badge ${statusClass}">${statusText}</span> ${escapeHtml(s.name)}</span>
+        <span class="meta">checked ${lastCheck}${errorText}</span>
+      </div>`;
+    }
+    container.innerHTML = html;
+  } catch {
+    setText("service-count", "err");
+  }
+}
+
 async function refreshAll() {
   // Fire all fetches in parallel
   await Promise.allSettled([
@@ -500,6 +663,10 @@ async function refreshAll() {
     fetchDataHealth(),
     fetchConfig(),
     fetchAdapters(),
+    fetchExtensions(),
+    fetchSessions(),
+    fetchHooks(),
+    fetchServices(),
   ]);
   document.getElementById("last-refresh").textContent =
     `Last refresh: ${new Date().toLocaleTimeString()}`;

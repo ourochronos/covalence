@@ -33,6 +33,34 @@
       <div id="search-results" class="search-results-container"></div>
     </section>
 
+    <!-- Extensions -->
+    <section class="card" id="extensions-card">
+      <h2>Extensions</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="extension-count">--</span>
+          <span class="stat-label">Loaded</span>
+        </div>
+      </div>
+      <div id="extension-list" class="list-container"></div>
+    </section>
+
+    <!-- Services -->
+    <section class="card" id="services-card">
+      <h2>Services</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="service-count">--</span>
+          <span class="stat-label">Registered</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="service-healthy-count">--</span>
+          <span class="stat-label">Healthy</span>
+        </div>
+      </div>
+      <div id="service-list" class="list-container"></div>
+    </section>
+
     <!-- Graph Stats -->
     <section class="card" id="graph-card">
       <h2>Knowledge Graph</h2>
@@ -190,12 +218,42 @@
           <span class="stat-label">Relations</span>
         </div>
       </div>
+      <div id="memory-details" class="list-container"></div>
+    </section>
+
+    <!-- Sessions -->
+    <section class="card" id="sessions-card">
+      <h2>Sessions</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="session-count">--</span>
+          <span class="stat-label">Active</span>
+        </div>
+      </div>
+      <div id="session-list" class="table-container"></div>
     </section>
 
     <!-- Topology -->
     <section class="card wide" id="topology-card">
       <h2>Domain Topology</h2>
       <div id="topology-map" class="topology-container"></div>
+    </section>
+
+    <!-- Lifecycle Hooks -->
+    <section class="card wide" id="hooks-card">
+      <h2>Lifecycle Hooks</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="hook-count">--</span>
+          <span class="stat-label">Registered</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="hook-active-count">--</span>
+          <span class="stat-label">Active</span>
+        </div>
+      </div>
+      <div id="hook-phase-breakdown" class="list-container"></div>
+      <div id="hook-list" class="table-container"></div>
     </section>
 
     <!-- Queue Status -->
