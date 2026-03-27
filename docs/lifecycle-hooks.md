@@ -2,17 +2,20 @@
 
 ## Overview
 
-Lifecycle hooks are HTTP POST callbacks that fire at specific points in the `/ask` pipeline. They allow extensions to inject context, enrich queries, filter results, or observe pipeline activity without modifying the core engine.
+Lifecycle hooks are HTTP POST callbacks that fire at specific points in the `/ask` and ingestion pipelines. They allow extensions to inject context, enrich queries, filter results, or observe pipeline activity without modifying the core engine.
 
 Hooks are **fail-open by default**: if a hook times out or returns an error, the pipeline logs a warning and continues. This can be overridden per hook by setting `fail_open: false`, which causes hook errors to propagate and abort the pipeline.
 
 ## Phase Reference
 
-| Phase | Direction | When | Payload | Response |
-|-------|-----------|------|---------|----------|
-| `pre_search` | sync | Before search execution in `/ask` | query, adapter_id | boost_terms, metadata_filters |
-| `post_search` | sync | After search results, before LLM synthesis | query, results_summary, adapter_id | additional_context |
-| `post_synthesis` | async | After LLM synthesis completes | query, answer, citations, adapter_id | (fire-and-forget) |
+| Phase | Direction | Pipeline | When | Payload | Response |
+|-------|-----------|----------|------|---------|----------|
+| `pre_search` | sync | ask | Before search execution in `/ask` | query, adapter_id | boost_terms, metadata_filters |
+| `post_search` | sync | ask | After search results, before LLM synthesis | query, results_summary, adapter_id | additional_context |
+| `post_synthesis` | async | ask | After LLM synthesis completes | query, answer, citations, adapter_id | (fire-and-forget) |
+| `pre_ingest` | sync | ingestion | Before extraction begins for a source | source_id, source_type, domain, content_preview | skip_extraction, override_domain |
+| `post_extract` | async | ingestion | After entity/relationship extraction completes | source_id, entities_count, relationships_count | (fire-and-forget) |
+| `post_resolve` | async | ingestion | After entity resolution completes | source_id, nodes_created | (fire-and-forget) |
 
 **Sync** hooks block the pipeline until all hooks for that phase complete. The engine merges responses from multiple hooks before proceeding.
 
@@ -110,6 +113,103 @@ Sent after LLM synthesis completes. This is fire-and-forget -- the response is i
 
 **Response:** Ignored. Any valid HTTP response is accepted.
 
+### pre_ingest
+
+Sent before extraction begins for a source. Hooks can skip extraction entirely or override the domain classification.
+
+**Request payload:**
+```json
+{
+  "source_id": "abc-123-def-456",
+  "source_type": "document",
+  "domain": "research",
+  "content_preview": "This paper introduces a novel approach to entity resolution using..."
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source_id` | string (UUID) | The source being ingested |
+| `source_type` | string | Source type (document, code, etc.) |
+| `domain` | string or null | Detected domain, if any |
+| `content_preview` | string or null | First 500 characters of the source content |
+
+**Response:**
+```json
+{
+  "skip_extraction": false,
+  "override_domain": "code"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `skip_extraction` | bool or null | If true, skip the extraction stage entirely |
+| `override_domain` | string or null | Override the detected domain for this source |
+
+All response fields are optional. Return `{}` to make no modifications.
+
+**Example curl:**
+```bash
+curl -X POST http://localhost:9090/pre-ingest \
+  -H "Content-Type: application/json" \
+  -d '{"source_id": "abc-123", "source_type": "document", "domain": null, "content_preview": "First 500 chars..."}'
+```
+
+### post_extract
+
+Sent after entity/relationship extraction completes for a source. This is fire-and-forget -- the response is ignored.
+
+**Request payload:**
+```json
+{
+  "source_id": "abc-123-def-456",
+  "entities_count": 42,
+  "relationships_count": 18
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source_id` | string (UUID) | The source that was extracted |
+| `entities_count` | integer | Number of entities extracted |
+| `relationships_count` | integer | Number of relationships extracted |
+
+**Response:** Ignored. Any valid HTTP response is accepted.
+
+**Example curl:**
+```bash
+curl -X POST http://localhost:9090/post-extract \
+  -H "Content-Type: application/json" \
+  -d '{"source_id": "abc-123", "entities_count": 42, "relationships_count": 18}'
+```
+
+### post_resolve
+
+Sent after entity resolution completes for a source. This is fire-and-forget -- the response is ignored.
+
+**Request payload:**
+```json
+{
+  "source_id": "abc-123-def-456",
+  "nodes_created": 15
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source_id` | string (UUID) | The source that was resolved |
+| `nodes_created` | integer | Number of new nodes created during resolution |
+
+**Response:** Ignored. Any valid HTTP response is accepted.
+
+**Example curl:**
+```bash
+curl -X POST http://localhost:9090/post-resolve \
+  -H "Content-Type: application/json" \
+  -d '{"source_id": "abc-123", "nodes_created": 15}'
+```
+
 ## Behavior
 
 ### fail_open
@@ -130,6 +230,9 @@ When multiple hooks are registered for the same phase, they execute **concurrent
 - `pre_search`: boost terms are concatenated. The last non-null `metadata_filters` wins.
 - `post_search`: additional context strings are concatenated.
 - `post_synthesis`: all hooks fire independently.
+- `pre_ingest`: the last non-null `skip_extraction` and `override_domain` win.
+- `post_extract`: all hooks fire independently.
+- `post_resolve`: all hooks fire independently.
 
 ### Scope
 

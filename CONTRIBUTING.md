@@ -99,6 +99,20 @@ Integration tests (require a running dev database) are marked `#[ignore]` and ru
 cd engine && cargo test --workspace -- --ignored
 ```
 
+## Feature Completeness Checklist
+
+A feature is not done until **all** of these are true:
+
+- [ ] **Code**: implemented, `cargo fmt` + `cargo clippy` clean
+- [ ] **Tests**: covering the change (unit tests at minimum, integration tests if touching storage)
+- [ ] **CLAUDE.md**: directives updated if config, environment, workflow, or conventions change
+- [ ] **Docs**: user-facing guides updated if applicable (e.g., `docs/lifecycle-hooks.md`, `docs/extension-author-guide.md`)
+- [ ] **README**: feature listed if user-visible
+- [ ] **Extension manifests**: entity types match what code actually emits
+- [ ] **MCP tools**: parity with REST endpoints (if adding a new API endpoint, add the corresponding MCP tool)
+
+If any artifact is stale relative to the code, the feature is incomplete. This prevents drift between code and documentation.
+
 ## Project Structure
 
 See the [README](README.md) for the workspace layout, architecture overview, and CLI usage.

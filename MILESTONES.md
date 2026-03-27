@@ -468,7 +468,7 @@ Spec 12 Stage 3: CALLS/USES_TYPE edges from code structure.
 Claude Code integration via Model Context Protocol.
 
 - [x] MCP server at `mcp-server/index.js` (Node.js)
-- [x] 7 tools: search, ask, health, data_health, alignment, node, blast_radius
+- [x] 10 tools: search, ask, health, data_health, alignment, node, blast_radius, memory_store, memory_recall, memory_forget
 - [x] Bridges Claude Code sessions to the Covalence API
 - [x] Environment-driven API URL configuration
 

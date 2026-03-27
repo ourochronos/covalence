@@ -31,18 +31,23 @@ engine/crates/covalence-core/       Library crate — all domain logic
   src/ingestion/                    Statement-first pipeline: fastcoref, offset projection, windowed Gemini Flash 3.0 extraction
   src/consolidation/                HDBSCAN Tier 5 entity resolution, batch/deep consolidation
   src/services/                     Service layer (source, node, edge, article, admin, search)
+  src/extensions/                   Extension manifest loading, metadata validation, seeding
   src/config.rs                     Environment-driven configuration
+  src/config_loader.rs              Layered figment config (covalence.conf + conf.d/ + env)
   src/error.rs                      Typed errors via thiserror
 engine/crates/covalence-api/        Binary crate — Axum server, utoipa OpenAPI
 engine/crates/covalence-migrations/ Binary crate — sqlx migration runner
 engine/crates/covalence-eval/       Binary crate — layer-by-layer evaluation harness
 engine/crates/covalence-worker/     Binary crate — async queue worker (per-kind concurrency)
+engine/crates/covalence-ast-extractor/ Binary crate — standalone AST extraction service (STDIO)
+extensions/                         Extension manifests (5 default: core, code-analysis, spec-design, research, agent-memory)
 cli/                                Go CLI (Cobra) — binary name: cove
-  cmd/                              Subcommands: source, search, node, admin
+  cmd/                              Subcommands: source, search, node, admin, memory, ask, llm, graph, audit
   internal/                         HTTP client + output helpers
+mcp-server/                         MCP server for Claude Code integration (Node.js, 10 tools)
 dashboard/                          Web dashboard (stats, observability, future interaction)
 spec/                               Design specs (13 specs + README)
-docs/adr/                           Architecture Decision Records (24 ADRs)
+docs/adr/                           Architecture Decision Records (23 ADRs)
 ```
 
 ### Key Dependencies
@@ -57,7 +62,8 @@ docs/adr/                           Architecture Decision Records (24 ADRs)
 | uuid | Entity identifiers |
 | thiserror | Typed errors in library code |
 | anyhow | Errors in binary crates only |
-| dotenvy | Environment-driven configuration |
+| figment | Layered YAML + env config (ADR-0023) |
+| dotenvy | Legacy .env loading (pre-figment compat) |
 | tokio | Async runtime |
 | sha2 | SHA-256 content hashing for dedup |
 | unicode-normalization | Unicode NFC normalization in ingestion |
@@ -70,7 +76,7 @@ docs/adr/                           Architecture Decision Records (24 ADRs)
 
 ## Development & Deployment
 
-Configure environment via `.env` (see `.env.example` for all variables). Ports, hosts, and deployment targets are environment-specific — not hardcoded.
+Configure via `covalence.conf` (see `covalence.conf.example`) or environment variables (`COVALENCE_*`). Legacy `.env` files still supported. Ports, hosts, and deployment targets are environment-specific — not hardcoded.
 
 ### Key Commands
 
@@ -236,6 +242,19 @@ Autonomous sessions should proactively maintain engineering quality:
 - **Spec-code-design triangle.** Every feature should be traceable: spec describes the concept, design docs record the decision, code implements it, tests verify it. When changing any vertex, check the other two. Use `/analysis/alignment` to detect drift.
 - **Epistemic data lifecycle.** Never automatically delete old source versions, orphan nodes, or duplicates. Old observations aren't false — they're prior state. Use `/admin/data-health` to preview what's stale, then make conscious cleanup decisions.
 
+### Completeness Rule
+
+A feature is NOT done until ALL of these are updated together:
+- [ ] Code: implemented, `cargo fmt` + `cargo clippy` clean
+- [ ] Tests: covering the change
+- [ ] CLAUDE.md: directives reflecting the new pattern
+- [ ] Docs: user-facing guide updated if applicable
+- [ ] README: feature listed if user-visible
+- [ ] Extension manifests: entity types match what code actually emits
+- [ ] MCP tools: parity with REST endpoints
+
+If any artifact is stale relative to the code, the feature is incomplete. Do not move on to the next task until all artifacts are synchronized. This prevents the pattern of features existing in code but being invisible to future sessions.
+
 ### Track What You Find
 
 Every insight, misalignment, or gap discovered through Covalence queries (or any other means) should be tracked:
@@ -279,6 +298,40 @@ See `VISION.md` for the full vision. In short: Covalence solves both an academic
 7. **Secure by default.** All data defaults to `clearance_level = 0` (local_strict). Promotion to federated requires explicit action.
 8. **No synthetic test data.** Tests use real data or clearly-marked fixtures. Never fabricate benchmarks or results.
 
+## Extension System
+
+Covalence is infrastructure, not a fixed solution. Domain-specific functionality is packaged as **extensions** — declarative YAML manifests that add entity types, relationship types, domains, alignment rules, services, and lifecycle hooks without modifying the core engine.
+
+Extensions live in `extensions/` at the repo root. Each extension has an `extension.yaml` manifest. The engine loads all manifests at startup and seeds the database. 5 default extensions ship:
+- **core** — MAGMA category primitives and relationship universals
+- **code-analysis** — Code entity types (function, struct, module, etc.), structural edges, AST extractor service
+- **spec-design** — Spec/design domains, bridge types, alignment rules
+- **research** — Research domains, epistemic edges, evidence grouping
+- **agent-memory** — Long-term agent memory (store, recall, consolidate, forget)
+
+Manifests support: `domains`, `entity_types` (with `metadata_schema`), `relationship_types`, `view_edges`, `noise_patterns`, `domain_rules`, `domain_groups`, `alignment_rules`, `service` (with `extractor_for`), `hooks`, `config_schema`, and `source_schemas`.
+
+See [ADR-0023](docs/adr/0023-extensions-and-config.md) and [Extension Author Guide](docs/extension-author-guide.md) for the full design.
+
+## Agent Memory
+
+The `agent-memory` extension provides persistent memory for AI agents. Entity types: `memory`, `lesson`, `preference`, `skill`. Three MCP tools (`covalence_memory_store`, `covalence_memory_recall`, `covalence_memory_forget`) and corresponding REST endpoints under `/api/v1/memory`.
+
+CLI: `cove memory store`, `cove memory recall`, `cove memory forget`, `cove memory status`.
+
+Configurable via `config_schema`: `retention_days`, `consolidation_threshold`, `auto_record_ask`, `max_memories_per_agent`.
+
+## Configuration
+
+Figment is the sole config path (`Config::from_env()` removed). Layered loading per ADR-0023:
+
+1. Hardcoded defaults in `RawConfig`
+2. `covalence.conf` (instance base, YAML)
+3. `covalence.conf.d/*.conf` (fragments, alphabetical, last value wins)
+4. Environment variables (`COVALENCE_*`, double-underscore for nesting: `COVALENCE_DATABASE__URL`)
+
+See `covalence.conf.example` for all options. Legacy `.env` / `dotenvy` still loaded before figment so `DATABASE_URL` works.
+
 ## Code Rules
 
 - Doc comments (`///` or `//!`) on every public item
@@ -306,8 +359,8 @@ These patterns come from the existing Covalence and should be maintained:
 - **Service layer per domain** — Each domain (sources, nodes, search, ingestion) has a service struct that owns business logic.
 - **Thin handlers** — Axum handlers extract params, call the service, format the response. No logic in handlers.
 - **utoipa for OpenAPI** — Derive `ToSchema` on response/request types, `#[utoipa::path]` on handlers.
-- **Cobra CLI with global flags** — `--api-url` and `--json` are global. Subcommands: `source`, `search`, `node`, `admin`.
-- **Environment-driven config** — `dotenvy` loads `.env`, config struct reads from env vars with defaults.
+- **Cobra CLI with global flags** — `--api-url` and `--json` are global. Subcommands: `source`, `search`, `node`, `admin`, `graph`, `audit`, `memory`, `ask`, `llm`.
+- **Layered figment config** — `Config::from_figment()` loads `covalence.conf` + `conf.d/` fragments + `COVALENCE_*` env vars. Legacy `.env` still supported via `dotenvy`.
 - **Embedding dimension discipline** — Embeddings flow through a consistent pipeline: (1) embedder generates at max dimension (e.g., 2048), (2) `truncate_and_validate()` truncates + L2-renormalizes to the target per-table dimension, (3) validated vector is stored. All storage call sites (`source.rs`, `pg_resolver.rs`) and search queries (`vector.rs`) must go through `truncate_and_validate`. When adding new embedding storage paths, always validate dimensions before the INSERT/UPDATE.
 - **Run migrations after schema changes** — After adding new migrations, run `make migrate` (or `make reset-db` for a clean slate). The DB schema must match what the code expects — dimension mismatches between column definitions and stored vectors cause silent failures.
 - **Validate sidecars at startup** — Every HTTP sidecar integration (fastcoref, PDF converter, future extractors) must include a `validate()` method that sends a test request and verifies the response format. Call `validate()` at engine startup. If it fails, disable the backend with an ERROR log — never silently degrade. See Lesson 20 in spec/10.
@@ -317,7 +370,7 @@ These patterns come from the existing Covalence and should be maintained:
 ```bash
 # Unit tests (no DB required, uses SQLX_OFFLINE=true)
 cd engine && cargo test --workspace
-# Current: 1,520 passing tests (1,437 core + 21 api + 13 ast-extractor + 49 eval), 18 ignored integration tests
+# Current: 1,535 passing tests (1,452 core + 21 api + 13 ast-extractor + 49 eval), 18 ignored integration tests
 
 # Integration tests (requires running dev PG — see .env)
 cd engine && cargo test --workspace -- --ignored
@@ -367,7 +420,7 @@ Design specs in `spec/`:
 
 ## ADR Process
 
-Architecture Decision Records live in `docs/adr/`. Use the template at `docs/adr/0000-template.md`.
+Architecture Decision Records live in `docs/adr/` (23 ADRs). Use the template at `docs/adr/0000-template.md`.
 
 To add a new ADR:
 1. Copy the template
@@ -406,13 +459,14 @@ Reference issue numbers in commit messages. Format: `<verb> <what> (#<issue>)`.
 
 Covalence should have a web interface for observability and eventually interaction. This lives in a `dashboard/` directory at the repo root.
 
-### Phase 1 — Stats & Observability (current priority)
+### Phase 1 — Stats & Observability (largely complete)
 A read-only dashboard showing:
 - Knowledge graph stats (sources, nodes, edges, chunks, articles)
 - Search dimension health and recent query performance
 - Ingestion pipeline status and recent activity
 - Graph topology visualization (communities, connectivity)
 - Epistemic health (confidence distributions, opinion coverage)
+- Prometheus metrics via `GET /metrics` (counters, histograms for search, queue, LLM, cache)
 
 ### Phase 2 — Interaction (future)
 - Search interface with strategy selection and result exploration
@@ -430,4 +484,4 @@ The dashboard is served by the existing Axum engine (alongside the API and Swagg
 ## Milestones
 
 See `MILESTONES.md` for the phased roadmap (M0–M11) and post-milestone waves.
-Current phase: **M0-M11 + Waves 1–20 complete.** 1,520 tests passing (1,437 core + 21 api + 13 ast-extractor + 49 eval). See `MILESTONES.md` for the full wave history. Recent waves: architecture evolution (multi-binary split, 67 SPs, per-kind concurrency, source adapters, config management, WebUI dashboard, codebase cleanup, lifecycle hooks, SSE streaming, sessions, STDIO sidecars, Prometheus metrics, input validation).
+Current phase: **M0-M11 + Waves 1–20 complete.** 1,535 tests passing (1,452 core + 21 api + 13 ast-extractor + 49 eval). See `MILESTONES.md` for the full wave history. Recent waves: architecture evolution (multi-binary split, 67 SPs, per-kind concurrency, source adapters, config management, WebUI dashboard, codebase cleanup, lifecycle hooks, SSE streaming, sessions, STDIO sidecars, Prometheus metrics, input validation, extensions, agent memory).
