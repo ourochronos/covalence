@@ -5,13 +5,17 @@
  * Bridges Claude Code to Covalence's knowledge engine via the MCP protocol.
  * Runs as a stdio server — Claude Code spawns it and communicates via JSON-RPC.
  *
- * Tools exposed:
+ * Tools exposed (10):
  *   - covalence_search: Multi-dimensional fused search
  *   - covalence_ask: LLM-powered knowledge synthesis
  *   - covalence_health: System health report
+ *   - covalence_data_health: Data hygiene preview
  *   - covalence_alignment: Cross-domain alignment analysis
  *   - covalence_node: Get node details
  *   - covalence_blast_radius: Impact analysis for a code entity
+ *   - covalence_memory_store: Store a memory in the knowledge graph
+ *   - covalence_memory_recall: Recall memories by semantic query
+ *   - covalence_memory_forget: Forget a memory by ID
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -165,6 +169,64 @@ server.tool(
     if (max_hops) body.max_hops = max_hops;
     if (include_invalidated) body.include_invalidated = include_invalidated;
     const result = await apiCall("/analysis/blast-radius", "POST", body);
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+);
+
+// --- Memory Store ---
+server.tool(
+  "covalence_memory_store",
+  "Store a memory in the knowledge graph with optional agent identity, topic, and confidence.",
+  {
+    content: z.string().describe("The memory content to store"),
+    topic: z.string().optional().describe("Topic tag for the memory"),
+    agent_id: z.string().optional().describe("Agent identifier for scoped recall"),
+    confidence: z.number().optional().describe("Confidence level 0.0-1.0"),
+  },
+  async ({ content, topic, agent_id, confidence }) => {
+    const body = { content };
+    if (topic) body.topic = topic;
+    if (agent_id) body.agent_id = agent_id;
+    if (confidence !== undefined) body.confidence = confidence;
+    const result = await apiCall("/memory", "POST", body);
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+);
+
+// --- Memory Recall ---
+server.tool(
+  "covalence_memory_recall",
+  "Recall memories from the knowledge graph by semantic query, optionally scoped to an agent.",
+  {
+    query: z.string().describe("Search query for memory recall"),
+    limit: z.number().optional().describe("Max results (default 10)"),
+    agent_id: z.string().optional().describe("Filter to specific agent's memories"),
+    topic: z.string().optional().describe("Filter by topic"),
+  },
+  async ({ query, limit, agent_id, topic }) => {
+    const body = { query, limit: limit || 10 };
+    if (agent_id) body.agent_id = agent_id;
+    if (topic) body.topic = topic;
+    const result = await apiCall("/memory/recall", "POST", body);
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+);
+
+// --- Memory Forget ---
+server.tool(
+  "covalence_memory_forget",
+  "Forget (delete) a specific memory by ID.",
+  {
+    id: z.string().describe("Memory ID to forget"),
+  },
+  async ({ id }) => {
+    const result = await apiCall(`/memory/${id}`, "DELETE");
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
