@@ -1,6 +1,6 @@
 # ADR-0019: Generalization Over Hardcoding
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0023](0023-extensions-and-config.md)
 
 **Date:** 2026-03-18
 
