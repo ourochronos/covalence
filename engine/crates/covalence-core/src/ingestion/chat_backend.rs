@@ -22,6 +22,10 @@ pub struct ChatResponse {
     /// Label identifying which provider handled the request
     /// (e.g. "claude(haiku)", "gemini(2.5-flash)", "openai(gpt-4)").
     pub provider: String,
+    /// Number of input (prompt) tokens consumed, when reported by the API.
+    pub input_tokens: Option<u64>,
+    /// Number of output (completion) tokens generated, when reported by the API.
+    pub output_tokens: Option<u64>,
 }
 
 /// A single chunk from a streaming chat response.
@@ -33,6 +37,10 @@ pub struct StreamChunk {
     pub provider: String,
     /// Whether this is the final chunk in the stream.
     pub done: bool,
+    /// Number of input (prompt) tokens consumed (set on final chunk when available).
+    pub input_tokens: Option<u64>,
+    /// Number of output (completion) tokens generated (set on final chunk when available).
+    pub output_tokens: Option<u64>,
 }
 
 /// A backend for LLM chat completions.
@@ -70,16 +78,22 @@ pub trait ChatBackend: Send + Sync {
             .chat(system_prompt, user_prompt, json_mode, temperature)
             .await?;
         let provider = resp.provider.clone();
+        let input_tokens = resp.input_tokens;
+        let output_tokens = resp.output_tokens;
         let stream = tokio_stream::iter(vec![
             Ok(StreamChunk {
                 text: resp.text,
                 provider: provider.clone(),
                 done: false,
+                input_tokens: None,
+                output_tokens: None,
             }),
             Ok(StreamChunk {
                 text: String::new(),
                 provider,
                 done: true,
+                input_tokens,
+                output_tokens,
             }),
         ]);
         Ok(Box::pin(stream))
@@ -181,9 +195,16 @@ impl ChatBackend for HttpChatBackend {
             .and_then(|c| c.message.content)
             .unwrap_or_default();
 
+        let (input_tokens, output_tokens) = chat_resp
+            .usage
+            .map(|u| (u.prompt_tokens, u.completion_tokens))
+            .unwrap_or((None, None));
+
         Ok(ChatResponse {
             text: content,
             provider: format!("http({})", self.model),
+            input_tokens,
+            output_tokens,
         })
     }
 }
@@ -328,6 +349,8 @@ impl ChatBackend for CliChatBackend {
         Ok(ChatResponse {
             text: content,
             provider: format!("{}({})", self.command, self.model),
+            input_tokens: None,
+            output_tokens: None,
         })
     }
 
@@ -395,6 +418,8 @@ impl ChatBackend for CliChatBackend {
                                     text: String::new(),
                                     provider: provider.clone(),
                                     done: false,
+                                    input_tokens: None,
+                                    output_tokens: None,
                                 }),
                                 (lines, child, provider, cmd_name, seen_cred, false),
                             ));
@@ -404,6 +429,8 @@ impl ChatBackend for CliChatBackend {
                                 text: format!("{line}\n"),
                                 provider: provider.clone(),
                                 done: false,
+                                input_tokens: None,
+                                output_tokens: None,
                             }),
                             (lines, child, provider, cmd_name, seen_cred, false),
                         ))
@@ -416,6 +443,8 @@ impl ChatBackend for CliChatBackend {
                                 text: String::new(),
                                 provider: provider.clone(),
                                 done: true,
+                                input_tokens: None,
+                                output_tokens: None,
                             }),
                             Ok(s) => Err(Error::Ingestion(format!(
                                 "chat CLI '{cmd_name}' \
@@ -526,6 +555,11 @@ impl ChatBackend for ChainChatBackend {
                     let elapsed = call_start.elapsed().as_secs_f64();
                     crate::metrics::record_llm_call(&response.provider);
                     crate::metrics::record_llm_latency(&response.provider, elapsed);
+                    if let (Some(input), Some(output)) =
+                        (response.input_tokens, response.output_tokens)
+                    {
+                        crate::metrics::record_llm_tokens(&response.provider, input, output);
+                    }
                     if i > 0 {
                         tracing::info!(
                             provider = %label,
@@ -583,9 +617,17 @@ struct HttpChatResponseMessage {
     content: Option<String>,
 }
 
+/// Token usage reported by OpenAI-compatible APIs.
+#[derive(Deserialize)]
+struct HttpChatUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+}
+
 #[derive(Deserialize)]
 struct HttpChatResponse {
     choices: Vec<HttpChatChoice>,
+    usage: Option<HttpChatUsage>,
 }
 
 #[cfg(test)]
@@ -654,6 +696,8 @@ mod tests {
             result.map(|text| ChatResponse {
                 text,
                 provider: self.label.clone(),
+                input_tokens: None,
+                output_tokens: None,
             })
         }
     }
@@ -753,18 +797,26 @@ mod tests {
             text: "hello".to_string(),
             provider: "test(model)".to_string(),
             done: false,
+            input_tokens: None,
+            output_tokens: None,
         };
         assert_eq!(chunk.text, "hello");
         assert_eq!(chunk.provider, "test(model)");
         assert!(!chunk.done);
+        assert!(chunk.input_tokens.is_none());
+        assert!(chunk.output_tokens.is_none());
 
         let done = StreamChunk {
             text: String::new(),
             provider: "test(model)".to_string(),
             done: true,
+            input_tokens: Some(100),
+            output_tokens: Some(50),
         };
         assert!(done.done);
         assert!(done.text.is_empty());
+        assert_eq!(done.input_tokens, Some(100));
+        assert_eq!(done.output_tokens, Some(50));
     }
 
     #[test]
@@ -773,11 +825,15 @@ mod tests {
             text: "data".to_string(),
             provider: "p".to_string(),
             done: false,
+            input_tokens: Some(42),
+            output_tokens: None,
         };
         let cloned = chunk.clone();
         assert_eq!(cloned.text, chunk.text);
         assert_eq!(cloned.provider, chunk.provider);
         assert_eq!(cloned.done, chunk.done);
+        assert_eq!(cloned.input_tokens, chunk.input_tokens);
+        assert_eq!(cloned.output_tokens, chunk.output_tokens);
     }
 
     // --- Default chat_stream tests ---
@@ -810,6 +866,8 @@ mod tests {
             Ok(ChatResponse {
                 text: self.text.clone(),
                 provider: self.provider.clone(),
+                input_tokens: None,
+                output_tokens: None,
             })
         }
     }
@@ -869,5 +927,79 @@ mod tests {
             .collect();
         assert!(args.contains(&"--prompt=test prompt".to_string()));
         assert!(args.contains(&"gemini-2.5-flash".to_string()));
+    }
+
+    // --- Token tracking tests ---
+
+    #[test]
+    fn chat_response_token_fields() {
+        let resp = ChatResponse {
+            text: "hello".to_string(),
+            provider: "http(gpt-4)".to_string(),
+            input_tokens: Some(150),
+            output_tokens: Some(42),
+        };
+        assert_eq!(resp.input_tokens, Some(150));
+        assert_eq!(resp.output_tokens, Some(42));
+
+        let resp_none = ChatResponse {
+            text: "hello".to_string(),
+            provider: "claude(haiku)".to_string(),
+            input_tokens: None,
+            output_tokens: None,
+        };
+        assert!(resp_none.input_tokens.is_none());
+        assert!(resp_none.output_tokens.is_none());
+    }
+
+    #[test]
+    fn http_chat_response_parses_usage() {
+        let json = serde_json::json!({
+            "choices": [{
+                "message": { "content": "response text" }
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "total_tokens": 125
+            }
+        });
+        let resp: HttpChatResponse = serde_json::from_value(json).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(100));
+        assert_eq!(usage.completion_tokens, Some(25));
+    }
+
+    #[test]
+    fn http_chat_response_parses_without_usage() {
+        let json = serde_json::json!({
+            "choices": [{
+                "message": { "content": "no usage" }
+            }]
+        });
+        let resp: HttpChatResponse = serde_json::from_value(json).unwrap();
+        assert!(resp.usage.is_none());
+    }
+
+    #[test]
+    fn http_chat_response_parses_partial_usage() {
+        let json = serde_json::json!({
+            "choices": [{
+                "message": { "content": "partial" }
+            }],
+            "usage": {
+                "prompt_tokens": 50
+            }
+        });
+        let resp: HttpChatResponse = serde_json::from_value(json).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(50));
+        assert!(usage.completion_tokens.is_none());
+    }
+
+    #[test]
+    fn metrics_record_llm_tokens_does_not_panic() {
+        // Without a recorder installed, metrics calls are no-ops.
+        crate::metrics::record_llm_tokens("http(gpt-4)", 100, 50);
     }
 }

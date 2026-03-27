@@ -34,6 +34,12 @@ pub const LLM_CALLS: &str = "covalence_llm_calls_total";
 /// Histogram: LLM call latency in seconds.
 pub const LLM_LATENCY: &str = "covalence_llm_latency_seconds";
 
+/// Counter: total LLM input (prompt) tokens consumed.
+pub const LLM_INPUT_TOKENS: &str = "covalence_llm_input_tokens_total";
+
+/// Counter: total LLM output (completion) tokens generated.
+pub const LLM_OUTPUT_TOKENS: &str = "covalence_llm_output_tokens_total";
+
 // ── Helpers ─────────────────────────────────────────────────────
 
 /// Increment the search query counter, labelled by strategy.
@@ -85,6 +91,12 @@ pub fn record_llm_latency(provider: &str, seconds: f64) {
     metrics::histogram!(LLM_LATENCY, "provider" => provider.to_string()).record(seconds);
 }
 
+/// Record LLM token usage, labelled by provider.
+pub fn record_llm_tokens(provider: &str, input: u64, output: u64) {
+    metrics::counter!(LLM_INPUT_TOKENS, "provider" => provider.to_string()).increment(input);
+    metrics::counter!(LLM_OUTPUT_TOKENS, "provider" => provider.to_string()).increment(output);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +111,8 @@ mod tests {
         assert!(QUEUE_JOB_DURATION.starts_with("covalence_"));
         assert!(LLM_CALLS.starts_with("covalence_"));
         assert!(LLM_LATENCY.starts_with("covalence_"));
+        assert!(LLM_INPUT_TOKENS.starts_with("covalence_"));
+        assert!(LLM_OUTPUT_TOKENS.starts_with("covalence_"));
     }
 
     #[test]
@@ -113,5 +127,6 @@ mod tests {
         record_queue_job_duration("extract_chunk", 1.5);
         record_llm_call("claude(haiku)");
         record_llm_latency("gemini(2.5-flash)", 2.1);
+        record_llm_tokens("http(gpt-4)", 150, 42);
     }
 }
