@@ -282,16 +282,118 @@ fn build_cli_prompt(
 /// For gemini/copilot: use `--prompt=<value>` (equals syntax)
 /// to avoid yargs misinterpreting prompt content containing
 /// dashes (e.g. "---" markdown separators) as CLI flags.
-fn build_cli_command(command: &str, model: &str, prompt: &str) -> tokio::process::Command {
+///
+/// When `json_output` is true, `--output-format json` is added
+/// for `claude` and `gemini` CLIs (copilot does not support it).
+/// This returns structured JSON with token usage and cost data.
+/// Use `json_output = false` for streaming, where line-by-line
+/// text output is needed.
+fn build_cli_command(
+    command: &str,
+    model: &str,
+    prompt: &str,
+    json_output: bool,
+) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(command);
     if command == "claude" {
-        cmd.arg("--print").arg("--model").arg(model).arg(prompt);
+        cmd.arg("--print").arg("--model").arg(model);
+        if json_output {
+            cmd.arg("--output-format").arg("json");
+        }
+        cmd.arg(prompt);
     } else {
         cmd.arg(format!("--prompt={prompt}"))
             .arg("--model")
             .arg(model);
+        // gemini supports --output-format json; copilot does not.
+        if json_output && command == "gemini" {
+            cmd.arg("--output-format").arg("json");
+        }
     }
     cmd
+}
+
+// ── CLI JSON response types ─────────────────────────────────
+
+/// Structured JSON response from CLI tools (claude, gemini).
+///
+/// Both CLIs support `--output-format json` which returns the
+/// response text alongside token usage and cost data. Fields are
+/// all optional for graceful degradation across CLI versions.
+#[derive(Deserialize)]
+struct CliJsonResponse {
+    /// The assistant's response text.
+    result: Option<String>,
+    /// Token usage breakdown.
+    #[serde(default)]
+    usage: Option<CliUsage>,
+    /// Total cost in USD (Claude CLI only).
+    #[allow(dead_code)]
+    total_cost_usd: Option<f64>,
+}
+
+/// Token usage reported by CLI tools in JSON output mode.
+#[derive(Deserialize)]
+struct CliUsage {
+    /// Number of input (prompt) tokens consumed.
+    input_tokens: Option<u64>,
+    /// Number of output (completion) tokens generated.
+    output_tokens: Option<u64>,
+    /// Tokens used to create a new cache entry (Claude only).
+    #[allow(dead_code)]
+    cache_creation_input_tokens: Option<u64>,
+    /// Tokens read from a cached prefix (Claude only).
+    #[allow(dead_code)]
+    cache_read_input_tokens: Option<u64>,
+}
+
+/// Parsed CLI response — either structured JSON or raw text fallback.
+struct ParsedCliResponse {
+    text: String,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+/// Try to parse CLI stdout as structured JSON, falling back to
+/// raw text on failure.
+///
+/// Some CLIs (e.g. gemini) emit preamble lines like
+/// "Loaded cached credentials." before the JSON body. To handle
+/// this, if the full string doesn't parse, we find the first `{`
+/// and try parsing from there.
+fn parse_cli_output(stdout: &str) -> ParsedCliResponse {
+    // Try the full string first.
+    if let Ok(resp) = serde_json::from_str::<CliJsonResponse>(stdout) {
+        return ParsedCliResponse {
+            text: resp.result.unwrap_or_default(),
+            input_tokens: resp.usage.as_ref().and_then(|u| u.input_tokens),
+            output_tokens: resp.usage.as_ref().and_then(|u| u.output_tokens),
+        };
+    }
+
+    // Try from the first `{` — handles preamble text before JSON.
+    if let Some(start) = stdout.find('{') {
+        if let Ok(resp) = serde_json::from_str::<CliJsonResponse>(&stdout[start..]) {
+            return ParsedCliResponse {
+                text: resp.result.unwrap_or_default(),
+                input_tokens: resp.usage.as_ref().and_then(|u| u.input_tokens),
+                output_tokens: resp.usage.as_ref().and_then(|u| u.output_tokens),
+            };
+        }
+    }
+
+    // JSON parsing failed — fall back to raw text (strip Gemini
+    // preamble as before).
+    let content = stdout
+        .strip_prefix("Loaded cached credentials.\n")
+        .unwrap_or(stdout)
+        .trim()
+        .to_string();
+    ParsedCliResponse {
+        text: content,
+        input_tokens: None,
+        output_tokens: None,
+    }
 }
 
 #[async_trait::async_trait]
@@ -304,7 +406,11 @@ impl ChatBackend for CliChatBackend {
         temperature: f64,
     ) -> Result<ChatResponse> {
         let prompt = build_cli_prompt(system_prompt, user_prompt, json_mode, temperature);
-        let mut cmd = build_cli_command(&self.command, &self.model, &prompt);
+
+        // Use JSON output mode for non-streaming calls to get
+        // token usage data. Supported by claude and gemini CLIs.
+        let use_json = self.command == "claude" || self.command == "gemini";
+        let mut cmd = build_cli_command(&self.command, &self.model, &prompt, use_json);
 
         // Run from a neutral directory to prevent CLI agents from
         // picking up the repo cwd and entering agentic/tool-use
@@ -337,20 +443,13 @@ impl ChatBackend for CliChatBackend {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-
-        // Strip the "Loaded cached credentials." preamble that
-        // Gemini CLI sometimes emits.
-        let content = stdout
-            .strip_prefix("Loaded cached credentials.\n")
-            .unwrap_or(&stdout)
-            .trim()
-            .to_string();
+        let parsed = parse_cli_output(&stdout);
 
         Ok(ChatResponse {
-            text: content,
+            text: parsed.text,
             provider: format!("{}({})", self.command, self.model),
-            input_tokens: None,
-            output_tokens: None,
+            input_tokens: parsed.input_tokens,
+            output_tokens: parsed.output_tokens,
         })
     }
 
@@ -364,7 +463,9 @@ impl ChatBackend for CliChatBackend {
         use tokio::io::{AsyncBufReadExt, BufReader};
 
         let prompt = build_cli_prompt(system_prompt, user_prompt, json_mode, temperature);
-        let mut cmd = build_cli_command(&self.command, &self.model, &prompt);
+        // Streaming uses text mode — JSON output would
+        // buffer the entire response into one blob.
+        let mut cmd = build_cli_command(&self.command, &self.model, &prompt, false);
 
         let neutral_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
 
@@ -900,8 +1001,8 @@ mod tests {
     }
 
     #[test]
-    fn build_cli_command_claude() {
-        let cmd = build_cli_command("claude", "haiku", "hello world");
+    fn build_cli_command_claude_text_mode() {
+        let cmd = build_cli_command("claude", "haiku", "hello world", false);
         let prog = cmd.as_std().get_program().to_str().unwrap();
         assert_eq!(prog, "claude");
         let args: Vec<_> = cmd
@@ -913,11 +1014,32 @@ mod tests {
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"haiku".to_string()));
         assert!(args.contains(&"hello world".to_string()));
+        assert!(!args.contains(&"--output-format".to_string()));
     }
 
     #[test]
-    fn build_cli_command_gemini() {
-        let cmd = build_cli_command("gemini", "gemini-2.5-flash", "test prompt");
+    fn build_cli_command_claude_json_mode() {
+        let cmd = build_cli_command("claude", "haiku", "hello world", true);
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        // Prompt must come after --output-format json.
+        let prompt_idx = args.iter().position(|a| a == "hello world").unwrap();
+        let fmt_idx = args.iter().position(|a| a == "json").unwrap();
+        assert!(
+            prompt_idx > fmt_idx,
+            "prompt must follow --output-format json"
+        );
+    }
+
+    #[test]
+    fn build_cli_command_gemini_text_mode() {
+        let cmd = build_cli_command("gemini", "gemini-2.5-flash", "test prompt", false);
         let prog = cmd.as_std().get_program().to_str().unwrap();
         assert_eq!(prog, "gemini");
         let args: Vec<_> = cmd
@@ -927,6 +1049,34 @@ mod tests {
             .collect();
         assert!(args.contains(&"--prompt=test prompt".to_string()));
         assert!(args.contains(&"gemini-2.5-flash".to_string()));
+        assert!(!args.contains(&"--output-format".to_string()));
+    }
+
+    #[test]
+    fn build_cli_command_gemini_json_mode() {
+        let cmd = build_cli_command("gemini", "gemini-2.5-flash", "test prompt", true);
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+    }
+
+    #[test]
+    fn build_cli_command_copilot_no_json_flag() {
+        // copilot does not support --output-format json.
+        let cmd = build_cli_command("copilot", "gpt-4", "prompt", true);
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert!(
+            !args.contains(&"--output-format".to_string()),
+            "copilot must not get --output-format flag"
+        );
     }
 
     // --- Token tracking tests ---
@@ -1001,5 +1151,138 @@ mod tests {
     fn metrics_record_llm_tokens_does_not_panic() {
         // Without a recorder installed, metrics calls are no-ops.
         crate::metrics::record_llm_tokens("http(gpt-4)", 100, 50);
+    }
+
+    // --- CLI JSON response parsing tests ---
+
+    #[test]
+    fn parse_claude_json_response_with_usage() {
+        let stdout = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "result": "the response text",
+            "total_cost_usd": 0.067,
+            "usage": {
+                "input_tokens": 9,
+                "cache_creation_input_tokens": 53319,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 59
+            }
+        })
+        .to_string();
+
+        let parsed = parse_cli_output(&stdout);
+        assert_eq!(parsed.text, "the response text");
+        assert_eq!(parsed.input_tokens, Some(9));
+        assert_eq!(parsed.output_tokens, Some(59));
+    }
+
+    #[test]
+    fn parse_claude_json_response_without_usage() {
+        let stdout = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "result": "response without usage"
+        })
+        .to_string();
+
+        let parsed = parse_cli_output(&stdout);
+        assert_eq!(parsed.text, "response without usage");
+        assert!(parsed.input_tokens.is_none());
+        assert!(parsed.output_tokens.is_none());
+    }
+
+    #[test]
+    fn parse_cli_json_with_partial_usage() {
+        let stdout = serde_json::json!({
+            "result": "partial usage response",
+            "usage": {
+                "input_tokens": 42
+            }
+        })
+        .to_string();
+
+        let parsed = parse_cli_output(&stdout);
+        assert_eq!(parsed.text, "partial usage response");
+        assert_eq!(parsed.input_tokens, Some(42));
+        assert!(parsed.output_tokens.is_none());
+    }
+
+    #[test]
+    fn parse_cli_falls_back_to_text_on_invalid_json() {
+        let stdout = "This is just plain text, not JSON.";
+        let parsed = parse_cli_output(stdout);
+        assert_eq!(parsed.text, "This is just plain text, not JSON.");
+        assert!(parsed.input_tokens.is_none());
+        assert!(parsed.output_tokens.is_none());
+    }
+
+    #[test]
+    fn parse_cli_handles_gemini_preamble_before_json() {
+        let json_body = serde_json::json!({
+            "result": "gemini response",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20
+            }
+        })
+        .to_string();
+        let stdout = format!("Loaded cached credentials.\n{json_body}");
+
+        let parsed = parse_cli_output(&stdout);
+        assert_eq!(parsed.text, "gemini response");
+        assert_eq!(parsed.input_tokens, Some(100));
+        assert_eq!(parsed.output_tokens, Some(20));
+    }
+
+    #[test]
+    fn parse_cli_falls_back_text_with_gemini_preamble() {
+        let stdout = "Loaded cached credentials.\nPlain text response";
+        let parsed = parse_cli_output(stdout);
+        assert_eq!(parsed.text, "Plain text response");
+        assert!(parsed.input_tokens.is_none());
+        assert!(parsed.output_tokens.is_none());
+    }
+
+    #[test]
+    fn parse_cli_json_missing_result_field() {
+        // JSON is valid but has no `result` field — text should
+        // be empty string, not panic.
+        let stdout = serde_json::json!({
+            "type": "result",
+            "usage": {
+                "input_tokens": 5,
+                "output_tokens": 10
+            }
+        })
+        .to_string();
+
+        let parsed = parse_cli_output(&stdout);
+        assert!(parsed.text.is_empty());
+        assert_eq!(parsed.input_tokens, Some(5));
+        assert_eq!(parsed.output_tokens, Some(10));
+    }
+
+    #[test]
+    fn parse_cli_json_with_extra_fields() {
+        // Unknown fields should be silently ignored.
+        let stdout = serde_json::json!({
+            "result": "ok",
+            "total_cost_usd": 0.001,
+            "usage": {
+                "input_tokens": 50,
+                "output_tokens": 25,
+                "cache_creation_input_tokens": 1000,
+                "cache_read_input_tokens": 500
+            },
+            "session_id": "abc123",
+            "model": "claude-haiku-4"
+        })
+        .to_string();
+
+        let parsed = parse_cli_output(&stdout);
+        assert_eq!(parsed.text, "ok");
+        assert_eq!(parsed.input_tokens, Some(50));
+        assert_eq!(parsed.output_tokens, Some(25));
     }
 }
