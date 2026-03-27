@@ -4,6 +4,7 @@
 //! Implementations live in the `postgres` module.
 
 use crate::error::Result;
+use crate::models::agent_memory::AgentMemory;
 use crate::models::article::Article;
 use crate::models::audit::AuditLog;
 use crate::models::chunk::Chunk;
@@ -1457,4 +1458,53 @@ pub trait SessionRepo: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> impl Future<Output = Result<Vec<Session>>> + Send;
+}
+
+/// Repository for [`AgentMemory`] entities.
+pub trait AgentMemoryRepo: Send + Sync {
+    /// Insert a new agent memory record.
+    fn create(&self, memory: &AgentMemory) -> impl Future<Output = Result<()>> + Send;
+
+    /// Get an agent memory by ID.
+    fn get(&self, id: uuid::Uuid) -> impl Future<Output = Result<Option<AgentMemory>>> + Send;
+
+    /// Get the agent memory linked to a source.
+    fn get_by_source(
+        &self,
+        source_id: uuid::Uuid,
+    ) -> impl Future<Output = Result<Option<AgentMemory>>> + Send;
+
+    /// List memories for a specific agent, most recent first.
+    fn list_by_agent(
+        &self,
+        agent_id: &str,
+        limit: i64,
+    ) -> impl Future<Output = Result<Vec<AgentMemory>>> + Send;
+
+    /// List memories by topic, optionally filtered by agent.
+    fn list_by_topic(
+        &self,
+        topic: &str,
+        agent_id: Option<&str>,
+        limit: i64,
+    ) -> impl Future<Output = Result<Vec<AgentMemory>>> + Send;
+
+    /// Increment access_count and update last_accessed for a memory
+    /// identified by its source_id.
+    fn increment_access(&self, source_id: uuid::Uuid) -> impl Future<Output = Result<()>> + Send;
+
+    /// Find memories past their retention period.
+    fn find_expired(
+        &self,
+        retention_days: i64,
+    ) -> impl Future<Output = Result<Vec<AgentMemory>>> + Send;
+
+    /// Delete an agent memory by ID. Returns `true` if it existed.
+    fn delete(&self, id: uuid::Uuid) -> impl Future<Output = Result<bool>> + Send;
+
+    /// Count memories for a specific agent.
+    fn count_by_agent(&self, agent_id: &str) -> impl Future<Output = Result<i64>> + Send;
+
+    /// Count all agent memories.
+    fn count_all(&self) -> impl Future<Output = Result<i64>> + Send;
 }

@@ -1,5 +1,6 @@
 //! Domain models representing the core entities in the knowledge graph.
 
+pub mod agent_memory;
 pub mod alignment_rule;
 pub mod article;
 pub mod audit;

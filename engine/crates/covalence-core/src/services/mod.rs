@@ -2,6 +2,7 @@
 
 pub mod adapter_service;
 pub mod admin;
+pub mod agent_memory;
 pub mod analysis;
 pub mod article;
 pub mod ask;
@@ -26,6 +27,7 @@ pub mod source;
 pub(crate) mod statement_pipeline;
 
 pub use admin::{AdminService, CooccurrenceResult, GcResult, InvalidatedEdgeStats};
+pub use agent_memory::AgentMemoryService;
 pub use analysis::AnalysisService;
 pub use article::ArticleService;
 pub use ask::{AskResponse, AskService, AskStreamEvent, Citation};

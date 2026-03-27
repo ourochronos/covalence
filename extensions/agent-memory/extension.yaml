@@ -1,0 +1,89 @@
+name: agent-memory
+version: "1.0.0"
+description: "Long-term memory for AI agents. Store, recall, consolidate, and forget."
+
+domains:
+  - id: memory
+    label: Memory
+    description: "Agent memory observations and learnings"
+    is_internal: true
+
+entity_types:
+  - id: memory
+    category: artifact
+    label: Memory
+    description: "A stored observation, learning, or fact"
+    metadata_schema:
+      type: object
+      properties:
+        agent_id: { type: string }
+        topic: { type: string }
+        confidence: { type: number }
+  - id: lesson
+    category: concept
+    label: Lesson Learned
+    description: "A synthesized learning from experience"
+  - id: preference
+    category: property
+    label: Preference
+    description: "An agent's stated preference or working style"
+  - id: skill
+    category: process
+    label: Skill
+    description: "A reusable pattern or capability"
+
+relationship_types:
+  - id: remembers
+    universal: uses
+    label: Remembers
+  - id: learned_from
+    universal: derived_from
+    label: Learned From
+  - id: contradicts_memory
+    universal: contradicts
+    label: Contradicts Memory
+  - id: supersedes_memory
+    universal: derived_from
+    label: Supersedes Memory
+
+domain_rules:
+  - match_type: source_type
+    match_value: observation
+    domain_id: memory
+    priority: 5
+    description: "Memory observations"
+  - match_type: source_type
+    match_value: conversation
+    domain_id: memory
+    priority: 5
+    description: "Conversation extractions"
+
+domain_groups:
+  agent_context: [memory]
+
+config_schema:
+  retention_days:
+    type: integer
+    default: 90
+    description: "Days before memories are candidates for forgetting"
+  consolidation_threshold:
+    type: number
+    default: 0.85
+    description: "Similarity threshold for memory consolidation"
+  auto_record_ask:
+    type: boolean
+    default: false
+    description: "Automatically record learnings from /ask responses"
+  max_memories_per_agent:
+    type: integer
+    default: 10000
+    description: "Maximum memories per agent before consolidation triggers"
+
+source_schemas:
+  memory:
+    type: object
+    properties:
+      agent_id: { type: string }
+      topic: { type: string }
+      task_id: { type: string }
+      confidence: { type: number }

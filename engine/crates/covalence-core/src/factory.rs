@@ -78,6 +78,8 @@ pub struct ServiceFactory {
     pub hook_service: Arc<HookService>,
     /// Registry of external service transports (HTTP and STDIO).
     pub service_registry: Arc<ServiceRegistry>,
+    /// Agent memory lifecycle service.
+    pub agent_memory_service: Arc<crate::services::AgentMemoryService>,
 }
 
 impl ServiceFactory {
@@ -364,6 +366,17 @@ impl ServiceFactory {
         // ── Session service ──────────────────────────────────────
         let session_service = Arc::new(SessionService::new(Arc::clone(&repo)));
 
+        // ── Agent memory service ─────────────────────────────────
+        let agent_memory_service = Arc::new(
+            crate::services::AgentMemoryService::new(
+                Arc::clone(&repo),
+                Arc::clone(&source_service),
+                Arc::clone(&search_service),
+                Arc::clone(&session_service),
+            )
+            .with_chat_backend(chat_backend.clone()),
+        );
+
         // ── Ask service ─────────────────────────────────────────
         let ask_service = {
             let ask_model = &config.ask_model;
@@ -498,6 +511,7 @@ impl ServiceFactory {
             ontology_service,
             hook_service,
             service_registry,
+            agent_memory_service,
         })
     }
 

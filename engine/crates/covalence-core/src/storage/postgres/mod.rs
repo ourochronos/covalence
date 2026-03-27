@@ -14,6 +14,7 @@ mod node_alias;
 mod node_landmark;
 mod pg_adapter;
 mod pg_admin;
+mod pg_agent_memory;
 mod pg_analysis;
 mod pg_ask;
 mod pg_config;

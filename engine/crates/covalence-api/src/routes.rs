@@ -180,5 +180,8 @@ fn memory_routes() -> Router<AppState> {
         .route("/", post(memory::store_memory))
         .route("/recall", post(memory::recall_memory))
         .route("/status", get(memory::memory_status))
+        .route("/consolidate", post(memory::consolidate_memory))
+        .route("/reflect/{session_id}", post(memory::reflect_memory))
+        .route("/forget-old", post(memory::apply_forgetting))
         .route("/{id}", delete(memory::forget_memory))
 }

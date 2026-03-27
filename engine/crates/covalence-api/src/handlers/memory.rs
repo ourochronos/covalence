@@ -1,70 +1,57 @@
 //! Memory API handlers.
 //!
 //! High-level memory interface for AI agent integration.
-//! Wraps source ingestion and search with a simple
-//! store/recall/forget interface.
+//! Delegates to [`AgentMemoryService`] for store, recall,
+//! consolidate, reflect, and forget operations.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use serde_json::json;
 
-use covalence_core::search::strategy::SearchStrategy;
-use covalence_core::services::memory::{
-    MemoryItem, MemoryRecallRequest, MemoryStatus, MemoryStoreRequest, MemoryStoreResponse,
-};
+use covalence_core::services::agent_memory;
 
+use crate::handlers::dto;
 use crate::state::AppState;
 
 /// POST /memory — Store a new memory.
 pub async fn store_memory(
     State(state): State<AppState>,
-    Json(req): Json<MemoryStoreRequest>,
-) -> Result<Json<MemoryStoreResponse>, StatusCode> {
+    Json(req): Json<dto::StoreMemoryRequest>,
+) -> Result<Json<dto::StoreMemoryResponse>, StatusCode> {
     if req.content.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let metadata = match (&req.topic, &req.metadata) {
-        (Some(topic), Some(extra)) => {
-            let mut m = extra.clone();
-            if let Some(obj) = m.as_object_mut() {
-                obj.insert("topic".to_string(), json!(topic));
-            }
-            m
-        }
-        (Some(topic), None) => json!({ "topic": topic }),
-        (None, Some(extra)) => extra.clone(),
-        (None, None) => json!({}),
+    let svc_req = agent_memory::MemoryStoreRequest {
+        content: req.content,
+        topic: req.topic,
+        metadata: req.metadata,
+        confidence: req.confidence,
+        agent_id: req.agent_id,
+        task_id: req.task_id,
     };
 
-    let source_id = state
-        .source_service
-        .ingest(
-            req.content.as_bytes(),
-            "observation",
-            "text/plain",
-            None,
-            metadata,
-        )
+    let resp = state
+        .agent_memory_service
+        .store(svc_req)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "memory store failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    Ok(Json(MemoryStoreResponse {
-        id: source_id.into_uuid().to_string(),
-        entities_extracted: 0,
-        status: format!("Memory stored ({} chars)", req.content.len()),
+    Ok(Json(dto::StoreMemoryResponse {
+        id: resp.id,
+        entities_extracted: resp.entities_extracted,
+        status: resp.status,
     }))
 }
 
 /// POST /memory/recall — Search memories.
 pub async fn recall_memory(
     State(state): State<AppState>,
-    Json(req): Json<MemoryRecallRequest>,
-) -> Result<Json<Vec<MemoryItem>>, StatusCode> {
+    Json(req): Json<dto::RecallMemoryRequest>,
+) -> Result<Json<Vec<dto::MemoryItemResponse>>, StatusCode> {
     if req.query.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -75,59 +62,51 @@ pub async fn recall_memory(
         }
     }
 
-    let limit = req.limit.unwrap_or(10).min(200);
-
-    let filters = if req.min_confidence.is_some() {
-        Some(covalence_core::services::search::SearchFilters {
-            min_confidence: req.min_confidence,
-            node_types: None,
-            entity_classes: None,
-            date_range: None,
-            source_types: None,
-            domains: None,
-            graph_view: None,
-        })
-    } else {
-        None
+    let svc_req = agent_memory::MemoryRecallRequest {
+        query: req.query,
+        limit: req.limit,
+        topic: req.topic,
+        min_confidence: req.min_confidence,
+        agent_id: req.agent_id,
     };
 
-    let results = state
-        .search_service
-        .search(&req.query, SearchStrategy::Auto, limit, filters)
+    let items = state
+        .agent_memory_service
+        .recall(svc_req)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "memory recall failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let items = results
-        .into_iter()
-        .map(|r| MemoryItem {
-            id: r.id.to_string(),
-            content: r.snippet.unwrap_or_default(),
-            topic: None,
-            relevance: r.fused_score,
-            confidence: r.confidence.unwrap_or(1.0),
-            stored_at: r.created_at.unwrap_or_default(),
-        })
-        .collect();
-
-    Ok(Json(items))
+    Ok(Json(
+        items
+            .into_iter()
+            .map(|i| dto::MemoryItemResponse {
+                id: i.id,
+                content: i.content,
+                topic: i.topic,
+                relevance: i.relevance,
+                confidence: i.confidence,
+                stored_at: i.stored_at,
+                agent_id: i.agent_id,
+                access_count: i.access_count,
+                last_accessed: i.last_accessed,
+            })
+            .collect(),
+    ))
 }
 
 /// DELETE /memory/:id — Forget a specific memory.
-pub async fn forget_memory(
-    State(state): State<AppState>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> StatusCode {
+pub async fn forget_memory(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
     let uuid = match id.parse::<uuid::Uuid>() {
         Ok(u) => u,
         Err(_) => return StatusCode::BAD_REQUEST,
     };
 
-    match state.source_service.delete(uuid.into()).await {
-        Ok(result) if result.deleted => StatusCode::NO_CONTENT,
-        Ok(_) => StatusCode::NOT_FOUND,
+    match state.agent_memory_service.forget(uuid).await {
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::NOT_FOUND,
         Err(e) => {
             tracing::error!(error = %e, "memory forget failed");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -138,22 +117,94 @@ pub async fn forget_memory(
 /// GET /memory/status — Get memory system status.
 pub async fn memory_status(
     State(state): State<AppState>,
-) -> Result<Json<MemoryStatus>, StatusCode> {
-    let total_memories = state.source_service.count().await.unwrap_or(0) as u64;
-
-    let total_entities = state.graph_engine.node_count().await.unwrap_or(0) as u64;
-    let total_relationships = state.graph_engine.edge_count().await.unwrap_or(0) as u64;
-    let communities = state
-        .graph_engine
-        .communities(2)
+    Query(params): Query<dto::MemoryStatusParams>,
+) -> Result<Json<dto::MemoryStatusResponse>, StatusCode> {
+    let status = state
+        .agent_memory_service
+        .status(params.agent_id.as_deref())
         .await
-        .map(|c| c.len() as u64)
-        .unwrap_or(0);
+        .map_err(|e| {
+            tracing::error!(error = %e, "memory status failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-    Ok(Json(MemoryStatus {
-        total_memories,
-        total_entities,
-        total_relationships,
-        communities,
+    Ok(Json(dto::MemoryStatusResponse {
+        total_memories: status.total_memories,
+        agent_memories: status.agent_memories,
+    }))
+}
+
+/// POST /memory/consolidate — Consolidate similar memories.
+pub async fn consolidate_memory(
+    State(state): State<AppState>,
+    Json(req): Json<dto::ConsolidateMemoryRequest>,
+) -> Result<Json<dto::ConsolidateMemoryResponse>, StatusCode> {
+    let svc_req = agent_memory::ConsolidateRequest {
+        agent_id: req.agent_id,
+        threshold: req.threshold,
+    };
+
+    let resp = state
+        .agent_memory_service
+        .consolidate(svc_req)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "memory consolidate failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(dto::ConsolidateMemoryResponse {
+        groups_found: resp.groups_found,
+        merged: resp.merged,
+        expired: resp.expired,
+        status: resp.status,
+    }))
+}
+
+/// POST /memory/reflect/:session_id — Reflect on a session.
+pub async fn reflect_memory(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(params): Query<dto::ReflectParams>,
+) -> Result<Json<dto::ReflectMemoryResponse>, StatusCode> {
+    let uuid = match session_id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let resp = state
+        .agent_memory_service
+        .reflect(uuid, params.agent_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "memory reflect failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(dto::ReflectMemoryResponse {
+        learnings_stored: resp.learnings_stored,
+        status: resp.status,
+    }))
+}
+
+/// POST /memory/forget-old — Apply forgetting to expired memories.
+pub async fn apply_forgetting(
+    State(state): State<AppState>,
+    Json(req): Json<dto::ForgetOldMemoryRequest>,
+) -> Result<Json<dto::ForgetOldMemoryResponse>, StatusCode> {
+    let retention_days = req.retention_days.unwrap_or(90);
+
+    let resp = state
+        .agent_memory_service
+        .apply_forgetting(retention_days)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "memory forget-old failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(dto::ForgetOldMemoryResponse {
+        deleted: resp.deleted,
+        status: resp.status,
     }))
 }

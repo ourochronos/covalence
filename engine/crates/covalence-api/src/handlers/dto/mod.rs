@@ -12,6 +12,7 @@ mod edges;
 mod extensions;
 mod graph;
 mod hooks;
+mod memory;
 mod nodes;
 mod search;
 mod sessions;
@@ -48,6 +49,12 @@ pub use graph::{
 };
 pub use hooks::{
     CreateHookRequest, CreateHookResponse, DeleteHookResponse, HookResponse, ListHooksResponse,
+};
+pub use memory::{
+    ConsolidateMemoryRequest, ConsolidateMemoryResponse, ForgetOldMemoryRequest,
+    ForgetOldMemoryResponse, MemoryItemResponse, MemoryStatusParams, MemoryStatusResponse,
+    RecallMemoryRequest, ReflectMemoryResponse, ReflectParams, StoreMemoryRequest,
+    StoreMemoryResponse,
 };
 pub use nodes::{
     AnnotateNodeRequest, CorrectNodeRequest, GetNodeParams, MergeNodesRequest, MergeNodesResponse,
