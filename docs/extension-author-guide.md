@@ -82,6 +82,7 @@ Entity types define the kinds of nodes that can exist in the graph. Each type be
 | `category` | string | yes | -- | MAGMA category (concept, process, artifact, agent, property, collection) |
 | `label` | string | yes | -- | Human-readable label |
 | `description` | string | no | `null` | Optional description |
+| `metadata_schema` | object | no | `null` | JSON Schema for node metadata fields specific to this entity type |
 
 ```yaml
 entity_types:
@@ -89,6 +90,11 @@ entity_types:
     category: process
     label: Function
     description: "A named function"
+    metadata_schema:
+      type: object
+      properties:
+        language: { type: string }
+        visibility: { type: string }
   - id: struct
     category: concept
     label: Struct
@@ -242,16 +248,18 @@ An optional external service definition. Services are registered in the `Service
 | `command` | string | no | `null` | Command to execute (STDIO transport only) |
 | `args` | list | no | `[]` | Command arguments (STDIO transport only) |
 | `url` | string | no | `null` | Base URL (HTTP transport only) |
+| `extractor_for` | string | no | `null` | Domain ID this service handles extraction for. When set, the engine routes sources in this domain to this service instead of the default LLM extractor |
 
 STDIO services follow the [STDIO Service Contract](stdio-service-contract.md). HTTP services must respond to a GET on their base URL for validation.
 
 ```yaml
-# STDIO service
+# STDIO service (domain extractor)
 service:
   name: ast-extractor
   transport: stdio
   command: covalence-ast-extractor
   args: []
+  extractor_for: code
 
 # HTTP service
 service:
@@ -266,7 +274,7 @@ Lifecycle hooks are HTTP POST callbacks at pipeline points. See [Lifecycle Hooks
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `phase` | string | yes | -- | Pipeline phase (see lifecycle-hooks.md) |
+| `phase` | string | yes | -- | Pipeline phase: pre_search, post_search, post_synthesis, pre_ingest, post_extract, post_resolve (see [lifecycle-hooks.md](lifecycle-hooks.md)) |
 | `url` | string | yes | -- | URL to POST to |
 | `timeout_ms` | int | no | `2000` | Per-hook timeout in milliseconds |
 | `fail_open` | bool | no | `true` | If true, errors are logged but the pipeline continues |
@@ -299,6 +307,20 @@ config_schema:
     type: float
     default: 0.5
     description: "Extraction confidence threshold"
+```
+
+### source_schemas
+
+Declares JSON schemas for source metadata fields that this extension introduces. Keys are source type names. The engine validates incoming source metadata against these schemas during ingestion.
+
+```yaml
+source_schemas:
+  memory:
+    type: object
+    properties:
+      agent_id: { type: string }
+      topic: { type: string }
+      confidence: { type: number }
 ```
 
 ## Operator Configuration Overrides

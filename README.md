@@ -14,11 +14,12 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 - **Semantic code summaries** — per-method extraction from impl blocks, definition-pattern chunk matching, bottom-up file summary composition
 - **Cross-domain alignment analysis** — coverage analysis, architecture erosion detection, blast-radius simulation, whitespace roadmap, dialectical critique
 - **`/ask` endpoint with SSE streaming** — grounded Q&A with citations, per-request model override, ChainChatBackend multi-provider failover. `POST /ask/stream` returns Server-Sent Events (context, tokens, done)
-- **Lifecycle hooks** — external HTTP hooks at pre_search, post_search, and post_synthesis pipeline points. Fail-open by default, concurrent execution, global or domain-scoped via adapter binding
+- **Lifecycle hooks** — external HTTP hooks at 6 pipeline phases: pre_search, post_search, post_synthesis (ask pipeline) and pre_ingest, post_extract, post_resolve (ingestion pipeline). Fail-open by default, concurrent execution, global or domain-scoped via adapter binding
 - **Session/conversation primitives** — lightweight session + turn model for multi-turn `/ask` conversations. Conversation history injected into LLM context automatically
 - **STDIO sidecar contract** — JSON-in/JSON-out stateless transforms alongside HTTP sidecars. SidecarRegistry manages named transports with startup validation
 - **Prometheus metrics** — `GET /metrics` endpoint with counters and histograms for search, queue, LLM calls, and cache
-- **MCP server for Claude Code** — 7 tools bridging Claude Code sessions to the Covalence API
+- **MCP server for Claude Code** — 10 tools bridging Claude Code sessions to the Covalence API (search, ask, health, data_health, alignment, node, blast_radius, memory_store, memory_recall, memory_forget)
+- **Agent memory** — long-term memory for AI agents via the agent-memory extension. Store, recall, and forget memories with topic filtering and semantic search
 - **Data health monitoring** — `/admin/data-health` endpoint, source supersession tracking
 - **Input validation** — validator crate on all request DTOs with bounds checking
 - **Provider attribution** — ChatResponse tracks which LLM provider answered each request
@@ -30,7 +31,7 @@ A hybrid GraphRAG knowledge engine. Ingests unstructured sources, builds a prope
 |--------|------|---------|
 | Search precision@5 | >0.80 | 0.86 |
 | Entity precision | >90% | 96% |
-| Tests passing | — | 1,520 (1,437 core + 21 api + 13 ast-extractor + 49 eval) |
+| Tests passing | — | 1,535 (1,452 core + 21 api + 13 ast-extractor + 49 eval) |
 
 ## Architecture
 
@@ -40,7 +41,7 @@ Three layers:
 - **Engine** — Rust (Axum + petgraph/AGE). Search fusion, graph sidecar, ingestion pipeline, consolidation, epistemic model.
 - **API** — HTTP REST + MCP. Thin routing, OpenAPI via utoipa, Swagger UI at `/docs`.
 
-See `spec/` for 14 design specifications, `docs/adr/` for 22 architectural decision records.
+See `spec/` for 14 design specifications, `docs/adr/` for 23 architectural decision records.
 
 ## Quick Start
 
@@ -89,16 +90,17 @@ engine/                        Rust workspace
     covalence-eval/            Binary: layer-by-layer evaluation harness
     covalence-worker/          Binary: async queue worker (per-kind concurrency)
     covalence-ast-extractor/   Binary: standalone AST extraction service (STDIO)
-extensions/                    Extension manifests (domain packs)
+extensions/                    Extension manifests (5 domain packs)
   core/                        Universal categories + relationship universals
   code-analysis/               Code entity types, structural edges, domain rules
   spec-design/                 Spec/design domains, bridge types, alignment rules
   research/                    Research domains, epistemic edges, evidence grouping
+  agent-memory/                Long-term agent memory (store, recall, forget)
 cli/                           Go CLI (Cobra) — binary name: cove
 mcp-server/                    MCP server for Claude Code integration (Node.js)
 dashboard/                     Web dashboard (stats, observability)
 spec/                          Design specifications (14 specs)
-docs/adr/                      Architecture Decision Records (24 ADRs)
+docs/adr/                      Architecture Decision Records (23 ADRs)
 ```
 
 ## Development
@@ -133,6 +135,7 @@ extensions/
   code-analysis/extension.yaml  # AST entity types, structural edges
   spec-design/extension.yaml    # Spec/design domains, bridge types
   research/extension.yaml       # Research domains, epistemic edges
+  agent-memory/extension.yaml   # Long-term agent memory
   your-domain/extension.yaml    # Your domain — add your own
 ```
 
@@ -151,7 +154,7 @@ Last value wins across files (alphabetical order). Environment variables (`COVAL
 
 ## MCP Server
 
-The MCP server at `mcp-server/index.js` bridges Claude Code sessions to the Covalence API. It provides 7 tools:
+The MCP server at `mcp-server/index.js` bridges Claude Code sessions to the Covalence API. It provides 10 tools:
 
 | Tool | Description |
 |------|-------------|
@@ -162,6 +165,9 @@ The MCP server at `mcp-server/index.js` bridges Claude Code sessions to the Cova
 | `covalence_node` | Node detail lookup with epistemic explanation |
 | `covalence_blast_radius` | Blast-radius simulation from any node |
 | `covalence_data_health` | Data quality metrics and source health |
+| `covalence_memory_store` | Store a memory in the knowledge graph |
+| `covalence_memory_recall` | Recall memories by semantic query |
+| `covalence_memory_forget` | Forget a memory by ID |
 
 Configure in Claude Code's MCP settings to enable Covalence-aware development sessions.
 
