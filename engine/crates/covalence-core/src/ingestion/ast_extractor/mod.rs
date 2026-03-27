@@ -1,16 +1,21 @@
 //! Deterministic AST-based entity extraction for source code.
 //!
 //! Walks a tree-sitter AST to extract structured entities and
-//! relationships from Rust and Python source code. Unlike the LLM
-//! extractor, all extractions are deterministic with confidence 1.0.
+//! relationships from Rust, Python, Go, TypeScript, JavaScript,
+//! Java, and C source code. Unlike the LLM extractor, all
+//! extractions are deterministic with confidence 1.0.
 //!
 //! Design principle: struct/class fields become metadata properties
 //! on their parent entity, NOT separate graph nodes.
 
+mod c;
 mod common;
 mod go;
+mod java;
+mod javascript;
 mod python;
 mod rust;
+mod typescript;
 
 #[cfg(test)]
 mod tests;
@@ -42,8 +47,10 @@ fn ast_metadata(source: &str, node: &tree_sitter::Node) -> Option<serde_json::Va
 /// code entities and relationships.
 ///
 /// Produces entities for structs, enums, traits, functions, impl
-/// blocks, modules, constants, macros (Rust) and classes, functions
-/// (Python). Relationships include `implements`, `extends`,
+/// blocks, modules, constants, macros (Rust), classes and functions
+/// (Python), interfaces and type aliases (Go/TypeScript), arrow
+/// functions (TypeScript/JavaScript), and Java classes/enums/
+/// interfaces. Relationships include `implements`, `extends`,
 /// `imports`, `calls`, and `contains`.
 ///
 /// All extractions have confidence 1.0 since they are derived from
@@ -73,6 +80,10 @@ impl AstExtractor {
             CodeLanguage::Rust => tree_sitter_rust::LANGUAGE,
             CodeLanguage::Python => tree_sitter_python::LANGUAGE,
             CodeLanguage::Go => tree_sitter_go::LANGUAGE,
+            CodeLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            CodeLanguage::JavaScript => tree_sitter_javascript::LANGUAGE,
+            CodeLanguage::Java => tree_sitter_java::LANGUAGE,
+            CodeLanguage::C => tree_sitter_c::LANGUAGE,
         };
         parser
             .set_language(&ts_language.into())
@@ -91,6 +102,10 @@ impl AstExtractor {
             CodeLanguage::Rust => rust::extract_rust(&raw_code, &tree),
             CodeLanguage::Python => python::extract_python(&raw_code, &tree),
             CodeLanguage::Go => go::extract_go(&raw_code, &tree),
+            CodeLanguage::TypeScript => typescript::extract_typescript(&raw_code, &tree),
+            CodeLanguage::JavaScript => javascript::extract_javascript(&raw_code, &tree),
+            CodeLanguage::Java => java::extract_java(&raw_code, &tree),
+            CodeLanguage::C => c::extract_c(&raw_code, &tree),
         }
     }
 

@@ -117,6 +117,10 @@ fn language_to_extension(lang: &str) -> &str {
         "rust" => "rs",
         "python" => "py",
         "go" => "go",
+        "typescript" => "ts",
+        "javascript" => "js",
+        "java" => "java",
+        "c" => "c",
         other => other,
     }
 }
@@ -156,6 +160,10 @@ fn detect_language_name(language: Option<&str>, file_path: Option<&str>) -> Stri
                 "rs" => "rust",
                 "py" => "python",
                 "go" => "go",
+                "ts" | "tsx" => "typescript",
+                "js" | "jsx" => "javascript",
+                "java" => "java",
+                "c" | "h" => "c",
                 other => other,
             }
             .to_string();
@@ -195,7 +203,15 @@ fn main() {
             pong: true,
             name: "covalence-ast-extractor".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            languages: vec!["rust".to_string(), "python".to_string(), "go".to_string()],
+            languages: vec![
+                "rust".to_string(),
+                "python".to_string(),
+                "go".to_string(),
+                "typescript".to_string(),
+                "javascript".to_string(),
+                "java".to_string(),
+                "c".to_string(),
+            ],
         };
         println!("{}", serde_json::to_string(&pong).unwrap());
         return;

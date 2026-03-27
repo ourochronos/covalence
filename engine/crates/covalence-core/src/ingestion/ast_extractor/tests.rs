@@ -1,6 +1,7 @@
 //! Tests for the AST extractor module.
 
 use super::*;
+use crate::ingestion::code_chunker::CodeLanguage;
 use crate::ingestion::extractor::ExtractionContext;
 
 fn make_context(uri: &str) -> ExtractionContext {
@@ -726,4 +727,660 @@ async fn ast_hash_changes_on_code_change() {
         .as_str()
         .unwrap();
     assert_ne!(h1, h2, "different code should produce different hashes");
+}
+
+// ── TypeScript extraction tests ─────────────────────────────
+
+fn ts_context() -> ExtractionContext {
+    ExtractionContext {
+        source_uri: Some("file://src/app.ts".to_string()),
+        source_type: Some("code".to_string()),
+        source_title: Some("app.ts".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn typescript_class_and_interface() {
+    let source = r#"
+interface Serializable {
+    serialize(): string;
+}
+
+class Config implements Serializable {
+    constructor(public name: string) {}
+
+    serialize(): string {
+        return this.name;
+    }
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &ts_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        names.contains(&"Serializable"),
+        "missing Serializable in {names:?}"
+    );
+    assert!(names.contains(&"Config"), "missing Config in {names:?}");
+
+    let config = result.entities.iter().find(|e| e.name == "Config").unwrap();
+    assert_eq!(config.entity_type, "class");
+
+    let iface = result
+        .entities
+        .iter()
+        .find(|e| e.name == "Serializable")
+        .unwrap();
+    assert_eq!(iface.entity_type, "interface");
+
+    // Check implements relationship.
+    let implements: Vec<_> = result
+        .relationships
+        .iter()
+        .filter(|r| r.rel_type == "implements")
+        .collect();
+    assert!(
+        !implements.is_empty(),
+        "missing implements: {:?}",
+        result.relationships
+    );
+    assert_eq!(implements[0].source_name, "Config");
+    assert_eq!(implements[0].target_name, "Serializable");
+}
+
+#[tokio::test]
+async fn typescript_function_and_arrow() {
+    let source = r#"
+function greet(name: string): string {
+    return `Hello, ${name}`;
+}
+
+const add = (a: number, b: number): number => a + b;
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &ts_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"greet"), "missing greet in {names:?}");
+    assert!(names.contains(&"add"), "missing add in {names:?}");
+
+    let greet = result.entities.iter().find(|e| e.name == "greet").unwrap();
+    assert_eq!(greet.entity_type, "function");
+
+    let add = result.entities.iter().find(|e| e.name == "add").unwrap();
+    assert_eq!(add.entity_type, "arrow_function");
+}
+
+#[tokio::test]
+async fn typescript_enum_and_type_alias() {
+    let source = r#"
+type ID = string | number;
+
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &ts_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"ID"), "missing ID in {names:?}");
+    assert!(
+        names.contains(&"Direction"),
+        "missing Direction in {names:?}"
+    );
+
+    let id = result.entities.iter().find(|e| e.name == "ID").unwrap();
+    assert_eq!(id.entity_type, "type_alias");
+
+    let dir = result
+        .entities
+        .iter()
+        .find(|e| e.name == "Direction")
+        .unwrap();
+    assert_eq!(dir.entity_type, "enum");
+}
+
+#[tokio::test]
+async fn typescript_import_relationship() {
+    let source = r#"
+import { Component } from '@angular/core';
+import * as fs from 'fs';
+
+function init() {}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &ts_context()).await.unwrap();
+
+    let imports: Vec<_> = result
+        .relationships
+        .iter()
+        .filter(|r| r.rel_type == "imports")
+        .collect();
+    assert_eq!(imports.len(), 2, "expected 2 imports: {imports:?}");
+    let targets: Vec<&str> = imports.iter().map(|r| r.target_name.as_str()).collect();
+    assert!(
+        targets.contains(&"@angular/core"),
+        "missing @angular/core in {targets:?}"
+    );
+    assert!(targets.contains(&"fs"), "missing fs in {targets:?}");
+}
+
+// ── JavaScript extraction tests ─────────────────────────────
+
+fn js_context() -> ExtractionContext {
+    ExtractionContext {
+        source_uri: Some("file://src/app.js".to_string()),
+        source_type: Some("code".to_string()),
+        source_title: Some("app.js".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn javascript_function_and_class() {
+    let source = r#"
+function processData(items) {
+    return items.map(i => i.value);
+}
+
+class EventEmitter {
+    constructor() {
+        this.listeners = {};
+    }
+
+    on(event, fn) {
+        this.listeners[event] = fn;
+    }
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &js_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        names.contains(&"processData"),
+        "missing processData in {names:?}"
+    );
+    assert!(
+        names.contains(&"EventEmitter"),
+        "missing EventEmitter in {names:?}"
+    );
+
+    let class = result
+        .entities
+        .iter()
+        .find(|e| e.name == "EventEmitter")
+        .unwrap();
+    assert_eq!(class.entity_type, "class");
+    assert!(
+        class.description.as_deref().unwrap().contains("2 methods"),
+        "desc: {:?}",
+        class.description
+    );
+
+    // Methods extracted as individual entities.
+    assert!(
+        names.contains(&"constructor"),
+        "missing constructor in {names:?}"
+    );
+    assert!(names.contains(&"on"), "missing on in {names:?}");
+}
+
+#[tokio::test]
+async fn javascript_arrow_function() {
+    let source = r#"
+const multiply = (a, b) => a * b;
+const identity = x => x;
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &js_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"multiply"), "missing multiply in {names:?}");
+    assert!(names.contains(&"identity"), "missing identity in {names:?}");
+
+    let mult = result
+        .entities
+        .iter()
+        .find(|e| e.name == "multiply")
+        .unwrap();
+    assert_eq!(mult.entity_type, "arrow_function");
+}
+
+#[tokio::test]
+async fn javascript_class_extends() {
+    let source = r#"
+class Animal {
+    speak() { return "..."; }
+}
+
+class Dog extends Animal {
+    speak() { return "woof"; }
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &js_context()).await.unwrap();
+
+    let extends: Vec<_> = result
+        .relationships
+        .iter()
+        .filter(|r| r.rel_type == "extends")
+        .collect();
+    assert!(!extends.is_empty(), "missing extends relationship");
+    assert_eq!(extends[0].source_name, "Dog");
+    assert_eq!(extends[0].target_name, "Animal");
+}
+
+// ── Java extraction tests ───────────────────────────────────
+
+fn java_context() -> ExtractionContext {
+    ExtractionContext {
+        source_uri: Some("file://src/App.java".to_string()),
+        source_type: Some("code".to_string()),
+        source_title: Some("App.java".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn java_class_and_method() {
+    let source = r#"
+public class Calculator {
+    public int add(int a, int b) {
+        return a + b;
+    }
+
+    private double multiply(double x, double y) {
+        return x * y;
+    }
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &java_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        names.contains(&"Calculator"),
+        "missing Calculator in {names:?}"
+    );
+    assert!(names.contains(&"add"), "missing add in {names:?}");
+    assert!(names.contains(&"multiply"), "missing multiply in {names:?}");
+
+    let class = result
+        .entities
+        .iter()
+        .find(|e| e.name == "Calculator")
+        .unwrap();
+    assert_eq!(class.entity_type, "class");
+    assert!(
+        class.description.as_deref().unwrap().contains("2 methods"),
+        "desc: {:?}",
+        class.description
+    );
+
+    // Methods should have `contains` relationships.
+    let contains: Vec<_> = result
+        .relationships
+        .iter()
+        .filter(|r| r.rel_type == "contains" && r.source_name == "Calculator")
+        .collect();
+    assert_eq!(contains.len(), 2, "expected 2 contains: {contains:?}");
+}
+
+#[tokio::test]
+async fn java_interface_and_implements() {
+    let source = r#"
+public interface Readable {
+    String read();
+}
+
+public class FileReader implements Readable {
+    public String read() {
+        return "content";
+    }
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &java_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"Readable"), "missing Readable in {names:?}");
+    assert!(
+        names.contains(&"FileReader"),
+        "missing FileReader in {names:?}"
+    );
+
+    let iface = result
+        .entities
+        .iter()
+        .find(|e| e.name == "Readable")
+        .unwrap();
+    assert_eq!(iface.entity_type, "interface");
+
+    // Check implements relationship.
+    let implements: Vec<_> = result
+        .relationships
+        .iter()
+        .filter(|r| r.rel_type == "implements")
+        .collect();
+    assert!(
+        !implements.is_empty(),
+        "missing implements: {:?}",
+        result.relationships
+    );
+}
+
+#[tokio::test]
+async fn java_enum_extraction() {
+    let source = r#"
+public enum Color {
+    RED,
+    GREEN,
+    BLUE;
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &java_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"Color"), "missing Color in {names:?}");
+
+    let color = result.entities.iter().find(|e| e.name == "Color").unwrap();
+    assert_eq!(color.entity_type, "enum");
+    let desc = color.description.as_deref().unwrap();
+    assert!(desc.contains("RED"), "desc: {desc}");
+    assert!(desc.contains("GREEN"), "desc: {desc}");
+    assert!(desc.contains("BLUE"), "desc: {desc}");
+}
+
+#[tokio::test]
+async fn java_import_extraction() {
+    let source = r#"
+import java.util.List;
+import java.util.Map;
+
+public class App {}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &java_context()).await.unwrap();
+
+    let imports: Vec<_> = result
+        .relationships
+        .iter()
+        .filter(|r| r.rel_type == "imports")
+        .collect();
+    assert_eq!(imports.len(), 2, "expected 2 imports: {imports:?}");
+    let targets: Vec<&str> = imports.iter().map(|r| r.target_name.as_str()).collect();
+    assert!(
+        targets.contains(&"java.util.List"),
+        "missing List in {targets:?}"
+    );
+    assert!(
+        targets.contains(&"java.util.Map"),
+        "missing Map in {targets:?}"
+    );
+}
+
+// ── C extraction tests ──────────────────────────────────────
+
+fn c_context() -> ExtractionContext {
+    ExtractionContext {
+        source_uri: Some("file://src/main.c".to_string()),
+        source_type: Some("code".to_string()),
+        source_title: Some("main.c".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn c_function_extraction() {
+    let source = r#"
+int add(int a, int b) {
+    return a + b;
+}
+
+static void helper(void) {
+    /* internal */
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &c_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"add"), "missing add in {names:?}");
+    assert!(names.contains(&"helper"), "missing helper in {names:?}");
+
+    let add = result.entities.iter().find(|e| e.name == "add").unwrap();
+    assert_eq!(add.entity_type, "function");
+
+    let helper = result.entities.iter().find(|e| e.name == "helper").unwrap();
+    assert!(
+        helper.description.as_deref().unwrap().contains("static"),
+        "desc: {:?}",
+        helper.description
+    );
+}
+
+#[tokio::test]
+async fn c_struct_extraction() {
+    let source = r#"
+struct Point {
+    int x;
+    int y;
+};
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &c_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"Point"), "missing Point in {names:?}");
+
+    let point = result.entities.iter().find(|e| e.name == "Point").unwrap();
+    assert_eq!(point.entity_type, "struct");
+    assert!(
+        point.description.as_deref().unwrap().contains("2 fields"),
+        "desc: {:?}",
+        point.description
+    );
+}
+
+#[tokio::test]
+async fn c_enum_extraction() {
+    let source = r#"
+enum Color {
+    RED,
+    GREEN,
+    BLUE
+};
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &c_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"Color"), "missing Color in {names:?}");
+
+    let color = result.entities.iter().find(|e| e.name == "Color").unwrap();
+    assert_eq!(color.entity_type, "enum");
+    let desc = color.description.as_deref().unwrap();
+    assert!(desc.contains("RED"), "desc: {desc}");
+    assert!(desc.contains("GREEN"), "desc: {desc}");
+    assert!(desc.contains("BLUE"), "desc: {desc}");
+}
+
+#[tokio::test]
+async fn c_macro_extraction() {
+    let source = r#"
+#define MAX_SIZE 1024
+#define SQUARE(x) ((x) * (x))
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &c_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"MAX_SIZE"), "missing MAX_SIZE in {names:?}");
+    assert!(names.contains(&"SQUARE"), "missing SQUARE in {names:?}");
+
+    for entity in &result.entities {
+        assert_eq!(entity.entity_type, "macro");
+        assert_eq!(entity.confidence, 1.0);
+    }
+}
+
+#[tokio::test]
+async fn c_include_extraction() {
+    let source = r#"
+#include <stdio.h>
+#include "myheader.h"
+
+int main(void) {
+    return 0;
+}
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &c_context()).await.unwrap();
+
+    let imports: Vec<_> = result
+        .relationships
+        .iter()
+        .filter(|r| r.rel_type == "imports")
+        .collect();
+    assert_eq!(imports.len(), 2, "expected 2 imports: {imports:?}");
+    let targets: Vec<&str> = imports.iter().map(|r| r.target_name.as_str()).collect();
+    assert!(
+        targets.contains(&"stdio.h"),
+        "missing stdio.h in {targets:?}"
+    );
+    assert!(
+        targets.contains(&"myheader.h"),
+        "missing myheader.h in {targets:?}"
+    );
+}
+
+#[tokio::test]
+async fn c_typedef_extraction() {
+    let source = r#"
+typedef unsigned long size_t;
+
+typedef struct {
+    int x;
+    int y;
+} Point;
+"#
+    .trim();
+    let extractor = AstExtractor::new();
+    let result = extractor.extract(source, &c_context()).await.unwrap();
+
+    let names: Vec<&str> = result.entities.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"size_t"), "missing size_t in {names:?}");
+    assert!(names.contains(&"Point"), "missing Point in {names:?}");
+
+    let size_t = result.entities.iter().find(|e| e.name == "size_t").unwrap();
+    assert_eq!(size_t.entity_type, "type_alias");
+
+    let point = result.entities.iter().find(|e| e.name == "Point").unwrap();
+    assert_eq!(point.entity_type, "type_alias");
+}
+
+// ── Language detection tests for new languages ──────────────
+
+#[test]
+fn typescript_language_detection() {
+    assert_eq!(
+        CodeLanguage::from_extension("ts"),
+        Some(CodeLanguage::TypeScript)
+    );
+    assert_eq!(
+        CodeLanguage::from_extension("tsx"),
+        Some(CodeLanguage::TypeScript)
+    );
+    assert_eq!(
+        CodeLanguage::from_mime("text/typescript"),
+        Some(CodeLanguage::TypeScript)
+    );
+    assert_eq!(
+        CodeLanguage::from_mime("application/typescript"),
+        Some(CodeLanguage::TypeScript)
+    );
+    assert_eq!(
+        CodeLanguage::from_uri("src/app.ts"),
+        Some(CodeLanguage::TypeScript)
+    );
+}
+
+#[test]
+fn javascript_language_detection() {
+    assert_eq!(
+        CodeLanguage::from_extension("js"),
+        Some(CodeLanguage::JavaScript)
+    );
+    assert_eq!(
+        CodeLanguage::from_extension("jsx"),
+        Some(CodeLanguage::JavaScript)
+    );
+    assert_eq!(
+        CodeLanguage::from_mime("text/javascript"),
+        Some(CodeLanguage::JavaScript)
+    );
+    assert_eq!(
+        CodeLanguage::from_mime("application/javascript"),
+        Some(CodeLanguage::JavaScript)
+    );
+}
+
+#[test]
+fn java_language_detection() {
+    assert_eq!(
+        CodeLanguage::from_extension("java"),
+        Some(CodeLanguage::Java)
+    );
+    assert_eq!(
+        CodeLanguage::from_mime("text/x-java"),
+        Some(CodeLanguage::Java)
+    );
+    assert_eq!(
+        CodeLanguage::from_mime("text/x-java-source"),
+        Some(CodeLanguage::Java)
+    );
+    assert_eq!(
+        CodeLanguage::from_uri("src/Main.java"),
+        Some(CodeLanguage::Java)
+    );
+}
+
+#[test]
+fn c_language_detection() {
+    assert_eq!(CodeLanguage::from_extension("c"), Some(CodeLanguage::C));
+    assert_eq!(CodeLanguage::from_extension("h"), Some(CodeLanguage::C));
+    assert_eq!(CodeLanguage::from_mime("text/x-c"), Some(CodeLanguage::C));
+    assert_eq!(
+        CodeLanguage::from_mime("text/x-csrc"),
+        Some(CodeLanguage::C)
+    );
+    assert_eq!(
+        CodeLanguage::from_mime("text/x-chdr"),
+        Some(CodeLanguage::C)
+    );
+    assert_eq!(CodeLanguage::from_uri("lib/util.c"), Some(CodeLanguage::C));
+    assert_eq!(
+        CodeLanguage::from_uri("include/util.h"),
+        Some(CodeLanguage::C)
+    );
 }

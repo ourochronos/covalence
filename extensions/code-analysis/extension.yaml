@@ -84,6 +84,39 @@ entity_types:
     category: collection
     label: Module
     description: "A code module or package"
+  - id: class
+    category: concept
+    label: Class
+    description: "A class definition"
+    metadata_schema:
+      type: object
+      properties:
+        methods: { type: array }
+        visibility: { type: string }
+  - id: variable
+    category: concept
+    label: Variable
+    description: "A named variable or constant binding"
+  - id: type_alias
+    category: concept
+    label: Type Alias
+    description: "A type alias or typedef"
+  - id: interface
+    category: concept
+    label: Interface
+    description: "An interface (TypeScript, Java, or Go)"
+    metadata_schema:
+      type: object
+      properties:
+        methods: { type: array }
+  - id: arrow_function
+    category: process
+    label: Arrow Function
+    description: "An arrow function expression assigned to a variable"
+    metadata_schema:
+      type: object
+      properties:
+        signature: { type: string }
   - id: code_test
     category: process
     label: Code Test
@@ -165,7 +198,7 @@ source_schemas:
 config_schema:
   languages:
     type: array
-    default: ["rust", "python", "go"]
+    default: ["rust", "python", "go", "typescript", "javascript", "java", "c"]
     description: "Languages to extract AST from"
   max_function_depth:
     type: integer

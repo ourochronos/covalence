@@ -16,6 +16,14 @@ pub enum CodeLanguage {
     Python,
     /// Go source code.
     Go,
+    /// TypeScript source code (including TSX).
+    TypeScript,
+    /// JavaScript source code (including JSX).
+    JavaScript,
+    /// Java source code.
+    Java,
+    /// C source code (including headers).
+    C,
 }
 
 impl CodeLanguage {
@@ -25,6 +33,10 @@ impl CodeLanguage {
             "text/x-rust" => Some(Self::Rust),
             "text/x-python" | "text/x-script.python" => Some(Self::Python),
             "text/x-go" => Some(Self::Go),
+            "text/typescript" | "application/typescript" => Some(Self::TypeScript),
+            "text/javascript" | "application/javascript" => Some(Self::JavaScript),
+            "text/x-java" | "text/x-java-source" => Some(Self::Java),
+            "text/x-c" | "text/x-csrc" | "text/x-chdr" => Some(Self::C),
             _ => None,
         }
     }
@@ -35,6 +47,10 @@ impl CodeLanguage {
             "rs" => Some(Self::Rust),
             "py" => Some(Self::Python),
             "go" => Some(Self::Go),
+            "ts" | "tsx" => Some(Self::TypeScript),
+            "js" | "jsx" => Some(Self::JavaScript),
+            "java" => Some(Self::Java),
+            "c" | "h" => Some(Self::C),
             _ => None,
         }
     }
@@ -52,6 +68,10 @@ impl CodeLanguage {
             Self::Rust => "rust",
             Self::Python => "python",
             Self::Go => "go",
+            Self::TypeScript => "typescript",
+            Self::JavaScript => "javascript",
+            Self::Java => "java",
+            Self::C => "c",
         }
     }
 
@@ -82,6 +102,38 @@ impl CodeLanguage {
                 "type_declaration",
                 "const_declaration",
                 "var_declaration",
+            ],
+            Self::TypeScript => &[
+                "function_declaration",
+                "class_declaration",
+                "interface_declaration",
+                "type_alias_declaration",
+                "enum_declaration",
+                "lexical_declaration",
+                "export_statement",
+            ],
+            Self::JavaScript => &[
+                "function_declaration",
+                "class_declaration",
+                "lexical_declaration",
+                "variable_declaration",
+                "export_statement",
+            ],
+            Self::Java => &[
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "annotation_type_declaration",
+                "method_declaration",
+            ],
+            Self::C => &[
+                "function_definition",
+                "struct_specifier",
+                "enum_specifier",
+                "type_definition",
+                "declaration",
+                "preproc_def",
+                "preproc_function_def",
             ],
         }
     }
@@ -114,6 +166,10 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
         CodeLanguage::Rust => tree_sitter_rust::LANGUAGE,
         CodeLanguage::Python => tree_sitter_python::LANGUAGE,
         CodeLanguage::Go => tree_sitter_go::LANGUAGE,
+        CodeLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        CodeLanguage::JavaScript => tree_sitter_javascript::LANGUAGE,
+        CodeLanguage::Java => tree_sitter_java::LANGUAGE,
+        CodeLanguage::C => tree_sitter_c::LANGUAGE,
     };
 
     parser
@@ -212,6 +268,12 @@ fn extract_methods(source: &str, node: &tree_sitter::Node, lang: CodeLanguage) -
         CodeLanguage::Python => ("class_definition", "function_definition"),
         // Go methods are top-level, not nested.
         CodeLanguage::Go => return Vec::new(),
+        CodeLanguage::TypeScript | CodeLanguage::JavaScript => {
+            ("class_declaration", "method_definition")
+        }
+        CodeLanguage::Java => ("class_declaration", "method_declaration"),
+        // C does not have class-like containers.
+        CodeLanguage::C => return Vec::new(),
     };
 
     if node.kind() != container_kind {
@@ -247,6 +309,9 @@ fn extract_label(source: &str, node: &tree_sitter::Node, lang: CodeLanguage) -> 
         CodeLanguage::Rust => extract_rust_label(source, node),
         CodeLanguage::Python => extract_python_label(source, node),
         CodeLanguage::Go => extract_go_label(source, node),
+        CodeLanguage::TypeScript | CodeLanguage::JavaScript => extract_js_ts_label(source, node),
+        CodeLanguage::Java => extract_java_label(source, node),
+        CodeLanguage::C => extract_c_label(source, node),
     }
 }
 
@@ -430,6 +495,123 @@ fn extract_go_label(source: &str, node: &tree_sitter::Node) -> String {
     }
 }
 
+/// Extract a label for a TypeScript or JavaScript AST node.
+fn extract_js_ts_label(source: &str, node: &tree_sitter::Node) -> String {
+    let kind = node.kind();
+    let text = &source[node.start_byte()..node.end_byte()];
+
+    match kind {
+        "function_declaration" => {
+            if let Some(pos) = text.find('{') {
+                let sig = text[..pos].trim();
+                truncate_label(sig)
+            } else {
+                text.lines().next().unwrap_or(kind).to_string()
+            }
+        }
+        "class_declaration" => {
+            if let Some(pos) = text.find('{') {
+                let header = text[..pos].trim();
+                truncate_label(header)
+            } else {
+                text.lines().next().unwrap_or(kind).to_string()
+            }
+        }
+        "interface_declaration" | "type_alias_declaration" | "enum_declaration" => {
+            if let Some(pos) = text.find('{') {
+                let header = text[..pos].trim();
+                truncate_label(header)
+            } else {
+                text.lines().next().unwrap_or(kind).trim().to_string()
+            }
+        }
+        "lexical_declaration" | "variable_declaration" => {
+            text.lines().next().unwrap_or(kind).trim().to_string()
+        }
+        "export_statement" => {
+            // Unwrap the export to show the inner declaration.
+            let first_line = text.lines().next().unwrap_or(kind).trim();
+            if let Some(pos) = first_line.find('{') {
+                truncate_label(first_line[..pos].trim())
+            } else {
+                truncate_label(first_line)
+            }
+        }
+        _ => text.lines().next().unwrap_or(kind).to_string(),
+    }
+}
+
+/// Extract a label for a Java AST node.
+fn extract_java_label(source: &str, node: &tree_sitter::Node) -> String {
+    let kind = node.kind();
+    let text = &source[node.start_byte()..node.end_byte()];
+
+    match kind {
+        "class_declaration"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "annotation_type_declaration" => {
+            if let Some(pos) = text.find('{') {
+                let header = text[..pos].trim();
+                truncate_label(header)
+            } else {
+                text.lines().next().unwrap_or(kind).to_string()
+            }
+        }
+        "method_declaration" => {
+            if let Some(pos) = text.find('{') {
+                let sig = text[..pos].trim();
+                truncate_label(sig)
+            } else {
+                text.lines().next().unwrap_or(kind).to_string()
+            }
+        }
+        _ => text.lines().next().unwrap_or(kind).to_string(),
+    }
+}
+
+/// Extract a label for a C AST node.
+fn extract_c_label(source: &str, node: &tree_sitter::Node) -> String {
+    let kind = node.kind();
+    let text = &source[node.start_byte()..node.end_byte()];
+
+    match kind {
+        "function_definition" => {
+            if let Some(pos) = text.find('{') {
+                let sig = text[..pos].trim();
+                truncate_label(sig)
+            } else {
+                text.lines().next().unwrap_or(kind).to_string()
+            }
+        }
+        "struct_specifier" | "enum_specifier" => {
+            if let Some(pos) = text.find('{') {
+                let header = text[..pos].trim();
+                truncate_label(header)
+            } else {
+                text.lines().next().unwrap_or(kind).trim().to_string()
+            }
+        }
+        "type_definition" | "declaration" | "preproc_def" | "preproc_function_def" => {
+            text.lines().next().unwrap_or(kind).trim().to_string()
+        }
+        _ => text.lines().next().unwrap_or(kind).to_string(),
+    }
+}
+
+/// Truncate a label to at most 120 characters, snapping to a char boundary.
+fn truncate_label(s: &str) -> String {
+    if s.len() > 120 {
+        let mut end = 117;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
+    } else {
+        s.to_string()
+    }
+}
+
 /// Detect a code language from a MIME type or URI.
 ///
 /// Tries MIME first, then falls back to URI extension detection.
@@ -443,6 +625,15 @@ pub const CODE_MIME_TYPES: &[&str] = &[
     "text/x-python",
     "text/x-script.python",
     "text/x-go",
+    "text/typescript",
+    "application/typescript",
+    "text/javascript",
+    "application/javascript",
+    "text/x-java",
+    "text/x-java-source",
+    "text/x-c",
+    "text/x-csrc",
+    "text/x-chdr",
 ];
 
 #[cfg(test)]
@@ -595,7 +786,11 @@ def helper():
             CodeLanguage::from_extension("py"),
             Some(CodeLanguage::Python)
         );
-        assert_eq!(CodeLanguage::from_extension("js"), None);
+        assert_eq!(
+            CodeLanguage::from_extension("js"),
+            Some(CodeLanguage::JavaScript)
+        );
+        assert_eq!(CodeLanguage::from_extension("xml"), None);
     }
 
     #[test]
