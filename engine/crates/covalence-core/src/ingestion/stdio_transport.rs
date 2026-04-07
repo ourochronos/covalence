@@ -90,10 +90,19 @@ impl StdioTransport {
             .map_err(|e| Error::Ingestion(format!("failed to serialize service input: {e}")))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(&stdin_bytes)
-                .await
-                .map_err(|e| Error::Ingestion(format!("failed to write to service stdin: {e}")))?;
+            // A child that closes stdin before consuming all input is
+            // valid: it has decided early it has enough information to
+            // produce a response. Treat BrokenPipe as a non-fatal signal
+            // and let the exit-code/stdout check below decide success.
+            match stdin.write_all(&stdin_bytes).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(e) => {
+                    return Err(Error::Ingestion(format!(
+                        "failed to write to service stdin: {e}"
+                    )));
+                }
+            }
             // Drop stdin to signal EOF.
             drop(stdin);
         }

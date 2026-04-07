@@ -276,18 +276,23 @@ fn build_cli_prompt(
 ///
 /// Each CLI tool has different flags for non-interactive prompt mode:
 ///   gemini:  --prompt=<text> --model <model>
-///   copilot: --prompt=<text> --model <model>
+///   copilot: --silent --prompt=<text> --model <model>
 ///   claude:  --print --model <model> <prompt>
 ///
 /// For gemini/copilot: use `--prompt=<value>` (equals syntax)
 /// to avoid yargs misinterpreting prompt content containing
 /// dashes (e.g. "---" markdown separators) as CLI flags.
 ///
+/// `copilot` requires `--silent` to suppress its trailing usage
+/// summary block ("Total usage est:", model breakdown, etc.) which
+/// would otherwise pollute the response and break JSON parsing.
+///
 /// When `json_output` is true, `--output-format json` is added
-/// for `claude` and `gemini` CLIs (copilot does not support it).
-/// This returns structured JSON with token usage and cost data.
-/// Use `json_output = false` for streaming, where line-by-line
-/// text output is needed.
+/// for `claude` and `gemini` CLIs (copilot's JSON output is JSONL
+/// event stream, not a single response object, so we use --silent
+/// text mode instead). This returns structured JSON with token
+/// usage and cost data. Use `json_output = false` for streaming,
+/// where line-by-line text output is needed.
 fn build_cli_command(
     command: &str,
     model: &str,
@@ -302,10 +307,15 @@ fn build_cli_command(
         }
         cmd.arg(prompt);
     } else {
+        if command == "copilot" {
+            cmd.arg("--silent");
+        }
         cmd.arg(format!("--prompt={prompt}"))
             .arg("--model")
             .arg(model);
-        // gemini supports --output-format json; copilot does not.
+        // gemini supports --output-format json; copilot does not
+        // (its --output-format json is JSONL event stream, not a
+        // single response object — incompatible with parse_cli_output).
         if json_output && command == "gemini" {
             cmd.arg("--output-format").arg("json");
         }
@@ -1066,7 +1076,8 @@ mod tests {
 
     #[test]
     fn build_cli_command_copilot_no_json_flag() {
-        // copilot does not support --output-format json.
+        // copilot does not support --output-format json (its JSON
+        // mode is a JSONL event stream, not a single response).
         let cmd = build_cli_command("copilot", "gpt-4", "prompt", true);
         let args: Vec<_> = cmd
             .as_std()
@@ -1077,6 +1088,37 @@ mod tests {
             !args.contains(&"--output-format".to_string()),
             "copilot must not get --output-format flag"
         );
+        assert!(
+            args.contains(&"--silent".to_string()),
+            "copilot must get --silent to suppress trailing usage summary"
+        );
+    }
+
+    #[test]
+    fn build_cli_command_copilot_text_mode_has_silent() {
+        let cmd = build_cli_command("copilot", "claude-haiku-4.5", "hello", false);
+        let prog = cmd.as_std().get_program().to_str().unwrap();
+        assert_eq!(prog, "copilot");
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert!(args.contains(&"--silent".to_string()));
+        assert!(args.contains(&"--prompt=hello".to_string()));
+        assert!(args.contains(&"claude-haiku-4.5".to_string()));
+    }
+
+    #[test]
+    fn build_cli_command_gemini_no_silent_flag() {
+        // --silent is copilot-specific; gemini must not receive it.
+        let cmd = build_cli_command("gemini", "gemini-2.5-flash", "hello", false);
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert!(!args.contains(&"--silent".to_string()));
     }
 
     // --- Token tracking tests ---

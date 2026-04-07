@@ -543,6 +543,111 @@ Multi-binary decomposition, stored procedures, Gemini SRE hardening.
 
 **Note:** 1,399 tests passing (1,329 core + 21 api + 49 eval), clippy clean, fmt clean.
 
+## Wave 21 — Ontology + Domain-Agnostic Core (ADR-0020/21/22) *(complete)*
+
+Replace hardcoded domain/relationship vocabulary with a configurable ontology layer
+so the core engine has no built-in opinions about what counts as a domain, bridge,
+or edge type.
+
+- [x] ADR-0020: Domain-agnostic core with configurable ontology
+- [x] ADR-0021: Simplify pipeline to statements and chunks (MaxSim for source-level ranking)
+- [x] ADR-0022: Knowledge Primitives
+- [x] Ontology schema + `OntologyService` (Phase 1)
+- [x] Ontology endpoint wired into API
+- [x] `INTERNAL_DOMAINS` replaced with ontology lookup
+- [x] Ontology-aware entity class derivation
+- [x] Graph view edge type constants replaced with ontology lookups
+- [x] Bridge type literals replaced with `BridgeConfig`
+- [x] Domain literals replaced with `DomainConfig`, analysis wiring complete
+- [x] Final 8 hardcoded ontology references replaced — 81/81 complete
+
+## Wave 22 — Architecture Polish + SQL Elimination *(complete)*
+
+Six god-file decompositions, complete elimination of raw SQL from the service layer,
+and a migration squash for clean state.
+
+- [x] Split `admin.rs` (1,917 lines) into 8 focused submodules
+- [x] Split `ast_extractor.rs` (2,183 lines) into 6 focused submodules
+- [x] Split `queue.rs` (1,621 lines) into 5 focused submodules
+- [x] Split `converter.rs` (1,515 lines) into 9 focused submodules
+- [x] Split `search.rs` (1,537 lines) into 5 focused submodules
+- [x] Split `source.rs` (1,527 lines) into 5 focused submodules
+- [x] Phase 4: 7 new repo traits, 41 raw SQL calls migrated (partial)
+- [x] Phase 4 complete: zero raw SQL in services layer
+- [x] Migration squash: 25 migrations into 8 clean logical migrations
+- [x] `ServiceFactory` extracted to eliminate API/worker init duplication
+- [x] Glob DTO re-exports replaced with explicit named imports
+- [x] Cleanup Phase 1+2: accurate docs, zero `dead_code` annotations
+- [x] `sp_find_cooccurrence_pairs` perf fix (CTE replaces correlated subqueries)
+- [x] `AdapterService` wired into source ingestion
+- [x] Graph lock tracing and fan-in debug logging
+
+## Wave 23 — Hooks + Sessions + SSE + Validation *(complete)*
+
+Pluggable lifecycle hooks at three pipeline points, conversation primitives,
+streaming `/ask`, and proper input validation/observability.
+
+- [x] Lifecycle hook architecture — external hooks at 3 pipeline points
+- [x] STDIO sidecar contract — JSON-in/JSON-out stateless transforms
+- [x] Session/conversation primitives — lightweight turns for `/ask` context
+- [x] SSE streaming for `/ask` — `POST /api/v1/ask/stream`
+- [x] Input validation (validator crate)
+- [x] Prometheus `/metrics` endpoint with counters and histograms
+
+## Wave 24 — Extension System + Domain Generalization (ADR-0023) *(complete)*
+
+Manifest-based extension model. Domains, entity types, edge types, services, hooks,
+and alignment rules become declarative YAML rather than hardcoded engine concepts.
+Sidecar→service rename across the codebase. AST extractor extracted to a standalone
+STDIO binary so it can be replaced without recompiling the engine.
+
+- [x] Migration: multi-domain sources, groups, rules
+- [x] Configurable visibility scopes, rule-driven alignment
+- [x] Sidecar→service rename across codebase
+- [x] ADR-0023: Extension model and layered configuration
+- [x] Layered figment config system (`covalence.conf` + `conf.d/` + env)
+- [x] Extension manifest loader + 4 default extensions (core, code-analysis, spec-design, research)
+- [x] `covalence-ast-extractor` — standalone STDIO service binary
+- [x] Extension operator config + services as graph entities
+- [x] Platform documentation: contributing, extensions, STDIO, hooks
+- [x] Domain-routed extraction + ingestion lifecycle hooks wired
+- [x] Dead code cleanup + service lifecycle management
+
+## Wave 25 — Library Modernization + Clean Redeploy *(complete)*
+
+Replace hand-rolled retry/HTML/JSON-schema code with established libraries, then
+take advantage of the clean slate to remove all backward-compatibility shims and
+re-squash migrations.
+
+- [x] Replace hand-rolled code: `reqwest-middleware`, `html2md`, `jsonschema`
+- [x] Remove all backward compatibility code for clean redeploy
+- [x] Migration re-squash: 16 migrations into 8 final-state migrations
+- [x] Close 5 Gemini alignment gaps: hook wiring, turn extraction, adapter scope
+- [x] Metadata schema enforcement for extension-declared contracts
+- [x] Wire metadata filters into search + adapter-driven search strategy
+- [x] `Config::from_env()` removed — figment is the sole config path
+
+## Wave 26 — Agent Memory + Multi-Language AST + Token Tracking *(complete)*
+
+Flagship 5th extension (`agent-memory`) makes Covalence usable as persistent memory
+for AI agents, with three MCP tools. AST extractor expanded from 3 to 7 languages.
+LLM call provenance now includes token counts.
+
+- [x] Flagship `agent-memory` extension with full service layer (5th default extension)
+- [x] 3 MCP memory tools: `covalence_memory_store`, `covalence_memory_recall`, `covalence_memory_forget`
+- [x] 4 new dashboard cards: Extensions, Services, Sessions, Hooks
+- [x] AST extractor: TypeScript, JavaScript, Java, C added (7 languages total: + Rust, Go, Python)
+- [x] LLM token usage tracking (input + output tokens)
+- [x] Parse token usage from Claude/Gemini CLI via `--output-format json`
+- [x] Docs overhaul: completeness directive, lifecycle phases, counts fix
+
+**Note:** Waves 21–26 landed in two bursts (2026-03-20→21 and 2026-03-25→26) with
+a 3-day silence in between. Unlike Waves 9–20, none of these waves shipped with
+GitHub tracking issues — the work was scoped from ADRs (0020–0023) and direct
+implementation rather than from the issue tracker. Test count ended at 1,572
+passing (1,489 core + 21 api + 13 ast-extractor + 49 eval), 18 ignored. Clippy
+clean, fmt clean.
+
 ## Future
 
 - Source adapter webhook integration (Phase 4)

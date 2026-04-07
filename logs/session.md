@@ -1500,3 +1500,341 @@ Result: orphan code 30 → 0, coverage stable at 84.1%, 10 new PART_OF_COMPONENT
 - Re-test Ollama after ROCm fix
 - Wire up Ollama as tertiary fallback
 - Continue SE source ingestion (#132)
+
+---
+
+## Session 40 — 2026-04-07 — Retroactive Reconciliation: 2026-03-16 → 2026-03-26
+
+This entry reconciles ~12 days of undocumented work. Sessions 40a–40f were not
+logged at the time, so this is reconstructed from `git log`, the resulting
+`MILESTONES.md` Wave 21–26 entries, and ADRs 0020–0023. Insights below are
+intentionally minimal — the freshness window has passed and inventing reflections
+post-hoc would be dishonest.
+
+### Timeline
+
+- **2026-03-16 → 2026-03-20 (Waves 11–20 era):** Already covered by Sessions 39 /
+  39b (the prior log entries). The retry queue, GraphEngine/AGE backend (#137),
+  /ask synthesis, ChainChatBackend, graph type system (ADR-0018, #138 DDSS),
+  semantic code summaries (#139), async pipeline (#140), MCP server (#143),
+  structural edges (#145), pipeline decomposition (#148), provider attribution +
+  data health, spec sync, coref + PDF (#160, #125), async ingestion (#162),
+  multi-binary architecture evolution (#175, #147). All landed and closed in
+  this window.
+
+- **2026-03-20 evening → 2026-03-21 morning (Wave 21):** Ontology layer.
+  ADR-0020/0021/0022 written. `OntologyService` schema + endpoint. 81 hardcoded
+  domain/bridge/edge-type/entity-class references replaced with config lookups
+  in two evening sessions. Domain-agnostic core achieved.
+
+- **2026-03-22 → 2026-03-24:** **Three-day silence.** No commits.
+
+- **2026-03-25 (Waves 22–24 partial):** Single longest day in the gap window.
+  Six god-file decompositions (`admin.rs`, `ast_extractor.rs`, `queue.rs`,
+  `converter.rs`, `search.rs`, `source.rs` — all >1,500 lines, all split).
+  Phase 4 raw-SQL elimination from services layer (zero raw SQL remaining).
+  First migration squash (25→8). Lifecycle hook architecture, STDIO sidecar
+  contract, sessions/turns primitive, SSE streaming for `/ask`, input validation
+  (validator crate), Prometheus `/metrics`. Domain generalization migration +
+  configurable visibility scopes. Sidecar→service rename across the codebase.
+
+- **2026-03-26 (Waves 24 finish + 25 + 26):** ADR-0023 + extension system landed.
+  Extension manifest loader, 4 default extensions, `covalence-ast-extractor`
+  binary extracted as standalone STDIO service, layered figment config. Library
+  modernization (`reqwest-middleware`, `html2md`, `jsonschema`). Backward-compat
+  removal + second migration squash (16→8). `Config::from_env()` deleted.
+  Metadata schema enforcement for extensions. Flagship `agent-memory` extension +
+  3 MCP memory tools. 4 new dashboard cards. AST extractor expanded to 7
+  languages (TS/JS/Java/C added). LLM token usage tracking with CLI parsing.
+
+- **2026-03-27 → 2026-04-06:** Silence. Last commit was `c0bca5f` on
+  2026-03-26 23:15.
+
+### Metrics at end of window
+
+- 1,572 tests passing (1,489 core + 21 api + 13 ast-extractor + 49 eval),
+  18 ignored. Clippy clean, fmt clean.
+- 5 default extensions: core, code-analysis, spec-design, research, agent-memory
+- 7 AST languages: Rust, Go, Python, TypeScript, JavaScript, Java, C
+- 23 ADRs total (was 19 at end of Session 39b)
+
+### Process notes (NOT insight, just observation)
+
+- **None of Waves 21–26 shipped with GitHub tracking issues.** This is a deviation
+  from the CLAUDE.md "every non-trivial piece of work gets an issue" rule. The
+  work was scoped from ADRs and direct implementation rather than from the
+  issue tracker.
+- **The session log was not maintained** during this window. The "Update" step
+  of the meta loop was the casualty. CLAUDE.md says "the insight is freshest
+  immediately after the work" — proven true by the loss of those insights.
+
+### Where things were left
+
+- Database appears to have been rebuilt mid-window (consistent with the
+  back-to-back migration squashes + "Remove all backward compatibility code for
+  clean redeploy"). Post-rebuild ingestion got partway through but never
+  completed embed/summarize backfill or codebase re-ingest.
+- Stale data from prior runs is gone. Numbers from Session 39b
+  (5,840 nodes / 98,985 edges) no longer apply.
+
+---
+
+## Session 41 — 2026-04-07 — Cleanup, Stored-Procedure Bugs, Copilot Switch
+
+Picked up immediately after Session 40's retroactive reconciliation. Goal:
+finish the open cleanup checklist (#1–#11) and get the system back to a known
+healthy state after the 12-day silence + post-rebuild half-finished ingest.
+
+### Work Completed
+
+**1. Baseline + codebase re-ingest.** `make check` green at start (1,572).
+Ran `make ingest-codebase` to repopulate the graph after the post-Wave-26
+rebuild. Component count came back high (162) — sources had landed but
+co-occurrence edges had not yet been synthesized.
+
+**2. Embed + summarize backfill.** Triggered queue passes to complete the
+unfinished embed/summarize work from the rebuild. Verified via `cove admin
+metrics` that `unsummarized_code` and `unembedded_nodes` settled to 0.
+
+**3. Switched ingestion CLI from `claude` to `copilot`** (user request
+mid-session). Two changes:
+  - `.env.wsl`: `COVALENCE_CHAT_CLI_COMMAND=copilot`,
+    `COVALENCE_STATEMENT_MODEL=claude-haiku-4.5`.
+  - `chat_backend.rs`: Copilot CLI emits an interactive banner unless
+    invoked with `--silent`. Added the flag in `build_cli_command` for
+    `command == "copilot"`. Also discovered Copilot's `--output-format json`
+    is a JSONL event stream, *not* a single response object — incompatible
+    with `parse_cli_output`. Gated `--output-format json` to gemini only.
+  - Updated existing test `build_cli_command_copilot_no_json_flag` to
+    assert `--silent`; added `build_cli_command_copilot_text_mode_has_silent`
+    and `build_cli_command_gemini_no_silent_flag`. All 36 chat_backend
+    tests pass.
+  - Verified end-to-end: 2,013+ jobs flowed through chain
+    `["copilot(claude-haiku-4.5)", "claude(haiku)", "gemini(gemini-3-flash-preview)"]`
+    with 0 failures.
+
+**4. Stale worker process.** After restarting `covalence-engine`, the
+`covalence-worker` systemd unit still held the previous `claude` child
+process (PID 215282). Restarting the worker unit was needed separately —
+the engine and worker are independent systemd services. Worth remembering.
+
+**5. Migration 012 — `sp_delete_source_cascade` ROW_COUNT bug.** 21
+`process_source` jobs were dead with `column row_count does not exist`.
+Root cause: line 85 of `sp_delete_source_cascade` reads
+`v_ext := v_ext + ROW_COUNT;`. PostgreSQL parses bare `ROW_COUNT` as a
+column reference — `GET DIAGNOSTICS ... = ROW_COUNT` is the only legal
+way to read it. Created `012_fix_delete_source_cascade.sql` with a
+`v_ext2` temp + second `GET DIAGNOSTICS`. Cannot edit migration 006 in
+place — sqlx hashes applied migrations and rejects modifications
+("migration 6 was previously applied but has been modified"). The
+buggy line stays in 006, the fix lives in 012.
+
+**6. Migration 013 — `sp_data_health_report` duplicate metric.** The
+`duplicate_sources` count used `(title, domains)` as the dedup key, which
+flagged 24 different `mod.rs` files across crates as "duplicates." Real
+definition of a duplicate: multiple non-superseded rows sharing a URI
+(`content_hash` is already UNIQUE at the schema level). Rewrote with a
+URI-based heuristic. Result: `duplicate_sources` 48 → 0.
+
+**7. `sqlx::migrate!` is a compile-time macro.** Added migration 013,
+ran `make migrate` — nothing happened. The `covalence-migrations` binary
+embeds the migration list at build time. Fix: `touch
+crates/covalence-migrations/src/main.rs` to force a rebuild, then re-run.
+Worth knowing for the next person who adds a migration without a code
+change.
+
+**8. Dead-job revival.** The `retry_failed` API only handles `failed`
+status, not `dead`. Had to revive the 21 process_source jobs directly:
+`UPDATE retry_jobs SET status='pending', attempt=0 WHERE status='dead'
+AND kind='process_source'`. All 21 ran cleanly post-migration-012.
+
+**9. Edge synthesis loop.** First synthesis call returned 0 candidates
+because chunks had not yet linked to nodes. Waited for the queue to
+drain, retried — 6 new co-occurrence edges, components dropped from
+**162 → 8**. Most of the drop came from the codebase re-ingest itself
+filling in shared imports/types; the synthesis pass was the final
+stitch.
+
+**10. Untitled Document sources.** Found 4 sources with empty titles
+from 2026-03-26. Investigated: legitimate `agent-memory` observations
+from the agent-memory extension launch. Per the CLAUDE.md epistemic
+lifecycle rule ("Never automatically delete old source versions"), left
+them alone. Documenting here so the next session doesn't re-investigate.
+
+**11. CLAUDE.md test counts.** Updated 1,535 → 1,574 (1,491 core + 21
+api + 13 ast-extractor + 49 eval) and milestone phase from
+"Waves 1–20" → "Waves 1–26".
+
+**12. Migration 014 — `sp_list_nodes_without_embeddings` filter bug.**
+After the embedding backfill ran and reported success, `data-health`
+still showed 39 unembedded nodes. Tracing the SP showed the WHERE clause
+required `description IS NOT NULL AND description != ''` — but the
+Rust backfill in `backfill_node_embeddings` already falls back to
+`canonical_name` when description is empty. The SP filter was hiding
+exactly the rows the application code knew how to handle: actor nodes
+(authors, institutions) and short domain concepts that only have a
+canonical name. Migration 014 drops the description filter; the next
+backfill cleared the remaining 39 nodes to 0.
+
+**13. Petgraph sidecar wasn't loading the synthetic edge backlog.**
+Edge synthesis returned 0 candidates on the second pass, but the metrics
+endpoint showed `synthetic_edge_count: 0` while the DB had **108,285
+synthetic `co_occurs` edges**. A `POST /admin/graph/reload` brought the
+sidecar from 103,763 → 109,286 edges and components from 29 → **6**.
+The sidecar was started before the bulk of synthetic edges existed and
+nothing had reloaded it since. Filing a follow-up: the graph sidecar
+should subscribe to edge inserts (or at minimum the synthesis service
+should call `reload()` when it commits a batch). The metric label is
+also wrong — `synthetic_edge_count` from the engine is reporting `0`
+while the DB clearly has 108K synthetic edges, so the sidecar's
+synthetic-vs-semantic classification doesn't match the DB column.
+
+**14. AST extractor coverage gap (logged, not fixed).** While
+investigating why `compose-all` only enqueued 14 jobs against 193
+unsummarized code sources, found that 178 of those sources have **zero
+code-class nodes** despite having chunks and extractions. Sample:
+`chat_backend.rs` has 726 chunks, 4,677 extractions, and 176 distinct
+nodes — none of them code-class. The LLM extractor is producing
+domain/concept nodes for these sources but the AST extractor path is
+not creating code entities. 166 .rs and 11 .go files affected — both
+languages the AST extractor supports. Not chasing in this session
+(separate investigation), filing as a high-priority follow-up issue.
+
+### Commits
+
+None this session yet — all work is staged for a single bundled commit
+after this log entry lands.
+
+### Metrics at end of session
+
+- **1,574 tests passing** (1,491 core + 21 api + 13 ast-extractor + 49 eval),
+  18 ignored. Up from 1,572 at session start (the 2 new tests are the
+  copilot `--silent` assertions).
+- **6 graph components** (from 162 at session start, 8 mid-session,
+  29 after the engine restart, finally 6 after the post-backfill
+  graph reload).
+- **3,522 nodes**, **109,286 edges** (1,308 semantic + 108,285 synthetic
+  co_occurs). 357 sources, 23,400 chunks.
+- **0 duplicate_sources**, **0 unembedded_nodes**, **0 dead jobs**.
+- **190 unsummarized_sources remaining** — all blocked on the AST
+  extractor coverage gap (item 14), not on the LLM pipeline. 14 code
+  sources with proper code-class entities composed cleanly during this
+  session.
+- Ingestion chain healthy: copilot primary, claude + gemini fallbacks,
+  2,013+ jobs with 0 failures.
+
+### Insights
+
+- **`ROW_COUNT` is not a column.** It is a session variable readable
+  only via `GET DIAGNOSTICS`. Using it as a bare identifier in a plpgsql
+  expression compiles fine until the function actually executes —
+  PostgreSQL only resolves it as a column reference at runtime. This is
+  exactly the kind of bug that sits in a stored procedure for weeks
+  because the unhappy path (cascade delete during re-ingest) is rare.
+  Lesson: any new plpgsql function that reads `ROW_COUNT` should get an
+  explicit integration test that exercises the cascade.
+
+- **`sqlx::migrate!` rejects modifications to applied migrations by
+  hash.** This is correct and safe — it prevents schema drift between
+  environments — but it means *every* fix to a stored procedure has to
+  go in a fresh migration, and the buggy original stays on disk forever.
+  When reviewing the migrations directory, always read the *latest*
+  CREATE OR REPLACE for any given function, not the first.
+
+- **Two-process restarts are easy to miss.** `covalence-engine` and
+  `covalence-worker` are separate systemd units sharing the same env
+  file. Restarting the engine after an env change does not pick up env
+  changes in the worker, and the worker keeps the old CLI subprocess
+  open until *it* is restarted. Any future `cove admin restart` style
+  command should hit both units.
+
+- **Heuristics for "duplicate" need to know what canonical means.**
+  `(title, domains)` as a duplicate key looked reasonable until you
+  remember that 24 of your `mod.rs` files share both. URI is the stable
+  per-file identifier, and `superseded_by IS NULL` filters historical
+  rows. The right test for the heuristic is "does it count files I
+  intentionally have multiple of as duplicates?" — that question would
+  have caught this on day one.
+
+- **Edge synthesis is downstream of node-chunk linkage.** Calling
+  `/admin/edges/synthesize` immediately after ingestion returns 0
+  candidates because the chunks-to-nodes join is empty. The synthesis
+  pass needs to wait for the embed + summarize jobs to drain. Next
+  iteration: synthesis should be a queue kind that runs after a source's
+  jobs complete, not a manual admin trigger.
+
+- **Stored procedures and the calling code can drift apart silently.**
+  Migration 014 fixed an SP that filtered out exactly the rows the
+  Rust caller knew how to handle. The contract between the SP and the
+  caller wasn't tested end-to-end — the SP had unit-style coverage
+  ("returns rows where embedding IS NULL") but no test that asserted
+  it returns *all* such rows. When you split logic across an SP and
+  the application, the integration boundary needs its own test. Not
+  filing as a follow-up because it's already a known anti-pattern; the
+  long-term answer is to do this work in the application layer or in
+  one place, not both.
+
+- **The petgraph sidecar is not a live mirror.** Synthetic edges
+  written directly to PG by background jobs do *not* appear in the
+  sidecar until something forces a reload. The system has been running
+  with a stale sidecar for an unknown period — every metric and graph
+  query was missing 5K+ edges. The fix isn't "remember to reload more
+  often" — it's that the synthesis service should call `reload()` (or
+  better, an incremental `add_edges()`) on commit. Filing as
+  high-priority follow-up.
+
+### Loop reflection
+
+The single biggest friction point of the session was the
+`sqlx::migrate!` rebuild requirement — I added migration 013, ran
+`make migrate`, saw nothing happen, and had to spend several minutes
+diagnosing whether the SQL was wrong before remembering the macro is
+compile-time. The fix is documentation, not code: the
+`covalence-migrations` README should have a one-liner: *"After adding
+a new migration, `touch crates/covalence-migrations/src/main.rs` to
+force a rebuild before `make migrate`."* Filing this as a follow-up.
+
+The second friction point was the worker restart. The fact that the
+covalence-worker process held a stale `claude` child for ~10 minutes
+after I switched the env to copilot is the kind of bug that erodes
+trust in `cove admin restart`. The right fix is a `cove admin
+restart-all` that targets both units, or — better — a config-reload
+endpoint on the worker that re-reads env without a process restart.
+
+### Where things were left
+
+- Working tree bundled into a single commit on `fix/session-41-cleanup`:
+  `MILESTONES.md`, `CLAUDE.md`, `chat_backend.rs`, `stdio_transport.rs`,
+  `Makefile`, `logs/session.md`, three new migrations (012, 013, 014),
+  `.gitignore`, and the staged deletion of `.mcp.json`. `.env.wsl`
+  remains untracked (gitignored, local secrets).
+- Task #9 (prune 6 stale remote feature branches) is **pending user
+  approval** — all 6 are verified merged into main but per CLAUDE.md
+  remote-action rules, branch deletion needs explicit OK.
+- Follow-up issues to file:
+  - **AST extractor coverage gap (high priority).** 178 .rs/.go sources
+    have chunks and extractions but zero code-class nodes. The LLM
+    extractor is running for them; the AST extractor is not. Blocks
+    entity-summary → source-summary composition for these sources
+    (affecting `unsummarized_sources` metric directly).
+  - **Petgraph sidecar reload after edge synthesis (high priority).**
+    `EdgeSynthService::commit_batch()` should call `graph.reload()` (or
+    `graph.add_edges()`). Also fix the metrics endpoint label so
+    `synthetic_edge_count` matches the DB `is_synthetic` column.
+  - `handlers.rs:226/356/459` hardcode `"model": "haiku"` in processing
+    metadata. Cosmetic — actual provider attribution is correct via the
+    chain backend's separate `provider` field — but the literal should
+    be the configured statement model.
+  - Document the `sqlx::migrate!` recompile dance in
+    `covalence-migrations/README.md`.
+  - `covalence-worker` should reload env without a process restart, or
+    `cove admin restart-all` should hit both systemd units.
+
+### Next steps
+
+- Get user approval on Task #9 (branch pruning), then either prune or
+  defer.
+- Run `cove llm` review per protocol, address feedback, then push and
+  merge `fix/session-41-cleanup` into main.
+- File the five follow-up issues above (the two new ones from items
+  13/14 are the highest priority).

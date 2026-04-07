@@ -175,7 +175,7 @@ ingest-codebase:
 	@echo "Ingesting Rust source files..."
 	@find engine/crates -name '*.rs' -not -path '*/target/*' | while read f; do \
 		echo "  $$f"; \
-		b64=$$(base64 < "$$f"); \
+		b64=$$(base64 -w 0 < "$$f"); \
 		curl -sf -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
 			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"mime\": \"text/x-rust\", \"uri\": \"file://$$f\"}" \
@@ -184,7 +184,7 @@ ingest-codebase:
 	@echo "Ingesting Go CLI files..."
 	@find cli -name '*.go' | while read f; do \
 		echo "  $$f"; \
-		b64=$$(base64 < "$$f"); \
+		b64=$$(base64 -w 0 < "$$f"); \
 		curl -sf -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
 			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"mime\": \"text/x-go\", \"uri\": \"file://$$f\"}" \
@@ -194,7 +194,7 @@ ingest-codebase:
 	@for f in dashboard/index.html dashboard/style.css dashboard/dashboard.js; do \
 		[ -f "$$f" ] || continue; \
 		echo "  $$f"; \
-		b64=$$(base64 < "$$f"); \
+		b64=$$(base64 -w 0 < "$$f"); \
 		mime=$$(case "$$f" in *.html) echo "text/html";; *.css) echo "text/css";; *.js) echo "application/javascript";; esac); \
 		curl -sf -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
@@ -208,7 +208,7 @@ ingest-specs:
 	@for f in spec/*.md; do \
 		[ -f "$$f" ] || continue; \
 		echo "  $$f"; \
-		b64=$$(base64 < "$$f"); \
+		b64=$$(base64 -w 0 < "$$f"); \
 		curl -sf -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
 			-d "{\"content\": \"$$b64\", \"source_type\": \"document\", \"mime\": \"text/markdown\", \"uri\": \"file://$$f\"}" \
@@ -221,7 +221,7 @@ ingest-adrs:
 	@for f in docs/adr/*.md; do \
 		[ -f "$$f" ] || continue; \
 		echo "  $$f"; \
-		b64=$$(base64 < "$$f"); \
+		b64=$$(base64 -w 0 < "$$f"); \
 		curl -sf -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
 			-d "{\"content\": \"$$b64\", \"source_type\": \"document\", \"mime\": \"text/markdown\", \"uri\": \"file://$$f\"}" \
@@ -254,7 +254,7 @@ ingest-changes:
 	while IFS= read -r f; do \
 		[ -f "$$f" ] || continue; \
 		echo "  [code] $$f"; \
-		b64=$$(base64 < "$$f"); \
+		b64=$$(base64 -w 0 < "$$f"); \
 		curl -sf -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
 			-d "{\"content\": \"$$b64\", \"source_type\": \"code\", \"uri\": \"file://$$f\"}" \
@@ -263,7 +263,7 @@ ingest-changes:
 	while IFS= read -r f; do \
 		[ -f "$$f" ] || continue; \
 		echo "  [doc] $$f"; \
-		b64=$$(base64 < "$$f"); \
+		b64=$$(base64 -w 0 < "$$f"); \
 		curl -sf --max-time 600 -X POST $(INGEST_API)/api/v1/sources \
 			-H 'Content-Type: application/json' \
 			-d "{\"content\": \"$$b64\", \"source_type\": \"document\", \"uri\": \"file://$$f\"}" \
