@@ -205,6 +205,17 @@ impl ProfileRegistry {
     }
 
     /// Find the best-matching profile for a source.
+    ///
+    /// Matching priority:
+    /// 1. URI prefix match (most specific — picks up profiles like
+    ///    `arxiv_paper` that are URI-keyed).
+    /// 2. Source type match, restricted to profiles without URI
+    ///    prefixes. This prevents URI-keyed profiles from being
+    ///    selected as a generic source-type fallback (e.g.,
+    ///    `arxiv_paper` shares `source_type=Document` with the
+    ///    generic `document` profile and would otherwise win the
+    ///    fallback for all non-arxiv documents because of vec order).
+    /// 3. Fallback to the document profile (the last entry).
     pub fn match_profile(&self, source_type: &SourceType, uri: Option<&str>) -> &SourceProfile {
         // Priority 1: URI prefix match.
         if let Some(uri) = uri {
@@ -219,8 +230,12 @@ impl ProfileRegistry {
             }
         }
 
-        // Priority 2: Source type match.
+        // Priority 2: Source type match. Skip URI-keyed profiles —
+        // they should only be selected via Priority 1.
         for profile in &self.profiles {
+            if !profile.uri_prefixes.is_empty() {
+                continue;
+            }
             if &profile.source_type == source_type {
                 return profile;
             }
@@ -265,6 +280,30 @@ mod tests {
     fn registry_falls_back_to_document() {
         let reg = ProfileRegistry::new();
         let profile = reg.match_profile(&SourceType::Observation, None);
+        assert_eq!(profile.name, "document");
+    }
+
+    #[test]
+    fn registry_document_type_does_not_select_arxiv_for_non_arxiv_uri() {
+        // Regression for #190: ARXIV_PAPER and DOCUMENT both share
+        // source_type=Document. Before the fix, the source_type loop
+        // returned the first match in vec order (arxiv) for any
+        // Document URL — including local code files reprocessed
+        // through the synchronous pipeline.
+        let reg = ProfileRegistry::new();
+        let profile = reg.match_profile(
+            &SourceType::Document,
+            Some("file:///path/to/chat_backend.rs"),
+        );
+        assert_eq!(profile.name, "document");
+    }
+
+    #[test]
+    fn registry_document_type_with_no_uri_picks_document() {
+        // Same regression: even without a URI, Document type must
+        // resolve to the generic document profile, not arxiv_paper.
+        let reg = ProfileRegistry::new();
+        let profile = reg.match_profile(&SourceType::Document, None);
         assert_eq!(profile.name, "document");
     }
 
