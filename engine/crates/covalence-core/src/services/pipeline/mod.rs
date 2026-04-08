@@ -54,8 +54,21 @@ impl SourceService {
     /// dedup, supersession, or cleanup).
     pub(crate) async fn run_pipeline(&self, input: &PipelineInput<'_>) -> Result<PipelineOutput> {
         // Resolve source profile for per-type chunk parameters.
-        let source_type_enum = crate::models::source::SourceType::from_str_opt(input.source_type)
-            .unwrap_or(crate::models::source::SourceType::Document);
+        //
+        // `input.is_code` is set by `prepare_content` via URI/MIME
+        // detection (`code_chunker::detect_code_language`) and is
+        // authoritative for code dispatch. The PG row's `source_type`
+        // can lag (e.g. a `.rs` file added with `--type document`),
+        // so when `is_code` is true we must force the CODE profile —
+        // otherwise the file gets paragraph-chunked as a document
+        // and tree-sitter never produces per-entity chunks for the
+        // AST extractor (#190).
+        let source_type_enum = if input.is_code {
+            crate::models::source::SourceType::Code
+        } else {
+            crate::models::source::SourceType::from_str_opt(input.source_type)
+                .unwrap_or(crate::models::source::SourceType::Document)
+        };
         let registry = crate::ingestion::source_profile::ProfileRegistry::new();
         let profile = registry.match_profile(&source_type_enum, input.source_uri.as_deref());
         tracing::debug!(
@@ -399,9 +412,16 @@ impl SourceService {
 
             let extractable: Vec<_> = chunk_outputs.iter().collect();
 
+            // Use the profile's `min_extract_tokens` rather than the
+            // engine-wide default. The CODE profile sets this to 10
+            // because tree-sitter-derived sections like `struct Foo`
+            // are intentionally short (~20 tokens) — the global
+            // default of 30 would filter them out before extraction
+            // (#190 follow-up).
+            let min_extract_tokens = profile.min_extract_tokens;
             let batches = group_extraction_batches(
                 &extractable,
-                self.min_extract_tokens,
+                min_extract_tokens,
                 self.extract_batch_tokens,
                 resolved_texts.as_ref(),
             );
@@ -409,7 +429,7 @@ impl SourceService {
             tracing::debug!(
                 extractable = extractable.len(),
                 batches = batches.len(),
-                min_tokens = self.min_extract_tokens,
+                min_tokens = min_extract_tokens,
                 batch_budget = self.extract_batch_tokens,
                 "extraction batching"
             );
