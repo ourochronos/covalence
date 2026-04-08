@@ -90,6 +90,20 @@ impl SourceService {
         uri: Option<&str>,
         metadata: serde_json::Value,
     ) -> Result<SourceId> {
+        // Reject scratch-path URIs. Smoke tests against the live engine
+        // have a habit of leaking files like `/tmp/copilot-smoke.md` into
+        // the persistent store, where they pollute search and citation
+        // results forever. If callers genuinely want to ingest a temp
+        // file, they should copy it to a stable path first.
+        if let Some(u) = uri
+            && is_scratch_uri(u)
+        {
+            return Err(Error::InvalidInput(format!(
+                "refusing to ingest source with scratch-path URI: {u} \
+                 — copy the file to a stable location first"
+            )));
+        }
+
         let hash = Sha256::digest(content).to_vec();
 
         // Dedup check — exact content hash match.
@@ -496,5 +510,42 @@ impl SourceService {
         PipelineRepo::mark_source_superseded(&*self.repo, old_id, new_id, update_class.as_str())
             .await?;
         Ok(())
+    }
+}
+
+/// Returns true if the URI points at a scratch / temp location that should
+/// not be persisted into the knowledge base. Currently catches `/tmp/` and
+/// `file:///tmp/` prefixes.
+fn is_scratch_uri(uri: &str) -> bool {
+    const PREFIXES: &[&str] = &["/tmp/", "file:///tmp/"];
+    PREFIXES.iter().any(|p| uri.starts_with(p))
+}
+
+#[cfg(test)]
+mod scratch_uri_tests {
+    use super::is_scratch_uri;
+
+    #[test]
+    fn rejects_bare_tmp() {
+        assert!(is_scratch_uri("/tmp/copilot-smoke.md"));
+    }
+
+    #[test]
+    fn rejects_file_scheme_tmp() {
+        assert!(is_scratch_uri("file:///tmp/copilot-smoke.md"));
+    }
+
+    #[test]
+    fn allows_normal_paths() {
+        assert!(!is_scratch_uri("file:///home/user/notes.md"));
+        assert!(!is_scratch_uri("https://example.com/paper.pdf"));
+        assert!(!is_scratch_uri("file://engine/crates/foo.rs"));
+    }
+
+    #[test]
+    fn allows_tmp_substring_in_other_paths() {
+        // Don't false-positive on legitimate paths that happen to contain "tmp".
+        assert!(!is_scratch_uri("file:///home/attempts/log.md"));
+        assert!(!is_scratch_uri("file:///opt/temp_keeper.md"));
     }
 }

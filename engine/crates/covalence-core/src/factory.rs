@@ -982,6 +982,7 @@ mod tests {
             ask_model: "sonnet".into(),
             external_services: vec![],
             metadata_enforcement: "warn".into(),
+            graph_reload_interval_secs: 30,
         }
     }
 

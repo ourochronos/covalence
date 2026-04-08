@@ -168,7 +168,7 @@ pub async fn blast_radius(
     let include_invalidated = req.include_invalidated.unwrap_or(false);
     let result = state
         .analysis_service
-        .blast_radius(&req.target, max_hops, include_invalidated)
+        .blast_radius(&req.target, max_hops, include_invalidated, req.node_limit)
         .await?;
     Ok(Json(BlastRadiusResponse {
         target_node_id: result.target.node_id,
@@ -193,6 +193,9 @@ pub async fn blast_radius(
             })
             .collect(),
         total_affected: result.total_affected,
+        total_reachable: result.total_reachable,
+        truncated: result.truncated,
+        node_limit_applied: result.node_limit_applied,
     }))
 }
 

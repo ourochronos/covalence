@@ -95,12 +95,19 @@ struct DatabaseConfig {
 #[serde(default)]
 struct GraphConfig {
     engine: String,
+    /// Polling interval (seconds) for the engine's background graph
+    /// reload task. Per ADR-0004 this is the polling fallback that
+    /// keeps the in-process sidecar in sync with PG when worker
+    /// processes commit changes the engine never sees. `0` disables
+    /// the background reload entirely.
+    reload_interval_secs: u64,
 }
 
 impl Default for GraphConfig {
     fn default() -> Self {
         Self {
             engine: "petgraph".to_string(),
+            reload_interval_secs: 30,
         }
     }
 }
@@ -357,6 +364,7 @@ impl RawConfig {
             voyage_api_key: self.voyage_api_key,
             voyage_base_url: self.voyage_base_url,
             graph_engine: self.graph.engine,
+            graph_reload_interval_secs: self.graph.reload_interval_secs,
             embed_provider: self.embedding.provider,
             embed_model: self.embedding.model.clone(),
             chat_model: self.chat.model,

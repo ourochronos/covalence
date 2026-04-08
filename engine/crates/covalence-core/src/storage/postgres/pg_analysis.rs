@@ -435,8 +435,13 @@ impl AnalysisRepo for PgRepo {
         distance_threshold: f64,
         limit: i64,
     ) -> Result<Vec<(String, String, String, Option<f64>, Option<String>)>> {
+        // The SP declares `p_limit INT`. sqlx binds Rust `i64` as PG `bigint`,
+        // and PG's overload resolution is type-strict — without the explicit
+        // `::INT` cast, lookup fails with "function sp_find_code_ahead(double
+        // precision, bigint) does not exist". Same fix applied to all four
+        // alignment SPs below.
         let rows: Vec<(String, String, String, Option<f64>, Option<String>)> =
-            sqlx::query_as("SELECT * FROM sp_find_code_ahead($1, $2)")
+            sqlx::query_as("SELECT * FROM sp_find_code_ahead($1, $2::INT)")
                 .bind(distance_threshold)
                 .bind(limit)
                 .fetch_all(&self.pool)
@@ -446,7 +451,7 @@ impl AnalysisRepo for PgRepo {
 
     async fn check_spec_ahead(&self, limit: i64) -> Result<Vec<(String, String, i32)>> {
         let rows: Vec<(String, String, i32)> =
-            sqlx::query_as("SELECT * FROM sp_check_spec_ahead($1)")
+            sqlx::query_as("SELECT * FROM sp_check_spec_ahead($1::INT)")
                 .bind(limit)
                 .fetch_all(&self.pool)
                 .await?;
@@ -459,7 +464,7 @@ impl AnalysisRepo for PgRepo {
         limit: i64,
     ) -> Result<Vec<(String, String, f64, String)>> {
         let rows: Vec<(String, String, f64, String)> =
-            sqlx::query_as("SELECT * FROM sp_find_design_contradictions($1, $2)")
+            sqlx::query_as("SELECT * FROM sp_find_design_contradictions($1, $2::INT)")
                 .bind(distance_threshold)
                 .bind(limit)
                 .fetch_all(&self.pool)
@@ -469,7 +474,7 @@ impl AnalysisRepo for PgRepo {
 
     async fn find_stale_design(&self, limit: i64) -> Result<Vec<(String, String, f64, String)>> {
         let rows: Vec<(String, String, f64, String)> =
-            sqlx::query_as("SELECT * FROM sp_find_stale_design($1)")
+            sqlx::query_as("SELECT * FROM sp_find_stale_design($1::INT)")
                 .bind(limit)
                 .fetch_all(&self.pool)
                 .await?;

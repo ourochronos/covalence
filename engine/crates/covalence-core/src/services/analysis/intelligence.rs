@@ -51,10 +51,17 @@ pub struct BlastRadiusHop {
 pub struct BlastRadiusResult {
     /// The target node being analyzed.
     pub target: TargetInfo,
-    /// Affected nodes grouped by hop distance.
+    /// Affected nodes grouped by hop distance (capped by `node_limit_applied`).
     pub affected_by_hop: Vec<BlastRadiusHop>,
-    /// Total number of affected nodes.
+    /// Number of affected nodes returned in `affected_by_hop`.
     pub total_affected: usize,
+    /// Total number of nodes the BFS reached, regardless of cap.
+    /// Equal to `total_affected` when no truncation happened.
+    pub total_reachable: usize,
+    /// True if the response was truncated due to `node_limit_applied`.
+    pub truncated: bool,
+    /// The effective per-request node cap that was applied.
+    pub node_limit_applied: usize,
 }
 
 /// A matched node in verification analysis.
@@ -157,8 +164,12 @@ impl AnalysisService {
     // Capability 4: Blast-Radius Simulation
     // ------------------------------------------------------------------
 
-    /// Maximum affected nodes to collect before stopping BFS early.
-    const BLAST_RADIUS_NODE_CAP: usize = 500;
+    /// Default cap on affected nodes — small enough to fit comfortably
+    /// in an MCP tool response. Callers can override per request.
+    pub const BLAST_RADIUS_DEFAULT_CAP: usize = 50;
+    /// Hard upper bound on `node_limit` to keep response sizes bounded
+    /// even when callers ask for "everything".
+    pub const BLAST_RADIUS_MAX_CAP: usize = 500;
 
     /// Resolve a node by name with fuzzy fallback.
     ///
@@ -199,7 +210,12 @@ impl AnalysisService {
         target_name: &str,
         max_hops: usize,
         include_invalidated: bool,
+        node_limit: Option<usize>,
     ) -> Result<BlastRadiusResult> {
+        let node_cap = node_limit
+            .unwrap_or(Self::BLAST_RADIUS_DEFAULT_CAP)
+            .clamp(1, Self::BLAST_RADIUS_MAX_CAP);
+
         // Find the target node by name (exact, then fuzzy fallback).
         let (target_id, target_canonical, target_type) =
             self.resolve_node_by_name(target_name).await?;
@@ -215,23 +231,27 @@ impl AnalysisService {
         };
         let bfs_nodes = self.graph.bfs_neighborhood(target_id, bfs_opts).await?;
 
+        // Total reachable count (before capping) — needed so the caller
+        // can tell whether the response was truncated.
+        let total_reachable: usize = bfs_nodes.len();
+
         // Collect IDs already present from BFS to avoid duplicates.
         let mut seen_ids: std::collections::HashSet<uuid::Uuid> =
             bfs_nodes.iter().map(|n| n.id).collect();
         seen_ids.insert(target_id);
 
         // Group BFS results by hop distance for the blast radius response,
-        // capping total collected at BLAST_RADIUS_NODE_CAP.
+        // capping total collected at the requested `node_cap`.
         let mut affected: Vec<BlastRadiusHop> = Vec::new();
         let mut total_collected = 0usize;
         for hop in 1..=max_hops {
-            if total_collected >= Self::BLAST_RADIUS_NODE_CAP {
+            if total_collected >= node_cap {
                 break;
             }
             let hop_nodes: Vec<AffectedNode> = bfs_nodes
                 .iter()
                 .filter(|n| n.hops == hop)
-                .take(Self::BLAST_RADIUS_NODE_CAP - total_collected)
+                .take(node_cap - total_collected)
                 .map(|n| AffectedNode {
                     node_id: n.id,
                     name: n.name.clone(),
@@ -250,8 +270,8 @@ impl AnalysisService {
 
         // When include_invalidated is set, query PG for nodes
         // reachable through invalidated edges at hop distance 1.
-        if include_invalidated && total_collected < Self::BLAST_RADIUS_NODE_CAP {
-            let remaining = Self::BLAST_RADIUS_NODE_CAP - total_collected;
+        if include_invalidated && total_collected < node_cap {
+            let remaining = node_cap - total_collected;
             let invalidated_neighbors =
                 AnalysisRepo::get_invalidated_neighbors(&*self.repo, target_id, remaining as i64)
                     .await?;
@@ -287,6 +307,7 @@ impl AnalysisService {
         }
 
         let total_affected: usize = affected.iter().map(|h| h.nodes.len()).sum();
+        let truncated = total_affected < total_reachable;
 
         Ok(BlastRadiusResult {
             target: TargetInfo {
@@ -297,6 +318,9 @@ impl AnalysisService {
             },
             affected_by_hop: affected,
             total_affected,
+            total_reachable,
+            truncated,
+            node_limit_applied: node_cap,
         })
     }
 
