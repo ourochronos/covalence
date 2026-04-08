@@ -366,6 +366,18 @@ impl PgResolver {
     }
 }
 
+/// Whether an extracted entity came from a deterministic AST parser.
+///
+/// True iff `metadata.ast_hash` is present. AST entities are exact
+/// source identifiers and must not be matched fuzzily — see #188.
+fn is_ast_extracted(entity: &ExtractedEntity) -> bool {
+    entity
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("ast_hash"))
+        .is_some()
+}
+
 #[async_trait::async_trait]
 impl EntityResolver for PgResolver {
     /// Resolve an extracted entity against the knowledge graph.
@@ -373,7 +385,19 @@ impl EntityResolver for PgResolver {
     /// Tries exact → alias → vector (+ graph context) → fuzzy
     /// trigram (+ graph context).
     /// Returns `MatchType::New` if nothing matches.
+    ///
+    /// **AST short-circuit**: entities carrying `metadata.ast_hash`
+    /// come from a deterministic AST parser, not an LLM. Their names
+    /// are unambiguous source identifiers (struct/trait/function
+    /// names). Fuzzy/vector matching against pre-existing LLM-noise
+    /// nodes silently merges distinct identifiers (e.g.
+    /// `ChainChatBackend` folded into `HttpChatBackend` because the
+    /// embeddings are close, see #188). For AST entities we only
+    /// allow exact name and alias matches; otherwise we create a new
+    /// node.
     async fn resolve(&self, entity: &ExtractedEntity) -> Result<ResolvedEntity> {
+        let is_ast_entity = is_ast_extracted(entity);
+
         // 1. Exact canonical name match (fastest path).
         if let Some(resolved) = self.try_exact_match(entity).await? {
             return Ok(resolved);
@@ -382,6 +406,26 @@ impl EntityResolver for PgResolver {
         // 2. Alias match.
         if let Some(resolved) = self.try_alias_match(entity).await? {
             return Ok(resolved);
+        }
+
+        // AST short-circuit: skip vector, fuzzy, and tier5 entirely.
+        // AST identifiers must be exact-matched or created fresh.
+        // We deliberately bypass the tier5 deferral path even when
+        // tier5 is enabled — tier5 batch-clusters ambiguous LLM
+        // extractions, but AST identifiers are deterministic and
+        // unambiguous, so clustering them with LLM noise reintroduces
+        // exactly the conflation we're guarding against.
+        if is_ast_entity {
+            tracing::debug!(
+                entity = %entity.name,
+                entity_type = %entity.entity_type,
+                "ast short-circuit: bypassing fuzzy/vector/tier5"
+            );
+            return Ok(ResolvedEntity {
+                node_id: None,
+                canonical_name: entity.name.clone(),
+                match_type: MatchType::New,
+            });
         }
 
         // 3. Vector cosine similarity match + graph context.
@@ -625,5 +669,44 @@ mod tests {
             // Ensures with_tier5 signature is correct at compile time.
             let _: fn(PgResolver, bool) -> PgResolver = PgResolver::with_tier5;
         }
+    }
+
+    /// AST entity (carrying `metadata.ast_hash`) is detected.
+    #[test]
+    fn ast_entity_detected_via_metadata() {
+        let entity = ExtractedEntity {
+            name: "ChainChatBackend".to_string(),
+            entity_type: "struct".to_string(),
+            description: None,
+            confidence: 1.0,
+            metadata: Some(serde_json::json!({ "ast_hash": "abc123" })),
+        };
+        assert!(is_ast_extracted(&entity));
+    }
+
+    /// LLM-extracted entity (no metadata) is not flagged as AST.
+    #[test]
+    fn llm_entity_not_flagged_as_ast() {
+        let entity = ExtractedEntity {
+            name: "ChainChatBackend".to_string(),
+            entity_type: "technology".to_string(),
+            description: Some("a chat backend".to_string()),
+            confidence: 0.8,
+            metadata: None,
+        };
+        assert!(!is_ast_extracted(&entity));
+    }
+
+    /// Entity with metadata but no `ast_hash` field is not flagged.
+    #[test]
+    fn metadata_without_ast_hash_not_flagged() {
+        let entity = ExtractedEntity {
+            name: "Foo".to_string(),
+            entity_type: "concept".to_string(),
+            description: None,
+            confidence: 0.5,
+            metadata: Some(serde_json::json!({ "other_field": "x" })),
+        };
+        assert!(!is_ast_extracted(&entity));
     }
 }
