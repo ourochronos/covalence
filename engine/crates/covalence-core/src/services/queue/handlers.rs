@@ -250,22 +250,57 @@ async fn summarize_single_entity(
     Ok(())
 }
 
-/// Extract entities from a single chunk via the LLM extractor.
+/// Decide whether a source is code from its `source_type` and `uri`.
+///
+/// Mirrors the synchronous pipeline's `is_code` derivation
+/// (`services/source/ingest.rs`) so the queue handler classifies
+/// sources identically.
+fn source_is_code(source_type: Option<&str>, source_uri: Option<&str>) -> bool {
+    crate::ingestion::code_chunker::detect_code_language("application/octet-stream", source_uri)
+        .is_some()
+        || source_type == Some("code")
+}
+
+/// Pick the extraction method label for a chunk.
+///
+/// Mirrors the priority used in `pipeline/mod.rs::run_pipeline`:
+/// domain → ast (code only) → llm.
+fn select_extraction_method(has_domain_extractor: bool, is_code: bool) -> &'static str {
+    if has_domain_extractor {
+        "service"
+    } else if is_code {
+        "ast"
+    } else {
+        "llm"
+    }
+}
+
+/// Extract entities from a single chunk.
+///
+/// Selects the extractor at job time using the same priority as the
+/// synchronous pipeline (`pipeline/mod.rs`):
+///   1. Domain-specific extractor (from extension)
+///   2. Built-in `AstExtractor` for code sources
+///   3. Global LLM/sidecar extractor
+///
+/// The async-fan-out path used to hardcode the LLM extractor for
+/// every chunk regardless of source type, which silently bypassed
+/// AST extraction for code sources (issue #186). Code-derived
+/// identifiers like `ChainChatBackend` were never extracted as
+/// nodes because the LLM was given markdown-wrapped code and
+/// returned abstract concepts ("CLI subprocess", "data model")
+/// instead of literal struct names.
 async fn extract_single_chunk(
     svc: &Arc<SourceService>,
     chunk_id: uuid::Uuid,
     source_id: SourceId,
     job: &RetryJob,
 ) -> Result<()> {
-    use crate::ingestion::extractor::ExtractionContext;
+    use crate::ingestion::extractor::{ExtractionContext, Extractor};
     use crate::services::pipeline::ExtractionProvenance;
     use crate::storage::traits::{ChunkRepo, SourceRepo};
     use crate::types::ids::ChunkId;
     use std::time::Instant;
-
-    let extractor = svc.extractor.as_ref().ok_or_else(|| {
-        crate::error::Error::Queue("no extractor available for extract_chunk".to_string())
-    })?;
 
     let chunk_id_typed = ChunkId::from_uuid(chunk_id);
     let chunk = ChunkRepo::get(&*svc.repo, chunk_id_typed)
@@ -282,6 +317,33 @@ async fn extract_single_chunk(
         source_title: source.as_ref().and_then(|s| s.title.clone()),
     };
     let source_domain = source.as_ref().and_then(|s| s.domains.first().cloned());
+
+    // Re-derive is_code from the source row. The queue payload
+    // intentionally doesn't carry it forward — sources can be
+    // reclassified between chunking and extraction (e.g. by a
+    // pre-ingest hook), so we always read the latest state.
+    let is_code = source_is_code(
+        source.as_ref().map(|s| s.source_type.as_str()),
+        context.source_uri.as_deref(),
+    );
+
+    // Selection priority mirrors `pipeline/mod.rs::run_pipeline`:
+    // domain extractor → AST (code only) → global LLM extractor.
+    let domain_ext: Option<Arc<dyn Extractor>> = source_domain
+        .as_deref()
+        .and_then(|d| svc.domain_extractors.get(d).cloned());
+
+    let extraction_method = select_extraction_method(domain_ext.is_some(), is_code);
+    let extractor: Arc<dyn Extractor> = match extraction_method {
+        "service" => domain_ext.expect("domain extractor present"),
+        "ast" => Arc::new(crate::ingestion::ast_extractor::AstExtractor::new()),
+        _ => {
+            let global = svc.extractor.as_ref().ok_or_else(|| {
+                crate::error::Error::Queue("no extractor available for extract_chunk".to_string())
+            })?;
+            Arc::clone(global)
+        }
+    };
 
     let start = Instant::now();
     let result = extractor.extract(&chunk.content, &context).await?;
@@ -320,7 +382,7 @@ async fn extract_single_chunk(
                 .resolve_and_store_entity(
                     &entity,
                     ExtractionProvenance::Chunk(chunk_id_typed),
-                    "llm",
+                    extraction_method,
                     source_id,
                     source_domain.as_deref(),
                 )
@@ -348,12 +410,19 @@ async fn extract_single_chunk(
         .unwrap_or("");
 
     use crate::storage::traits::PipelineRepo;
+    // For AST extraction there is no LLM model — record the method
+    // explicitly so downstream observability can distinguish runs.
+    let model_value = match extraction_method {
+        "ast" => serde_json::Value::Null,
+        _ => serde_json::Value::String("haiku".to_string()),
+    };
     PipelineRepo::update_chunk_processing(
         &*svc.repo,
         chunk_id,
         "extraction",
         &serde_json::json!({
-            "model": "haiku",
+            "method": extraction_method,
+            "model": model_value,
             "at": chrono::Utc::now().to_rfc3339(),
             "ms": duration_ms,
             "entities_found": entity_count,
@@ -570,4 +639,43 @@ async fn embed_batch_job(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rust_uri_is_code_regardless_of_source_type() {
+        assert!(source_is_code(Some("document"), Some("file:///x.rs")));
+        assert!(source_is_code(None, Some("/path/to/foo.rs")));
+    }
+
+    #[test]
+    fn code_source_type_is_code_without_uri_extension() {
+        assert!(source_is_code(Some("code"), None));
+        assert!(source_is_code(Some("code"), Some("/no/extension/here")));
+    }
+
+    #[test]
+    fn markdown_doc_is_not_code() {
+        assert!(!source_is_code(Some("document"), Some("/path/notes.md")));
+        assert!(!source_is_code(None, None));
+    }
+
+    #[test]
+    fn select_method_prefers_domain_extractor() {
+        assert_eq!(select_extraction_method(true, false), "service");
+        assert_eq!(select_extraction_method(true, true), "service");
+    }
+
+    #[test]
+    fn select_method_uses_ast_for_code_when_no_domain_extractor() {
+        assert_eq!(select_extraction_method(false, true), "ast");
+    }
+
+    #[test]
+    fn select_method_falls_back_to_llm_for_non_code() {
+        assert_eq!(select_extraction_method(false, false), "llm");
+    }
 }
