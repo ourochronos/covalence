@@ -39,6 +39,24 @@ async function apiCall(path, method = "GET", body = null) {
   return resp.json();
 }
 
+// Like apiCall but treats 404 as a sentinel rather than an error.
+// Returns null if the endpoint responds with 404, otherwise the parsed body.
+async function apiCallOrNull(path, method = "GET", body = null) {
+  const opts = {
+    method,
+    headers: { "Content-Type": "application/json" },
+  };
+  if (body) opts.body = JSON.stringify(body);
+
+  const resp = await fetch(`${API_URL}/api/v1${path}`, opts);
+  if (resp.status === 404) return null;
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`API error ${resp.status}: ${text}`);
+  }
+  return resp.json();
+}
+
 const server = new McpServer({
   name: "covalence",
   version: "0.1.0",
@@ -132,23 +150,26 @@ server.tool(
 // --- Node Details ---
 server.tool(
   "covalence_node",
-  "Get details about a specific node in the knowledge graph by name. Returns entity class, type, description, domain entropy, and primary domain.",
+  "Get details about a specific node in the knowledge graph by exact canonical name. Case-insensitive. Returns NotFound rather than a fuzzy match if no exact name hits.",
   {
-    name: z.string().describe("Node canonical name to look up"),
+    name: z.string().describe("Node canonical name to look up (exact match, case-insensitive)"),
   },
   async ({ name }) => {
-    // Use search to find the node, then get details
-    const results = await apiCall("/search", "POST", {
-      query: name,
-      limit: 1,
-      node_types: ["concept", "technology", "function", "struct", "trait", "component"],
-    });
-    const items = Array.isArray(results) ? results : results.results || results.data || [];
-    if (items.length === 0) {
-      return { content: [{ type: "text", text: `No node found matching "${name}"` }] };
+    // Exact-name resolve (case-insensitive). Previously this used
+    // `/search` with limit:1 and returned whatever ranked first by
+    // RRF, which silently produced tangential matches when the
+    // requested name didn't exist as a node. We now require an
+    // exact canonical_name hit and return NotFound otherwise.
+    const resolved = await apiCallOrNull("/nodes/resolve", "POST", { name });
+    if (!resolved) {
+      return {
+        content: [{
+          type: "text",
+          text: `No node found with canonical name "${name}". Try covalence_search if you want a semantic match.`,
+        }],
+      };
     }
-    const nodeId = items[0].id;
-    const node = await apiCall(`/nodes/${nodeId}?explain=true`);
+    const node = await apiCall(`/nodes/${resolved.id}?explain=true`);
     return {
       content: [{ type: "text", text: JSON.stringify(node, null, 2) }],
     };
@@ -158,16 +179,18 @@ server.tool(
 // --- Blast Radius ---
 server.tool(
   "covalence_blast_radius",
-  "Analyze the impact of changing a code entity. Shows directly affected nodes, component impact, and cascading functions.",
+  "Analyze the impact of changing a code entity. Returns affected nodes grouped by hop distance, plus total_reachable and truncated flag so you can tell if the response was capped. Defaults: max_hops=2, node_limit=50.",
   {
     target: z.string().describe("Entity name (e.g., 'PgResolver', 'SearchService')"),
-    max_hops: z.number().optional().describe("Max traversal depth (default 2)"),
+    max_hops: z.number().optional().describe("Max traversal depth (default 2, max 10)"),
     include_invalidated: z.boolean().optional().describe("Include invalidated edges (default false)"),
+    node_limit: z.number().optional().describe("Max affected nodes to return (default 50, max 500). Increase for deeper impact analysis on highly-connected entities."),
   },
-  async ({ target, max_hops, include_invalidated }) => {
+  async ({ target, max_hops, include_invalidated, node_limit }) => {
     const body = { target };
     if (max_hops) body.max_hops = max_hops;
     if (include_invalidated) body.include_invalidated = include_invalidated;
+    if (node_limit) body.node_limit = node_limit;
     const result = await apiCall("/analysis/blast-radius", "POST", body);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

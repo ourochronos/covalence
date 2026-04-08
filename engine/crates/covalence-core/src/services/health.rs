@@ -304,6 +304,7 @@ mod tests {
             ask_model: "sonnet".to_string(),
             external_services: vec![],
             metadata_enforcement: "warn".to_string(),
+            graph_reload_interval_secs: 30,
         }
     }
 

@@ -178,10 +178,15 @@ pub struct ErosionResponse {
 pub struct BlastRadiusRequest {
     /// Target node name or UUID.
     pub target: String,
-    /// Maximum hops to traverse (default 2).
+    /// Maximum hops to traverse (default 2, max 10).
     pub max_hops: Option<usize>,
     /// Include nodes connected via invalidated edges (default false).
     pub include_invalidated: Option<bool>,
+    /// Maximum affected nodes to return (default 50, max 500).
+    /// The response sets `truncated: true` if BFS reached more nodes
+    /// than this cap allows; `total_reachable` always reflects the
+    /// full BFS frontier so the caller can tell what was hidden.
+    pub node_limit: Option<usize>,
 }
 
 /// An affected node in the blast radius.
@@ -218,10 +223,17 @@ pub struct BlastRadiusResponse {
     /// Target's component (if assigned).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
-    /// Affected nodes by hop distance.
+    /// Affected nodes by hop distance (capped by `node_limit_applied`).
     pub affected_by_hop: Vec<BlastRadiusHopResponse>,
-    /// Total affected nodes.
+    /// Number of affected nodes returned in `affected_by_hop`.
     pub total_affected: usize,
+    /// Total nodes the BFS reached, regardless of cap. Equal to
+    /// `total_affected` when no truncation happened.
+    pub total_reachable: usize,
+    /// True if BFS hit more nodes than the cap allowed.
+    pub truncated: bool,
+    /// The effective node cap applied to this request.
+    pub node_limit_applied: usize,
 }
 
 /// Request body for whitespace roadmap analysis.

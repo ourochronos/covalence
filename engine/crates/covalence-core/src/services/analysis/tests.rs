@@ -102,6 +102,9 @@ mod tests {
                 }],
             }],
             total_affected: 1,
+            total_reachable: 1,
+            truncated: false,
+            node_limit_applied: 50,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("run_pipeline"));

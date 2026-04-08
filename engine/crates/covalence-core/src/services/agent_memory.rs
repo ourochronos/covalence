@@ -278,12 +278,25 @@ impl AgentMemoryService {
                 }
             }
 
+            // Fetch the source's actual body. The search snippet is a
+            // preview only — for node-level matches it can be empty,
+            // which previously caused the recall API to return memories
+            // with `content: ""`. Falling back to the snippet keeps
+            // recall non-empty even if the source row is unexpectedly
+            // missing raw_content.
+            let source = self.source_service.get(source_uuid.into()).await?;
+            let content = source
+                .as_ref()
+                .and_then(|s| s.raw_content.clone())
+                .or(r.snippet)
+                .unwrap_or_default();
+
             // Increment access count (fire-and-forget style).
             let _ = AgentMemoryRepo::increment_access(&*self.repo, source_uuid).await;
 
             items.push(MemoryItem {
                 id: source_uuid.to_string(),
-                content: r.snippet.unwrap_or_default(),
+                content,
                 topic: am.as_ref().and_then(|m| m.topic.clone()),
                 relevance: r.fused_score,
                 confidence: am

@@ -46,6 +46,13 @@ pub struct Config {
     /// Env: `COVALENCE_GRAPH_ENGINE`. Default: `"petgraph"`.
     pub graph_engine: String,
 
+    /// Polling interval (seconds) for the engine's background graph
+    /// reload task. Per ADR-0004 this is the "polling fallback" that
+    /// catches sidecar drift when worker processes commit edges/nodes
+    /// the engine never sees. Set to `0` to disable polling. Default
+    /// `30`. Env: `COVALENCE_GRAPH_RELOAD_INTERVAL_SECS`.
+    pub graph_reload_interval_secs: u64,
+
     /// When set to `"voyage"` or when `VOYAGE_API_KEY` is present,
     /// the Voyage AI embedder is used instead of OpenAI.
     /// Env: `COVALENCE_EMBED_PROVIDER`.
@@ -549,6 +556,10 @@ impl std::fmt::Debug for Config {
             )
             .field("voyage_base_url", &self.voyage_base_url)
             .field("graph_engine", &self.graph_engine)
+            .field(
+                "graph_reload_interval_secs",
+                &self.graph_reload_interval_secs,
+            )
             .field("embed_provider", &self.embed_provider)
             .field("embed_model", &self.embed_model)
             .field("chat_model", &self.chat_model)
@@ -780,6 +791,7 @@ mod tests {
                 voyage_api_key: Some("vk-secret".into()),
                 voyage_base_url: None,
                 graph_engine: "petgraph".into(),
+                graph_reload_interval_secs: 30,
                 embed_provider: "openai".into(),
                 embed_model: "test-model".into(),
                 chat_model: "gpt-4o".into(),
