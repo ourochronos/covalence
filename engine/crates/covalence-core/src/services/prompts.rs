@@ -112,19 +112,70 @@ pub fn wrap_input(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
 }
 
+/// Maximum code bytes to include in the summary prompt.
+///
+/// Large AST chunks (e.g., an entire impl block with many methods)
+/// can blow past a model's context window. We truncate to keep the
+/// prompt within budget while preserving syntactic coherence.
+const MAX_CODE_BYTES: usize = 3000;
+
+/// Truncate a code string at a line boundary so we never cut in
+/// the middle of a token or multi-byte UTF-8 character.
+///
+/// Returns the full string if it's already within the limit.
+fn truncate_code(code: &str, max_bytes: usize) -> &str {
+    if code.len() <= max_bytes {
+        return code;
+    }
+    // First, snap to a valid char boundary so we can safely search
+    // for newlines. This prevents panics on multi-byte UTF-8.
+    let mut safe_end = max_bytes;
+    while safe_end > 0 && !code.is_char_boundary(safe_end) {
+        safe_end -= 1;
+    }
+    // Find the last newline before the safe limit. This keeps
+    // every included line syntactically complete, which reduces
+    // LLM hallucinations from broken code fragments.
+    match code[..safe_end].rfind('\n') {
+        Some(pos) => &code[..pos],
+        // No newline found (single very-long line): return the
+        // char-boundary-safe slice.
+        None => &code[..safe_end],
+    }
+}
+
 /// Build a code summary prompt by filling in template variables.
+///
+/// Returns `(system_prompt, user_prompt)`. The template's
+/// instruction text ("You are a code analysis engine...") becomes
+/// the system prompt, while the entity metadata and code go into
+/// the user prompt. This matches the role-separation pattern used
+/// by the entity extraction pipeline and improves instruction-
+/// following from the LLM.
 pub fn build_summary_prompt(
     entity_name: &str,
     entity_type: &str,
     file_path: &str,
     code: &str,
-) -> String {
+) -> (String, String) {
     let template = code_summary_template();
-    template
+    let code = truncate_code(code, MAX_CODE_BYTES);
+
+    // Split at the <entity> tag: everything before is the system
+    // prompt (instructions), everything from <entity> onward is
+    // the user prompt (data).
+    let (system, user_template) = match template.find("<entity>") {
+        Some(pos) => (template[..pos].trim(), &template[pos..]),
+        None => (template, ""),
+    };
+
+    let user = user_template
         .replace("{{name}}", entity_name)
         .replace("{{type}}", entity_type)
         .replace("{{file}}", file_path)
-        .replace("{{code}}", &code[..code.len().min(3000)])
+        .replace("{{code}}", code);
+
+    (system.to_string(), user)
 }
 
 /// Wrap document text for entity extraction.
@@ -140,4 +191,53 @@ pub fn wrap_statements(text: &str) -> String {
 /// Wrap section list for source summary.
 pub fn wrap_sections(text: &str) -> String {
     wrap_input("sections", text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_code_short_string_unchanged() {
+        let code = "fn main() {}";
+        assert_eq!(truncate_code(code, 3000), code);
+    }
+
+    #[test]
+    fn truncate_code_at_line_boundary() {
+        let code = "line1\nline2\nline3\nline4\n";
+        // Limit that falls in the middle of "line3"
+        let result = truncate_code(code, 14);
+        assert_eq!(result, "line1\nline2");
+    }
+
+    #[test]
+    fn truncate_code_utf8_safe() {
+        // "é" is 2 bytes — a limit of 5 falls in the middle
+        let code = "abc\néfg";
+        let result = truncate_code(code, 5);
+        // Should cut at the newline before "é"
+        assert_eq!(result, "abc");
+    }
+
+    #[test]
+    fn build_summary_prompt_returns_system_user_pair() {
+        let (system, user) = build_summary_prompt("Foo", "struct", "src/foo.rs", "struct Foo {}");
+        assert!(
+            system.contains("code analysis engine"),
+            "system prompt should have instructions"
+        );
+        assert!(
+            user.contains("<entity>"),
+            "user prompt should have entity tag"
+        );
+        assert!(
+            user.contains("struct Foo {}"),
+            "user prompt should have code"
+        );
+        assert!(
+            !system.contains("<entity>"),
+            "system prompt should NOT have entity data"
+        );
+    }
 }

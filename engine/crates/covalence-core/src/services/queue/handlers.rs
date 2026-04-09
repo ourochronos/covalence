@@ -197,7 +197,7 @@ async fn summarize_single_entity(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    let prompt = crate::services::prompts::build_summary_prompt(
+    let (system, user) = crate::services::prompts::build_summary_prompt(
         &node.canonical_name,
         &node.node_type,
         file_path,
@@ -205,7 +205,7 @@ async fn summarize_single_entity(
     );
 
     let start = Instant::now();
-    let chat_response = chat.chat("", &prompt, false, 0.2).await?;
+    let chat_response = chat.chat(&system, &user, false, 0.2).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     let provider = chat_response.provider;
