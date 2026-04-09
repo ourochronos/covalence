@@ -674,14 +674,14 @@ impl SourceService {
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown");
 
-                        let prompt = super::prompts::build_summary_prompt(
+                        let (system, user) = super::prompts::build_summary_prompt(
                             &node.canonical_name,
                             &node.node_type,
                             file_path,
                             raw,
                         );
 
-                        match chat.chat("", &prompt, false, 0.2).await {
+                        match chat.chat(&system, &user, false, 0.2).await {
                             Ok(resp) if !resp.text.trim().is_empty() => {
                                 let summary = resp.text.trim().to_string();
                                 // Store summary in properties and update

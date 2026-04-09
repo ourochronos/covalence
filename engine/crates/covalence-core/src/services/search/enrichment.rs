@@ -11,6 +11,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::graph::engine::GraphEngine;
+use crate::models::source::Source;
 use crate::search::fusion::{FusedResult, RelatedEntity};
 use crate::storage::postgres::PgRepo;
 use crate::storage::traits::{
@@ -21,6 +22,27 @@ use crate::types::ids::{ArticleId, ChunkId, NodeId, SectionId, StatementId};
 use super::super::search_helpers::{
     derive_chunk_name_qualified, kwic_snippet, truncate_with_ellipsis,
 };
+
+/// Effective `source_type` for display in search results.
+///
+/// `sources.source_type` is set at ingest time from caller input
+/// (e.g. `--type document`), but the pipeline detects code via
+/// `is_code` (URI/MIME) and routes those sources through the CODE
+/// profile regardless. That means a `.rs` file ingested as `document`
+/// gets correctly chunked and AST-extracted as code, but the PG row
+/// keeps saying `document` and search results were misleading.
+///
+/// `domains` is the authoritative classification — domain rules and
+/// adapters set it from the same `is_code` detection. So when
+/// `domains` contains `code` we surface `code` in search results
+/// regardless of the lagging `source_type` row. The PG row stays
+/// untouched (it represents the original user intent).
+fn effective_source_type(source: &Source) -> String {
+    if source.domains.iter().any(|d| d == "code") {
+        return "code".to_string();
+    }
+    source.source_type.clone()
+}
 
 /// Enrich fused results with entity metadata (Step 8).
 ///
@@ -80,11 +102,14 @@ async fn enrich_source(result: &mut FusedResult, repo: &Arc<PgRepo>) {
     if let Ok(Some(source)) =
         SourceRepo::get(&**repo, crate::types::ids::SourceId::from_uuid(result.id)).await
     {
+        // Compute the effective source_type BEFORE consuming any
+        // fields of `source`, since the helper takes `&Source`.
+        let effective = effective_source_type(&source);
         result.name = source.title.clone();
         result.entity_type = Some("source".to_string());
         result.source_uri = source.uri;
         result.source_title = source.title;
-        result.source_type = Some(source.source_type.clone());
+        result.source_type = Some(effective);
         result.source_domains = source.domains.clone();
         result.created_at = Some(source.ingested_at.to_rfc3339());
         // Use truncated raw content for snippet.
@@ -103,9 +128,10 @@ async fn enrich_statement(result: &mut FusedResult, repo: &Arc<PgRepo>, query: &
         result.created_at = Some(stmt.created_at.to_rfc3339());
         // Look up source for URI/title.
         if let Ok(Some(source)) = SourceRepo::get(&**repo, stmt.source_id).await {
+            let effective = effective_source_type(&source);
             result.source_uri = source.uri;
             result.source_title = source.title.clone();
-            result.source_type = Some(source.source_type.clone());
+            result.source_type = Some(effective);
             result.source_domains = source.domains.clone();
         }
         // Use the statement content as name (truncated).
@@ -126,9 +152,10 @@ async fn enrich_section(result: &mut FusedResult, repo: &Arc<PgRepo>, query: &st
         result.created_at = Some(sect.created_at.to_rfc3339());
         // Look up source for URI/title.
         if let Ok(Some(source)) = SourceRepo::get(&**repo, sect.source_id).await {
+            let effective = effective_source_type(&source);
             result.source_uri = source.uri;
             result.source_title = source.title.clone();
-            result.source_type = Some(source.source_type.clone());
+            result.source_type = Some(effective);
             result.source_domains = source.domains.clone();
         }
         // Content-based snippet fallback.
@@ -148,9 +175,10 @@ async fn enrich_chunk_or_fallback(result: &mut FusedResult, repo: &Arc<PgRepo>, 
         // Look up source first so we can qualify generic chunk
         // headings with the source title.
         let src_title = if let Ok(Some(source)) = SourceRepo::get(&**repo, chunk.source_id).await {
+            let effective = effective_source_type(&source);
             result.source_uri = source.uri;
             result.source_title = source.title.clone();
-            result.source_type = Some(source.source_type.clone());
+            result.source_type = Some(effective);
             result.source_domains = source.domains.clone();
             result.created_at = Some(source.ingested_at.to_rfc3339());
             source.title
@@ -191,11 +219,12 @@ async fn enrich_chunk_or_fallback(result: &mut FusedResult, repo: &Arc<PgRepo>, 
         if let Ok(Some(source)) =
             SourceRepo::get(&**repo, crate::types::ids::SourceId::from_uuid(result.id)).await
         {
+            let effective = effective_source_type(&source);
             result.name = source.title.clone();
             result.entity_type = Some("source".to_string());
             result.source_uri = source.uri;
             result.source_title = source.title;
-            result.source_type = Some(source.source_type.clone());
+            result.source_type = Some(effective);
             result.source_domains = source.domains.clone();
             result.created_at = Some(source.ingested_at.to_rfc3339());
             if let Some(ref raw) = source.raw_content {
@@ -269,5 +298,42 @@ pub(super) async fn enrich_graph_context(
         if !related.is_empty() {
             result.graph_context = Some(related);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::source::SourceType;
+
+    fn make_source(source_type: &str, domains: Vec<&str>) -> Source {
+        // Reuse Source::new for the heavy lifting; override the
+        // raw type string + domains for the test scenario.
+        let mut s = Source::new(SourceType::Document, vec![0u8; 32]);
+        s.source_type = source_type.to_string();
+        s.domains = domains.into_iter().map(String::from).collect();
+        s
+    }
+
+    #[test]
+    fn effective_source_type_promotes_code_domain_over_lagging_type() {
+        // Regression: a `.rs` file ingested as `--type document`
+        // gets routed through the CODE profile but the PG row's
+        // `source_type` keeps saying `document`. We want search
+        // results to surface `code` so callers see the truth.
+        let source = make_source("document", vec!["code"]);
+        assert_eq!(effective_source_type(&source), "code");
+    }
+
+    #[test]
+    fn effective_source_type_passes_through_when_no_code_domain() {
+        let source = make_source("document", vec!["spec", "external"]);
+        assert_eq!(effective_source_type(&source), "document");
+    }
+
+    #[test]
+    fn effective_source_type_passes_through_when_domains_empty() {
+        let source = make_source("web_page", vec![]);
+        assert_eq!(effective_source_type(&source), "web_page");
     }
 }

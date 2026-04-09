@@ -29,8 +29,21 @@ func Execute() {
 	}
 }
 
+// defaultAPIURL returns the API URL the CLI should target.
+//
+// Order of precedence: COVALENCE_API_URL env var, then a sensible
+// localhost default. Without the env-var fallback, running cove
+// against a non-default port (e.g. dev on 8441) requires passing
+// --api-url on every invocation.
+func defaultAPIURL() string {
+	if v := os.Getenv("COVALENCE_API_URL"); v != "" {
+		return v
+	}
+	return "http://localhost:8431"
+}
+
 func init() {
-	rootCmd.PersistentFlags().StringVar(&apiURL, "api-url", "http://localhost:8431", "Covalence API URL")
+	rootCmd.PersistentFlags().StringVar(&apiURL, "api-url", defaultAPIURL(), "Covalence API URL (or set COVALENCE_API_URL)")
 	rootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "API key for authentication (or set COVALENCE_API_KEY)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 }

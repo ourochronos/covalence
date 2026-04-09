@@ -792,5 +792,16 @@ async function fetchAdapters() {
 
 refreshAll();
 
-// Auto-refresh every 30 seconds
-setInterval(refreshAll, 30000);
+// Auto-refresh every 5 minutes.
+//
+// Each `refreshAll` fires /admin/metrics, /admin/data-health,
+// /analysis/coverage, /analysis/whitespace, and /analysis/erosion
+// in parallel. /admin/data-health alone runs `sp_data_health_report`
+// which currently takes ~20 seconds against a 100K-edge graph, and
+// /admin/metrics holds the petgraph read lock for several seconds
+// while computing weakly-connected components. Polling every 30s
+// kept the graph read lock saturated, queued the periodic
+// `full_reload` writer behind it, and pushed search latency from
+// sub-second to 90+ seconds. 5 minutes is a reasonable refresh
+// cadence for an observability dashboard.
+setInterval(refreshAll, 5 * 60 * 1000);

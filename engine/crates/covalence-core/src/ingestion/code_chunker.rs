@@ -75,6 +75,31 @@ impl CodeLanguage {
         }
     }
 
+    /// Tree-sitter node kinds that represent attributes/annotations
+    /// that appear as siblings of (and conceptually attach to) the
+    /// following top-level item.
+    ///
+    /// These nodes are buffered while walking the AST and prepended
+    /// to the next top-level item's source text. Without this, Rust
+    /// attribute siblings like `#[derive(...)]` and
+    /// `#[async_trait::async_trait]` end up dumped into the
+    /// preamble section, which (a) loses their attachment to the
+    /// item they decorate, and (b) produces a junk chunk named
+    /// `[derive(...)]` whenever clusters of attributes happen to
+    /// fall together at the top of a file.
+    fn attribute_kinds(self) -> &'static [&'static str] {
+        match self {
+            // tree-sitter-rust parses outer attributes as
+            // `attribute_item` siblings of the item they decorate.
+            Self::Rust => &["attribute_item", "inner_attribute_item"],
+            // Python's `decorated_definition` already wraps the
+            // decorator + def together, so no buffering needed.
+            // Other languages don't have this sibling-attribute
+            // pattern at the top level.
+            _ => &[],
+        }
+    }
+
     /// Tree-sitter node kinds that represent top-level items.
     fn top_level_kinds(self) -> &'static [&'static str] {
         match self {
@@ -144,7 +169,15 @@ impl CodeLanguage {
 struct CodeItem {
     /// Human-readable label (e.g. "fn foo", "struct Bar", "class Baz").
     label: String,
-    /// The full source text of this item.
+    /// Attribute/annotation source text that decorates the item
+    /// (e.g. `#[derive(Debug, Clone)]` for Rust). May be empty.
+    /// Stored separately from `text` so that compound items (impl
+    /// blocks, classes) can emit attributes alongside the brief
+    /// header instead of dropping them when only methods are
+    /// rendered as code blocks.
+    attrs: String,
+    /// The full source text of this item (excluding attached
+    /// attributes — those live in `attrs`).
     text: String,
     /// Methods inside compound items (impl blocks, classes).
     /// When non-empty, each method gets its own sub-section chunk.
@@ -182,10 +215,15 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
 
     let root = tree.root_node();
     let top_level_kinds = lang.top_level_kinds();
+    let attribute_kinds = lang.attribute_kinds();
     let fence = lang.fence_tag();
 
     let mut items: Vec<CodeItem> = Vec::new();
     let mut preamble_ranges: Vec<(usize, usize)> = Vec::new();
+    // Buffer for attribute_item siblings (Rust's `#[derive(...)]`,
+    // `#[async_trait]`, etc.) that should attach to the next top-
+    // level item rather than fall into the preamble.
+    let mut pending_attrs: Vec<(usize, usize)> = Vec::new();
 
     let cursor_node_count = root.child_count() as u32;
     for i in 0..cursor_node_count {
@@ -196,20 +234,49 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
         let text = &source[node.start_byte()..node.end_byte()];
 
         if top_level_kinds.contains(&kind) {
+            // Collect any buffered attributes into a prefix string
+            // so the rendered chunk shows `#[derive(...)]` next to
+            // the struct it decorates. Stored separately from the
+            // item text so compound items (impl blocks, classes)
+            // can emit attributes alongside the brief header even
+            // when their full body is split into per-method chunks.
+            let attrs = pending_attrs
+                .iter()
+                .map(|(s, e)| source[*s..*e].trim())
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
             let label = extract_label(source, &node, lang);
             let methods = extract_methods(source, &node, lang);
             items.push(CodeItem {
                 label,
+                attrs,
                 text: text.to_string(),
                 methods,
             });
+            pending_attrs.clear();
+        } else if attribute_kinds.contains(&kind) {
+            // Buffer — likely belongs to the next top-level item.
+            pending_attrs.push((node.start_byte(), node.end_byte()));
         } else if kind != "line_comment"
             && kind != "block_comment"
             && kind != "comment"
             && !text.trim().is_empty()
         {
+            // Some other top-level construct landed between buffered
+            // attributes and any item — flush the buffer into the
+            // preamble so we don't drop the attribute text entirely.
+            for range in pending_attrs.drain(..) {
+                preamble_ranges.push(range);
+            }
             preamble_ranges.push((node.start_byte(), node.end_byte()));
         }
+    }
+
+    // Anything still pending at EOF (e.g. trailing `#[cfg(test)]`
+    // followed by no item we recognize) goes to the preamble.
+    for range in pending_attrs.drain(..) {
+        preamble_ranges.push(range);
     }
 
     let mut md = String::new();
@@ -235,11 +302,24 @@ pub fn code_to_markdown(source: &str, lang: CodeLanguage) -> Result<String> {
     for item in &items {
         md.push_str(&format!("# {}\n\n", item.label));
         if item.methods.is_empty() {
-            md.push_str(&format!("```{fence}\n{}\n```\n\n", item.text));
+            // Prepend buffered attribute lines so the rendered code
+            // block matches the original source layout.
+            let body = if item.attrs.is_empty() {
+                item.text.clone()
+            } else {
+                format!("{}\n{}", item.attrs, item.text)
+            };
+            md.push_str(&format!("```{fence}\n{body}\n```\n\n"));
         } else {
-            // Emit the impl/class header as a brief code block, then
-            // each method as a sub-section.
-            md.push_str(&format!("```{fence}\n{}\n```\n\n", item.label));
+            // Emit the impl/class header (with attached attributes)
+            // as a brief code block, then each method as a
+            // sub-section.
+            let header = if item.attrs.is_empty() {
+                item.label.clone()
+            } else {
+                format!("{}\n{}", item.attrs, item.label)
+            };
+            md.push_str(&format!("```{fence}\n{header}\n```\n\n"));
             for method in &item.methods {
                 md.push_str(&format!("## {}\n\n", method.label));
                 md.push_str(&format!("```{fence}\n{}\n```\n\n", method.text));
@@ -295,6 +375,7 @@ fn extract_methods(source: &str, node: &tree_sitter::Node, lang: CodeLanguage) -
             let text = source[child.start_byte()..child.end_byte()].to_string();
             methods.push(CodeItem {
                 label,
+                attrs: String::new(),
                 text,
                 methods: Vec::new(),
             });
@@ -717,6 +798,75 @@ pub fn public_fn(x: &str) -> String {
 "#;
         let md = code_to_markdown(source.trim(), CodeLanguage::Rust).unwrap();
         assert!(md.contains("# pub fn public_fn"));
+    }
+
+    #[test]
+    fn rust_attributes_attach_to_following_item() {
+        // Regression: clusters of `#[derive(...)]` /
+        // `#[async_trait]` siblings used to land in the preamble
+        // section, producing chunks named `[derive(Debug, Clone)]`
+        // with no body. They should now be folded into the next
+        // top-level item.
+        let source = r#"
+#[derive(Debug, Clone)]
+#[derive(Serialize)]
+pub struct Foo {
+    pub bar: i32,
+}
+
+#[async_trait::async_trait]
+impl SomeTrait for Foo {
+    async fn do_thing(&self) -> i32 {
+        self.bar
+    }
+}
+"#;
+        let md = code_to_markdown(source.trim(), CodeLanguage::Rust).unwrap();
+
+        // No preamble section — attributes should not have leaked
+        // into one.
+        assert!(
+            !md.contains("# Preamble"),
+            "attributes leaked into preamble:\n{md}"
+        );
+
+        // The struct chunk should carry both `#[derive]` lines.
+        assert!(md.contains("# struct Foo"));
+        let struct_section_start = md.find("# struct Foo").unwrap();
+        let after_struct = &md[struct_section_start..];
+        assert!(
+            after_struct.contains("#[derive(Debug, Clone)]"),
+            "struct chunk missing #[derive(Debug, Clone)]:\n{after_struct}"
+        );
+        assert!(
+            after_struct.contains("#[derive(Serialize)]"),
+            "struct chunk missing #[derive(Serialize)]:\n{after_struct}"
+        );
+
+        // The impl chunk should carry the async_trait attribute.
+        assert!(md.contains("# impl SomeTrait for Foo"));
+        let impl_section_start = md.find("# impl SomeTrait for Foo").unwrap();
+        let after_impl = &md[impl_section_start..];
+        assert!(
+            after_impl.contains("#[async_trait::async_trait]"),
+            "impl chunk missing #[async_trait]:\n{after_impl}"
+        );
+    }
+
+    #[test]
+    fn rust_orphan_attribute_falls_through_to_preamble() {
+        // If an attribute has no following top-level item it should
+        // still surface somewhere — fall through to the preamble so
+        // we never silently drop source text.
+        let source = r#"
+#[cfg(test)]
+"#;
+        let md = code_to_markdown(source.trim(), CodeLanguage::Rust).unwrap();
+        // tree-sitter may parse a lone `#[cfg(test)]` differently
+        // depending on grammar version; the contract here is just
+        // that we don't silently drop it. Either it lands in the
+        // preamble or in the fallback Source section.
+        assert!(md.contains("cfg(test)") || md.contains("# Source"));
     }
 
     #[test]

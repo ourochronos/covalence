@@ -56,6 +56,10 @@ pub struct SearchService {
     pub(super) global: GlobalDimension,
     pub(super) reranker: Arc<dyn Reranker>,
     pub(super) cache: Option<QueryCache>,
+    /// Truncation dim used when constructing the query cache.
+    /// Captured from `TableDimensions::chunk` in `with_config` so
+    /// that `with_cache` can hand it to [`QueryCache::new`].
+    pub(super) cache_dim: usize,
     pub(super) abstention_config: AbstentionConfig,
     /// Use Convex Combination fusion instead of RRF.
     /// CC preserves score magnitude; RRF uses only rank.
@@ -91,6 +95,7 @@ impl SearchService {
         let pool = repo.pool().clone();
         let graph_engine: Arc<dyn GraphEngine> =
             Arc::new(crate::graph::PetgraphEngine::new(Arc::clone(&graph)));
+        let cache_dim = table_dims.chunk;
         Self {
             repo,
             embedder,
@@ -104,6 +109,7 @@ impl SearchService {
             graph: Arc::clone(&graph),
             reranker: Arc::new(NoopReranker),
             cache: None,
+            cache_dim,
             abstention_config: AbstentionConfig::default(),
             use_cc_fusion: true,
             internal_domains: ["code", "spec", "design"]
@@ -147,7 +153,7 @@ impl SearchService {
     /// the full search pipeline.
     pub fn with_cache(mut self, config: CacheConfig) -> Self {
         let pool = self.repo.pool().clone();
-        self.cache = Some(QueryCache::new(pool, config));
+        self.cache = Some(QueryCache::new(pool, config, self.cache_dim));
         self
     }
 

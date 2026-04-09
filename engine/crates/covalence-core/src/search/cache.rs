@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::ingestion::embedder::truncate_and_validate;
 use crate::search::fusion::FusedResult;
 
 /// Configuration for the semantic query cache.
@@ -54,12 +55,25 @@ pub struct CachedResponse {
 pub struct QueryCache {
     pool: PgPool,
     config: CacheConfig,
+    /// Truncation dimension for query embeddings.
+    ///
+    /// The `query_cache.query_embedding` column is `halfvec(1024)`
+    /// (see migration `005_search.sql`). Embedders generate vectors
+    /// at the engine's max dimension (typically 2048 for source); we
+    /// truncate + L2-renormalize before INSERT/SELECT so the column
+    /// type matches. Without this, every cache write fails with
+    /// `expected 1024 dimensions, not 2048` and every query is a miss.
+    dim: usize,
 }
 
 impl QueryCache {
-    /// Create a new query cache with the given pool and config.
-    pub fn new(pool: PgPool, config: CacheConfig) -> Self {
-        Self { pool, config }
+    /// Create a new query cache with the given pool, config, and
+    /// embedding truncation dimension.
+    ///
+    /// `dim` must match the `query_embedding` column dimension
+    /// (currently 1024 — see migration `005_search.sql`).
+    pub fn new(pool: PgPool, config: CacheConfig, dim: usize) -> Self {
+        Self { pool, config, dim }
     }
 
     /// Look up a semantically similar cached query.
@@ -73,9 +87,10 @@ impl QueryCache {
         query_embedding: &[f64],
         strategy: &str,
     ) -> Result<Option<Vec<FusedResult>>> {
+        let truncated = truncate_and_validate(query_embedding, self.dim, "query_cache")?;
         let pgvec = format!(
             "[{}]",
-            query_embedding
+            truncated
                 .iter()
                 .map(|v| v.to_string())
                 .collect::<Vec<_>>()
@@ -87,8 +102,16 @@ impl QueryCache {
 
         // Find the closest cached embedding within TTL and
         // distance threshold, matching strategy.
+        //
+        // The SP returns `(id UUID, response JSONB)` — column name is
+        // `response`, not `results`. The previous SELECT referenced
+        // `results` and threw `column "results" does not exist` on
+        // every lookup. The error was caught and downgraded to a
+        // tracing::warn! ("cache lookup failed, proceeding without
+        // cache") so search still returned results, but every query
+        // was a hard miss against the cache regardless of contents.
         let row: Option<(Uuid, serde_json::Value)> = sqlx::query_as(
-            "SELECT id, results \
+            "SELECT id, response \
              FROM sp_lookup_query_cache($1::halfvec, $2, $3, $4)",
         )
         .bind(&pgvec)
@@ -137,9 +160,10 @@ impl QueryCache {
         strategy: &str,
         results: &[FusedResult],
     ) -> Result<()> {
+        let truncated = truncate_and_validate(query_embedding, self.dim, "query_cache")?;
         let pgvec = format!(
             "[{}]",
-            query_embedding
+            truncated
                 .iter()
                 .map(|v| v.to_string())
                 .collect::<Vec<_>>()
