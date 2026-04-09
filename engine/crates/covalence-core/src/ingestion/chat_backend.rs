@@ -63,6 +63,35 @@ pub trait ChatBackend: Send + Sync {
         temperature: f64,
     ) -> Result<ChatResponse>;
 
+    /// Send a chat completion request with a native JSON schema.
+    ///
+    /// Providers that support OpenAI's `json_schema` response format
+    /// (e.g. `HttpChatBackend`) send the schema alongside the
+    /// request, which moves the schema definition out of the prompt
+    /// and into the API parameter. This saves ~40% of input tokens
+    /// for extraction prompts and eliminates output formatting errors.
+    ///
+    /// The default implementation embeds the schema as pretty-printed
+    /// JSON in the system prompt and delegates to
+    /// [`chat(json_mode=true)`](Self::chat). CLI backends use this
+    /// fallback automatically.
+    async fn chat_with_schema(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &serde_json::Value,
+        temperature: f64,
+    ) -> Result<ChatResponse> {
+        let schema_text = serde_json::to_string_pretty(schema).unwrap_or_default();
+        let augmented = format!(
+            "{system_prompt}\n\n\
+             Return a JSON object matching this schema:\n\
+             {schema_text}\n\n\
+             Return valid JSON only, no markdown fences or extra text."
+        );
+        self.chat(&augmented, user_prompt, true, temperature).await
+    }
+
     /// Stream a chat completion token-by-token.
     ///
     /// Default implementation calls [`chat()`](ChatBackend::chat)
@@ -144,6 +173,55 @@ impl ChatBackend for HttpChatBackend {
         json_mode: bool,
         temperature: f64,
     ) -> Result<ChatResponse> {
+        let response_format = if json_mode {
+            Some(
+                serde_json::to_value(SimpleResponseFormat {
+                    r#type: "json_object",
+                })
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        self.send_request(system_prompt, user_prompt, response_format, temperature)
+            .await
+    }
+
+    async fn chat_with_schema(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &serde_json::Value,
+        temperature: f64,
+    ) -> Result<ChatResponse> {
+        let response_format = serde_json::to_value(JsonSchemaResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: JsonSchemaSpec {
+                name: "extraction".to_string(),
+                strict: true,
+                schema: schema.clone(),
+            },
+        })
+        .unwrap();
+        self.send_request(
+            system_prompt,
+            user_prompt,
+            Some(response_format),
+            temperature,
+        )
+        .await
+    }
+}
+
+impl HttpChatBackend {
+    /// Shared HTTP request logic for both `chat` and `chat_with_schema`.
+    async fn send_request(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        response_format: Option<serde_json::Value>,
+        temperature: f64,
+    ) -> Result<ChatResponse> {
         let body = HttpChatRequest {
             model: &self.model,
             messages: vec![
@@ -156,13 +234,7 @@ impl ChatBackend for HttpChatBackend {
                     content: user_prompt,
                 },
             ],
-            response_format: if json_mode {
-                Some(ResponseFormat {
-                    r#type: "json_object",
-                })
-            } else {
-                None
-            },
+            response_format,
             temperature,
         };
 
@@ -625,6 +697,31 @@ impl ChatBackend for FallbackChatBackend {
             }
         }
     }
+
+    async fn chat_with_schema(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &serde_json::Value,
+        temperature: f64,
+    ) -> Result<ChatResponse> {
+        match self
+            .primary
+            .chat_with_schema(system_prompt, user_prompt, schema, temperature)
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(primary_err) => {
+                tracing::warn!(
+                    error = %primary_err,
+                    "primary chat backend failed, falling back to secondary"
+                );
+                self.fallback
+                    .chat_with_schema(system_prompt, user_prompt, schema, temperature)
+                    .await
+            }
+        }
+    }
 }
 
 // ── Chain backend (multi-provider failover) ─────────────────────
@@ -694,6 +791,53 @@ impl ChatBackend for ChainChatBackend {
         }
         Err(last_err.unwrap_or_else(|| Error::Ingestion("no chat backends configured".to_string())))
     }
+
+    async fn chat_with_schema(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &serde_json::Value,
+        temperature: f64,
+    ) -> Result<ChatResponse> {
+        let call_start = std::time::Instant::now();
+        let mut last_err = None;
+        for (i, (label, backend)) in self.chain.iter().enumerate() {
+            match backend
+                .chat_with_schema(system_prompt, user_prompt, schema, temperature)
+                .await
+            {
+                Ok(response) => {
+                    let elapsed = call_start.elapsed().as_secs_f64();
+                    crate::metrics::record_llm_call(&response.provider);
+                    crate::metrics::record_llm_latency(&response.provider, elapsed);
+                    if let (Some(input), Some(output)) =
+                        (response.input_tokens, response.output_tokens)
+                    {
+                        crate::metrics::record_llm_tokens(&response.provider, input, output);
+                    }
+                    if i > 0 {
+                        tracing::info!(
+                            provider = %label,
+                            attempt = i + 1,
+                            "chat succeeded on fallback provider"
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(e) => {
+                    let remaining = self.chain.len() - i - 1;
+                    tracing::warn!(
+                        provider = %label,
+                        error = %e,
+                        remaining_providers = remaining,
+                        "chat provider failed, trying next"
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| Error::Ingestion("no chat backends configured".to_string())))
+    }
 }
 
 // ── HTTP serialization types ────────────────────────────────────
@@ -704,9 +848,25 @@ struct HttpChatMessage<'a> {
     content: &'a str,
 }
 
+/// Simple `{ "type": "json_object" }` response format.
 #[derive(Serialize)]
-struct ResponseFormat<'a> {
+struct SimpleResponseFormat<'a> {
     r#type: &'a str,
+}
+
+/// OpenAI `json_schema` response format with a named strict schema.
+#[derive(Serialize)]
+struct JsonSchemaResponseFormat {
+    r#type: String,
+    json_schema: JsonSchemaSpec,
+}
+
+/// Schema specification nested inside `json_schema` response format.
+#[derive(Serialize)]
+struct JsonSchemaSpec {
+    name: String,
+    strict: bool,
+    schema: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -714,7 +874,7 @@ struct HttpChatRequest<'a> {
     model: &'a str,
     messages: Vec<HttpChatMessage<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<ResponseFormat<'a>>,
+    response_format: Option<serde_json::Value>,
     temperature: f64,
 }
 
