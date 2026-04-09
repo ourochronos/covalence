@@ -543,7 +543,12 @@ impl Extractor for ChatBackendExtractor {
 
         let chat_resp = self
             .backend
-            .chat(system_prompt(), &user_msg, true, 0.0)
+            .chat_with_schema(
+                system_prompt(),
+                &user_msg,
+                &crate::ingestion::extraction_schemas::ENTITY_EXTRACTION_SCHEMA,
+                0.0,
+            )
             .await?;
         let content = chat_resp.text;
 

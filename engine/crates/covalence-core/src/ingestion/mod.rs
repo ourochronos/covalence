@@ -11,6 +11,7 @@ pub mod code_chunker;
 pub mod converter;
 pub mod coreference;
 pub mod embedder;
+pub mod extraction_schemas;
 pub mod extractor;
 pub mod fingerprint;
 pub mod gliner_extractor;
