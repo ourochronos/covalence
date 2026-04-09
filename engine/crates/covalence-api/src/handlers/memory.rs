@@ -97,19 +97,20 @@ pub async fn recall_memory(
     ))
 }
 
-/// DELETE /memory/:id — Forget a specific memory.
-pub async fn forget_memory(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+/// DELETE /memory/{id} — Forget a specific memory.
+pub async fn forget_memory(State(state): State<AppState>, Path(id): Path<String>) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let uuid = match id.parse::<uuid::Uuid>() {
         Ok(u) => u,
-        Err(_) => return StatusCode::BAD_REQUEST,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
     match state.agent_memory_service.forget(uuid).await {
-        Ok(true) => StatusCode::NO_CONTENT,
-        Ok(false) => StatusCode::NOT_FOUND,
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Memory record not found for this ID").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "memory forget failed");
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }

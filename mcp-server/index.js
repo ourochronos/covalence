@@ -24,9 +24,9 @@ import { z } from "zod";
 
 const API_URL = process.env.COVALENCE_API_URL || "http://covalence-wsl:8441";
 
-// 60-second timeout covers the cold-start case where the first search
+// 5-minute timeout covers the extreme cold-start case where the first search
 // incurs embedding model initialization and graph sidecar loading.
-const FETCH_TIMEOUT_MS = 60_000;
+const FETCH_TIMEOUT_MS = 300_000;
 
 async function apiCall(path, method = "GET", body = null) {
   const opts = {

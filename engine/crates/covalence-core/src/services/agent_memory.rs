@@ -294,6 +294,10 @@ impl AgentMemoryService {
                 .or(r.snippet)
                 .unwrap_or_default();
 
+            if content.trim().is_empty() {
+                continue;
+            }
+
             // Increment access count (fire-and-forget style).
             let _ = AgentMemoryRepo::increment_access(&*self.repo, source_uuid).await;
 
