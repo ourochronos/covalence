@@ -1,9 +1,11 @@
 //! Statement-level entity extraction.
 //!
 //! Extracts entities and relationships from stored statements for a
-//! given source. Uses a three-phase approach:
+//! given source. Uses a four-phase approach:
 //!
-//! 1. **Extract** — concurrent LLM extraction from all statements.
+//! 0. **Novelty gate** (#195) — skip near-paraphrase statements
+//!    using embedding cosine similarity (greedy furthest-first).
+//! 1. **Extract** — concurrent LLM extraction from novel statements.
 //! 2. **Dedup** — accumulate entities across all statements and
 //!    resolve each unique entity name once (not once per statement).
 //! 3. **Link** — process relationships per-statement using the
@@ -14,6 +16,11 @@
 //! instead of 50 times (50 advisory locks + potential embedding
 //! API calls). Each source statement still gets an extraction
 //! provenance record linking it to the resolved node.
+//!
+//! Novelty gating (#195, Lesson 1 reconciliation) prevents redundant
+//! LLM extraction calls: statements whose embedding is >= the
+//! threshold similarity to an already-selected statement are skipped
+//! entirely. The 0.92 default only skips near-paraphrases.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +28,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 use crate::ingestion::embedder::truncate_and_validate;
 use crate::ingestion::extractor::{ExtractedEntity, ExtractionContext};
+use crate::ingestion::statement_cluster::cosine_similarity_f32;
 use crate::models::edge::Edge;
 use crate::models::extraction::{ExtractedEntityType, Extraction};
 use crate::storage::traits::{EdgeRepo, ExtractionRepo, NodeRepo};
@@ -29,6 +37,63 @@ use crate::types::ids::{NodeId, SourceId, StatementId};
 use super::super::noise_filter::is_noise_entity;
 use super::super::source::SourceService;
 use super::types::ExtractionProvenance;
+
+/// Select statements whose embeddings are sufficiently novel for
+/// entity extraction.
+///
+/// Uses greedy furthest-first ordering: start with the first
+/// embedded statement, then for each remaining statement compute
+/// its max cosine similarity to any already-selected statement.
+/// If that max is below `threshold`, the statement introduces
+/// novel content worth extracting.
+///
+/// Statements without embeddings (None) are always included — we
+/// can't assess novelty without a vector.
+///
+/// Returns indices into the input slice of statements to extract.
+fn select_novel_statements(embeddings: &[Option<&[f32]>], threshold: f64) -> Vec<usize> {
+    let n = embeddings.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    let mut selected: Vec<usize> = Vec::new();
+
+    // Seed with the first embedded statement.
+    for (i, emb) in embeddings.iter().enumerate() {
+        if emb.is_some() {
+            selected.push(i);
+            break;
+        }
+    }
+    // If no embeddings at all, return all indices.
+    if selected.is_empty() {
+        return (0..n).collect();
+    }
+
+    for i in 0..n {
+        if selected.contains(&i) {
+            continue;
+        }
+        match embeddings[i] {
+            None => {
+                // No embedding — always include.
+                selected.push(i);
+            }
+            Some(emb) => {
+                let max_sim = selected
+                    .iter()
+                    .filter_map(|&j| embeddings[j].map(|sel| cosine_similarity_f32(emb, sel)))
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if max_sim < threshold {
+                    selected.push(i);
+                }
+            }
+        }
+    }
+
+    selected
+}
 
 /// An entity deduplicated across multiple statements.
 ///
@@ -76,10 +141,37 @@ impl SourceService {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.extract_concurrency));
 
+        // ── Phase 0: Novelty gating (#195) ─────────────────────
+        //
+        // Skip near-paraphrase statements to avoid redundant LLM
+        // extraction calls. Greedy furthest-first: each statement
+        // is included only if its embedding is below the cosine
+        // threshold to all already-selected statements.
+        let non_evicted: Vec<_> = statements.iter().filter(|s| !s.is_evicted).collect();
+
+        let extractable: Vec<_> = if self.pipeline.statement_novelty_enabled {
+            let embeddings: Vec<Option<&[f32]>> =
+                non_evicted.iter().map(|s| s.embedding.as_deref()).collect();
+            let novel_indices =
+                select_novel_statements(&embeddings, self.pipeline.statement_novelty_threshold);
+            let skipped = non_evicted.len() - novel_indices.len();
+            if skipped > 0 {
+                tracing::info!(
+                    total = non_evicted.len(),
+                    novel = novel_indices.len(),
+                    skipped,
+                    threshold = self.pipeline.statement_novelty_threshold,
+                    "statement novelty gating"
+                );
+            }
+            novel_indices.into_iter().map(|i| non_evicted[i]).collect()
+        } else {
+            non_evicted
+        };
+
         // ── Phase 1: Concurrent LLM extraction ──────────────────
-        let batch_futures: Vec<_> = statements
+        let batch_futures: Vec<_> = extractable
             .iter()
-            .filter(|s| !s.is_evicted)
             .map(|stmt| {
                 let sem = Arc::clone(&semaphore);
                 let ext = Arc::clone(extractor);
@@ -291,5 +383,118 @@ impl SourceService {
         );
 
         Ok(entity_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a unit vector pointing in one direction.
+    fn unit_vec(dim: usize, axis: usize) -> Vec<f32> {
+        let mut v = vec![0.0f32; dim];
+        v[axis] = 1.0;
+        v
+    }
+
+    /// Helper: create a vector close to another (high cosine sim).
+    fn near_vec(base: &[f32], perturbation: f32) -> Vec<f32> {
+        base.iter().map(|v| v + perturbation).collect()
+    }
+
+    #[test]
+    fn novelty_empty_input() {
+        assert!(select_novel_statements(&[], 0.92).is_empty());
+    }
+
+    #[test]
+    fn novelty_single_statement_always_selected() {
+        let emb = vec![1.0f32, 0.0, 0.0];
+        let embeddings = vec![Some(emb.as_slice())];
+        let selected = select_novel_statements(&embeddings, 0.92);
+        assert_eq!(selected, vec![0]);
+    }
+
+    #[test]
+    fn novelty_all_none_embeddings_returns_all() {
+        let embeddings: Vec<Option<&[f32]>> = vec![None, None, None];
+        let mut selected = select_novel_statements(&embeddings, 0.92);
+        selected.sort();
+        assert_eq!(selected, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn novelty_identical_embeddings_selects_only_first() {
+        let emb = vec![1.0f32, 0.0, 0.0];
+        let embeddings = vec![
+            Some(emb.as_slice()),
+            Some(emb.as_slice()),
+            Some(emb.as_slice()),
+        ];
+        let selected = select_novel_statements(&embeddings, 0.92);
+        // Only the first should be selected — the others are identical
+        // (cosine = 1.0 >= 0.92).
+        assert_eq!(selected, vec![0]);
+    }
+
+    #[test]
+    fn novelty_orthogonal_embeddings_all_selected() {
+        let a = unit_vec(3, 0);
+        let b = unit_vec(3, 1);
+        let c = unit_vec(3, 2);
+        let embeddings = vec![Some(a.as_slice()), Some(b.as_slice()), Some(c.as_slice())];
+        let mut selected = select_novel_statements(&embeddings, 0.92);
+        selected.sort();
+        // All are orthogonal (cosine = 0.0 < 0.92), all novel.
+        assert_eq!(selected, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn novelty_near_duplicate_filtered() {
+        let base = vec![1.0f32, 0.0, 0.0];
+        let near = near_vec(&base, 0.001); // very close to base
+        let far = unit_vec(3, 1); // orthogonal
+        let embeddings = vec![
+            Some(base.as_slice()),
+            Some(near.as_slice()),
+            Some(far.as_slice()),
+        ];
+        let selected = select_novel_statements(&embeddings, 0.92);
+        // base selected first, near is too similar, far is novel.
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(&0));
+        assert!(selected.contains(&2));
+        assert!(!selected.contains(&1));
+    }
+
+    #[test]
+    fn novelty_threshold_controls_aggressiveness() {
+        let a = vec![1.0f32, 0.0];
+        let b = vec![0.9f32, 0.436]; // cosine ~ 0.9 with a
+        let embeddings = vec![Some(a.as_slice()), Some(b.as_slice())];
+
+        // Threshold 0.95 — b is below, both selected.
+        let selected = select_novel_statements(&embeddings, 0.95);
+        assert_eq!(selected.len(), 2);
+
+        // Threshold 0.85 — b is above, only a selected.
+        let selected = select_novel_statements(&embeddings, 0.85);
+        assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn novelty_none_embeddings_always_included() {
+        let emb = vec![1.0f32, 0.0, 0.0];
+        let embeddings = vec![
+            Some(emb.as_slice()),
+            None, // no embedding — must be included
+            Some(emb.as_slice()),
+        ];
+        let selected = select_novel_statements(&embeddings, 0.92);
+        // Index 0 (seed), 1 (None → always included).
+        // Index 2 is identical to 0, filtered.
+        assert!(selected.contains(&0));
+        assert!(selected.contains(&1));
+        assert!(!selected.contains(&2));
     }
 }

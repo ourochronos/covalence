@@ -423,6 +423,22 @@ pub struct PipelineConfig {
     /// Env: `COVALENCE_STATEMENT_MODEL`. Default: `None` (uses
     /// `chat_model`).
     pub statement_model: Option<String>,
+
+    /// Enable embedding-based novelty gating for statement entity
+    /// extraction. When enabled, statements whose embedding is too
+    /// similar to an already-selected statement are skipped, saving
+    /// LLM extraction calls on near-paraphrases.
+    /// Env: `COVALENCE_STATEMENT_NOVELTY_ENABLED`. Default: `true`.
+    pub statement_novelty_enabled: bool,
+
+    /// Cosine similarity threshold for statement novelty gating.
+    /// Statements with embedding cosine >= this threshold to any
+    /// already-selected statement are skipped for entity extraction.
+    /// Lower values are more aggressive (skip more); higher values
+    /// are more conservative (skip less). 0.92 matches the eviction
+    /// threshold and only skips near-paraphrases.
+    /// Env: `COVALENCE_STATEMENT_NOVELTY_THRESHOLD`. Default: `0.92`.
+    pub statement_novelty_threshold: f64,
 }
 
 impl Default for PipelineConfig {
@@ -443,6 +459,8 @@ impl Default for PipelineConfig {
             statement_window_chars: 8_000,
             statement_window_overlap: 1_000,
             statement_model: None,
+            statement_novelty_enabled: true,
+            statement_novelty_threshold: 0.92,
             code_entity_class: "code".to_string(),
             code_domain: "code".to_string(),
             code_node_types: Self::default_code_node_types(),
