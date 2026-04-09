@@ -232,7 +232,10 @@ fn merge_small_clusters(assignments: &mut [usize], embeddings: &[Option<&[f32]>]
 }
 
 /// Cosine similarity between two f32 vectors.
-fn cosine_similarity_f32(a: &[f32], b: &[f32]) -> f64 {
+///
+/// Used by HAC clustering and novelty gating
+/// (`select_novel_statements`).
+pub(crate) fn cosine_similarity_f32(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
