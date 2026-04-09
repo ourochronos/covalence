@@ -106,6 +106,16 @@ pub async fn sync_loop(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
 /// Load all nodes and edges from PostgreSQL into the graph sidecar.
 ///
 /// Used on startup and for admin-triggered full reloads.
+///
+/// **Lock discipline:** the entire rebuild happens against a *local*
+/// `GraphSidecar` outside the shared lock. The shared write lock is
+/// only acquired at the very end to swap the new sidecar in. This
+/// keeps lock-hold time to a single move regardless of graph size.
+///
+/// Previously the implementation cleared `*graph` under the write
+/// lock and inserted nodes/edges row-by-row while holding it. With
+/// 100K+ edges that meant 30+ seconds of write-lock contention every
+/// reload, blocking every search dimension that wanted a read lock.
 pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> {
     // Fetch all nodes via stored procedure.
     let node_rows = sqlx::query("SELECT * FROM sp_load_all_nodes()")
@@ -117,14 +127,14 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
         .fetch_all(pool)
         .await?;
 
-    let mut g = super::instrumented_lock::write_graph(&graph, "full_reload").await;
-    // Clear existing graph
-    *g = GraphSidecar::new();
+    // Build the new sidecar OFF-LOCK. Searches keep reading the
+    // current graph during the rebuild.
+    let mut new_graph = GraphSidecar::new();
 
     // Insert nodes (SP returns canonical_type = COALESCE(canonical_type, node_type))
     let mut node_errors = 0usize;
     for row in &node_rows {
-        if let Err(e) = g.add_node(NodeMeta {
+        if let Err(e) = new_graph.add_node(NodeMeta {
             id: row.get("id"),
             node_type: row.get("canonical_type"),
             entity_class: row.get("entity_class"),
@@ -149,7 +159,7 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
             _ => None,
         };
 
-        if let Err(e) = g.add_edge(
+        if let Err(e) = new_graph.add_edge(
             row.get("source_node_id"),
             row.get("target_node_id"),
             EdgeMeta {
@@ -168,6 +178,16 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
         }
     }
 
+    let nodes = new_graph.node_count();
+    let edges = new_graph.edge_count();
+
+    // Brief write-lock acquisition just to swap in the rebuilt graph.
+    // This is the only window in which concurrent readers are blocked.
+    {
+        let mut g = super::instrumented_lock::write_graph(&graph, "full_reload").await;
+        *g = new_graph;
+    }
+
     if node_errors > 0 || edge_errors > 0 {
         tracing::warn!(
             node_errors,
@@ -176,11 +196,7 @@ pub async fn full_reload(pool: &sqlx::PgPool, graph: SharedGraph) -> Result<()> 
         );
     }
 
-    tracing::info!(
-        nodes = g.node_count(),
-        edges = g.edge_count(),
-        "full graph reload complete"
-    );
+    tracing::info!(nodes, edges, "full graph reload complete");
 
     Ok(())
 }
