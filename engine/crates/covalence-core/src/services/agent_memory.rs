@@ -264,16 +264,19 @@ impl AgentMemoryService {
         for r in results {
             let source_uuid = r.id;
 
-            // Look up agent_memories metadata.
+            // Look up agent_memories metadata. Results without an
+            // agent_memories record are non-memory graph entities
+            // (nodes, chunks, statements) that happened to match
+            // the vector search — skip them to avoid returning
+            // entries with `content: ""` and `topic: null`.
             let am = AgentMemoryRepo::get_by_source(&*self.repo, source_uuid).await?;
+            let Some(am) = am else {
+                continue;
+            };
 
             // Apply agent_id filter if requested.
             if let Some(ref filter_agent) = req.agent_id {
-                if let Some(ref am) = am {
-                    if am.agent_id.as_deref() != Some(filter_agent) {
-                        continue;
-                    }
-                } else {
+                if am.agent_id.as_deref() != Some(filter_agent) {
                     continue;
                 }
             }
@@ -297,18 +300,13 @@ impl AgentMemoryService {
             items.push(MemoryItem {
                 id: source_uuid.to_string(),
                 content,
-                topic: am.as_ref().and_then(|m| m.topic.clone()),
+                topic: am.topic.clone(),
                 relevance: r.fused_score,
-                confidence: am
-                    .as_ref()
-                    .map(|m| m.confidence)
-                    .unwrap_or(r.confidence.unwrap_or(1.0)),
+                confidence: am.confidence,
                 stored_at: r.created_at.unwrap_or_default(),
-                agent_id: am.as_ref().and_then(|m| m.agent_id.clone()),
-                access_count: am.as_ref().map(|m| m.access_count),
-                last_accessed: am
-                    .as_ref()
-                    .and_then(|m| m.last_accessed.map(|t| t.to_rfc3339())),
+                agent_id: am.agent_id.clone(),
+                access_count: Some(am.access_count),
+                last_accessed: am.last_accessed.map(|t| t.to_rfc3339()),
             });
         }
 
@@ -320,8 +318,12 @@ impl AgentMemoryService {
     /// Deletes the source (which CASCADE-deletes the agent_memories
     /// row).
     pub async fn forget(&self, memory_id: Uuid) -> Result<bool> {
-        // Look up the agent_memory to get the source_id.
-        let am = AgentMemoryRepo::get(&*self.repo, memory_id).await?;
+        // The ID returned by `store()` is a source_id, not an
+        // agent_memories.id. Try source_id lookup first (the common
+        // path from MCP clients), then fall back to the primary key.
+        let am = AgentMemoryRepo::get_by_source(&*self.repo, memory_id)
+            .await?
+            .or(AgentMemoryRepo::get(&*self.repo, memory_id).await?);
         let Some(am) = am else {
             return Ok(false);
         };
