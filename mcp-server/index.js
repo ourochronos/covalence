@@ -24,10 +24,15 @@ import { z } from "zod";
 
 const API_URL = process.env.COVALENCE_API_URL || "http://covalence-wsl:8441";
 
+// 60-second timeout covers the cold-start case where the first search
+// incurs embedding model initialization and graph sidecar loading.
+const FETCH_TIMEOUT_MS = 60_000;
+
 async function apiCall(path, method = "GET", body = null) {
   const opts = {
     method,
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   };
   if (body) opts.body = JSON.stringify(body);
 
@@ -36,6 +41,8 @@ async function apiCall(path, method = "GET", body = null) {
     const text = await resp.text();
     throw new Error(`API error ${resp.status}: ${text}`);
   }
+  // 204 No Content (e.g., memory forget) has no body to parse.
+  if (resp.status === 204) return { ok: true };
   return resp.json();
 }
 
@@ -45,6 +52,7 @@ async function apiCallOrNull(path, method = "GET", body = null) {
   const opts = {
     method,
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   };
   if (body) opts.body = JSON.stringify(body);
 
@@ -54,6 +62,7 @@ async function apiCallOrNull(path, method = "GET", body = null) {
     const text = await resp.text();
     throw new Error(`API error ${resp.status}: ${text}`);
   }
+  if (resp.status === 204) return { ok: true };
   return resp.json();
 }
 
