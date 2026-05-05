@@ -1,0 +1,154 @@
+# Modules catalog for Covalence
+#
+# Modules represent areas of the codebase with their own boundaries. The `paths`
+# field maps file globs to a module — used by hooks and scope-detection logic to
+# determine whether a commit or edit falls within an active change's claimed
+# cells.
+#
+# Catalog evolution is itself a meta-change. Adding, removing, or splitting a
+# module requires its own change spec, and propagates to all active manifests
+# as new pending cells.
+#
+# Per-module specs live at `docs/architecture/modules/<name>.md`.
+
+[modules.engine_core]
+description = "covalence-core foundations: types, models, storage repos, config, errors, factory, services facade"
+paths = [
+    "engine/crates/covalence-core/src/types/**",
+    "engine/crates/covalence-core/src/models/**",
+    "engine/crates/covalence-core/src/storage/**",
+    "engine/crates/covalence-core/src/config*.rs",
+    "engine/crates/covalence-core/src/error.rs",
+    "engine/crates/covalence-core/src/factory.rs",
+    "engine/crates/covalence-core/src/lib.rs",
+    "engine/crates/covalence-core/src/metrics.rs",
+    "engine/crates/covalence-core/src/services/mod.rs",
+    "engine/crates/covalence-core/src/services/adapter_service.rs",
+    "engine/crates/covalence-core/src/services/admin/**",
+    "engine/crates/covalence-core/src/services/agent_memory.rs",
+    "engine/crates/covalence-core/src/services/analysis/**",
+    "engine/crates/covalence-core/src/services/article.rs",
+    "engine/crates/covalence-core/src/services/ask.rs",
+    "engine/crates/covalence-core/src/services/chunk_quality.rs",
+    "engine/crates/covalence-core/src/services/config_service.rs",
+    "engine/crates/covalence-core/src/services/edge.rs",
+    "engine/crates/covalence-core/src/services/health.rs",
+    "engine/crates/covalence-core/src/services/hooks.rs",
+    "engine/crates/covalence-core/src/services/memory.rs",
+    "engine/crates/covalence-core/src/services/node.rs",
+    "engine/crates/covalence-core/src/services/noise_filter.rs",
+    "engine/crates/covalence-core/src/services/ontology_service.rs",
+    "engine/crates/covalence-core/src/services/prompts.rs",
+    "engine/crates/covalence-core/src/services/session.rs",
+]
+
+[modules.engine_search]
+description = "Search engine: 6-dimensional fusion (vector, lexical, temporal, graph, structural, global), strategies, RRF, search service"
+paths = [
+    "engine/crates/covalence-core/src/search/**",
+    "engine/crates/covalence-core/src/services/search/**",
+    "engine/crates/covalence-core/src/services/search_helpers.rs",
+]
+
+[modules.engine_ingestion]
+description = "Ingestion pipeline: chunking, fastcoref, offset projection, statement → triple extraction, embedding, queue, source adapters"
+paths = [
+    "engine/crates/covalence-core/src/ingestion/**",
+    "engine/crates/covalence-core/src/services/pipeline/**",
+    "engine/crates/covalence-core/src/services/queue/**",
+    "engine/crates/covalence-core/src/services/source/**",
+    "engine/crates/covalence-core/src/services/ingestion_helpers.rs",
+    "engine/crates/covalence-core/src/services/statement_pipeline.rs",
+]
+
+[modules.engine_graph_consolidation]
+description = "petgraph sidecar: traversal, algorithms (PageRank, TrustRank, communities), HDBSCAN entity resolution, batch/deep consolidation"
+paths = [
+    "engine/crates/covalence-core/src/graph/**",
+    "engine/crates/covalence-core/src/consolidation/**",
+    "engine/crates/covalence-core/src/services/consolidation.rs",
+]
+
+[modules.engine_epistemic]
+description = "Subjective Logic, Dempster-Shafer fusion, DF-QuAD, decay, convergence, opinion tuples"
+paths = [
+    "engine/crates/covalence-core/src/epistemic/**",
+]
+
+[modules.engine_api]
+description = "HTTP API + MCP server: Axum routing, handlers, OpenAPI (utoipa), middleware, error surfaces"
+paths = [
+    "engine/crates/covalence-api/**",
+]
+
+[modules.engine_workers]
+description = "Async queue worker, AST extractor sidecar, evaluation harness, sqlx migrations, extension loader"
+paths = [
+    "engine/crates/covalence-worker/**",
+    "engine/crates/covalence-ast-extractor/**",
+    "engine/crates/covalence-eval/**",
+    "engine/crates/covalence-migrations/**",
+    "engine/crates/covalence-core/src/extensions/**",
+]
+
+[modules.clients]
+description = "Client surfaces: Go cove CLI (Cobra) and Node.js MCP server bridge for Claude Code"
+paths = [
+    "cli/**",
+    "mcp-server/**",
+]
+
+[modules.dashboard]
+description = "Web dashboard: stats, observability, future interaction"
+paths = [
+    "dashboard/**",
+]
+
+[modules.extensions]
+description = "Extension manifests: domain-specific entity types, relationship types, alignment rules, lifecycle hooks"
+paths = [
+    "extensions/**",
+]
+
+[modules.infra]
+description = "Build, deploy, sidecar containers, scripts, top-level project metadata"
+paths = [
+    "Makefile",
+    "docker-compose.yml",
+    "covalence.conf.example",
+    "deploy/**",
+    "scripts/**",
+    "sidecar/**",
+    "sidecars/**",
+    ".env.example",
+]
+
+[modules.documentation]
+description = "Specs, ADRs, design docs, project-level prose, and claude-ultra apparatus (.changes/, holistic spec, CLAUDE.md)"
+paths = [
+    "spec/**",
+    "docs/adr/**",
+    "docs/architecture/**",
+    "docs/extension-author-guide.md",
+    "docs/lifecycle-hooks.md",
+    "docs/local-llm.md",
+    "docs/providers.md",
+    "docs/research-papers.md",
+    "docs/sources/**",
+    "docs/stdio-service-contract.md",
+    "design/**",
+    "README.md",
+    "MILESTONES.md",
+    "VISION.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CLAUDE.md",
+    ".changes/active/**",
+    ".changes/archive/**",
+    ".changes/backlog/**",
+    ".changes/catalogs/**",
+]
+
+# Out of any module's enforcement scope (informational only):
+#   LICENSE, openapi.json (generated), package-lock.json, .gitignore,
+#   logs/** (per-session artifacts), .claude/**, .gemini/**.
