@@ -39,7 +39,7 @@ Estimated single-session work. Likely warrants no ADR (it's a bug or a missing-f
 
 ## Operational workaround for change 0002
 
-To complete the spirit of Decision 6 #1 immediately, an operator can manually enqueue compose-source-summary for the 250 sources that now have code-class nodes:
+To complete the spirit of Decision 6 #1 immediately, an operator can manually enqueue compose-source-summary for code sources that now have code-class nodes but no summary:
 
 ```sql
 -- enqueue compose_source_summary for sources with code-class nodes that lack a summary

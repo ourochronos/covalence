@@ -6,10 +6,12 @@
 #
 # 12 modules × 11 concerns = 132 cells. No engine code is added or modified
 # in this change — implementation is operational (trigger reprocess) plus
-# verification (INV-1 + INV-2 + metrics). Most cells are `n/a`; 3 cells are
-# `pending` (verification work to do) and 1 is `in-progress` (documentation:
-# spec + decisions + ISSUE-0001 done at freeze; GitHub issue #176 closing
-# comment pending at reconciliation).
+# verification (INV-1 + INV-2 + metrics). Phase is `reconciliation` post-
+# verification; cell distribution: 128 `n/a` + 4 `complete`
+# (documentation.documentation, engine_graph_consolidation.graph_integrity,
+# engine_ingestion.provenance, engine_workers.observability). No `pending` or
+# `in-progress` cells remain; verification spot-checks landed and Decision 9
+# captures the realistic acceptance state.
 
 [change]
 id = "0002-restore-code-extraction-data"
@@ -132,7 +134,7 @@ justification = "No catalog or schema changes."
 
 [cells."documentation.documentation"]
 state = "complete"
-terminal = "spec.md (full diagnosis + 4 options + recommendation), decisions.md (Decisions 1-9 incl. final acceptance per actual results), 4 backlog issues filed: ISSUE-0001 (reprocess hard-deletes despite superseded naming), ISSUE-0002 (AST entities all attributed to single chunk's byte range), ISSUE-0003 (reprocess does not cascade summary regeneration), ISSUE-0004 (28 code sources still have zero code-class nodes). GitHub issue #176 closing comment posted with verification metrics (see Decision 9)."
+terminal = "spec.md (full diagnosis + 4 options + recommendation), decisions.md (Decisions 1-9 incl. final acceptance per actual results with precise headcounts: 144 of 172 reprocessed got code nodes, 28 did not), 4 backlog issues filed: ISSUE-0001 (reprocess hard-deletes despite superseded naming), ISSUE-0002 (AST entities all attributed to single chunk's byte range), ISSUE-0003 (reprocess does not cascade summary regeneration), ISSUE-0004 (28 code sources still have zero code-class nodes). GitHub issue #176 closing-comment composition pending operator decision per Decision 9 (close vs leave open)."
 last_updated = "2026-05-05T20:30:00Z"
 
 [cells."documentation.epistemic_model"]
@@ -487,7 +489,7 @@ justification = "Owned by engine_graph_consolidation."
 
 [cells."engine_workers.observability"]
 state = "complete"
-terminal = "Aggregate metrics per Decision 6 partially met: total_code_entities went 101 → 680 (gain of +579, satisfies #176's narrow symptom); 235 of 250-ish previously-broken sources now have ≥1 code-class node (was 15). NOT met: unsummarized_sources stayed at 192 — reprocess did not cascade compose_source_summary jobs. Filed as ISSUE-0003. 28 sources still have zero code-class nodes after reprocess — filed as ISSUE-0004 (likely demotion-rule firing on multi-domain sources). orphan_nodes jumped 31 → 302 — expected per Decision 4 (LLM-noise nodes lost their last reference). Decision 9 captures the realistic acceptance state."
+terminal = "Aggregate metrics per Decision 6 partially met: total_code_entities went 101 → 680 (+579, satisfies #176's narrow symptom). Of the 172 reprocessed in this batch, 144 now have ≥1 code-class node and 28 do not (filed as ISSUE-0004 — likely demotion-rule firing on multi-domain sources). System-wide code-source population: 250 of 292 code sources now have ≥1 code-class node (was 15 of 193 unsummarized at issue-filing time; the 99-source universe difference is sources with summaries pre-existing and outside #176's panel). NOT met: unsummarized_sources stayed at 192, entity_summary_pct collapsed 92% → 14% (denominator grew, numerator unchanged) — reprocess did not cascade compose_source_summary jobs. Filed as ISSUE-0003. orphan_nodes jumped 31 → 302 — expected per Decision 4 (LLM-noise nodes lost their last reference). Decision 9 captures the realistic acceptance state."
 last_updated = "2026-05-05T20:30:00Z"
 
 [cells."engine_workers.persistence"]

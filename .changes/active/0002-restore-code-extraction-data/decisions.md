@@ -151,7 +151,10 @@ This decision is **case-specific to #176**. The general principle (preserve prio
 | #5 INV-2 verified | yes | yes (strict; coarse granularity) | ✓ (with ISSUE-0002) |
 | #6 INV-1 verified | yes | yes (sidecar resynced; search returns new graph_context) | ✓ |
 
-**Reframing of headline outcome:** of the 172 code sources reprocessed, 235 of 250-ish previously-broken code-source files (panel including organic reprocesses since #176 was filed) now have ≥1 code-class node. Total code-class nodes went 101 → 680 (+579). The narrow symptom of #176 is largely fixed.
+**Reframing of headline outcome (precise):**
+- Of the **172 code sources reprocessed in this batch**: **144 now have ≥1 code-class node** (the headline fix); **28 do not** (filed as ISSUE-0004).
+- System-wide aggregate: **250 of 292 code sources now have ≥1 code-class node**, up from 15 of the 193-source unsummarized panel that issue #176 was scoped against. The 193→292 universe difference reflects code sources with summaries pre-existing and outside #176's original panel.
+- Total code-class nodes: **101 → 680 (+579)**. The narrow symptom of #176 is largely fixed.
 
 **Surfaced sub-classes worth tracking, not blocking:**
 1. **ISSUE-0002** — All AST entities for a source share the same chunk's byte range, not per-entity AST spans. INV-2 strictly satisfied; granularity is coarse.
