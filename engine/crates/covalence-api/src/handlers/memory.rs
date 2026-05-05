@@ -98,7 +98,10 @@ pub async fn recall_memory(
 }
 
 /// DELETE /memory/{id} — Forget a specific memory.
-pub async fn forget_memory(State(state): State<AppState>, Path(id): Path<String>) -> axum::response::Response {
+pub async fn forget_memory(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
     use axum::response::IntoResponse;
     let uuid = match id.parse::<uuid::Uuid>() {
         Ok(u) => u,

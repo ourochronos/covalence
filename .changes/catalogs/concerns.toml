@@ -1,0 +1,49 @@
+# Concerns catalog for Covalence
+#
+# Concerns are cross-cutting properties every affected module must address (or
+# justify as `n/a`) for an architectural change. Each concern listed here
+# generates one cell per affected module in a manifest.
+#
+# Catalog evolution is itself a meta-change. Adding or removing a concern
+# requires its own change spec, and propagates to all active manifests as new
+# pending cells (most marked `n/a` quickly — but the discipline of considering
+# them is the point).
+#
+# Per-concern policy details live at `docs/architecture/concerns/<name>.md`.
+#
+# This catalog extends claude-ultra's defaults (8 concerns) with 3 Covalence-
+# specific concerns (provenance, epistemic_model, graph_integrity) reflecting
+# the system's hybrid-GraphRAG architecture and explicit epistemic model.
+
+[concerns.data_model]
+description = "Schemas, types, validation rules"
+
+[concerns.persistence]
+description = "PostgreSQL schema, migrations, file formats, serialization"
+
+[concerns.observability]
+description = "Tracing, structured logs, Prometheus metrics, processing metadata"
+
+[concerns.tests]
+description = "Unit tests, integration tests, evaluation harness coverage"
+
+[concerns.documentation]
+description = "User-facing guides, inline rationale, ADR if architectural"
+
+[concerns.cli_ux]
+description = "cove CLI command behavior, output formatting, error messages"
+
+[concerns.error_handling]
+description = "thiserror in library, anyhow in binaries, exit codes, recovery paths"
+
+[concerns.security]
+description = "Clearance levels, secrets handling, file-system safety, egress filtering"
+
+[concerns.provenance]
+description = "Canonical byte-offset sourcing, offset projection ledger, provenance link integrity"
+
+[concerns.epistemic_model]
+description = "Opinion tuples (b, d, u, a), confidence propagation, fusion, decay"
+
+[concerns.graph_integrity]
+description = "PG-as-source-of-truth invariant, sidecar sync, no graph algorithms in SQL"

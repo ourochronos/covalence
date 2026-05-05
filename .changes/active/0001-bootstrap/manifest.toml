@@ -1,0 +1,616 @@
+# Manifest for change 0001-bootstrap
+#
+# Authored manually — claude-ultra's brownfield `change init` tooling is upstream
+# change 0015 (not yet built). The manifest format follows the reference at
+# claude-ultra/.changes/archive/0001-bootstrap/manifest.toml.
+#
+# 12 modules × 11 concerns = 132 cells. The bootstrap installs framework
+# apparatus only — no engine code is modified. Most cells are `n/a`; a small
+# set of cells in `documentation` and per-module `documentation` cells are
+# `complete` because the bootstrap delivers the holistic spec stubs and ADR.
+
+[change]
+id = "0001-bootstrap"
+title = "Adopt claude-ultra change-management framework in Covalence"
+spec = "spec.md"
+amends_sections = [
+    "overview.md",
+    "invariants.md",
+    "modules/*",
+    "concerns/*",
+]
+phase = "implementation"
+kind = "meta"
+created = "2026-05-05T18:00:00Z"
+updated = "2026-05-05T18:00:00Z"
+depends_on_change = []
+
+# ---------------------------------------------------------------------------
+# Module: clients (cove CLI + MCP server bridge)
+# ---------------------------------------------------------------------------
+
+[cells."clients.cli_ux"]
+state = "n/a"
+justification = "Bootstrap does not change cove CLI surface."
+
+[cells."clients.data_model"]
+state = "n/a"
+justification = "No client-side data shapes modified."
+
+[cells."clients.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/clients.md, cross-referencing spec/08-api.md (MCP tools section)."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."clients.epistemic_model"]
+state = "n/a"
+justification = "CLI/MCP bridges relay opinion tuples; no opinion logic in client code."
+
+[cells."clients.error_handling"]
+state = "n/a"
+justification = "No execution paths modified."
+
+[cells."clients.graph_integrity"]
+state = "n/a"
+justification = "Clients consume the API; graph integrity is enforced server-side."
+
+[cells."clients.observability"]
+state = "n/a"
+justification = "No new spans, metrics, or logs added."
+
+[cells."clients.persistence"]
+state = "n/a"
+justification = "Clients hold no persistent state."
+
+[cells."clients.provenance"]
+state = "n/a"
+justification = "Provenance is enforced at ingestion; clients are read-mostly."
+
+[cells."clients.security"]
+state = "n/a"
+justification = "No auth or secrets handling modified."
+
+[cells."clients.tests"]
+state = "n/a"
+justification = "No client tests added or modified."
+
+# ---------------------------------------------------------------------------
+# Module: dashboard
+# ---------------------------------------------------------------------------
+
+[cells."dashboard.cli_ux"]
+state = "n/a"
+justification = "Dashboard has no CLI surface."
+
+[cells."dashboard.data_model"]
+state = "n/a"
+justification = "No dashboard data shapes modified."
+
+[cells."dashboard.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/dashboard.md."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."dashboard.epistemic_model"]
+state = "n/a"
+justification = "Dashboard renders confidence values; no opinion logic in UI code."
+
+[cells."dashboard.error_handling"]
+state = "n/a"
+justification = "No frontend changes."
+
+[cells."dashboard.graph_integrity"]
+state = "n/a"
+justification = "Dashboard consumes API; graph integrity is server-side."
+
+[cells."dashboard.observability"]
+state = "n/a"
+justification = "No frontend instrumentation modified."
+
+[cells."dashboard.persistence"]
+state = "n/a"
+justification = "No dashboard storage."
+
+[cells."dashboard.provenance"]
+state = "n/a"
+justification = "Dashboard surfaces provenance; no provenance writes."
+
+[cells."dashboard.security"]
+state = "n/a"
+justification = "No auth changes."
+
+[cells."dashboard.tests"]
+state = "n/a"
+justification = "No dashboard tests added."
+
+# ---------------------------------------------------------------------------
+# Module: documentation (specs, ADRs, design docs, claude-ultra apparatus)
+# ---------------------------------------------------------------------------
+
+[cells."documentation.cli_ux"]
+state = "n/a"
+justification = "CLAUDE.md additions are project instructions, not CLI behavior; cove surface unchanged."
+
+[cells."documentation.data_model"]
+state = "complete"
+terminal = "Catalog schemas established at .changes/catalogs/modules.toml and concerns.toml. Manifest cell schema demonstrated by this file. Backlog issue schema in .changes/backlog/_TEMPLATE.md."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."documentation.documentation"]
+state = "complete"
+terminal = "docs/architecture/ created with overview.md, invariants.md (8 INVs), modules/ (12 stubs), concerns/ (11 stubs). ADR-0024 (Adopting claude-ultra) authored at docs/adr/. CLAUDE.md updated with Change Management section. Backlog and proposed-amendments READMEs explain the framework's curation rules."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."documentation.epistemic_model"]
+state = "n/a"
+justification = "Apparatus is metadata, not facts; no opinion tuples involved."
+
+[cells."documentation.error_handling"]
+state = "n/a"
+justification = "No execution paths in the apparatus; hooks exit 0 silently per claude-ultra contract."
+
+[cells."documentation.graph_integrity"]
+state = "n/a"
+justification = "Apparatus is filesystem artifacts, not graph state."
+
+[cells."documentation.observability"]
+state = "n/a"
+justification = "Hook event emission is the plugin's internal concern (.changes/.events.jsonl); Covalence-side observability for change-management is not introduced."
+
+[cells."documentation.persistence"]
+state = "complete"
+terminal = "Directory layout under .changes/ established (catalogs/, active/{id}/, archive/, backlog/) and under docs/architecture/. Formats: TOML for machine-edited (catalogs, manifests), Markdown for human-edited (specs, decisions, issues, ADRs)."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."documentation.provenance"]
+state = "n/a"
+justification = "Apparatus is meta; no graph nodes/edges/chunks created."
+
+[cells."documentation.security"]
+state = "n/a"
+justification = "Local files only; no privileged operations or secrets handled."
+
+[cells."documentation.tests"]
+state = "n/a"
+justification = "Apparatus reviewed through use, not unit-tested. Validation comes via the framework's reconciliation pass at change closure."
+
+# ---------------------------------------------------------------------------
+# Module: engine_api
+# ---------------------------------------------------------------------------
+
+[cells."engine_api.cli_ux"]
+state = "n/a"
+justification = "API surface unchanged."
+
+[cells."engine_api.data_model"]
+state = "n/a"
+justification = "No request/response schemas modified."
+
+[cells."engine_api.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/engine_api.md cross-referencing spec/08-api.md."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."engine_api.epistemic_model"]
+state = "n/a"
+justification = "API serializes opinion tuples; no opinion logic added."
+
+[cells."engine_api.error_handling"]
+state = "n/a"
+justification = "No new error surfaces."
+
+[cells."engine_api.graph_integrity"]
+state = "n/a"
+justification = "No graph operations introduced."
+
+[cells."engine_api.observability"]
+state = "n/a"
+justification = "No new tracing or metrics."
+
+[cells."engine_api.persistence"]
+state = "n/a"
+justification = "API is stateless; no migrations."
+
+[cells."engine_api.provenance"]
+state = "n/a"
+justification = "API serializes provenance; no provenance writes."
+
+[cells."engine_api.security"]
+state = "n/a"
+justification = "No auth, clearance, or middleware changes."
+
+[cells."engine_api.tests"]
+state = "n/a"
+justification = "No API tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_core (covalence-core foundations)
+# ---------------------------------------------------------------------------
+
+[cells."engine_core.cli_ux"]
+state = "n/a"
+justification = "Core library has no CLI surface."
+
+[cells."engine_core.data_model"]
+state = "n/a"
+justification = "No domain types modified."
+
+[cells."engine_core.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/engine_core.md cross-referencing spec/01, spec/02, spec/03."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."engine_core.epistemic_model"]
+state = "n/a"
+justification = "No epistemic types modified."
+
+[cells."engine_core.error_handling"]
+state = "n/a"
+justification = "No error types modified."
+
+[cells."engine_core.graph_integrity"]
+state = "n/a"
+justification = "No graph operations modified."
+
+[cells."engine_core.observability"]
+state = "n/a"
+justification = "No tracing or metrics changes."
+
+[cells."engine_core.persistence"]
+state = "n/a"
+justification = "No storage repos or migrations modified."
+
+[cells."engine_core.provenance"]
+state = "n/a"
+justification = "No provenance handling modified."
+
+[cells."engine_core.security"]
+state = "n/a"
+justification = "No security primitives modified."
+
+[cells."engine_core.tests"]
+state = "n/a"
+justification = "No core tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_epistemic
+# ---------------------------------------------------------------------------
+
+[cells."engine_epistemic.cli_ux"]
+state = "n/a"
+justification = "No CLI surface in epistemic crate."
+
+[cells."engine_epistemic.data_model"]
+state = "n/a"
+justification = "No opinion types modified."
+
+[cells."engine_epistemic.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/engine_epistemic.md cross-referencing spec/07-epistemic-model.md and naming INV-6."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."engine_epistemic.epistemic_model"]
+state = "n/a"
+justification = "No epistemic logic modified."
+
+[cells."engine_epistemic.error_handling"]
+state = "n/a"
+justification = "No error paths modified."
+
+[cells."engine_epistemic.graph_integrity"]
+state = "n/a"
+justification = "No graph operations."
+
+[cells."engine_epistemic.observability"]
+state = "n/a"
+justification = "No tracing or metrics changes."
+
+[cells."engine_epistemic.persistence"]
+state = "n/a"
+justification = "No storage changes."
+
+[cells."engine_epistemic.provenance"]
+state = "n/a"
+justification = "Epistemic ops preserve provenance; no provenance writes here."
+
+[cells."engine_epistemic.security"]
+state = "n/a"
+justification = "No security surface."
+
+[cells."engine_epistemic.tests"]
+state = "n/a"
+justification = "No tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_graph_consolidation
+# ---------------------------------------------------------------------------
+
+[cells."engine_graph_consolidation.cli_ux"]
+state = "n/a"
+justification = "No CLI surface in graph crate."
+
+[cells."engine_graph_consolidation.data_model"]
+state = "n/a"
+justification = "No graph types or sidecar types modified."
+
+[cells."engine_graph_consolidation.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/engine_graph_consolidation.md cross-referencing spec/04-graph.md and naming INV-1, INV-5."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."engine_graph_consolidation.epistemic_model"]
+state = "n/a"
+justification = "Graph algorithms propagate confidence; no propagation rules modified."
+
+[cells."engine_graph_consolidation.error_handling"]
+state = "n/a"
+justification = "No error paths modified."
+
+[cells."engine_graph_consolidation.graph_integrity"]
+state = "n/a"
+justification = "No sidecar sync or PG-graph relationship modified."
+
+[cells."engine_graph_consolidation.observability"]
+state = "n/a"
+justification = "No tracing or metrics changes."
+
+[cells."engine_graph_consolidation.persistence"]
+state = "n/a"
+justification = "No PG schema changes."
+
+[cells."engine_graph_consolidation.provenance"]
+state = "n/a"
+justification = "Consolidation preserves provenance; no rules modified."
+
+[cells."engine_graph_consolidation.security"]
+state = "n/a"
+justification = "No security surface."
+
+[cells."engine_graph_consolidation.tests"]
+state = "n/a"
+justification = "No tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_ingestion
+# ---------------------------------------------------------------------------
+
+[cells."engine_ingestion.cli_ux"]
+state = "n/a"
+justification = "Ingestion has no direct CLI surface (cove source add unchanged)."
+
+[cells."engine_ingestion.data_model"]
+state = "n/a"
+justification = "No chunk, statement, or pipeline types modified."
+
+[cells."engine_ingestion.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/engine_ingestion.md cross-referencing spec/05-ingestion.md and naming INV-2, INV-3."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."engine_ingestion.epistemic_model"]
+state = "n/a"
+justification = "Ingestion sets initial opinions; no rules modified."
+
+[cells."engine_ingestion.error_handling"]
+state = "n/a"
+justification = "No pipeline error paths modified."
+
+[cells."engine_ingestion.graph_integrity"]
+state = "n/a"
+justification = "Ingestion writes to PG (source of truth); no rules modified."
+
+[cells."engine_ingestion.observability"]
+state = "n/a"
+justification = "No new ingestion telemetry."
+
+[cells."engine_ingestion.persistence"]
+state = "n/a"
+justification = "No schema or migration changes."
+
+[cells."engine_ingestion.provenance"]
+state = "n/a"
+justification = "Provenance handling unchanged; ledger code unmodified."
+
+[cells."engine_ingestion.security"]
+state = "n/a"
+justification = "No clearance or secrets handling modified."
+
+[cells."engine_ingestion.tests"]
+state = "n/a"
+justification = "No ingestion tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_search
+# ---------------------------------------------------------------------------
+
+[cells."engine_search.cli_ux"]
+state = "n/a"
+justification = "cove search surface unchanged."
+
+[cells."engine_search.data_model"]
+state = "n/a"
+justification = "No search request/response types modified."
+
+[cells."engine_search.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/engine_search.md cross-referencing spec/06-search.md."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."engine_search.epistemic_model"]
+state = "n/a"
+justification = "Ranking respects opinion tuples; no rules modified."
+
+[cells."engine_search.error_handling"]
+state = "n/a"
+justification = "No error paths modified."
+
+[cells."engine_search.graph_integrity"]
+state = "n/a"
+justification = "Graph dimension reads sidecar; no rules modified."
+
+[cells."engine_search.observability"]
+state = "n/a"
+justification = "No new search metrics."
+
+[cells."engine_search.persistence"]
+state = "n/a"
+justification = "No index or cache changes."
+
+[cells."engine_search.provenance"]
+state = "n/a"
+justification = "Search returns provenance; no provenance writes."
+
+[cells."engine_search.security"]
+state = "n/a"
+justification = "Egress filtering unchanged."
+
+[cells."engine_search.tests"]
+state = "n/a"
+justification = "No search tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_workers (worker, ast_extractor, eval, migrations, extensions loader)
+# ---------------------------------------------------------------------------
+
+[cells."engine_workers.cli_ux"]
+state = "n/a"
+justification = "Workers have no CLI surface (driven by queue); cove unchanged."
+
+[cells."engine_workers.data_model"]
+state = "n/a"
+justification = "No queue or worker types modified."
+
+[cells."engine_workers.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/engine_workers.md cross-referencing spec/05 (queue), spec/11 (eval), and the extension author guide."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."engine_workers.epistemic_model"]
+state = "n/a"
+justification = "No epistemic ops in workers."
+
+[cells."engine_workers.error_handling"]
+state = "n/a"
+justification = "Worker retry paths unchanged."
+
+[cells."engine_workers.graph_integrity"]
+state = "n/a"
+justification = "No graph ops in workers."
+
+[cells."engine_workers.observability"]
+state = "n/a"
+justification = "No worker telemetry changes."
+
+[cells."engine_workers.persistence"]
+state = "n/a"
+justification = "No new migrations."
+
+[cells."engine_workers.provenance"]
+state = "n/a"
+justification = "Workers preserve provenance; no rules modified."
+
+[cells."engine_workers.security"]
+state = "n/a"
+justification = "No security changes."
+
+[cells."engine_workers.tests"]
+state = "n/a"
+justification = "No worker tests added."
+
+# ---------------------------------------------------------------------------
+# Module: extensions
+# ---------------------------------------------------------------------------
+
+[cells."extensions.cli_ux"]
+state = "n/a"
+justification = "Extension manifests are loaded at startup; no CLI surface change."
+
+[cells."extensions.data_model"]
+state = "n/a"
+justification = "Manifest schema unchanged."
+
+[cells."extensions.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/extensions.md cross-referencing the extension author guide and ADR-0023."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."extensions.epistemic_model"]
+state = "n/a"
+justification = "No epistemic logic in manifests."
+
+[cells."extensions.error_handling"]
+state = "n/a"
+justification = "Manifest validation unchanged."
+
+[cells."extensions.graph_integrity"]
+state = "n/a"
+justification = "No graph ops."
+
+[cells."extensions.observability"]
+state = "n/a"
+justification = "No telemetry changes."
+
+[cells."extensions.persistence"]
+state = "n/a"
+justification = "No DB seeding changes."
+
+[cells."extensions.provenance"]
+state = "n/a"
+justification = "Extensions don't touch provenance."
+
+[cells."extensions.security"]
+state = "n/a"
+justification = "No clearance or auth changes."
+
+[cells."extensions.tests"]
+state = "n/a"
+justification = "No extension tests added."
+
+# ---------------------------------------------------------------------------
+# Module: infra (Makefile, docker-compose, deploy scripts, sidecars)
+# ---------------------------------------------------------------------------
+
+[cells."infra.cli_ux"]
+state = "n/a"
+justification = "No make-target or script surface changed."
+
+[cells."infra.data_model"]
+state = "n/a"
+justification = "No config schema changes."
+
+[cells."infra.documentation"]
+state = "complete"
+terminal = "Module stub authored at docs/architecture/modules/infra.md."
+last_updated = "2026-05-05T18:00:00Z"
+
+[cells."infra.epistemic_model"]
+state = "n/a"
+justification = "Infra is operational; no epistemic logic."
+
+[cells."infra.error_handling"]
+state = "n/a"
+justification = "No script error handling modified."
+
+[cells."infra.graph_integrity"]
+state = "n/a"
+justification = "No graph ops."
+
+[cells."infra.observability"]
+state = "n/a"
+justification = "No deployment telemetry changes."
+
+[cells."infra.persistence"]
+state = "n/a"
+justification = "No data files modified; .env.example untouched."
+
+[cells."infra.provenance"]
+state = "n/a"
+justification = "Infra is operational; no provenance involvement."
+
+[cells."infra.security"]
+state = "n/a"
+justification = "No deploy-time secrets handling modified."
+
+[cells."infra.tests"]
+state = "n/a"
+justification = "No infra tests added."

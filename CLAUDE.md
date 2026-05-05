@@ -7,6 +7,20 @@ Covalence is a hybrid GraphRAG knowledge engine. It ingests unstructured sources
 **Repo:** `ourochronos/covalence`
 **License:** MIT
 
+## Change Management (claude-ultra)
+
+This repo uses **claude-ultra** for tracking architectural changes. The relevant artifacts:
+
+- `.changes/active/<id>/` — work in flight (each change has `spec.md`, `manifest.toml`, `decisions.md`)
+- `.changes/archive/<id>/` — closed changes, full history retained
+- `.changes/backlog/` — local-authoritative tracker for tech debt and observations
+- `.changes/catalogs/` — `modules.toml` and `concerns.toml` defining the 12 × 11 cell space
+- `docs/architecture/` — holistic spec: overview, invariants (INV-1..INV-8), per-module + per-concern stubs
+
+When the user requests work that crosses module boundaries, modifies a public contract (CLI, API, manifest schema, exported function signatures), affects an invariant, or adds/removes a module/concern — classify the change as **architectural** and follow the discovery → proposal → alignment → freeze workflow before writing code. Otherwise it's **local** and proceeds without the manifest apparatus. The full ruleset lives in the `claude-ultra:architectural-change` skill (auto-loads when triggered).
+
+Branch convention: `change/<change-id>` for managed architectural changes (e.g., `change/0001-bootstrap`); `feature/issue-N` for non-managed work.
+
 ## Architecture
 
 Three-layer design:
