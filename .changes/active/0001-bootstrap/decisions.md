@@ -147,3 +147,25 @@ This file records non-trivial choices made during the alignment loop. Each entry
 **Rationale:** Project convention. Issue is the durable cross-session artifact in Covalence's existing tracking system; the change manifest is the durable artifact in claude-ultra's. Both are referenced.
 
 **ADR candidate?** No.
+
+---
+
+## Decision 11 — Bootstrap exceptions to closure-only artifact rules
+
+**Date:** 2026-05-05
+**Phase:** freeze
+**Kind:** bypass (recorded per the framework's escape-hatch convention)
+
+**Choice:** Two artifact-placement exceptions are taken in this bootstrap, deviating from the framework's normal closure-gated flow:
+
+1. **`docs/architecture/` written directly, not via `proposed-amendments/`.** Normally, edits to the holistic spec stage in `.changes/active/<id>/proposed-amendments/` during phase two and merge at closure. The bootstrap creates `docs/architecture/` from scratch — there is nothing yet to amend — so the holistic spec stubs are written directly to `docs/architecture/`. The `proposed-amendments/` directory in this change is intentionally empty; its `README.md` records the exception.
+
+2. **ADR-0024 written directly to `docs/adr/`, not via `proposed-adrs/`.** Normally, proposed ADRs stage in `.changes/active/<id>/proposed-adrs/` and promote at closure. ADR-0024 records the bootstrap decision itself; it is written directly to `docs/adr/0024-adopting-claude-ultra.md` so the decision is discoverable from the moment the framework is installed (without the consumer having to know about an in-flight `proposed-adrs/` path). The `proposed-adrs/` directory contains only `.gitkeep`.
+
+**Rationale:** Both exceptions are intrinsic to bootstrapping the framework — there is no way to "stage and merge at closure" something that creates the staging mechanism itself. Claude-ultra's own `0001-bootstrap` change took the same pair of exceptions; we follow that pattern.
+
+**Implications:**
+- Future changes do *not* inherit these exceptions. They use `proposed-amendments/` and `proposed-adrs/` per the normal closure flow.
+- Reconciliation for change 0001 explicitly checks that the exceptions are limited to this bootstrap (no later change should bypass closure for amendment placement).
+
+**ADR candidate?** No — the exceptions are recorded in this decision and noted in ADR-0024's "Implementation" section, but they are not architectural decisions on their own.

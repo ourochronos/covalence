@@ -4,7 +4,7 @@ This document is the index into Covalence's holistic spec from the perspective o
 
 For deep subsystem designs (search, ingestion, epistemic model, graph, etc.), see `spec/` (13 design specs). This document is a higher-level companion: it names the partition, captures the cross-cutting concerns, and pins the invariants. Per-module stubs cross-reference `spec/` where relevant.
 
-For framework decisions (manifest as durable state, phase-one alignment loop, local backlog as authoritative, assistant-driven workflow), see the claude-ultra plugin's own ADRs at `.claude/plugins/cache/claude-ultra-local/claude-ultra/docs/adr/` (ADR-0001 through ADR-0004). They are not duplicated in Covalence's `docs/adr/`.
+For framework decisions (manifest as durable state, phase-one alignment loop, local backlog as authoritative, assistant-driven workflow), see the claude-ultra plugin's own ADRs (ADR-0001 through ADR-0004) inside the plugin repo at `/home/covalence/claude-ultra/docs/adr/`. They are not duplicated in Covalence's `docs/adr/`. (The plugin install cache under `.claude/plugins/cache/` is versioned and version-specific; the source repo path is the stable reference.)
 
 ## Purpose
 

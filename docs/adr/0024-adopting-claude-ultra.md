@@ -6,7 +6,7 @@
 
 ## Context
 
-Covalence has crossed the size and complexity threshold where single-PR review is insufficient evidence that a change ships in a consistent state across all the modules and cross-cutting concerns it touches. The codebase is 11+ modules (engine_core, search, ingestion, graph_consolidation, epistemic, api, workers, clients, dashboard, extensions, infra, documentation), and changes routinely cross several of them — e.g., adding a new search dimension touches engine_core (types/storage), engine_search (algorithms), engine_ingestion (whatever the dimension indexes), engine_api (handler/schema), clients (CLI flag), and documentation (spec/06-search.md, ADR if novel). The "Holistic changes" checklist in `CLAUDE.md` already names this need; what was missing was a durable, machine-checkable artifact that makes "did this change actually update everything it should have?" verifiable.
+Covalence has crossed the size and complexity threshold where single-PR review is insufficient evidence that a change ships in a consistent state across all the modules and cross-cutting concerns it touches. The codebase splits into 12 modules (engine_core, engine_search, engine_ingestion, engine_graph_consolidation, engine_epistemic, engine_api, engine_workers, clients, dashboard, extensions, infra, documentation), and changes routinely cross several of them — e.g., adding a new search dimension touches engine_core (types/storage), engine_search (algorithms), engine_ingestion (whatever the dimension indexes), engine_api (handler/schema), clients (CLI flag), and documentation (spec/06-search.md, ADR if novel). The "Holistic changes" checklist in `CLAUDE.md` already names this need; what was missing was a durable, machine-checkable artifact that makes "did this change actually update everything it should have?" verifiable.
 
 The `claude-ultra` plugin (locally developed at `/home/covalence/claude-ultra/`) provides exactly this: a manifest-driven, phase-gated workflow where the **manifest** — a TOML file enumerating every cell in the affected-modules × all-concerns cross-product — is the authoritative state of a change. A change is complete when its manifest says so, not when its diff merges. The framework adds three phases (spec change → implementation → reconciliation) with explicit gates between them.
 
@@ -16,7 +16,7 @@ Adopt claude-ultra for architectural-change management in Covalence. The framewo
 
 ### Module catalog (12 modules)
 
-`engine_core`, `engine_search`, `engine_ingestion`, `engine_graph_consolidation`, `engine_epistemic`, `engine_api`, `engine_workers`, `clients`, `dashboard`, `extensions`, `infra`, `documentation`. Path globs in `.changes/catalogs/modules.toml`. The split is fine-grained: `covalence-core` is split into 5 modules (core, search, ingestion, graph+consolidation, epistemic) so that subsystem-local changes have small cell footprints. `process` artifacts (`.changes/`) are scoped under `documentation` rather than as a separate module — a deviation from claude-ultra's reference partition.
+`engine_core`, `engine_search`, `engine_ingestion`, `engine_graph_consolidation`, `engine_epistemic`, `engine_api`, `engine_workers`, `clients`, `dashboard`, `extensions`, `infra`, `documentation`. Path globs in `.changes/catalogs/modules.toml`. The split is fine-grained: `covalence-core` is split into 5 modules (engine_core, engine_search, engine_ingestion, engine_graph_consolidation, engine_epistemic) so that subsystem-local changes have small cell footprints. `process` artifacts (`.changes/`) are scoped under `documentation` rather than as a separate module — a deviation from claude-ultra's reference partition.
 
 ### Concern catalog (11 concerns)
 
@@ -34,7 +34,7 @@ INV-1 through INV-8, sourced from `CLAUDE.md`'s "Hard Rules" section. Documented
 
 ### Holistic spec at `docs/architecture/`
 
-A new `docs/architecture/` directory holds the claude-ultra holistic spec: `overview.md`, `invariants.md`, `modules/<name>.md` (11 stubs), `concerns/<name>.md` (11 stubs). This is **separate** from `spec/` (13 mature subsystem designs) — the architecture spec is a higher-level companion that names the partition and the cross-cutting properties; per-module stubs cross-reference the relevant `spec/NN-name.md`.
+A new `docs/architecture/` directory holds the claude-ultra holistic spec: `overview.md`, `invariants.md`, `modules/<name>.md` (12 stubs), `concerns/<name>.md` (11 stubs). This is **separate** from `spec/` (13 mature subsystem designs) — the architecture spec is a higher-level companion that names the partition and the cross-cutting properties; per-module stubs cross-reference the relevant `spec/NN-name.md`.
 
 ### Branch convention
 

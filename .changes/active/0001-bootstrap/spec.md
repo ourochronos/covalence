@@ -272,7 +272,7 @@ This change creates `docs/architecture/` from scratch (analogous to claude-ultra
 Files seeded:
 - `docs/architecture/overview.md` — index pointing at invariants, modules, concerns
 - `docs/architecture/invariants.md` — INV-1 through INV-8
-- `docs/architecture/modules/<module>.md` — one stub per module (11 files)
+- `docs/architecture/modules/<module>.md` — one stub per module (12 files)
 - `docs/architecture/concerns/<concern>.md` — one stub per concern (11 files)
 
 ## Proposed ADRs
