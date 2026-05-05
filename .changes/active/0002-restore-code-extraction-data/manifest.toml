@@ -1,0 +1,605 @@
+# Manifest for change 0002-restore-code-extraction-data
+#
+# Option D from spec.md: apply the operational reprocess (Option A) for the
+# 172 broken code sources, file ISSUE-0001 capturing the architectural concern
+# about reprocess hard-deletion (Option B's body of work) for future treatment.
+#
+# 12 modules × 11 concerns = 132 cells. No engine code is added or modified
+# in this change — implementation is operational (trigger reprocess) plus
+# verification (INV-1 + INV-2 + metrics). Phase is `reconciliation` post-
+# verification; cell distribution: 128 `n/a` + 4 `complete`
+# (documentation.documentation, engine_graph_consolidation.graph_integrity,
+# engine_ingestion.provenance, engine_workers.observability). No `pending` or
+# `in-progress` cells remain; verification spot-checks landed and Decision 9
+# captures the realistic acceptance state.
+
+[change]
+id = "0002-restore-code-extraction-data"
+title = "Restore code-extraction data for 172 stale sources (issue #176)"
+spec = "spec.md"
+amends_sections = []
+phase = "reconciliation"
+kind = "data-and-architectural"
+created = "2026-05-05T19:00:00Z"
+updated = "2026-05-05T20:30:00Z"
+depends_on_change = ["0001-bootstrap"]
+
+# ---------------------------------------------------------------------------
+# Module: clients (cove CLI + MCP server bridge)
+# ---------------------------------------------------------------------------
+
+[cells."clients.cli_ux"]
+state = "n/a"
+justification = "No CLI surface change; reprocess is triggered via existing admin mechanism. ISSUE-0001 may add a `cove admin reprocess --supersede` flag in the future."
+
+[cells."clients.data_model"]
+state = "n/a"
+justification = "No client-side data shapes touched."
+
+[cells."clients.documentation"]
+state = "n/a"
+justification = "No client-facing documentation changes."
+
+[cells."clients.epistemic_model"]
+state = "n/a"
+justification = "No client-side epistemic logic."
+
+[cells."clients.error_handling"]
+state = "n/a"
+justification = "No client error paths modified."
+
+[cells."clients.graph_integrity"]
+state = "n/a"
+justification = "Clients consume the API; graph integrity is server-side."
+
+[cells."clients.observability"]
+state = "n/a"
+justification = "No client-side telemetry changes."
+
+[cells."clients.persistence"]
+state = "n/a"
+justification = "Clients hold no persistent state."
+
+[cells."clients.provenance"]
+state = "n/a"
+justification = "Clients do not write provenance."
+
+[cells."clients.security"]
+state = "n/a"
+justification = "No auth or clearance changes."
+
+[cells."clients.tests"]
+state = "n/a"
+justification = "No client tests added."
+
+# ---------------------------------------------------------------------------
+# Module: dashboard
+# ---------------------------------------------------------------------------
+
+[cells."dashboard.cli_ux"]
+state = "n/a"
+justification = "Dashboard has no CLI surface."
+
+[cells."dashboard.data_model"]
+state = "n/a"
+justification = "No dashboard data shapes touched."
+
+[cells."dashboard.documentation"]
+state = "n/a"
+justification = "No dashboard docs."
+
+[cells."dashboard.epistemic_model"]
+state = "n/a"
+justification = "No epistemic logic in dashboard."
+
+[cells."dashboard.error_handling"]
+state = "n/a"
+justification = "No frontend changes."
+
+[cells."dashboard.graph_integrity"]
+state = "n/a"
+justification = "Dashboard consumes API."
+
+[cells."dashboard.observability"]
+state = "n/a"
+justification = "Dashboard observability stats will improve as a side-effect of reprocess (more code-class nodes appear in counters), but no instrumentation changes."
+
+[cells."dashboard.persistence"]
+state = "n/a"
+justification = "No dashboard storage."
+
+[cells."dashboard.provenance"]
+state = "n/a"
+justification = "Dashboard surfaces provenance; no provenance writes."
+
+[cells."dashboard.security"]
+state = "n/a"
+justification = "No auth changes."
+
+[cells."dashboard.tests"]
+state = "n/a"
+justification = "No dashboard tests."
+
+# ---------------------------------------------------------------------------
+# Module: documentation
+# ---------------------------------------------------------------------------
+
+[cells."documentation.cli_ux"]
+state = "n/a"
+justification = "Documentation isn't CLI-facing."
+
+[cells."documentation.data_model"]
+state = "n/a"
+justification = "No catalog or schema changes."
+
+[cells."documentation.documentation"]
+state = "complete"
+terminal = "spec.md (full diagnosis + 4 options + recommendation), decisions.md (Decisions 1-9 incl. final acceptance per actual results with precise headcounts: 144 of 172 reprocessed got code nodes, 28 did not), 4 backlog issues filed: ISSUE-0001 (reprocess hard-deletes despite superseded naming), ISSUE-0002 (AST entities all attributed to single chunk's byte range), ISSUE-0003 (reprocess does not cascade summary regeneration), ISSUE-0004 (28 code sources still have zero code-class nodes). GitHub issue #176 closing-comment composition pending operator decision per Decision 9 (close vs leave open)."
+last_updated = "2026-05-05T20:30:00Z"
+
+[cells."documentation.epistemic_model"]
+state = "n/a"
+justification = "Documentation doesn't carry opinion logic."
+
+[cells."documentation.error_handling"]
+state = "n/a"
+justification = "Documentation has no execution paths."
+
+[cells."documentation.graph_integrity"]
+state = "n/a"
+justification = "Documentation doesn't touch graph state."
+
+[cells."documentation.observability"]
+state = "n/a"
+justification = "Documentation doesn't emit telemetry."
+
+[cells."documentation.persistence"]
+state = "n/a"
+justification = "Documentation files added to existing layout (.changes/active/, .changes/backlog/); no schema/format change."
+
+[cells."documentation.provenance"]
+state = "n/a"
+justification = "Documentation doesn't carry provenance metadata."
+
+[cells."documentation.security"]
+state = "n/a"
+justification = "No secrets or privileged content in this change's documentation."
+
+[cells."documentation.tests"]
+state = "n/a"
+justification = "Documentation isn't unit-tested; reconciliation is its review."
+
+# ---------------------------------------------------------------------------
+# Module: engine_api
+# ---------------------------------------------------------------------------
+
+[cells."engine_api.cli_ux"]
+state = "n/a"
+justification = "API isn't CLI-facing."
+
+[cells."engine_api.data_model"]
+state = "n/a"
+justification = "No request/response schemas modified."
+
+[cells."engine_api.documentation"]
+state = "n/a"
+justification = "No new endpoints or schema docs."
+
+[cells."engine_api.epistemic_model"]
+state = "n/a"
+justification = "API serializes opinion tuples; no logic added."
+
+[cells."engine_api.error_handling"]
+state = "n/a"
+justification = "No new error surfaces."
+
+[cells."engine_api.graph_integrity"]
+state = "n/a"
+justification = "API is read-mostly for graph; no integrity-affecting writes."
+
+[cells."engine_api.observability"]
+state = "n/a"
+justification = "No new tracing or metrics."
+
+[cells."engine_api.persistence"]
+state = "n/a"
+justification = "No migrations."
+
+[cells."engine_api.provenance"]
+state = "n/a"
+justification = "API serializes provenance; no provenance writes."
+
+[cells."engine_api.security"]
+state = "n/a"
+justification = "Existing admin auth gates the reprocess endpoint (if used); no auth changes."
+
+[cells."engine_api.tests"]
+state = "n/a"
+justification = "No API tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_core
+# ---------------------------------------------------------------------------
+
+[cells."engine_core.cli_ux"]
+state = "n/a"
+justification = "Core library has no CLI surface."
+
+[cells."engine_core.data_model"]
+state = "n/a"
+justification = "No types or models modified. ISSUE-0001 anticipates schema changes (superseded_by/superseded_at) for a future change, not this one."
+
+[cells."engine_core.documentation"]
+state = "n/a"
+justification = "No new doc comments on core types."
+
+[cells."engine_core.epistemic_model"]
+state = "n/a"
+justification = "No epistemic types or logic touched."
+
+[cells."engine_core.error_handling"]
+state = "n/a"
+justification = "Existing reprocess error paths unchanged."
+
+[cells."engine_core.graph_integrity"]
+state = "n/a"
+justification = "Sidecar resync verification is owned by engine_graph_consolidation."
+
+[cells."engine_core.observability"]
+state = "n/a"
+justification = "No new core-side instrumentation."
+
+[cells."engine_core.persistence"]
+state = "n/a"
+justification = "No schema migrations. The existing `reprocess` deletes data; that's the surfaced concern in ISSUE-0001 — not addressed here per Decision 3 (Option D)."
+
+[cells."engine_core.provenance"]
+state = "n/a"
+justification = "INV-2 verification is owned by engine_ingestion (where the reprocess pipeline writes new provenance)."
+
+[cells."engine_core.security"]
+state = "n/a"
+justification = "No security primitives touched."
+
+[cells."engine_core.tests"]
+state = "n/a"
+justification = "No core test coverage added — Option D adds no engine code; existing test coverage for #186/#188/#190 fixes is sufficient."
+
+# ---------------------------------------------------------------------------
+# Module: engine_epistemic
+# ---------------------------------------------------------------------------
+
+[cells."engine_epistemic.cli_ux"]
+state = "n/a"
+justification = "No CLI surface."
+
+[cells."engine_epistemic.data_model"]
+state = "n/a"
+justification = "No opinion types touched."
+
+[cells."engine_epistemic.documentation"]
+state = "n/a"
+justification = "No epistemic doc changes."
+
+[cells."engine_epistemic.epistemic_model"]
+state = "n/a"
+justification = "Reprocess preserves opinion tuples for unchanged nodes; new nodes from AST get default initial opinions per existing logic."
+
+[cells."engine_epistemic.error_handling"]
+state = "n/a"
+justification = "No epistemic error paths."
+
+[cells."engine_epistemic.graph_integrity"]
+state = "n/a"
+justification = "Sidecar resync is in scope of engine_graph_consolidation."
+
+[cells."engine_epistemic.observability"]
+state = "n/a"
+justification = "No telemetry changes."
+
+[cells."engine_epistemic.persistence"]
+state = "n/a"
+justification = "No storage changes."
+
+[cells."engine_epistemic.provenance"]
+state = "n/a"
+justification = "Owned by engine_ingestion."
+
+[cells."engine_epistemic.security"]
+state = "n/a"
+justification = "No surface."
+
+[cells."engine_epistemic.tests"]
+state = "n/a"
+justification = "No tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_graph_consolidation
+# ---------------------------------------------------------------------------
+
+[cells."engine_graph_consolidation.cli_ux"]
+state = "n/a"
+justification = "No CLI surface."
+
+[cells."engine_graph_consolidation.data_model"]
+state = "n/a"
+justification = "No graph types touched."
+
+[cells."engine_graph_consolidation.documentation"]
+state = "n/a"
+justification = "No documentation changes for graph/consolidation."
+
+[cells."engine_graph_consolidation.epistemic_model"]
+state = "n/a"
+justification = "No epistemic propagation rules touched."
+
+[cells."engine_graph_consolidation.error_handling"]
+state = "n/a"
+justification = "No graph error paths touched."
+
+[cells."engine_graph_consolidation.graph_integrity"]
+state = "complete"
+terminal = "INV-1 verified post-bulk-reprocess: covalence_health.graph reports 4152 nodes / 109729 edges; covalence_search returns the synthesize_cooccurrence_edges code node with valid graph_context co-occurrence edges, confirming the petgraph sidecar holds the new code-class nodes. No divergence symptoms; sidecar resync was automatic via the outbox/listener path."
+last_updated = "2026-05-05T20:30:00Z"
+
+[cells."engine_graph_consolidation.observability"]
+state = "n/a"
+justification = "Sidecar resync metrics will reflect the change naturally; no instrumentation added."
+
+[cells."engine_graph_consolidation.persistence"]
+state = "n/a"
+justification = "No PG schema changes; the petgraph sidecar is in-memory."
+
+[cells."engine_graph_consolidation.provenance"]
+state = "n/a"
+justification = "Graph nodes preserve provenance via their underlying chunk/extraction references; INV-2 verification is in engine_ingestion."
+
+[cells."engine_graph_consolidation.security"]
+state = "n/a"
+justification = "Clearance unchanged; reprocess preserves the source's clearance level."
+
+[cells."engine_graph_consolidation.tests"]
+state = "n/a"
+justification = "No new tests; existing sidecar-resync coverage is sufficient."
+
+# ---------------------------------------------------------------------------
+# Module: engine_ingestion
+# ---------------------------------------------------------------------------
+
+[cells."engine_ingestion.cli_ux"]
+state = "n/a"
+justification = "No CLI surface."
+
+[cells."engine_ingestion.data_model"]
+state = "n/a"
+justification = "No ingestion type changes."
+
+[cells."engine_ingestion.documentation"]
+state = "n/a"
+justification = "spec/05-ingestion.md may eventually note the data-debt-on-pipeline-fix pattern, but Option D defers that to ISSUE-0001's future treatment."
+
+[cells."engine_ingestion.epistemic_model"]
+state = "n/a"
+justification = "No opinion logic touched."
+
+[cells."engine_ingestion.error_handling"]
+state = "n/a"
+justification = "Existing pipeline error paths handle reprocess failures."
+
+[cells."engine_ingestion.graph_integrity"]
+state = "n/a"
+justification = "Sidecar resync owned by engine_graph_consolidation."
+
+[cells."engine_ingestion.observability"]
+state = "n/a"
+justification = "Per-job telemetry exists; no additional ingestion-side counters added."
+
+[cells."engine_ingestion.persistence"]
+state = "n/a"
+justification = "No schema changes; reprocess uses existing pipeline write paths."
+
+[cells."engine_ingestion.provenance"]
+state = "complete"
+terminal = "INV-2 verified strictly (provenance link exists and points to valid byte offsets in raw_content) for hooks.rs: all 14 newly-created code-class nodes link via extraction → chunk → byte_start=826/byte_end=1333 within the 28715-byte source. The strict invariant holds. Surfaced concern: granularity is coarse — all 14 entities share the same chunk's byte range rather than per-entity AST spans. Filed as ISSUE-0002 for follow-up; not blocking change 0002 closure."
+last_updated = "2026-05-05T20:30:00Z"
+
+[cells."engine_ingestion.security"]
+state = "n/a"
+justification = "Clearance level preserved by reprocess (line 92 of reprocess.rs: `SourceRepo::update` doesn't change `clearance_level`)."
+
+[cells."engine_ingestion.tests"]
+state = "n/a"
+justification = "Existing pipeline coverage sufficient; Option D adds no ingestion code."
+
+# ---------------------------------------------------------------------------
+# Module: engine_search
+# ---------------------------------------------------------------------------
+
+[cells."engine_search.cli_ux"]
+state = "n/a"
+justification = "cove search surface unchanged."
+
+[cells."engine_search.data_model"]
+state = "n/a"
+justification = "No search types modified."
+
+[cells."engine_search.documentation"]
+state = "n/a"
+justification = "No search docs touched."
+
+[cells."engine_search.epistemic_model"]
+state = "n/a"
+justification = "Ranking respects opinion tuples; no rules touched."
+
+[cells."engine_search.error_handling"]
+state = "n/a"
+justification = "No new error paths."
+
+[cells."engine_search.graph_integrity"]
+state = "n/a"
+justification = "Search reads sidecar; sidecar correctness is owned by engine_graph_consolidation."
+
+[cells."engine_search.observability"]
+state = "n/a"
+justification = "Search recall on code identifiers should improve as a side-effect; no instrumentation added."
+
+[cells."engine_search.persistence"]
+state = "n/a"
+justification = "No index changes; embeddings will be regenerated by the reprocess pipeline."
+
+[cells."engine_search.provenance"]
+state = "n/a"
+justification = "Search returns provenance; no writes."
+
+[cells."engine_search.security"]
+state = "n/a"
+justification = "Egress filtering unchanged."
+
+[cells."engine_search.tests"]
+state = "n/a"
+justification = "No search tests added."
+
+# ---------------------------------------------------------------------------
+# Module: engine_workers
+# ---------------------------------------------------------------------------
+
+[cells."engine_workers.cli_ux"]
+state = "n/a"
+justification = "Worker has no CLI surface; reprocess is enqueued via admin mechanism."
+
+[cells."engine_workers.data_model"]
+state = "n/a"
+justification = "No queue-job schema or payload changes."
+
+[cells."engine_workers.documentation"]
+state = "n/a"
+justification = "No worker docs modified."
+
+[cells."engine_workers.epistemic_model"]
+state = "n/a"
+justification = "No epistemic ops in workers."
+
+[cells."engine_workers.error_handling"]
+state = "n/a"
+justification = "Existing per-job error handling applies. If any of the 172 reprocess jobs fail, they'll appear in the queue with status='failed' and won't block the rest. Reconciliation will surface any failures."
+
+[cells."engine_workers.graph_integrity"]
+state = "n/a"
+justification = "Owned by engine_graph_consolidation."
+
+[cells."engine_workers.observability"]
+state = "complete"
+terminal = "Aggregate metrics per Decision 6 partially met: total_code_entities went 101 → 680 (+579, satisfies #176's narrow symptom). Of the 172 reprocessed in this batch, 144 now have ≥1 code-class node and 28 do not (filed as ISSUE-0004 — likely demotion-rule firing on multi-domain sources). System-wide code-source population: 250 of 292 code sources now have ≥1 code-class node (was 15 of 193 unsummarized at issue-filing time; the 99-source universe difference is sources with summaries pre-existing and outside #176's panel). NOT met: unsummarized_sources stayed at 192, entity_summary_pct collapsed 92% → 14% (denominator grew, numerator unchanged) — reprocess did not cascade compose_source_summary jobs. Filed as ISSUE-0003. orphan_nodes jumped 31 → 302 — expected per Decision 4 (LLM-noise nodes lost their last reference). Decision 9 captures the realistic acceptance state."
+last_updated = "2026-05-05T20:30:00Z"
+
+[cells."engine_workers.persistence"]
+state = "n/a"
+justification = "Queue persistence (job rows in PG) is unchanged; reprocess uses the existing JobKind::ReprocessSource enum variant."
+
+[cells."engine_workers.provenance"]
+state = "n/a"
+justification = "Owned by engine_ingestion."
+
+[cells."engine_workers.security"]
+state = "n/a"
+justification = "Clearance preserved across reprocess (line 92 of reprocess.rs)."
+
+[cells."engine_workers.tests"]
+state = "n/a"
+justification = "Option D adds no new worker code; the regression that caused #176 was fixed by #186 and has its own coverage. Adding a regression test specifically for the data-debt scenario (chunks-without-code-nodes → reprocess → code-nodes) is deferred to ISSUE-0001's future treatment."
+
+# ---------------------------------------------------------------------------
+# Module: extensions
+# ---------------------------------------------------------------------------
+
+[cells."extensions.cli_ux"]
+state = "n/a"
+justification = "No CLI surface."
+
+[cells."extensions.data_model"]
+state = "n/a"
+justification = "Manifest schema unchanged."
+
+[cells."extensions.documentation"]
+state = "n/a"
+justification = "Code-analysis manifest is internally consistent; no doc updates needed (verified during discovery)."
+
+[cells."extensions.epistemic_model"]
+state = "n/a"
+justification = "No epistemic logic in manifests."
+
+[cells."extensions.error_handling"]
+state = "n/a"
+justification = "Manifest validation unchanged."
+
+[cells."extensions.graph_integrity"]
+state = "n/a"
+justification = "No graph ops."
+
+[cells."extensions.observability"]
+state = "n/a"
+justification = "No telemetry changes."
+
+[cells."extensions.persistence"]
+state = "n/a"
+justification = "No manifest changes; entity_types declarations remain accurate."
+
+[cells."extensions.provenance"]
+state = "n/a"
+justification = "Manifests are declarative; no provenance involvement."
+
+[cells."extensions.security"]
+state = "n/a"
+justification = "No security changes."
+
+[cells."extensions.tests"]
+state = "n/a"
+justification = "No manifest tests added."
+
+# ---------------------------------------------------------------------------
+# Module: infra
+# ---------------------------------------------------------------------------
+
+[cells."infra.cli_ux"]
+state = "n/a"
+justification = "No make-targets or scripts modified."
+
+[cells."infra.data_model"]
+state = "n/a"
+justification = "No config schema changes."
+
+[cells."infra.documentation"]
+state = "n/a"
+justification = "No infra docs modified."
+
+[cells."infra.epistemic_model"]
+state = "n/a"
+justification = "No epistemic logic in infra."
+
+[cells."infra.error_handling"]
+state = "n/a"
+justification = "No script error handling modified."
+
+[cells."infra.graph_integrity"]
+state = "n/a"
+justification = "No graph ops."
+
+[cells."infra.observability"]
+state = "n/a"
+justification = "No deployment telemetry changes."
+
+[cells."infra.persistence"]
+state = "n/a"
+justification = "No infra files modified."
+
+[cells."infra.provenance"]
+state = "n/a"
+justification = "Infra is operational."
+
+[cells."infra.security"]
+state = "n/a"
+justification = "No deploy-time secrets handling changed."
+
+[cells."infra.tests"]
+state = "n/a"
+justification = "No infra tests added."
